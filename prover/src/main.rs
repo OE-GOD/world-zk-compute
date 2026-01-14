@@ -8,18 +8,21 @@
 
 use alloy::{
     primitives::{Address, B256, U256},
-    providers::{Provider, ProviderBuilder},
+    providers::ProviderBuilder,
     signers::local::PrivateKeySigner,
+    network::EthereumWallet,
 };
 use clap::{Parser, Subcommand};
 use std::sync::Arc;
-use tracing::{info, warn, error};
+use tracing::{info, error};
 
+mod bonsai;
 mod config;
 mod contracts;
 mod prover;
 mod monitor;
 
+use bonsai::ProvingMode;
 use config::ProverConfig;
 
 #[derive(Parser)]
@@ -53,6 +56,10 @@ enum Commands {
         /// Program image IDs to accept (comma-separated, empty = all)
         #[arg(long, default_value = "")]
         image_ids: String,
+
+        /// Proving mode: local, bonsai, or bonsai-fallback
+        #[arg(long, env = "PROVING_MODE", default_value = "local")]
+        proving_mode: String,
     },
 
     /// Check status of a specific request
@@ -104,8 +111,9 @@ async fn main() -> anyhow::Result<()> {
             engine_address,
             min_tip,
             image_ids,
+            proving_mode,
         } => {
-            run_prover(rpc_url, private_key, engine_address, min_tip, image_ids).await?;
+            run_prover(rpc_url, private_key, engine_address, min_tip, image_ids, proving_mode).await?;
         }
 
         Commands::Status {
@@ -134,11 +142,16 @@ async fn run_prover(
     engine_address: String,
     min_tip: f64,
     image_ids: String,
+    proving_mode: String,
 ) -> anyhow::Result<()> {
+    // Parse proving mode
+    let mode = ProvingMode::from_str(&proving_mode);
+
     info!("Starting World ZK Compute Prover Node");
     info!("RPC: {}", rpc_url);
     info!("Engine: {}", engine_address);
     info!("Min tip: {} ETH", min_tip);
+    info!("Proving mode: {:?}", mode);
 
     // Parse allowed image IDs
     let allowed_images: Vec<B256> = if image_ids.is_empty() {
@@ -167,8 +180,13 @@ async fn run_prover(
     let wallet_address = signer.address();
     info!("Prover wallet: {}", wallet_address);
 
+    let wallet = EthereumWallet::from(signer);
     let provider = ProviderBuilder::new()
-        .wallet(signer)
+        .filler(alloy::providers::fillers::GasFiller)
+        .filler(alloy::providers::fillers::BlobGasFiller)
+        .filler(alloy::providers::fillers::NonceFiller::default())
+        .filler(alloy::providers::fillers::ChainIdFiller::default())
+        .wallet(wallet)
         .on_http(rpc_url.parse()?);
 
     let provider = Arc::new(provider);
@@ -185,6 +203,8 @@ async fn run_prover(
         min_tip_wei,
         allowed_image_ids: allowed_images,
         poll_interval_secs: 5,
+        proving_mode: mode,
+        bonsai_config: bonsai::BonsaiConfig::from_env().ok(),
     };
 
     info!("Prover node ready. Monitoring for execution requests...");
@@ -211,12 +231,11 @@ async fn check_status(
     engine_address: String,
     request_id: u64,
 ) -> anyhow::Result<()> {
-    let provider = ProviderBuilder::new().on_http(rpc_url.parse()?);
-    let engine: Address = engine_address.parse()?;
+    let _provider = ProviderBuilder::new().on_http(rpc_url.parse()?);
+    let _engine: Address = engine_address.parse()?;
 
     // TODO: Call getRequest on the contract
     info!("Checking status of request {}...", request_id);
-    info!("Engine: {}", engine);
 
     // This would call the contract - simplified for now
     println!("Request ID: {}", request_id);
@@ -230,8 +249,8 @@ async fn list_pending(
     engine_address: String,
     limit: u64,
 ) -> anyhow::Result<()> {
-    let provider = ProviderBuilder::new().on_http(rpc_url.parse()?);
-    let engine: Address = engine_address.parse()?;
+    let _provider = ProviderBuilder::new().on_http(rpc_url.parse()?);
+    let _engine: Address = engine_address.parse()?;
 
     info!("Listing pending requests (limit: {})...", limit);
 

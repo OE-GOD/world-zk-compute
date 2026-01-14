@@ -13,10 +13,11 @@ path = "src/main.rs"
 tokio = { version = "1.0", features = ["full"] }
 
 # Ethereum
-alloy = { version = "0.9", features = ["full"] }
+alloy = { version = "0.8", features = ["full"] }
 
 # RISC Zero
-risc0-zkvm = { version = "^3.0.4" }
+risc0-zkvm = { version = "1.2" }
+bonsai-sdk = { version = "1.2" }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -28,7 +29,7 @@ hex = "0.4"
 reqwest = { version = "0.12", features = ["json"] }
 
 # CLI
-clap = { version = "4.0", features = ["derive"] }
+clap = { version = "4.0", features = ["derive", "env"] }
 
 # Logging
 tracing = "0.1"

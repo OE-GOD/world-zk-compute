@@ -3,16 +3,40 @@
 use crate::config::ProverConfig;
 use crate::contracts::IExecutionEngine;
 use crate::prover::execute_and_prove;
-use alloy::{
-    primitives::{Address, U256},
-    providers::Provider,
-};
+use alloy::primitives::U256;
+use alloy::providers::fillers::{FillProvider, JoinFill, WalletFiller};
+use alloy::providers::fillers::{ChainIdFiller, GasFiller, NonceFiller, BlobGasFiller};
+use alloy::network::{EthereumWallet, Ethereum};
+use alloy::transports::http::{Client, Http};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
+/// Provider type alias with wallet for signing transactions
+pub type SigningProvider = FillProvider<
+    JoinFill<
+        JoinFill<
+            JoinFill<
+                JoinFill<
+                    JoinFill<
+                        alloy::providers::Identity,
+                        GasFiller
+                    >,
+                    BlobGasFiller
+                >,
+                NonceFiller
+            >,
+            ChainIdFiller
+        >,
+        WalletFiller<EthereumWallet>
+    >,
+    alloy::providers::RootProvider<Http<Client>>,
+    Http<Client>,
+    Ethereum
+>;
+
 /// Check for pending requests and process them
-pub async fn check_and_process_requests<P: Provider + Clone>(
-    provider: &Arc<P>,
+pub async fn check_and_process_requests(
+    provider: &Arc<SigningProvider>,
     config: &ProverConfig,
 ) -> anyhow::Result<u64> {
     debug!("Checking for pending requests...");
@@ -55,8 +79,8 @@ pub async fn check_and_process_requests<P: Provider + Clone>(
 }
 
 /// Process a single request
-async fn process_request<P: Provider + Clone>(
-    provider: &Arc<P>,
+async fn process_request(
+    provider: &Arc<SigningProvider>,
     config: &ProverConfig,
     request_id: U256,
 ) -> anyhow::Result<bool> {
@@ -95,6 +119,7 @@ async fn process_request<P: Provider + Clone>(
         &request.imageId,
         &request.inputUrl,
         &request.inputDigest,
+        config.proving_mode.clone(),
     )
     .await?;
 

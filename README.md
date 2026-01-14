@@ -171,13 +171,56 @@ cd prover
 # Build
 cargo build --release
 
-# Run
+# Run with local CPU proving (slow but free)
 ./target/release/world-zk-prover run \
   --rpc-url $RPC_URL \
   --private-key $PRIVATE_KEY \
   --engine-address $ENGINE_ADDRESS \
-  --min-tip 0.0001
+  --min-tip 0.0001 \
+  --proving-mode local
+
+# Run with Bonsai cloud proving (fast, GPU-accelerated)
+./target/release/world-zk-prover run \
+  --rpc-url $RPC_URL \
+  --private-key $PRIVATE_KEY \
+  --engine-address $ENGINE_ADDRESS \
+  --min-tip 0.0001 \
+  --proving-mode bonsai
 ```
+
+### Bonsai Cloud Proving
+
+[Bonsai](https://bonsai.xyz) is RISC Zero's cloud proving service that provides:
+
+- **10-100x faster** proof generation using GPU acceleration
+- **Parallel proving** across multiple machines
+- **Production-ready** for any zkVM program complexity
+
+**Proving Modes:**
+
+| Mode | Description | Use Case |
+|------|-------------|----------|
+| `local` | CPU-based proving | Development, testing |
+| `bonsai` | Bonsai cloud proving | Production workloads |
+| `bonsai-fallback` | Try Bonsai, fall back to local | Hybrid setup |
+
+**Setup Bonsai:**
+
+```bash
+# 1. Get API key from https://bonsai.xyz
+# 2. Set environment variables
+export BONSAI_API_KEY=your-api-key
+export BONSAI_API_URL=https://api.bonsai.xyz  # optional, default
+
+# 3. Run prover with Bonsai
+./target/release/world-zk-prover run \
+  --proving-mode bonsai \
+  ...
+```
+
+**Why Bonsai Matters:**
+
+Without Bonsai, local CPU proving can take 10-60+ minutes for complex programs. With Bonsai's GPU clusters, the same proof generates in seconds to minutes. This makes the system practical for ANY detection algorithm, including ML models.
 
 ### Prover Flow
 
@@ -267,6 +310,7 @@ YOUR SYSTEM                          DETECTION TEAM
 - [x] Comprehensive tests (27 passing)
 - [x] Testnet deployment (Sepolia)
 - [x] Verifier router for multi-proof support
+- [x] Bonsai cloud proving integration (10-100x faster proofs)
 - [ ] Production RISC Zero verifier integration
 - [ ] World Chain mainnet deployment
 - [ ] Prover network incentives

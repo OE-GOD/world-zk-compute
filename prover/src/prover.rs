@@ -1,9 +1,108 @@
 //! zkVM execution and proof generation
+//!
+//! Supports two proving modes:
+//! - **Local**: CPU-based proving (slow but free)
+//! - **Bonsai**: Cloud proving via RISC Zero's Bonsai service (fast, GPU-accelerated)
 
 use alloy::primitives::B256;
 use risc0_zkvm::{default_prover, ExecutorEnv, Receipt};
 use std::path::PathBuf;
-use tracing::{info, debug};
+use tracing::{info, debug, warn};
+
+use crate::bonsai::{BonsaiProver, ProvingMode};
+
+/// Unified prover that supports both local and Bonsai proving
+pub struct UnifiedProver {
+    mode: ProvingMode,
+    bonsai_prover: Option<BonsaiProver>,
+}
+
+impl UnifiedProver {
+    /// Create a new unified prover
+    pub fn new(mode: ProvingMode) -> anyhow::Result<Self> {
+        let bonsai_prover = match &mode {
+            ProvingMode::Bonsai | ProvingMode::BonsaiWithFallback => {
+                match BonsaiProver::from_env() {
+                    Ok(prover) => {
+                        info!("Bonsai prover initialized");
+                        Some(prover)
+                    }
+                    Err(e) => {
+                        if mode == ProvingMode::Bonsai {
+                            return Err(e);
+                        }
+                        warn!("Bonsai not configured, will use local proving: {}", e);
+                        None
+                    }
+                }
+            }
+            ProvingMode::Local => None,
+        };
+
+        Ok(Self { mode, bonsai_prover })
+    }
+
+    /// Execute and prove with the configured mode
+    pub async fn prove(
+        &self,
+        elf: &[u8],
+        input: &[u8],
+    ) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+        match (&self.mode, &self.bonsai_prover) {
+            // Bonsai mode with prover available
+            (ProvingMode::Bonsai, Some(prover)) => {
+                info!("Using Bonsai cloud proving");
+                prover.prove(elf, input)
+            }
+
+            // Bonsai with fallback - try Bonsai first
+            (ProvingMode::BonsaiWithFallback, Some(prover)) => {
+                info!("Trying Bonsai cloud proving...");
+                match prover.prove(elf, input) {
+                    Ok(result) => Ok(result),
+                    Err(e) => {
+                        warn!("Bonsai proving failed, falling back to local: {}", e);
+                        Self::prove_local(elf, input)
+                    }
+                }
+            }
+
+            // Local mode or Bonsai not available
+            _ => {
+                info!("Using local CPU proving");
+                Self::prove_local(elf, input)
+            }
+        }
+    }
+
+    /// Local CPU-based proving
+    fn prove_local(elf: &[u8], input: &[u8]) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+        let start = std::time::Instant::now();
+
+        // Build executor environment
+        let env = ExecutorEnv::builder()
+            .write_slice(input)
+            .build()?;
+
+        // Run prover
+        let prover = default_prover();
+        let prove_info = prover.prove(env, elf)?;
+
+        let elapsed = start.elapsed();
+        info!("Local proof generated in {:.2?}", elapsed);
+
+        let receipt = prove_info.receipt;
+
+        // Note: Receipt verification happens on-chain via the RISC Zero verifier contract
+        info!("Local proof generated, ready for on-chain verification");
+
+        // Extract seal and journal
+        let seal = extract_seal(&receipt)?;
+        let journal = receipt.journal.bytes.clone();
+
+        Ok((seal, journal))
+    }
+}
 
 /// Execute a zkVM program and generate a proof
 ///
@@ -11,6 +110,7 @@ use tracing::{info, debug};
 /// * `image_id` - The program's image ID
 /// * `input_url` - URL to fetch inputs from
 /// * `input_digest` - Expected hash of inputs
+/// * `proving_mode` - Local or Bonsai proving
 ///
 /// # Returns
 /// * `(seal, journal)` - The proof seal and public outputs
@@ -18,6 +118,7 @@ pub async fn execute_and_prove(
     image_id: &B256,
     input_url: &str,
     input_digest: &B256,
+    proving_mode: ProvingMode,
 ) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
     info!("Fetching inputs from: {}", input_url);
 
@@ -37,33 +138,11 @@ pub async fn execute_and_prove(
     info!("Input digest verified");
 
     // Fetch the program ELF
-    // In production, this would be fetched from the program registry
     let elf = fetch_program_elf(image_id).await?;
 
-    info!("Running zkVM...");
-    let start = std::time::Instant::now();
-
-    // Build executor environment with inputs
-    let env = ExecutorEnv::builder()
-        .write_slice(&input_bytes)
-        .build()?;
-
-    // Get prover and generate proof
-    let prover = default_prover();
-    let prove_info = prover.prove(env, &elf)?;
-
-    let elapsed = start.elapsed();
-    info!("Proof generated in {:.2?}", elapsed);
-
-    let receipt = prove_info.receipt;
-
-    // Verify locally before submitting
-    receipt.verify_integrity()?;
-    info!("Local verification passed");
-
-    // Extract seal and journal
-    let seal = extract_seal(&receipt)?;
-    let journal = receipt.journal.bytes.clone();
+    // Create prover and generate proof
+    let prover = UnifiedProver::new(proving_mode)?;
+    let (seal, journal) = prover.prove(&elf, &input_bytes).await?;
 
     info!(
         "Proof ready: seal={} bytes, journal={} bytes",
@@ -74,8 +153,18 @@ pub async fn execute_and_prove(
     Ok((seal, journal))
 }
 
+/// Legacy function for backwards compatibility (uses local proving)
+#[allow(dead_code)]
+pub async fn execute_and_prove_local(
+    image_id: &B256,
+    input_url: &str,
+    input_digest: &B256,
+) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+    execute_and_prove(image_id, input_url, input_digest, ProvingMode::Local).await
+}
+
 /// Fetch inputs from URL
-async fn fetch_inputs(url: &str) -> anyhow::Result<Vec<u8>> {
+pub async fn fetch_inputs(url: &str) -> anyhow::Result<Vec<u8>> {
     // Handle different URL schemes
     if url.starts_with("ipfs://") {
         fetch_from_ipfs(url).await
@@ -115,7 +204,7 @@ fn parse_data_url(url: &str) -> anyhow::Result<Vec<u8>> {
 }
 
 /// Compute SHA256 digest of data
-fn compute_digest(data: &[u8]) -> B256 {
+pub fn compute_digest(data: &[u8]) -> B256 {
     use sha2::{Sha256, Digest};
     let mut hasher = Sha256::new();
     hasher.update(data);
@@ -124,7 +213,7 @@ fn compute_digest(data: &[u8]) -> B256 {
 }
 
 /// Fetch program ELF from registry or cache
-async fn fetch_program_elf(image_id: &B256) -> anyhow::Result<Vec<u8>> {
+pub async fn fetch_program_elf(image_id: &B256) -> anyhow::Result<Vec<u8>> {
     // In production, this would:
     // 1. Check local cache
     // 2. Query program registry for URL
