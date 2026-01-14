@@ -42,6 +42,7 @@ thiserror = "2.0"
 
 # Config
 dotenvy = "0.15"
+once_cell = "1.19"
 
 # Crypto
 sha2 = "0.10"

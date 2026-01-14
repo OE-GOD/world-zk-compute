@@ -390,6 +390,100 @@ let result = client.submit_and_wait(
 println!("Anomalies found: {}", result.anomalies_found);
 ```
 
+## Handling Large Detection Programs
+
+### Limitations & Solutions
+
+| Limit | Constraint | Solution |
+|-------|------------|----------|
+| **Cycles** | ~100M cycles max | Continuations (split execution) |
+| **Memory** | ~256MB guest RAM | Model quantization (INT8) |
+| **Proof Time** | Hours for huge programs | Bonsai GPU + parallel |
+| **Model Size** | Large NNs don't fit | Staged pipeline |
+
+### Continuations (Split Execution)
+
+For programs exceeding cycle limits:
+
+```rust
+use world_zk_compute::continuations::ContinuationExecutor;
+
+let executor = ContinuationExecutor::new(LargeProgramConfig {
+    max_cycles_per_segment: 50_000_000, // 50M per segment
+    enable_recursive: true,              // Compose proofs
+    ..Default::default()
+});
+
+let result = executor.execute_with_continuations(elf, input).await?;
+println!("Split into {} segments", result.segments.len());
+```
+
+### Staged Detection Pipeline
+
+Break complex detection into stages:
+
+```rust
+let pipeline = StagedPipeline::new()
+    .add_stage("preprocess", preprocess_id, 10_000_000, 64)
+    .add_stage("features", features_id, 30_000_000, 128)
+    .add_stage("inference", model_id, 50_000_000, 256)
+    .add_stage("postprocess", postprocess_id, 5_000_000, 32);
+
+// Each stage is proven separately, then composed
+```
+
+### Model Optimization for zkVM
+
+| Technique | Size Reduction | Recommended For |
+|-----------|---------------|-----------------|
+| INT8 Quantization | 4x smaller | All models |
+| Pruning | 2-10x smaller | Dense layers |
+| Knowledge Distillation | Custom | Large → small |
+| Weight Sharing | 2-4x smaller | Transformers |
+
+```rust
+// Check if your model fits
+let estimate = ModelOptimizer::estimate_fit(
+    1_000_000,  // 1M parameters
+    8,          // INT8 (8 bits)
+    256,        // 256MB limit
+);
+
+if !estimate.fits {
+    println!("{}", estimate.recommendation);
+}
+```
+
+### What Works Well in zkVM
+
+| Algorithm Type | Cycles | Fits? |
+|---------------|--------|-------|
+| Statistical (z-score, clustering) | 1-10M | ✅ Easy |
+| Decision trees / Random forest | 5-20M | ✅ Easy |
+| Small NNs (<1M params) | 20-50M | ✅ Yes |
+| Medium NNs (1-10M params) | 50-200M | ⚠️ With continuations |
+| Large NNs (>10M params) | 200M+ | ❌ Use staged pipeline |
+| LLMs | Billions | ❌ Not practical |
+
+### Monitoring
+
+Track prover performance:
+
+```rust
+use world_zk_compute::metrics;
+
+// Get current stats
+let snapshot = metrics::metrics().snapshot();
+println!("{}", snapshot);
+
+// Output:
+// === Prover Metrics ===
+// Proofs: 150 generated, 3 failed (98.0% success)
+// Throughput: 12.5 proofs/hour
+// Avg proof time: 45.2s
+// P99 proof time: 120.3s
+```
+
 ## Roadmap
 
 - [x] Core contracts (Engine, Registry, Verifier)
