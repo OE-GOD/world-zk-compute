@@ -1,0 +1,9 @@
+[package]
+name = "anomaly-detector-guest"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+risc0-zkvm = { version = "1.2", default-features = false, features = ["std"] }
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+sha2 = { version = "0.10", default-features = false }

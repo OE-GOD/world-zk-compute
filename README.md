@@ -361,6 +361,35 @@ YOUR SYSTEM                          DETECTION TEAM
 └─────────────────┘       returns PROVEN results
 ```
 
+## Detection Algorithm Examples
+
+See [`examples/`](./examples/) for complete detection algorithm examples:
+
+- **Anomaly Detector** - Statistical anomaly detection using z-score analysis
+- More coming soon...
+
+### Quick Start
+
+```bash
+# Run the demo
+./scripts/demo-detection.sh
+
+# Or use the SDK
+cargo add world-zk-sdk
+```
+
+```rust
+use world_zk_sdk::{Client, DetectionJob};
+
+let client = Client::new(rpc_url, private_key, engine_address).await?;
+let result = client.submit_and_wait(
+    DetectionJob::new(image_id, input_data)
+        .with_bounty(0.01)
+).await?;
+
+println!("Anomalies found: {}", result.anomalies_found);
+```
+
 ## Roadmap
 
 - [x] Core contracts (Engine, Registry, Verifier)
@@ -369,10 +398,12 @@ YOUR SYSTEM                          DETECTION TEAM
 - [x] Testnet deployment (Sepolia)
 - [x] Verifier router for multi-proof support
 - [x] Bonsai cloud proving integration (10-100x faster proofs)
+- [x] Performance optimizations (parallel, SNARK, caching)
+- [x] Detection SDK for easy integration
+- [x] Example detection algorithms
 - [ ] Production RISC Zero verifier integration
 - [ ] World Chain mainnet deployment
 - [ ] Prover network incentives
-- [ ] SDK for developers
 
 ## License
 
