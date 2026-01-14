@@ -17,10 +17,14 @@ use std::sync::Arc;
 use tracing::{info, error};
 
 mod bonsai;
+mod cache;
 mod config;
 mod contracts;
-mod prover;
+mod http;
 mod monitor;
+mod parallel;
+mod prover;
+mod snark;
 
 use bonsai::ProvingMode;
 use config::ProverConfig;
@@ -60,6 +64,18 @@ enum Commands {
         /// Proving mode: local, bonsai, or bonsai-fallback
         #[arg(long, env = "PROVING_MODE", default_value = "local")]
         proving_mode: String,
+
+        /// Maximum concurrent proofs (parallel processing)
+        #[arg(long, env = "MAX_CONCURRENT", default_value = "4")]
+        max_concurrent: usize,
+
+        /// Convert STARK proofs to SNARKs (smaller, cheaper on-chain)
+        #[arg(long, env = "USE_SNARK")]
+        use_snark: bool,
+
+        /// Memory cache size in MB for program ELFs
+        #[arg(long, env = "CACHE_SIZE_MB", default_value = "256")]
+        cache_size_mb: usize,
     },
 
     /// Check status of a specific request
@@ -112,8 +128,21 @@ async fn main() -> anyhow::Result<()> {
             min_tip,
             image_ids,
             proving_mode,
+            max_concurrent,
+            use_snark,
+            cache_size_mb,
         } => {
-            run_prover(rpc_url, private_key, engine_address, min_tip, image_ids, proving_mode).await?;
+            run_prover(
+                rpc_url,
+                private_key,
+                engine_address,
+                min_tip,
+                image_ids,
+                proving_mode,
+                max_concurrent,
+                use_snark,
+                cache_size_mb,
+            ).await?;
         }
 
         Commands::Status {
@@ -143,6 +172,9 @@ async fn run_prover(
     min_tip: f64,
     image_ids: String,
     proving_mode: String,
+    max_concurrent: usize,
+    use_snark: bool,
+    cache_size_mb: usize,
 ) -> anyhow::Result<()> {
     // Parse proving mode
     let mode = ProvingMode::from_str(&proving_mode);
@@ -152,6 +184,22 @@ async fn run_prover(
     info!("Engine: {}", engine_address);
     info!("Min tip: {} ETH", min_tip);
     info!("Proving mode: {:?}", mode);
+    info!("Max concurrent proofs: {}", max_concurrent);
+    info!("SNARK conversion: {}", if use_snark { "enabled" } else { "disabled" });
+    info!("Cache size: {} MB", cache_size_mb);
+
+    // Initialize program cache
+    let cache_dir = std::path::PathBuf::from("./cache/programs");
+    let _program_cache = cache::ProgramCache::new(cache_dir, cache_size_mb)?;
+    info!("Program cache initialized");
+
+    // Initialize parallel prover
+    let parallel_config = parallel::ParallelConfig {
+        max_concurrent,
+        ..Default::default()
+    };
+    let _parallel_prover = parallel::ParallelProver::new(parallel_config);
+    info!("Parallel prover ready with {} slots", max_concurrent);
 
     // Parse allowed image IDs
     let allowed_images: Vec<B256> = if image_ids.is_empty() {

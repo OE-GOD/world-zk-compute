@@ -222,6 +222,64 @@ export BONSAI_API_URL=https://api.bonsai.xyz  # optional, default
 
 Without Bonsai, local CPU proving can take 10-60+ minutes for complex programs. With Bonsai's GPU clusters, the same proof generates in seconds to minutes. This makes the system practical for ANY detection algorithm, including ML models.
 
+## Performance Optimizations
+
+The prover includes several optimizations for maximum throughput:
+
+### Parallel Processing
+
+Process multiple proofs concurrently:
+
+```bash
+# Process up to 8 proofs in parallel
+./world-zk-prover run --max-concurrent 8 ...
+```
+
+### STARK-to-SNARK Conversion
+
+Convert proofs to Groth16 for smaller size and cheaper on-chain verification:
+
+```bash
+# Enable SNARK conversion (256 bytes vs 200KB for STARK)
+./world-zk-prover run --use-snark ...
+```
+
+| Proof Type | Size | On-chain Gas |
+|------------|------|--------------|
+| STARK | ~200 KB | ~2M gas |
+| SNARK (Groth16) | ~256 bytes | ~200K gas |
+
+### ELF Caching
+
+Cache downloaded programs to avoid re-downloading:
+
+```bash
+# Use 512MB memory cache
+./world-zk-prover run --cache-size-mb 512 ...
+```
+
+### Connection Pooling
+
+The prover uses optimized HTTP settings:
+- Connection reuse (keep-alive)
+- Automatic retry with exponential backoff
+- gzip/brotli compression
+- Parallel prefetching
+
+### Full Optimization Example
+
+```bash
+./world-zk-prover run \
+  --rpc-url $RPC_URL \
+  --private-key $PRIVATE_KEY \
+  --engine-address $ENGINE_ADDRESS \
+  --proving-mode bonsai \
+  --max-concurrent 8 \
+  --use-snark \
+  --cache-size-mb 512 \
+  --min-tip 0.0001
+```
+
 ### Prover Flow
 
 1. **Monitor** - Watch for `ExecutionRequested` events
