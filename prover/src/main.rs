@@ -73,8 +73,14 @@ enum Commands {
         #[arg(long, default_value = "")]
         image_ids: String,
 
-        /// Proving mode: local, bonsai, or bonsai-fallback
-        #[arg(long, env = "PROVING_MODE", default_value = "local")]
+        /// Proving mode:
+        /// - local: CPU proving (slow but free)
+        /// - gpu: Local GPU proving (CUDA/Metal, requires --features cuda or metal)
+        /// - gpu-fallback: Try GPU first, fall back to CPU
+        /// - bonsai: Cloud proving (fast, requires BONSAI_API_KEY)
+        /// - bonsai-fallback: Try Bonsai first, fall back to CPU
+        /// - bonsai-gpu: Try Bonsai first, fall back to GPU, then CPU
+        #[arg(long, env = "PROVING_MODE", default_value = "gpu-fallback")]
         proving_mode: String,
 
         /// Maximum concurrent proofs (parallel processing)
@@ -222,6 +228,14 @@ async fn run_prover(
     // Parse proving mode
     let mode = ProvingMode::from_str(&proving_mode);
 
+    // Detect GPU backend
+    let gpu_backend = gpu_optimize::GpuBackend::detect();
+    let gpu_status = if gpu_backend.is_gpu() {
+        format!("{} (GPU detected)", gpu_backend)
+    } else {
+        "CPU only".to_string()
+    };
+
     info!("╔══════════════════════════════════════════════════════════════╗");
     info!("║       World ZK Compute - Optimized Prover Node               ║");
     info!("╚══════════════════════════════════════════════════════════════╝");
@@ -232,6 +246,7 @@ async fn run_prover(
     info!("  Registry:       {}", registry_address.as_deref().unwrap_or("not configured (local only)"));
     info!("  Min tip:        {} ETH", min_tip);
     info!("  Proving mode:   {:?}", mode);
+    info!("  GPU backend:    {}", gpu_status);
     info!("  Max concurrent: {}", max_concurrent);
     info!("  SNARK:          {}", if use_snark { "enabled" } else { "disabled" });
     info!("  Cache size:     {} MB", cache_size_mb);

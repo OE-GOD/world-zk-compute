@@ -1,8 +1,12 @@
 //! zkVM execution and proof generation
 //!
-//! Supports two proving modes:
+//! Supports multiple proving modes:
 //! - **Local**: CPU-based proving (slow but free)
+//! - **LocalGpu**: GPU-accelerated local proving (CUDA/Metal)
+//! - **GpuWithCpuFallback**: Try GPU first, fall back to CPU
 //! - **Bonsai**: Cloud proving via RISC Zero's Bonsai service (fast, GPU-accelerated)
+//! - **BonsaiWithFallback**: Try Bonsai first, fall back to local CPU
+//! - **BonsaiWithGpuFallback**: Try Bonsai first, fall back to GPU, then CPU
 
 use alloy::primitives::B256;
 use risc0_zkvm::{default_prover, ExecutorEnv, Receipt};
@@ -10,18 +14,26 @@ use std::path::PathBuf;
 use tracing::{info, debug, warn};
 
 use crate::bonsai::{BonsaiProver, ProvingMode};
+use crate::gpu_optimize::{GpuBackend, LocalGpuProver};
 
-/// Unified prover that supports both local and Bonsai proving
+/// Unified prover that supports local, GPU, and Bonsai proving
 pub struct UnifiedProver {
     mode: ProvingMode,
     bonsai_prover: Option<BonsaiProver>,
+    gpu_prover: LocalGpuProver,
+    gpu_backend: GpuBackend,
 }
 
 impl UnifiedProver {
     /// Create a new unified prover
     pub fn new(mode: ProvingMode) -> anyhow::Result<Self> {
+        // Detect GPU backend
+        let gpu_backend = GpuBackend::detect();
+        let gpu_prover = LocalGpuProver::with_backend(gpu_backend);
+
+        // Initialize Bonsai if needed
         let bonsai_prover = match &mode {
-            ProvingMode::Bonsai | ProvingMode::BonsaiWithFallback => {
+            ProvingMode::Bonsai | ProvingMode::BonsaiWithFallback | ProvingMode::BonsaiWithGpuFallback => {
                 match BonsaiProver::from_env() {
                     Ok(prover) => {
                         info!("Bonsai prover initialized");
@@ -36,10 +48,29 @@ impl UnifiedProver {
                     }
                 }
             }
-            ProvingMode::Local => None,
+            _ => None,
         };
 
-        Ok(Self { mode, bonsai_prover })
+        // Log GPU status
+        if mode.uses_gpu() {
+            if gpu_backend.is_gpu() {
+                info!("GPU proving enabled: {}", gpu_backend);
+            } else {
+                warn!("GPU mode requested but no GPU detected, will use CPU");
+            }
+        }
+
+        Ok(Self { mode, bonsai_prover, gpu_prover, gpu_backend })
+    }
+
+    /// Get the current GPU backend
+    pub fn gpu_backend(&self) -> GpuBackend {
+        self.gpu_backend
+    }
+
+    /// Check if GPU is available
+    pub fn has_gpu(&self) -> bool {
+        self.gpu_backend.is_gpu()
     }
 
     /// Execute and prove with the configured mode
@@ -55,31 +86,68 @@ impl UnifiedProver {
                 prover.prove(elf, input).await
             }
 
-            // Bonsai with fallback - try Bonsai first
+            // Bonsai with CPU fallback
             (ProvingMode::BonsaiWithFallback, Some(prover)) => {
                 info!("Trying Bonsai cloud proving...");
                 match prover.prove(elf, input).await {
                     Ok(result) => Ok(result),
                     Err(e) => {
-                        warn!("Bonsai proving failed, falling back to local: {}", e);
-                        Self::prove_local(elf, input).await
+                        warn!("Bonsai proving failed, falling back to local CPU: {}", e);
+                        Self::prove_local_cpu(elf, input).await
                     }
                 }
             }
 
-            // Local mode or Bonsai not available
+            // Bonsai with GPU fallback (then CPU)
+            (ProvingMode::BonsaiWithGpuFallback, Some(prover)) => {
+                info!("Trying Bonsai cloud proving...");
+                match prover.prove(elf, input).await {
+                    Ok(result) => Ok(result),
+                    Err(e) => {
+                        warn!("Bonsai proving failed, falling back to GPU: {}", e);
+                        self.prove_with_gpu_fallback(elf, input).await
+                    }
+                }
+            }
+
+            // GPU mode (direct)
+            (ProvingMode::LocalGpu, _) => {
+                info!("Using local {} proving", self.gpu_backend);
+                self.gpu_prover.prove_async(elf, input).await
+            }
+
+            // GPU with CPU fallback
+            (ProvingMode::GpuWithCpuFallback, _) => {
+                info!("Trying local {} proving...", self.gpu_backend);
+                self.prove_with_gpu_fallback(elf, input).await
+            }
+
+            // Local CPU mode or fallback
             _ => {
                 info!("Using local CPU proving");
-                Self::prove_local(elf, input).await
+                Self::prove_local_cpu(elf, input).await
             }
         }
+    }
+
+    /// Prove with GPU, falling back to CPU on failure
+    async fn prove_with_gpu_fallback(&self, elf: &[u8], input: &[u8]) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+        if self.gpu_backend.is_gpu() {
+            match self.gpu_prover.prove_async(elf, input).await {
+                Ok(result) => return Ok(result),
+                Err(e) => {
+                    warn!("{} proving failed, falling back to CPU: {}", self.gpu_backend, e);
+                }
+            }
+        }
+        Self::prove_local_cpu(elf, input).await
     }
 
     /// Local CPU-based proving (async wrapper around blocking prover)
     ///
     /// Runs the blocking RISC Zero prover in a dedicated thread pool
     /// to avoid blocking the async runtime.
-    async fn prove_local(elf: &[u8], input: &[u8]) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+    async fn prove_local_cpu(elf: &[u8], input: &[u8]) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
         let elf = elf.to_vec();
         let input = input.to_vec();
 
@@ -92,12 +160,12 @@ impl UnifiedProver {
                 .write_slice(&input)
                 .build()?;
 
-            // Run prover
+            // Run prover (uses CPU when no GPU features enabled)
             let prover = default_prover();
             let prove_info = prover.prove(env, &elf)?;
 
             let elapsed = start.elapsed();
-            info!("Local proof generated in {:.2?}", elapsed);
+            info!("Local CPU proof generated in {:.2?}", elapsed);
 
             let receipt = prove_info.receipt;
 

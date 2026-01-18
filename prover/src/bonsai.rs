@@ -283,20 +283,45 @@ pub enum ProvingMode {
     /// Local CPU proving (slow but free)
     #[default]
     Local,
+    /// Local GPU proving (fast, requires CUDA or Metal)
+    LocalGpu,
+    /// Try GPU first, fall back to CPU
+    GpuWithCpuFallback,
     /// Bonsai cloud proving (fast but requires API key)
     Bonsai,
-    /// Try Bonsai first, fall back to local
+    /// Try Bonsai first, fall back to local CPU
     BonsaiWithFallback,
+    /// Try Bonsai first, fall back to GPU, then CPU
+    BonsaiWithGpuFallback,
 }
 
 impl ProvingMode {
     /// Parse from string
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
+            "gpu" | "local-gpu" | "local_gpu" => Self::LocalGpu,
+            "gpu-fallback" | "gpu_fallback" => Self::GpuWithCpuFallback,
             "bonsai" => Self::Bonsai,
             "bonsai-fallback" | "bonsai_fallback" => Self::BonsaiWithFallback,
+            "bonsai-gpu" | "bonsai_gpu" | "bonsai-gpu-fallback" => Self::BonsaiWithGpuFallback,
             _ => Self::Local,
         }
+    }
+
+    /// Check if this mode uses GPU
+    pub fn uses_gpu(&self) -> bool {
+        matches!(
+            self,
+            Self::LocalGpu | Self::GpuWithCpuFallback | Self::BonsaiWithGpuFallback
+        )
+    }
+
+    /// Check if this mode uses Bonsai
+    pub fn uses_bonsai(&self) -> bool {
+        matches!(
+            self,
+            Self::Bonsai | Self::BonsaiWithFallback | Self::BonsaiWithGpuFallback
+        )
     }
 }
 
@@ -307,11 +332,33 @@ mod tests {
     #[test]
     fn test_proving_mode_parse() {
         assert_eq!(ProvingMode::from_str("local"), ProvingMode::Local);
+        assert_eq!(ProvingMode::from_str("gpu"), ProvingMode::LocalGpu);
+        assert_eq!(ProvingMode::from_str("local-gpu"), ProvingMode::LocalGpu);
+        assert_eq!(ProvingMode::from_str("gpu-fallback"), ProvingMode::GpuWithCpuFallback);
         assert_eq!(ProvingMode::from_str("bonsai"), ProvingMode::Bonsai);
         assert_eq!(
             ProvingMode::from_str("bonsai-fallback"),
             ProvingMode::BonsaiWithFallback
         );
+        assert_eq!(
+            ProvingMode::from_str("bonsai-gpu"),
+            ProvingMode::BonsaiWithGpuFallback
+        );
+    }
+
+    #[test]
+    fn test_proving_mode_flags() {
+        assert!(ProvingMode::LocalGpu.uses_gpu());
+        assert!(ProvingMode::GpuWithCpuFallback.uses_gpu());
+        assert!(ProvingMode::BonsaiWithGpuFallback.uses_gpu());
+        assert!(!ProvingMode::Local.uses_gpu());
+        assert!(!ProvingMode::Bonsai.uses_gpu());
+
+        assert!(ProvingMode::Bonsai.uses_bonsai());
+        assert!(ProvingMode::BonsaiWithFallback.uses_bonsai());
+        assert!(ProvingMode::BonsaiWithGpuFallback.uses_bonsai());
+        assert!(!ProvingMode::Local.uses_bonsai());
+        assert!(!ProvingMode::LocalGpu.uses_bonsai());
     }
 
     #[test]

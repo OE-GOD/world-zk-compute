@@ -17,6 +17,9 @@ futures = "0.3"
 alloy = { version = "0.8", features = ["full"] }
 
 # RISC Zero
+# Enable cuda or metal features for GPU acceleration:
+#   cargo build --release --features cuda    # NVIDIA GPU
+#   cargo build --release --features metal   # Apple GPU
 risc0-zkvm = { version = "1.2" }
 bonsai-sdk = { version = "1.2" }
 
@@ -51,3 +54,10 @@ rand = "0.8"
 
 [dev-dependencies]
 tempfile = "3.10"
+
+[features]
+default = []
+# CUDA GPU acceleration (NVIDIA) - requires CUDA toolkit installed
+cuda = ["risc0-zkvm/cuda"]
+# Metal GPU acceleration (Apple) - macOS only
+metal = ["risc0-zkvm/metal"]

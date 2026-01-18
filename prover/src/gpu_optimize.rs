@@ -1,23 +1,286 @@
-//! GPU Optimization for Bonsai Proving
+//! GPU Optimization for Proof Generation
 //!
-//! Maximizes GPU utilization for fastest proof generation.
+//! Provides GPU-accelerated proving for both local and Bonsai workflows.
 //!
-//! ## Optimizations
+//! ## Features
 //!
-//! 1. **Request Batching** - Batch multiple proofs to amortize API overhead
-//! 2. **Pipeline Parallelism** - Upload next job while current proves
-//! 3. **Adaptive Concurrency** - Auto-tune based on Bonsai load
-//! 4. **Proof Streaming** - Stream proofs back as segments complete
-//! 5. **Memory-Aware Scheduling** - Don't exceed GPU memory limits
+//! - **Local GPU Proving**: CUDA (NVIDIA) and Metal (Apple) support
+//! - **GPU Detection**: Runtime detection of available GPU backends
+//! - **Fallback Support**: Automatic fallback to CPU when GPU unavailable
+//! - **Request Batching**: Batch multiple proofs to amortize API overhead
+//! - **Pipeline Parallelism**: Upload next job while current proves
+//! - **Adaptive Concurrency**: Auto-tune based on GPU load
+//!
+//! ## Usage
+//!
+//! ```rust
+//! use gpu_optimize::{GpuProver, GpuBackend};
+//!
+//! // Check GPU availability
+//! if let Some(backend) = GpuBackend::detect() {
+//!     let prover = GpuProver::new(backend);
+//!     let (seal, journal) = prover.prove(&elf, &input).await?;
+//! }
+//! ```
 
 #![allow(dead_code)]
 
 use anyhow::{anyhow, Result};
+use risc0_zkvm::{ExecutorEnv, Receipt};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, RwLock, Semaphore};
 use tracing::{debug, info, warn};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GPU Backend Detection and Local GPU Proving
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Available GPU backends for proof generation
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GpuBackend {
+    /// NVIDIA CUDA (Linux/Windows)
+    Cuda,
+    /// Apple Metal (macOS)
+    Metal,
+    /// No GPU available, use CPU
+    Cpu,
+}
+
+impl GpuBackend {
+    /// Detect available GPU backend at runtime
+    ///
+    /// Checks for CUDA and Metal support based on compile-time features
+    /// and runtime availability.
+    pub fn detect() -> Self {
+        // Check CUDA first (Linux/Windows with NVIDIA GPU)
+        #[cfg(feature = "cuda")]
+        {
+            if Self::is_cuda_available() {
+                info!("CUDA GPU detected - using GPU acceleration");
+                return Self::Cuda;
+            }
+        }
+
+        // Check Metal (macOS with Apple GPU)
+        #[cfg(feature = "metal")]
+        {
+            if Self::is_metal_available() {
+                info!("Metal GPU detected - using GPU acceleration");
+                return Self::Metal;
+            }
+        }
+
+        // Check environment variable override
+        if let Ok(backend) = std::env::var("RISC0_GPU_BACKEND") {
+            match backend.to_lowercase().as_str() {
+                "cuda" => {
+                    #[cfg(feature = "cuda")]
+                    {
+                        info!("Using CUDA backend (via RISC0_GPU_BACKEND)");
+                        return Self::Cuda;
+                    }
+                    #[cfg(not(feature = "cuda"))]
+                    {
+                        warn!("CUDA requested but not compiled in, using CPU");
+                    }
+                }
+                "metal" => {
+                    #[cfg(feature = "metal")]
+                    {
+                        info!("Using Metal backend (via RISC0_GPU_BACKEND)");
+                        return Self::Metal;
+                    }
+                    #[cfg(not(feature = "metal"))]
+                    {
+                        warn!("Metal requested but not compiled in, using CPU");
+                    }
+                }
+                "cpu" => {
+                    info!("Using CPU backend (via RISC0_GPU_BACKEND)");
+                    return Self::Cpu;
+                }
+                _ => {
+                    warn!("Unknown GPU backend '{}', using CPU", backend);
+                }
+            }
+        }
+
+        info!("No GPU detected - using CPU proving");
+        Self::Cpu
+    }
+
+    /// Check if CUDA is available at runtime
+    #[cfg(feature = "cuda")]
+    fn is_cuda_available() -> bool {
+        // RISC Zero automatically detects CUDA when the feature is enabled
+        // We can also check for the CUDA library
+        std::env::var("CUDA_PATH").is_ok()
+            || std::path::Path::new("/usr/local/cuda").exists()
+            || std::path::Path::new("/opt/cuda").exists()
+    }
+
+    /// Check if Metal is available at runtime
+    #[cfg(feature = "metal")]
+    fn is_metal_available() -> bool {
+        // Metal is always available on macOS with Apple Silicon or compatible GPU
+        #[cfg(target_os = "macos")]
+        {
+            true
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            false
+        }
+    }
+
+    /// Check if this is a GPU backend
+    pub fn is_gpu(&self) -> bool {
+        matches!(self, Self::Cuda | Self::Metal)
+    }
+
+    /// Get display name
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Cuda => "CUDA",
+            Self::Metal => "Metal",
+            Self::Cpu => "CPU",
+        }
+    }
+}
+
+impl std::fmt::Display for GpuBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name())
+    }
+}
+
+/// Local GPU prover
+///
+/// Wraps RISC Zero's prover with GPU-aware configuration
+pub struct LocalGpuProver {
+    backend: GpuBackend,
+}
+
+impl LocalGpuProver {
+    /// Create a new local GPU prover
+    pub fn new() -> Self {
+        Self {
+            backend: GpuBackend::detect(),
+        }
+    }
+
+    /// Create with specific backend
+    pub fn with_backend(backend: GpuBackend) -> Self {
+        Self { backend }
+    }
+
+    /// Get the current backend
+    pub fn backend(&self) -> GpuBackend {
+        self.backend
+    }
+
+    /// Check if GPU is available
+    pub fn has_gpu(&self) -> bool {
+        self.backend.is_gpu()
+    }
+
+    /// Execute and prove using GPU (or CPU fallback)
+    ///
+    /// This method runs in a blocking context - use `prove_async` for async code.
+    pub fn prove_sync(&self, elf: &[u8], input: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
+        let start = Instant::now();
+        info!("Starting {} proof generation...", self.backend);
+
+        // Build executor environment
+        let env = ExecutorEnv::builder()
+            .write_slice(input)
+            .build()?;
+
+        // Get the prover - RISC Zero automatically uses GPU when available
+        // The `default_prover()` respects the cuda/metal feature flags
+        let prover = risc0_zkvm::default_prover();
+
+        // Generate proof
+        let prove_info = prover.prove(env, elf)?;
+
+        let elapsed = start.elapsed();
+        info!("{} proof generated in {:.2?}", self.backend, elapsed);
+
+        // Extract seal and journal
+        let receipt = prove_info.receipt;
+        let seal = extract_seal_local(&receipt)?;
+        let journal = receipt.journal.bytes.clone();
+
+        Ok((seal, journal))
+    }
+
+    /// Execute and prove asynchronously
+    ///
+    /// Runs the blocking prover in a dedicated thread pool to avoid
+    /// blocking the async runtime.
+    pub async fn prove_async(&self, elf: &[u8], input: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
+        let elf = elf.to_vec();
+        let input = input.to_vec();
+        let backend = self.backend;
+
+        tokio::task::spawn_blocking(move || {
+            let prover = LocalGpuProver::with_backend(backend);
+            prover.prove_sync(&elf, &input)
+        })
+        .await?
+    }
+
+    /// Prove with CPU fallback on GPU failure
+    pub async fn prove_with_fallback(&self, elf: &[u8], input: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
+        // First try GPU
+        if self.backend.is_gpu() {
+            match self.prove_async(elf, input).await {
+                Ok(result) => return Ok(result),
+                Err(e) => {
+                    warn!("{} proving failed, falling back to CPU: {}", self.backend, e);
+                }
+            }
+        }
+
+        // Fallback to CPU
+        let cpu_prover = LocalGpuProver::with_backend(GpuBackend::Cpu);
+        cpu_prover.prove_async(elf, input).await
+    }
+}
+
+impl Default for LocalGpuProver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Extract seal from receipt (local helper to avoid module dependency)
+fn extract_seal_local(receipt: &Receipt) -> Result<Vec<u8>> {
+    let seal = bincode::serialize(&receipt.inner)?;
+    Ok(seal)
+}
+
+/// GPU proving statistics
+#[derive(Clone, Debug, Default)]
+pub struct GpuProvingStats {
+    pub backend: Option<GpuBackend>,
+    pub proofs_generated: u64,
+    pub proofs_failed: u64,
+    pub total_proving_time: Duration,
+    pub gpu_fallbacks: u64,
+}
+
+impl GpuProvingStats {
+    /// Average proof time
+    pub fn avg_proof_time(&self) -> Duration {
+        if self.proofs_generated == 0 {
+            return Duration::ZERO;
+        }
+        self.total_proving_time / self.proofs_generated as u32
+    }
+}
 
 /// GPU optimization configuration
 #[derive(Clone, Debug)]

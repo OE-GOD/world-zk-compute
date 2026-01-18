@@ -52,12 +52,14 @@ impl ProverConfig {
     /// Check if Bonsai is enabled and configured
     #[allow(dead_code)]
     pub fn is_bonsai_enabled(&self) -> bool {
-        match self.proving_mode {
-            ProvingMode::Bonsai | ProvingMode::BonsaiWithFallback => {
-                self.bonsai_config.as_ref().map_or(false, |c| c.is_configured())
-            }
-            ProvingMode::Local => false,
-        }
+        self.proving_mode.uses_bonsai()
+            && self.bonsai_config.as_ref().map_or(false, |c| c.is_configured())
+    }
+
+    /// Check if GPU proving is enabled
+    #[allow(dead_code)]
+    pub fn is_gpu_enabled(&self) -> bool {
+        self.proving_mode.uses_gpu()
     }
 }
 
@@ -69,7 +71,7 @@ impl Default for ProverConfig {
             min_tip_wei: U256::from(100_000_000_000_000u64), // 0.0001 ETH
             allowed_image_ids: vec![],
             poll_interval_secs: 5,
-            proving_mode: ProvingMode::Local,
+            proving_mode: ProvingMode::GpuWithCpuFallback, // Try GPU first, fall back to CPU
             bonsai_config: None,
             min_profit_margin: 0.2, // 20% minimum profit
             skip_profitability_check: false,
