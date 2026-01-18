@@ -23,7 +23,7 @@ use alloy::network::{EthereumWallet, Ethereum};
 use alloy::transports::http::{Client, Http};
 use futures::future::join_all;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::{RwLock, Semaphore};
 use tracing::{debug, error, info, warn};
 
@@ -411,38 +411,19 @@ async fn process_single_job(
         );
     }
 
-    // Step 5: Claim the request (with managed nonce for parallel safety)
+    // Step 5: Claim the request (with retry logic)
     info!("[Job {}] Claiming...", job.request_id);
-    let claim_nonce = nonce_manager.next_nonce();
-    debug!("[Job {}] Using nonce {} for claim", job.request_id, claim_nonce);
+    let retry_config = RetryConfig::default();
 
-    let claim_result = engine
-        .claimExecution(request_id)
-        .nonce(claim_nonce)
-        .send()
-        .await;
+    let claim_result = send_claim_with_retry(
+        &engine,
+        request_id,
+        nonce_manager,
+        job.request_id,
+        &retry_config,
+    ).await?;
 
-    let claim_tx = match claim_result {
-        Ok(tx) => tx,
-        Err(e) => {
-            let error_str = format!("{:?}", e);
-            nonce_manager.handle_nonce_error(&error_str, claim_nonce).await?;
-            return Err(e.into());
-        }
-    };
-
-    let claim_receipt = match claim_tx.get_receipt().await {
-        Ok(receipt) => {
-            nonce_manager.transaction_completed();
-            receipt
-        }
-        Err(e) => {
-            let error_str = format!("{:?}", e);
-            nonce_manager.handle_nonce_error(&error_str, claim_nonce).await?;
-            return Err(e.into());
-        }
-    };
-    info!("[Job {}] Claimed in tx: {:?}", job.request_id, claim_receipt.transaction_hash);
+    info!("[Job {}] Claimed in tx: {:?}", job.request_id, claim_result.tx_hash);
 
     // Step 6: Generate proof using fast prover
     info!("[Job {}] Generating proof...", job.request_id);
@@ -453,46 +434,25 @@ async fn process_single_job(
         job.request_id, prove_result.proof_time, prove_result.proof.len()
     );
 
-    // Step 7: Submit proof (with managed nonce for parallel safety)
+    // Step 7: Submit proof (with retry logic)
     info!("[Job {}] Submitting proof...", job.request_id);
     let submit_timer = Timer::start();
 
-    let submit_nonce = nonce_manager.next_nonce();
-    debug!("[Job {}] Using nonce {} for submit", job.request_id, submit_nonce);
-
-    // Use actual journal from proving result
-    let submit_result = engine
-        .submitProof(request_id, prove_result.proof.clone().into(), prove_result.journal.clone().into())
-        .nonce(submit_nonce)
-        .send()
-        .await;
-
-    let submit_tx = match submit_result {
-        Ok(tx) => tx,
-        Err(e) => {
-            let error_str = format!("{:?}", e);
-            nonce_manager.handle_nonce_error(&error_str, submit_nonce).await?;
-            return Err(e.into());
-        }
-    };
-
-    let submit_receipt = match submit_tx.get_receipt().await {
-        Ok(receipt) => {
-            nonce_manager.transaction_completed();
-            receipt
-        }
-        Err(e) => {
-            let error_str = format!("{:?}", e);
-            nonce_manager.handle_nonce_error(&error_str, submit_nonce).await?;
-            return Err(e.into());
-        }
-    };
+    let submit_result = send_submit_with_retry(
+        &engine,
+        request_id,
+        prove_result.proof.clone(),
+        prove_result.journal.clone(),
+        nonce_manager,
+        job.request_id,
+        &retry_config,
+    ).await?;
 
     metrics().record_submit_time(submit_timer.elapsed());
 
     info!(
         "[Job {}] Proof submitted in tx: {:?}",
-        job.request_id, submit_receipt.transaction_hash
+        job.request_id, submit_result.tx_hash
     );
 
     Ok((prove_result.cycles, input.len() as u64))
@@ -560,6 +520,273 @@ fn compute_digest(data: &[u8]) -> B256 {
     use sha2::{Digest, Sha256};
     let hash = Sha256::digest(data);
     B256::from_slice(&hash)
+}
+
+// ============================================================================
+// Transaction Retry Logic
+// ============================================================================
+
+/// Configuration for transaction retries
+#[derive(Clone, Debug)]
+pub struct RetryConfig {
+    /// Maximum number of retry attempts
+    pub max_retries: u32,
+    /// Initial delay before first retry
+    pub initial_delay: Duration,
+    /// Maximum delay between retries
+    pub max_delay: Duration,
+    /// Multiplier for exponential backoff
+    pub backoff_multiplier: f64,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_retries: 3,
+            initial_delay: Duration::from_millis(500),
+            max_delay: Duration::from_secs(10),
+            backoff_multiplier: 2.0,
+        }
+    }
+}
+
+/// Check if an error is retryable (transient) or permanent
+///
+/// Retryable errors include:
+/// - Network timeouts
+/// - Connection errors
+/// - Rate limiting (429)
+/// - Server errors (5xx)
+///
+/// Non-retryable errors include:
+/// - Nonce too low (transaction already mined)
+/// - Insufficient funds
+/// - Contract reverts (execution reverted)
+/// - Already claimed/completed
+fn is_retryable_error(error: &str) -> bool {
+    let error_lower = error.to_lowercase();
+
+    // Non-retryable errors - return false immediately
+    let permanent_errors = [
+        "nonce too low",
+        "insufficient funds",
+        "execution reverted",
+        "already claimed",
+        "already completed",
+        "request not found",
+        "not pending",
+        "invalid signature",
+        "gas too low",
+        "max fee per gas less than block base fee",
+    ];
+
+    for permanent in permanent_errors {
+        if error_lower.contains(permanent) {
+            return false;
+        }
+    }
+
+    // Retryable errors
+    let transient_errors = [
+        "timeout",
+        "timed out",
+        "connection",
+        "network",
+        "rate limit",
+        "too many requests",
+        "429",
+        "500",
+        "502",
+        "503",
+        "504",
+        "temporarily unavailable",
+        "try again",
+        "retry",
+        "econnreset",
+        "econnrefused",
+        "socket hang up",
+    ];
+
+    for transient in transient_errors {
+        if error_lower.contains(transient) {
+            return true;
+        }
+    }
+
+    // Default: don't retry unknown errors
+    false
+}
+
+/// Result of a transaction with retry
+pub struct TransactionResult {
+    pub tx_hash: alloy::primitives::TxHash,
+    pub attempts: u32,
+}
+
+/// Send a claim transaction with retry logic
+async fn send_claim_with_retry(
+    engine: &IExecutionEngine::IExecutionEngineInstance<Http<Client>, Arc<SigningProvider>>,
+    request_id: U256,
+    nonce_manager: &Arc<SigningNonceManager>,
+    job_id: u64,
+    config: &RetryConfig,
+) -> anyhow::Result<TransactionResult> {
+    let mut attempts = 0u32;
+    let mut delay = config.initial_delay;
+
+    loop {
+        attempts += 1;
+        let nonce = nonce_manager.next_nonce();
+        debug!("[Job {}] Claim attempt {} with nonce {}", job_id, attempts, nonce);
+
+        let result = engine
+            .claimExecution(request_id)
+            .nonce(nonce)
+            .send()
+            .await;
+
+        match result {
+            Ok(pending_tx) => {
+                // Transaction sent, wait for receipt
+                match pending_tx.get_receipt().await {
+                    Ok(receipt) => {
+                        nonce_manager.transaction_completed();
+                        if attempts > 1 {
+                            info!("[Job {}] Claim succeeded on attempt {}", job_id, attempts);
+                        }
+                        return Ok(TransactionResult {
+                            tx_hash: receipt.transaction_hash,
+                            attempts,
+                        });
+                    }
+                    Err(e) => {
+                        let error_str = format!("{:?}", e);
+                        nonce_manager.handle_nonce_error(&error_str, nonce).await?;
+
+                        if !is_retryable_error(&error_str) || attempts >= config.max_retries {
+                            return Err(anyhow::anyhow!(
+                                "Claim receipt failed after {} attempts: {}",
+                                attempts,
+                                error_str
+                            ));
+                        }
+
+                        warn!(
+                            "[Job {}] Claim receipt failed (attempt {}), retrying: {}",
+                            job_id, attempts, error_str
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                let error_str = format!("{:?}", e);
+                nonce_manager.handle_nonce_error(&error_str, nonce).await?;
+
+                if !is_retryable_error(&error_str) || attempts >= config.max_retries {
+                    return Err(anyhow::anyhow!(
+                        "Claim send failed after {} attempts: {}",
+                        attempts,
+                        error_str
+                    ));
+                }
+
+                warn!(
+                    "[Job {}] Claim send failed (attempt {}), retrying: {}",
+                    job_id, attempts, error_str
+                );
+            }
+        }
+
+        // Exponential backoff
+        tokio::time::sleep(delay).await;
+        delay = Duration::from_secs_f64(
+            (delay.as_secs_f64() * config.backoff_multiplier).min(config.max_delay.as_secs_f64())
+        );
+    }
+}
+
+/// Send a submit proof transaction with retry logic
+async fn send_submit_with_retry(
+    engine: &IExecutionEngine::IExecutionEngineInstance<Http<Client>, Arc<SigningProvider>>,
+    request_id: U256,
+    proof: Vec<u8>,
+    journal: Vec<u8>,
+    nonce_manager: &Arc<SigningNonceManager>,
+    job_id: u64,
+    config: &RetryConfig,
+) -> anyhow::Result<TransactionResult> {
+    let mut attempts = 0u32;
+    let mut delay = config.initial_delay;
+
+    loop {
+        attempts += 1;
+        let nonce = nonce_manager.next_nonce();
+        debug!("[Job {}] Submit attempt {} with nonce {}", job_id, attempts, nonce);
+
+        let result = engine
+            .submitProof(request_id, proof.clone().into(), journal.clone().into())
+            .nonce(nonce)
+            .send()
+            .await;
+
+        match result {
+            Ok(pending_tx) => {
+                // Transaction sent, wait for receipt
+                match pending_tx.get_receipt().await {
+                    Ok(receipt) => {
+                        nonce_manager.transaction_completed();
+                        if attempts > 1 {
+                            info!("[Job {}] Submit succeeded on attempt {}", job_id, attempts);
+                        }
+                        return Ok(TransactionResult {
+                            tx_hash: receipt.transaction_hash,
+                            attempts,
+                        });
+                    }
+                    Err(e) => {
+                        let error_str = format!("{:?}", e);
+                        nonce_manager.handle_nonce_error(&error_str, nonce).await?;
+
+                        if !is_retryable_error(&error_str) || attempts >= config.max_retries {
+                            return Err(anyhow::anyhow!(
+                                "Submit receipt failed after {} attempts: {}",
+                                attempts,
+                                error_str
+                            ));
+                        }
+
+                        warn!(
+                            "[Job {}] Submit receipt failed (attempt {}), retrying: {}",
+                            job_id, attempts, error_str
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                let error_str = format!("{:?}", e);
+                nonce_manager.handle_nonce_error(&error_str, nonce).await?;
+
+                if !is_retryable_error(&error_str) || attempts >= config.max_retries {
+                    return Err(anyhow::anyhow!(
+                        "Submit send failed after {} attempts: {}",
+                        attempts,
+                        error_str
+                    ));
+                }
+
+                warn!(
+                    "[Job {}] Submit send failed (attempt {}), retrying: {}",
+                    job_id, attempts, error_str
+                );
+            }
+        }
+
+        // Exponential backoff
+        tokio::time::sleep(delay).await;
+        delay = Duration::from_secs_f64(
+            (delay.as_secs_f64() * config.backoff_multiplier).min(config.max_delay.as_secs_f64())
+        );
+    }
 }
 
 // ============================================================================
