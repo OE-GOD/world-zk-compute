@@ -21,6 +21,7 @@ use alloy::providers::fillers::{BlobGasFiller, ChainIdFiller, FillProvider, GasF
 use alloy::providers::Provider;
 use alloy::network::{EthereumWallet, Ethereum};
 use alloy::transports::http::{Client, Http};
+use futures::future::join_all;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{RwLock, Semaphore};
@@ -132,17 +133,32 @@ impl OptimizedProcessor {
 
         info!("Found {} pending requests", request_ids.len());
 
-        // Fetch details and add to queue
+        // Fetch details and add to queue IN PARALLEL
+        let fetch_futures: Vec<_> = request_ids
+            .iter()
+            .map(|&request_id| {
+                let provider = provider.clone();
+                let config = config.clone();
+                let program_cache = self.program_cache.clone();
+                let job_queue = self.job_queue.clone();
+                async move {
+                    fetch_request_details(&provider, &config, request_id, &program_cache, &job_queue).await
+                }
+            })
+            .collect();
+
+        let results = join_all(fetch_futures).await;
+
         let mut added = 0;
-        for request_id in &request_ids {
-            match self.fetch_and_queue(provider, config, *request_id).await {
+        for (i, result) in results.into_iter().enumerate() {
+            match result {
                 Ok(true) => added += 1,
-                Ok(false) => debug!("Request {} filtered out", request_id),
-                Err(e) => warn!("Failed to fetch request {}: {}", request_id, e),
+                Ok(false) => debug!("Request {} filtered out", request_ids[i]),
+                Err(e) => warn!("Failed to fetch request {}: {}", request_ids[i], e),
             }
         }
 
-        info!("Added {} jobs to queue", added);
+        info!("Added {} jobs to queue (fetched in parallel)", added);
 
         // Process queue in parallel
         let processed = self.process_queue_parallel(provider, config, nonce_manager).await?;
@@ -156,56 +172,6 @@ impl OptimizedProcessor {
         Ok(processed)
     }
 
-    /// Fetch request details and add to queue
-    async fn fetch_and_queue(
-        &self,
-        provider: &Arc<SigningProvider>,
-        config: &ProverConfig,
-        request_id: U256,
-    ) -> anyhow::Result<bool> {
-        let engine = IExecutionEngine::new(config.engine_address, provider.clone());
-
-        // Get request details
-        let request = engine.getRequest(request_id).call().await?._0;
-
-        // Check if image ID is allowed
-        if !config.is_image_allowed(&request.imageId) {
-            return Ok(false);
-        }
-
-        // Get current tip
-        let current_tip = engine.getCurrentTip(request_id).call().await?._0;
-
-        // Check tip threshold
-        if !config.is_tip_acceptable(current_tip) {
-            return Ok(false);
-        }
-
-        // Check if program is cached (bonus priority)
-        let program_cached = self.program_cache
-            .get(&request.imageId)
-            .is_some();
-
-        // Create queued job
-        let job = QueuedJob {
-            request_id: request_id.try_into().unwrap_or(0),
-            image_id: request.imageId,
-            input_hash: request.inputDigest,
-            input_url: request.inputUrl.clone(),
-            tip: current_tip,
-            requester: request.requester,
-            expires_at: request.expiresAt.try_into().unwrap_or(u64::MAX),
-            queued_at: Instant::now(),
-            estimated_cycles: None, // Will be filled by preflight
-            program_cached,
-        };
-
-        // Add to queue
-        let mut queue = self.job_queue.write().await;
-        let added = queue.push(job);
-
-        Ok(added)
-    }
 
     /// Process jobs from queue in parallel
     async fn process_queue_parallel(
@@ -294,6 +260,66 @@ impl OptimizedProcessor {
 
         Ok(processed)
     }
+}
+
+/// Fetch request details and add to queue (standalone for parallel execution)
+///
+/// This function parallelizes the RPC calls to getRequest and getCurrentTip
+/// for better performance when fetching multiple requests.
+async fn fetch_request_details(
+    provider: &Arc<SigningProvider>,
+    config: &ProverConfig,
+    request_id: U256,
+    program_cache: &Arc<ProgramCache>,
+    job_queue: &Arc<RwLock<JobQueue>>,
+) -> anyhow::Result<bool> {
+    let engine = IExecutionEngine::new(config.engine_address, provider.clone());
+
+    // Create call builders (must be bound to avoid temporary lifetime issues)
+    let request_call = engine.getRequest(request_id);
+    let tip_call = engine.getCurrentTip(request_id);
+
+    // Fetch request details and current tip IN PARALLEL
+    let (request_result, tip_result) = tokio::join!(
+        request_call.call(),
+        tip_call.call()
+    );
+
+    let request = request_result?._0;
+    let current_tip = tip_result?._0;
+
+    // Check if image ID is allowed
+    if !config.is_image_allowed(&request.imageId) {
+        return Ok(false);
+    }
+
+    // Check tip threshold
+    if !config.is_tip_acceptable(current_tip) {
+        return Ok(false);
+    }
+
+    // Check if program is cached (bonus priority)
+    let program_cached = program_cache.get(&request.imageId).is_some();
+
+    // Create queued job
+    let job = QueuedJob {
+        request_id: request_id.try_into().unwrap_or(0),
+        image_id: request.imageId,
+        input_hash: request.inputDigest,
+        input_url: request.inputUrl.clone(),
+        tip: current_tip,
+        requester: request.requester,
+        expires_at: request.expiresAt.try_into().unwrap_or(u64::MAX),
+        queued_at: Instant::now(),
+        estimated_cycles: None, // Will be filled by preflight
+        program_cached,
+    };
+
+    // Add to queue
+    let mut queue = job_queue.write().await;
+    let added = queue.push(job);
+
+    Ok(added)
 }
 
 /// Process a single job with all optimizations
