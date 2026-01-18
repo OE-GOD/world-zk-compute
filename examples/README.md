@@ -32,10 +32,34 @@ Statistical anomaly detection using z-score analysis.
 - Flag suspicious operator behavior
 - Identify temporal anomalies
 
+**Precompiles used:** SHA-256 (accelerated)
+
 **Run the example:**
 ```bash
 cd anomaly-detector
 cargo run --bin anomaly-detector-host
+```
+
+### 2. Signature-Verified Detector (`signature-verified/`)
+
+Detection with cryptographic verification of data source.
+
+**Use cases:**
+- Verify orb operator signed the biometric data
+- Chain of custody verification
+- Trusted data source validation
+
+**Precompiles used:** SHA-256 + secp256k1 ECDSA (both accelerated, ~100x faster)
+
+**Key features:**
+- Verifies Ethereum ECDSA signature before processing
+- Derives signer address from public key
+- Only processes data from verified sources
+
+**Run the example:**
+```bash
+cd signature-verified
+cargo run --bin signature-verified-host
 ```
 
 ## Writing Your Own Detection Algorithm
@@ -202,7 +226,28 @@ struct DetectionOutput {
 
 ## Performance Tips
 
-1. **Use Bonsai** - 10-100x faster than local proving
-2. **Batch inputs** - Process multiple items in one proof
-3. **Optimize algorithm** - Fewer cycles = faster proofs
-4. **Use SNARK conversion** - 90% cheaper on-chain verification
+1. **Use Precompiles** - 10-100x faster crypto operations (see `sdk/PRECOMPILES.md`)
+2. **Use Bonsai** - 10-100x faster than local proving
+3. **Use GPU** - Build with `--features cuda` or `--features metal`
+4. **Batch inputs** - Process multiple items in one proof
+5. **Optimize algorithm** - Fewer cycles = faster proofs
+6. **Use SNARK conversion** - 90% cheaper on-chain verification
+
+## Precompiles Guide
+
+**IMPORTANT**: Use RISC Zero's accelerated crypto crates for 10-100x speedup!
+
+See **[sdk/PRECOMPILES.md](../sdk/PRECOMPILES.md)** for the complete guide.
+
+Quick example - in your guest's `Cargo.toml`:
+
+```toml
+# SLOW: Standard SHA-256 (~500K cycles)
+# sha2 = "0.10"
+
+# FAST: Accelerated SHA-256 (~5K cycles) - 100x faster!
+sha2 = { git = "https://github.com/risc0/RustCrypto-hashes", tag = "sha2-v0.10.8-risczero.0" }
+
+# FAST: Accelerated Ethereum ECDSA - 100x faster!
+k256 = { git = "https://github.com/risc0/RustCrypto-elliptic-curves", tag = "k256-v0.13.4-risczero.1", features = ["ecdsa", "unstable"] }
+```
