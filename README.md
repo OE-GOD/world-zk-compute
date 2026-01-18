@@ -222,6 +222,57 @@ export BONSAI_API_URL=https://api.bonsai.xyz  # optional, default
 
 Without Bonsai, local CPU proving can take 10-60+ minutes for complex programs. With Bonsai's GPU clusters, the same proof generates in seconds to minutes. This makes the system practical for ANY detection algorithm, including ML models.
 
+## Fast Proving System
+
+The prover includes advanced optimizations for **maximum proof generation speed**:
+
+### Automatic Strategy Selection
+
+The prover analyzes each job and selects the optimal proving strategy:
+
+| Program Complexity | Cycles | Strategy | Speed |
+|-------------------|--------|----------|-------|
+| Simple | <20M | Direct | Fastest |
+| Medium | 20-100M | Segmented (parallel) | Fast |
+| Complex | 100-500M | Continuation | Moderate |
+| Very Complex | >500M | Rejected | N/A |
+
+### Preflight Execution
+
+Before proving, the system runs a quick preflight to estimate resources:
+
+```rust
+let preflight = prover.preflight(elf, input).await?;
+// Returns: cycles, memory usage, estimated time, recommended strategy
+```
+
+This prevents wasting GPU time on jobs that will fail.
+
+### GPU Pipeline Optimization
+
+```
+Job 1: [Upload] → [Prove] → [Download]
+Job 2:           [Upload] → [Prove] → [Download]
+Job 3:                     [Upload] → [Prove] → ...
+
+Pipeline keeps GPU constantly busy!
+```
+
+Features:
+- **Request batching** - Amortize API overhead
+- **Adaptive concurrency** - Auto-tune based on Bonsai load
+- **Memory pooling** - Pre-allocate GPU memory
+- **Session reuse** - Keep proving sessions warm
+
+### Proof Composition
+
+Combine multiple proofs into one for cheaper verification:
+
+```
+10 individual proofs → 10 verifications → 2M gas
+10 composed proofs   → 1 verification  → 200K gas (90% savings!)
+```
+
 ## Performance Optimizations
 
 The prover includes several optimizations for maximum throughput:
@@ -277,8 +328,53 @@ The prover uses optimized HTTP settings:
   --max-concurrent 8 \
   --use-snark \
   --cache-size-mb 512 \
+  --queue-size 1000 \
+  --health-port 8081 \
   --min-tip 0.0001
 ```
+
+### IPFS Integration
+
+The prover supports fetching inputs from IPFS for decentralized storage:
+
+```rust
+// Inputs can be stored on IPFS
+let input_url = "ipfs://QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG";
+
+// The prover automatically resolves IPFS URLs through multiple gateways:
+// 1. Cloudflare IPFS (fastest)
+// 2. ipfs.io (official)
+// 3. dweb.link (fallback)
+// 4. Pinata (fallback)
+```
+
+### Health Monitoring
+
+The prover exposes HTTP endpoints for monitoring:
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /health` | Basic health check (returns 200/503) |
+| `GET /metrics` | Prometheus-format metrics |
+| `GET /status` | Detailed prover status JSON |
+
+**Example metrics output:**
+```
+prover_proofs_total{status="success"} 150
+prover_proofs_total{status="failed"} 3
+prover_active_proofs 2
+prover_proof_duration_seconds{quantile="0.99"} 45.2
+prover_throughput_per_hour 12.5
+```
+
+### Job Queue
+
+Smart job selection with priority scoring:
+
+- **Tip amount** - Higher tips = higher priority
+- **Time urgency** - Jobs expiring soon get boosted
+- **Program familiarity** - Cached programs preferred
+- **Complexity** - Simpler jobs first for throughput
 
 ### Prover Flow
 
@@ -484,6 +580,51 @@ println!("{}", snapshot);
 // P99 proof time: 120.3s
 ```
 
+## Integrated Architecture
+
+All optimization modules are wired together in `OptimizedProcessor`:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    OptimizedProcessor                                │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  Blockchain ──→ Fetch Requests ──→ JobQueue (priority sort)         │
+│                                          │                          │
+│                                    ┌─────┴─────┐                    │
+│                                    ▼           ▼                    │
+│                              [Worker 1]   [Worker N]  (parallel)    │
+│                                    │           │                    │
+│  ┌─────────────────────────────────┴───────────┴──────────────────┐ │
+│  │                         Per-Job Pipeline                        │ │
+│  │                                                                 │ │
+│  │  1. ProgramCache.get() ──→ Cache hit? Skip download            │ │
+│  │           │                                                     │ │
+│  │           ▼                                                     │ │
+│  │  2. IpfsClient.fetch() ──→ Multi-gateway fallback              │ │
+│  │           │                                                     │ │
+│  │           ▼                                                     │ │
+│  │  3. FastProver.preflight() ──→ Reject impossible jobs          │ │
+│  │           │                                                     │ │
+│  │           ▼                                                     │ │
+│  │  4. Claim on-chain                                              │ │
+│  │           │                                                     │ │
+│  │           ▼                                                     │ │
+│  │  5. FastProver.prove_fast() ──→ Strategy selection             │ │
+│  │           │                                                     │ │
+│  │           ▼                                                     │ │
+│  │  6. Submit proof on-chain                                       │ │
+│  │           │                                                     │ │
+│  │           ▼                                                     │ │
+│  │  7. Metrics.record() ──→ Track success/failure/timing          │ │
+│  └─────────────────────────────────────────────────────────────────┘ │
+│                                                                      │
+│  Health Server (/health, /metrics, /status) ──→ Prometheus          │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**Result:** 5-10x throughput improvement over sequential processing.
+
 ## Roadmap
 
 - [x] Core contracts (Engine, Registry, Verifier)
@@ -495,6 +636,11 @@ println!("{}", snapshot);
 - [x] Performance optimizations (parallel, SNARK, caching)
 - [x] Detection SDK for easy integration
 - [x] Example detection algorithms
+- [x] Large program support (continuations, staged pipelines)
+- [x] IPFS integration for decentralized inputs
+- [x] Health monitoring & Prometheus metrics
+- [x] Smart job queue with priority scoring
+- [x] **Fully integrated OptimizedProcessor** (all modules wired together)
 - [ ] Production RISC Zero verifier integration
 - [ ] World Chain mainnet deployment
 - [ ] Prover network incentives

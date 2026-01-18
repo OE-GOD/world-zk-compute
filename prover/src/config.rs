@@ -24,6 +24,12 @@ pub struct ProverConfig {
     /// Bonsai configuration (if using Bonsai)
     #[allow(dead_code)]
     pub bonsai_config: Option<BonsaiConfig>,
+
+    /// Minimum profit margin (0.0 - 1.0, e.g., 0.2 = 20% profit required)
+    pub min_profit_margin: f64,
+
+    /// Skip profitability check (for testing)
+    pub skip_profitability_check: bool,
 }
 
 impl ProverConfig {
@@ -61,6 +67,8 @@ impl Default for ProverConfig {
             poll_interval_secs: 5,
             proving_mode: ProvingMode::Local,
             bonsai_config: None,
+            min_profit_margin: 0.2, // 20% minimum profit
+            skip_profitability_check: false,
         }
     }
 }
