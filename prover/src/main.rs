@@ -21,11 +21,17 @@ mod cache;
 mod config;
 mod continuations;
 mod contracts;
+mod fast_prove;
+mod gpu_optimize;
+mod health;
 mod http;
+mod ipfs;
 mod metrics;
 mod monitor;
+mod nonce;
 mod parallel;
 mod prover;
+mod queue;
 mod snark;
 
 use bonsai::ProvingMode;
@@ -78,6 +84,22 @@ enum Commands {
         /// Memory cache size in MB for program ELFs
         #[arg(long, env = "CACHE_SIZE_MB", default_value = "256")]
         cache_size_mb: usize,
+
+        /// Health check server port (0 to disable)
+        #[arg(long, env = "HEALTH_PORT", default_value = "8081")]
+        health_port: u16,
+
+        /// Maximum job queue size
+        #[arg(long, env = "QUEUE_SIZE", default_value = "1000")]
+        queue_size: usize,
+
+        /// Minimum profit margin (0.0 - 1.0, e.g., 0.2 = 20% profit required)
+        #[arg(long, env = "MIN_PROFIT_MARGIN", default_value = "0.2")]
+        min_profit_margin: f64,
+
+        /// Skip profitability check (accept all jobs regardless of gas cost)
+        #[arg(long, env = "SKIP_PROFITABILITY_CHECK")]
+        skip_profitability_check: bool,
     },
 
     /// Check status of a specific request
@@ -133,6 +155,10 @@ async fn main() -> anyhow::Result<()> {
             max_concurrent,
             use_snark,
             cache_size_mb,
+            health_port,
+            queue_size,
+            min_profit_margin,
+            skip_profitability_check,
         } => {
             run_prover(
                 rpc_url,
@@ -144,6 +170,10 @@ async fn main() -> anyhow::Result<()> {
                 max_concurrent,
                 use_snark,
                 cache_size_mb,
+                health_port,
+                queue_size,
+                min_profit_margin,
+                skip_profitability_check,
             ).await?;
         }
 
@@ -177,31 +207,34 @@ async fn run_prover(
     max_concurrent: usize,
     use_snark: bool,
     cache_size_mb: usize,
+    health_port: u16,
+    queue_size: usize,
+    min_profit_margin: f64,
+    skip_profitability_check: bool,
 ) -> anyhow::Result<()> {
     // Parse proving mode
     let mode = ProvingMode::from_str(&proving_mode);
 
-    info!("Starting World ZK Compute Prover Node");
-    info!("RPC: {}", rpc_url);
-    info!("Engine: {}", engine_address);
-    info!("Min tip: {} ETH", min_tip);
-    info!("Proving mode: {:?}", mode);
-    info!("Max concurrent proofs: {}", max_concurrent);
-    info!("SNARK conversion: {}", if use_snark { "enabled" } else { "disabled" });
-    info!("Cache size: {} MB", cache_size_mb);
+    info!("╔══════════════════════════════════════════════════════════════╗");
+    info!("║       World ZK Compute - Optimized Prover Node               ║");
+    info!("╚══════════════════════════════════════════════════════════════╝");
+    info!("");
+    info!("Configuration:");
+    info!("  RPC URL:        {}", rpc_url);
+    info!("  Engine:         {}", engine_address);
+    info!("  Min tip:        {} ETH", min_tip);
+    info!("  Proving mode:   {:?}", mode);
+    info!("  Max concurrent: {}", max_concurrent);
+    info!("  SNARK:          {}", if use_snark { "enabled" } else { "disabled" });
+    info!("  Cache size:     {} MB", cache_size_mb);
+    info!("  Queue size:     {}", queue_size);
+    info!("  Health port:    {}", if health_port > 0 { health_port.to_string() } else { "disabled".to_string() });
+    info!("  Profit margin:  {:.0}%{}", min_profit_margin * 100.0,
+        if skip_profitability_check { " (DISABLED)" } else { "" });
+    info!("");
 
-    // Initialize program cache
-    let cache_dir = std::path::PathBuf::from("./cache/programs");
-    let _program_cache = cache::ProgramCache::new(cache_dir, cache_size_mb)?;
-    info!("Program cache initialized");
-
-    // Initialize parallel prover
-    let parallel_config = parallel::ParallelConfig {
-        max_concurrent,
-        ..Default::default()
-    };
-    let _parallel_prover = parallel::ParallelProver::new(parallel_config);
-    info!("Parallel prover ready with {} slots", max_concurrent);
+    // Convert min tip to wei
+    let min_tip_wei = U256::from((min_tip * 1e18) as u128);
 
     // Parse allowed image IDs
     let allowed_images: Vec<B256> = if image_ids.is_empty() {
@@ -230,11 +263,11 @@ async fn run_prover(
     let wallet_address = signer.address();
     info!("Prover wallet: {}", wallet_address);
 
-    let wallet = EthereumWallet::from(signer);
+    let wallet = EthereumWallet::from(signer.clone());
+    // Note: We remove NonceFiller and manage nonces ourselves for parallel safety
     let provider = ProviderBuilder::new()
         .filler(alloy::providers::fillers::GasFiller)
         .filler(alloy::providers::fillers::BlobGasFiller)
-        .filler(alloy::providers::fillers::NonceFiller::default())
         .filler(alloy::providers::fillers::ChainIdFiller::default())
         .wallet(wallet)
         .on_http(rpc_url.parse()?);
@@ -244,8 +277,11 @@ async fn run_prover(
     // Parse engine address
     let engine: Address = engine_address.parse()?;
 
-    // Convert min tip to wei
-    let min_tip_wei = U256::from((min_tip * 1e18) as u128);
+    // Initialize nonce manager for parallel transaction safety
+    let nonce_manager = Arc::new(
+        nonce::NonceManager::new(provider.clone(), signer.address()).await?
+    );
+    info!("✓ Nonce manager initialized (current nonce: {})", nonce_manager.current());
 
     // Create prover config
     let config = ProverConfig {
@@ -253,22 +289,95 @@ async fn run_prover(
         min_tip_wei,
         allowed_image_ids: allowed_images,
         poll_interval_secs: 5,
-        proving_mode: mode,
+        proving_mode: mode.clone(),
         bonsai_config: bonsai::BonsaiConfig::from_env().ok(),
+        min_profit_margin,
+        skip_profitability_check,
     };
 
-    info!("Prover node ready. Monitoring for execution requests...");
+    // ════════════════════════════════════════════════════════════════════
+    // Initialize OptimizedProcessor (wires everything together!)
+    // ════════════════════════════════════════════════════════════════════
+    info!("Initializing optimized processor...");
+    let processor = monitor::OptimizedProcessor::new(
+        max_concurrent,
+        min_tip_wei,
+        cache_size_mb,
+        mode.clone(),
+    )?;
+    info!("✓ Optimized processor ready");
+    info!("  - Parallel processing: {} concurrent jobs", max_concurrent);
+    info!("  - Job queue: priority-based ordering");
+    info!("  - Program cache: {} MB (memory + disk)", cache_size_mb);
+    info!("  - IPFS: multi-gateway (4 fallbacks)");
+    info!("  - Fast prover: preflight + strategy selection");
+    info!("  - Metrics: tracking all operations");
+
+    // Start health server if enabled
+    let health_state = if health_port > 0 {
+        let state = health::SharedState::new(
+            wallet_address.to_string(),
+            engine_address.clone(),
+        );
+        state.set_running(true).await;
+
+        let health_server = health::HealthServer::new(health_port, state.clone());
+        let _health_handle = health_server.start().await;
+        info!("✓ Health server: http://0.0.0.0:{}", health_port);
+        info!("  - GET /health  - liveness check");
+        info!("  - GET /metrics - Prometheus metrics");
+        info!("  - GET /status  - detailed status");
+        Some(state)
+    } else {
+        None
+    };
+
+    info!("");
+    info!("═══════════════════════════════════════════════════════════════");
+    info!("  Prover node ready. Monitoring for execution requests...");
+    info!("═══════════════════════════════════════════════════════════════");
+    info!("");
+
+    // Metrics logging interval
+    let mut metrics_counter = 0u64;
+    let metrics_interval = 12; // Log metrics every 12 iterations (60 seconds at 5s poll)
 
     // Main loop
     loop {
-        match monitor::check_and_process_requests(&provider, &config).await {
+        match processor.check_and_process(&provider, &config, &nonce_manager).await {
             Ok(processed) => {
                 if processed > 0 {
-                    info!("Processed {} requests", processed);
+                    info!("✓ Processed {} requests", processed);
+
+                    // Update health state
+                    if let Some(ref state) = health_state {
+                        state.update_active_proofs(
+                            metrics::metrics().snapshot().active_proofs
+                        ).await;
+                    }
                 }
             }
             Err(e) => {
-                error!("Error processing requests: {:?}", e);
+                error!("✗ Error processing requests: {:?}", e);
+
+                // Update health state with error
+                if let Some(ref state) = health_state {
+                    state.set_error(format!("{:?}", e)).await;
+                }
+            }
+        }
+
+        // Periodic metrics logging
+        metrics_counter += 1;
+        if metrics_counter % metrics_interval == 0 {
+            let snapshot = metrics::metrics().snapshot();
+            if snapshot.proofs_generated > 0 || snapshot.proofs_failed > 0 {
+                info!("📊 Metrics: {} proofs ({:.1}% success), {:.1}/hr, avg {:?}",
+                    snapshot.proofs_generated + snapshot.proofs_failed,
+                    snapshot.success_rate(),
+                    snapshot.proofs_per_hour(),
+                    snapshot.avg_proof_time
+                );
             }
         }
 

@@ -52,17 +52,17 @@ impl UnifiedProver {
             // Bonsai mode with prover available
             (ProvingMode::Bonsai, Some(prover)) => {
                 info!("Using Bonsai cloud proving");
-                prover.prove(elf, input)
+                prover.prove(elf, input).await
             }
 
             // Bonsai with fallback - try Bonsai first
             (ProvingMode::BonsaiWithFallback, Some(prover)) => {
                 info!("Trying Bonsai cloud proving...");
-                match prover.prove(elf, input) {
+                match prover.prove(elf, input).await {
                     Ok(result) => Ok(result),
                     Err(e) => {
                         warn!("Bonsai proving failed, falling back to local: {}", e);
-                        Self::prove_local(elf, input)
+                        Self::prove_local(elf, input).await
                     }
                 }
             }
@@ -70,37 +70,47 @@ impl UnifiedProver {
             // Local mode or Bonsai not available
             _ => {
                 info!("Using local CPU proving");
-                Self::prove_local(elf, input)
+                Self::prove_local(elf, input).await
             }
         }
     }
 
-    /// Local CPU-based proving
-    fn prove_local(elf: &[u8], input: &[u8]) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
-        let start = std::time::Instant::now();
+    /// Local CPU-based proving (async wrapper around blocking prover)
+    ///
+    /// Runs the blocking RISC Zero prover in a dedicated thread pool
+    /// to avoid blocking the async runtime.
+    async fn prove_local(elf: &[u8], input: &[u8]) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+        let elf = elf.to_vec();
+        let input = input.to_vec();
 
-        // Build executor environment
-        let env = ExecutorEnv::builder()
-            .write_slice(input)
-            .build()?;
+        // Run blocking prover in spawn_blocking to avoid blocking the runtime
+        tokio::task::spawn_blocking(move || {
+            let start = std::time::Instant::now();
 
-        // Run prover
-        let prover = default_prover();
-        let prove_info = prover.prove(env, elf)?;
+            // Build executor environment
+            let env = ExecutorEnv::builder()
+                .write_slice(&input)
+                .build()?;
 
-        let elapsed = start.elapsed();
-        info!("Local proof generated in {:.2?}", elapsed);
+            // Run prover
+            let prover = default_prover();
+            let prove_info = prover.prove(env, &elf)?;
 
-        let receipt = prove_info.receipt;
+            let elapsed = start.elapsed();
+            info!("Local proof generated in {:.2?}", elapsed);
 
-        // Note: Receipt verification happens on-chain via the RISC Zero verifier contract
-        info!("Local proof generated, ready for on-chain verification");
+            let receipt = prove_info.receipt;
 
-        // Extract seal and journal
-        let seal = extract_seal(&receipt)?;
-        let journal = receipt.journal.bytes.clone();
+            // Note: Receipt verification happens on-chain via the RISC Zero verifier contract
+            info!("Local proof generated, ready for on-chain verification");
 
-        Ok((seal, journal))
+            // Extract seal and journal
+            let seal = extract_seal(&receipt)?;
+            let journal = receipt.journal.bytes.clone();
+
+            Ok((seal, journal))
+        })
+        .await?
     }
 }
 
