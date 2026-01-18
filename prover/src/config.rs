@@ -9,6 +9,9 @@ pub struct ProverConfig {
     /// Address of the ExecutionEngine contract
     pub engine_address: Address,
 
+    /// Address of the ProgramRegistry contract (optional, for on-chain program lookup)
+    pub registry_address: Option<Address>,
+
     /// Minimum tip to accept (in wei)
     pub min_tip_wei: U256,
 
@@ -62,6 +65,7 @@ impl Default for ProverConfig {
     fn default() -> Self {
         Self {
             engine_address: Address::ZERO,
+            registry_address: None,
             min_tip_wei: U256::from(100_000_000_000_000u64), // 0.0001 ETH
             allowed_image_ids: vec![],
             poll_interval_secs: 5,

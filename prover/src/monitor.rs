@@ -10,7 +10,7 @@
 
 use crate::cache::ProgramCache;
 use crate::config::ProverConfig;
-use crate::contracts::IExecutionEngine;
+use crate::contracts::{IExecutionEngine, IProgramRegistry};
 use crate::fast_prove::{FastProveConfig, FastProver, ProvingStrategy};
 use crate::ipfs::{IpfsClient, IpfsConfig};
 use crate::metrics::{metrics, Timer};
@@ -347,8 +347,8 @@ async fn process_single_job(
             cached
         }
         None => {
-            // Fetch from registry and cache
-            let elf = fetch_program_from_registry(&job.image_id).await?;
+            // Fetch from registry (local or on-chain) and cache
+            let elf = fetch_program_from_registry(&job.image_id, provider, config).await?;
             program_cache.put(&job.image_id, &elf);
             info!("[Job {}] ELF cached for future use", job.request_id);
             elf
@@ -459,8 +459,15 @@ async fn process_single_job(
 }
 
 /// Fetch program ELF from registry
+///
+/// Lookup order:
+/// 1. Local cache directory (./programs/{image_id}.elf)
+/// 2. On-chain ProgramRegistry (if configured)
+/// 3. Error if not found
 async fn fetch_program_from_registry(
     image_id: &B256,
+    provider: &Arc<SigningProvider>,
+    config: &ProverConfig,
 ) -> anyhow::Result<Vec<u8>> {
     // First try local cache directory
     let programs_dir = std::path::PathBuf::from("./programs");
@@ -472,16 +479,109 @@ async fn fetch_program_from_registry(
         return Ok(elf);
     }
 
-    // TODO: Query ProgramRegistry contract for URL
-    // let registry = IProgramRegistry::new(registry_address, provider.clone());
-    // let program = registry.getProgram(*image_id).call().await?;
-    // let url = program.url;
-    // let elf = reqwest::get(&url).await?.bytes().await?.to_vec();
+    // Try on-chain ProgramRegistry if configured
+    if let Some(registry_address) = config.registry_address {
+        info!("Fetching program {} from on-chain registry...", image_id);
+
+        let registry = IProgramRegistry::new(registry_address, provider.clone());
+
+        // Query the registry for program details
+        let program = match registry.getProgram(*image_id).call().await {
+            Ok(result) => result._0,
+            Err(e) => {
+                warn!("Failed to fetch program from registry: {:?}", e);
+                anyhow::bail!(
+                    "Program {} not found in registry: {:?}",
+                    image_id, e
+                );
+            }
+        };
+
+        // Check if program is active
+        if !program.active {
+            anyhow::bail!("Program {} is deactivated in registry", image_id);
+        }
+
+        let program_url = &program.programUrl;
+        if program_url.is_empty() {
+            anyhow::bail!("Program {} has no URL in registry", image_id);
+        }
+
+        info!("Downloading ELF from: {}", program_url);
+
+        // Download the ELF binary from the URL
+        let elf = download_program_elf(program_url).await?;
+
+        // Verify the downloaded ELF matches the image ID
+        let computed_image_id = compute_image_id(&elf)?;
+        if computed_image_id != *image_id {
+            anyhow::bail!(
+                "Downloaded ELF image ID mismatch: expected {}, got {}",
+                image_id, computed_image_id
+            );
+        }
+
+        info!("Successfully downloaded and verified ELF ({} bytes)", elf.len());
+
+        // Save to local cache for future use
+        if let Err(e) = save_elf_to_cache(&programs_dir, image_id, &elf) {
+            warn!("Failed to cache ELF locally: {:?}", e);
+        }
+
+        return Ok(elf);
+    }
 
     anyhow::bail!(
-        "Program ELF not found for image ID {}. Place in ./programs/ directory.",
+        "Program ELF not found for image ID {}. Either place in ./programs/ directory or configure --registry-address.",
         image_id
     )
+}
+
+/// Download program ELF from URL (supports HTTP, HTTPS, IPFS)
+async fn download_program_elf(url: &str) -> anyhow::Result<Vec<u8>> {
+    if url.starts_with("ipfs://") || url.contains("/ipfs/") {
+        // Use IPFS client with multi-gateway fallback
+        let ipfs_client = IpfsClient::new(IpfsConfig::default());
+        ipfs_client.fetch(url).await
+    } else if url.starts_with("http://") || url.starts_with("https://") {
+        // HTTP(S) download with retry
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120)) // 2 min timeout for large ELFs
+            .build()?;
+
+        let response = client.get(url).send().await?;
+
+        if !response.status().is_success() {
+            anyhow::bail!("HTTP error downloading ELF: {}", response.status());
+        }
+
+        Ok(response.bytes().await?.to_vec())
+    } else if url.starts_with("data:") {
+        // Data URL (base64 encoded)
+        parse_data_url(url)
+    } else {
+        anyhow::bail!("Unsupported URL scheme for ELF download: {}", url)
+    }
+}
+
+/// Compute RISC Zero image ID from ELF binary
+fn compute_image_id(elf: &[u8]) -> anyhow::Result<B256> {
+    let image_id = risc0_zkvm::compute_image_id(elf)?;
+    // Convert Digest to B256 via its byte representation
+    Ok(B256::from_slice(image_id.as_bytes()))
+}
+
+/// Save ELF to local cache directory
+fn save_elf_to_cache(
+    programs_dir: &std::path::Path,
+    image_id: &B256,
+    elf: &[u8],
+) -> anyhow::Result<()> {
+    std::fs::create_dir_all(programs_dir)?;
+    let elf_path = programs_dir.join(format!("{}.elf", hex::encode(image_id)));
+    std::fs::write(&elf_path, elf)?;
+    debug!("Cached ELF to {:?}", elf_path);
+    Ok(())
 }
 
 /// Smart input fetching with IPFS multi-gateway support

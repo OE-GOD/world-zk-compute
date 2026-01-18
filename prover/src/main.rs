@@ -61,6 +61,10 @@ enum Commands {
         #[arg(long, env = "ENGINE_ADDRESS")]
         engine_address: String,
 
+        /// ProgramRegistry contract address (optional, for on-chain program lookup)
+        #[arg(long, env = "REGISTRY_ADDRESS")]
+        registry_address: Option<String>,
+
         /// Minimum tip to accept (in ETH)
         #[arg(long, default_value = "0.0001")]
         min_tip: f64,
@@ -149,6 +153,7 @@ async fn main() -> anyhow::Result<()> {
             rpc_url,
             private_key,
             engine_address,
+            registry_address,
             min_tip,
             image_ids,
             proving_mode,
@@ -164,6 +169,7 @@ async fn main() -> anyhow::Result<()> {
                 rpc_url,
                 private_key,
                 engine_address,
+                registry_address,
                 min_tip,
                 image_ids,
                 proving_mode,
@@ -201,6 +207,7 @@ async fn run_prover(
     rpc_url: String,
     private_key: String,
     engine_address: String,
+    registry_address: Option<String>,
     min_tip: f64,
     image_ids: String,
     proving_mode: String,
@@ -222,6 +229,7 @@ async fn run_prover(
     info!("Configuration:");
     info!("  RPC URL:        {}", rpc_url);
     info!("  Engine:         {}", engine_address);
+    info!("  Registry:       {}", registry_address.as_deref().unwrap_or("not configured (local only)"));
     info!("  Min tip:        {} ETH", min_tip);
     info!("  Proving mode:   {:?}", mode);
     info!("  Max concurrent: {}", max_concurrent);
@@ -283,9 +291,16 @@ async fn run_prover(
     );
     info!("✓ Nonce manager initialized (current nonce: {})", nonce_manager.current());
 
+    // Parse registry address if provided
+    let registry: Option<Address> = registry_address
+        .as_ref()
+        .map(|s| s.parse())
+        .transpose()?;
+
     // Create prover config
     let config = ProverConfig {
         engine_address: engine,
+        registry_address: registry,
         min_tip_wei,
         allowed_image_ids: allowed_images,
         poll_interval_secs: 5,
