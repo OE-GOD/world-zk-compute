@@ -15,6 +15,7 @@ use crate::fast_prove::{FastProveConfig, FastProver, ProvingStrategy};
 use crate::ipfs::{IpfsClient, IpfsConfig};
 use crate::metrics::{metrics, Timer};
 use crate::nonce::NonceManager;
+use crate::prefetch::{InputPrefetcher, PrefetchConfig};
 use crate::queue::{JobQueue, QueuedJob};
 use alloy::primitives::{B256, U256};
 use alloy::providers::fillers::{BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, WalletFiller};
@@ -63,6 +64,8 @@ pub struct OptimizedProcessor {
     ipfs_client: Arc<IpfsClient>,
     /// Fast prover with preflight
     fast_prover: Arc<FastProver>,
+    /// Input prefetcher for reduced latency
+    input_prefetcher: Arc<InputPrefetcher>,
     /// Max concurrent jobs
     max_concurrent: usize,
 }
@@ -91,6 +94,14 @@ impl OptimizedProcessor {
         // Initialize fast prover with proving mode (Local, Bonsai, or BonsaiWithFallback)
         let fast_prover = Arc::new(FastProver::with_mode(FastProveConfig::default(), proving_mode));
 
+        // Initialize input prefetcher for reduced latency
+        let prefetch_config = PrefetchConfig {
+            max_concurrent: max_concurrent * 2, // Prefetch ahead
+            max_cache_bytes: cache_size_mb * 1024 * 1024 / 2, // Half of program cache
+            ..PrefetchConfig::default()
+        };
+        let input_prefetcher = Arc::new(InputPrefetcher::new(ipfs_client.clone(), prefetch_config));
+
         info!(
             "OptimizedProcessor initialized: max_concurrent={}, cache={}MB",
             max_concurrent, cache_size_mb
@@ -102,6 +113,7 @@ impl OptimizedProcessor {
             program_cache,
             ipfs_client,
             fast_prover,
+            input_prefetcher,
             max_concurrent,
         })
     }
@@ -160,6 +172,19 @@ impl OptimizedProcessor {
 
         info!("Added {} jobs to queue (fetched in parallel)", added);
 
+        // Start prefetching inputs for queued jobs (background, non-blocking)
+        {
+            let queue = self.job_queue.read().await;
+            // Prefetch for all jobs currently in queue
+            for scored_job in queue.iter_jobs() {
+                self.input_prefetcher.prefetch(scored_job);
+            }
+        }
+
+        // Log prefetch stats
+        let prefetch_stats = self.input_prefetcher.stats().await;
+        debug!("{}", prefetch_stats);
+
         // Process queue in parallel
         let processed = self.process_queue_parallel(provider, config, nonce_manager).await?;
 
@@ -213,6 +238,7 @@ impl OptimizedProcessor {
             let ipfs_client = self.ipfs_client.clone();
             let fast_prover = self.fast_prover.clone();
             let nonce_mgr = nonce_manager.clone();
+            let input_prefetcher = self.input_prefetcher.clone();
 
             let handle = tokio::spawn(async move {
                 // Acquire semaphore permit
@@ -230,6 +256,7 @@ impl OptimizedProcessor {
                     &ipfs_client,
                     &fast_prover,
                     &nonce_mgr,
+                    &input_prefetcher,
                 ).await;
 
                 // Record metrics
@@ -313,6 +340,7 @@ async fn fetch_request_details(
         queued_at: Instant::now(),
         estimated_cycles: None, // Will be filled by preflight
         program_cached,
+        prefetched_input: None, // Will be filled by InputPrefetcher
     };
 
     // Add to queue
@@ -331,6 +359,7 @@ async fn process_single_job(
     ipfs_client: &Arc<IpfsClient>,
     fast_prover: &Arc<FastProver>,
     nonce_manager: &Arc<SigningNonceManager>,
+    input_prefetcher: &Arc<InputPrefetcher>,
 ) -> anyhow::Result<(u64, u64)> {
     let request_id = U256::from(job.request_id);
     info!("Processing job {} (tip: {} wei)", job.request_id, job.tip);
@@ -356,20 +385,33 @@ async fn process_single_job(
     };
     metrics().record_fetch_time(fetch_timer.elapsed());
 
-    // Step 2: Fetch input (with IPFS multi-gateway support)
+    // Step 2: Fetch input (with prefetching support)
     info!("[Job {}] Fetching input...", job.request_id);
-    let input = fetch_input_smart(&job.input_url, ipfs_client).await?;
+    let input_timer = Timer::start();
 
-    // Verify input digest
-    let computed_digest = compute_digest(&input);
-    if computed_digest != job.input_hash {
-        anyhow::bail!(
-            "Input digest mismatch: expected {}, got {}",
-            job.input_hash,
-            computed_digest
-        );
-    }
-    info!("[Job {}] Input verified ({} bytes)", job.request_id, input.len());
+    // Try to get prefetched input first (instant if available)
+    let input = if let Some(prefetched) = input_prefetcher.get_cached(&job.input_url, &job.input_hash).await {
+        info!("[Job {}] Input PREFETCH HIT! ({} bytes, saved {:?})",
+            job.request_id, prefetched.len(), input_timer.elapsed());
+        prefetched
+    } else {
+        // Fallback to fetching (slower path)
+        debug!("[Job {}] Input prefetch miss, fetching now...", job.request_id);
+        let input = fetch_input_smart(&job.input_url, ipfs_client).await?;
+
+        // Verify input digest
+        let computed_digest = compute_digest(&input);
+        if computed_digest != job.input_hash {
+            anyhow::bail!(
+                "Input digest mismatch: expected {}, got {}",
+                job.input_hash,
+                computed_digest
+            );
+        }
+        info!("[Job {}] Input fetched and verified ({} bytes in {:?})",
+            job.request_id, input.len(), input_timer.elapsed());
+        input
+    };
 
     // Step 3: Preflight check
     info!("[Job {}] Running preflight...", job.request_id);

@@ -30,6 +30,7 @@ mod metrics;
 mod monitor;
 mod nonce;
 mod parallel;
+mod prefetch;
 mod prover;
 mod queue;
 mod snark;

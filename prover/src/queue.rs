@@ -48,6 +48,9 @@ pub struct QueuedJob {
     pub estimated_cycles: Option<u64>,
     /// Whether program is cached
     pub program_cached: bool,
+    /// Prefetched input data (if available)
+    /// This is populated by the InputPrefetcher to reduce latency
+    pub prefetched_input: Option<Vec<u8>>,
 }
 
 impl QueuedJob {
@@ -243,6 +246,11 @@ impl JobQueue {
         self.heap.is_empty()
     }
 
+    /// Iterate over jobs in the queue (for prefetching)
+    pub fn iter_jobs(&self) -> impl Iterator<Item = &QueuedJob> {
+        self.heap.iter().map(|scored| &scored.job)
+    }
+
     /// Remove expired jobs
     pub fn cleanup_expired(&mut self) -> usize {
         let now = std::time::SystemTime::now()
@@ -326,6 +334,7 @@ mod tests {
             queued_at: Instant::now(),
             estimated_cycles: None,
             program_cached: false,
+            prefetched_input: None,
         }
     }
 
