@@ -23,6 +23,32 @@ sol! {
             uint256 claimDeadline;
         }
 
+        // Events for subscription
+        #[allow(missing_docs)]
+        event ExecutionRequested(
+            uint256 indexed requestId,
+            address indexed requester,
+            bytes32 indexed imageId,
+            bytes32 inputDigest,
+            uint256 tip,
+            uint256 expiresAt
+        );
+
+        #[allow(missing_docs)]
+        event ExecutionClaimed(
+            uint256 indexed requestId,
+            address indexed prover,
+            uint256 claimDeadline
+        );
+
+        #[allow(missing_docs)]
+        event ExecutionCompleted(
+            uint256 indexed requestId,
+            address indexed prover,
+            bytes32 journalDigest,
+            uint256 payout
+        );
+
         function getRequest(uint256 requestId) external view returns (ExecutionRequest memory);
         function getPendingRequests(uint256 offset, uint256 limit) external view returns (uint256[] memory);
         function getCurrentTip(uint256 requestId) external view returns (uint256);

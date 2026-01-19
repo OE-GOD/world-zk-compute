@@ -14,13 +14,14 @@ use alloy::{
 };
 use clap::{Parser, Subcommand};
 use std::sync::Arc;
-use tracing::{info, error};
+use tracing::{debug, info, error};
 
 mod bonsai;
 mod cache;
 mod config;
 mod continuations;
 mod contracts;
+mod events;
 mod fast_prove;
 mod gpu_optimize;
 mod health;
@@ -50,9 +51,14 @@ struct Cli {
 enum Commands {
     /// Run the prover node
     Run {
-        /// RPC URL for World Chain
+        /// RPC URL for World Chain (HTTP)
         #[arg(long, env = "RPC_URL")]
         rpc_url: String,
+
+        /// WebSocket URL for event subscription (optional, derived from RPC URL if not set)
+        /// Set to "none" to disable event subscription and use polling only
+        #[arg(long, env = "WS_URL")]
+        ws_url: Option<String>,
 
         /// Private key for signing transactions
         #[arg(long, env = "PRIVATE_KEY")]
@@ -158,6 +164,7 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::Run {
             rpc_url,
+            ws_url,
             private_key,
             engine_address,
             registry_address,
@@ -174,6 +181,7 @@ async fn main() -> anyhow::Result<()> {
         } => {
             run_prover(
                 rpc_url,
+                ws_url,
                 private_key,
                 engine_address,
                 registry_address,
@@ -212,6 +220,7 @@ async fn main() -> anyhow::Result<()> {
 
 async fn run_prover(
     rpc_url: String,
+    ws_url: Option<String>,
     private_key: String,
     engine_address: String,
     registry_address: Option<String>,
@@ -237,12 +246,20 @@ async fn run_prover(
         "CPU only".to_string()
     };
 
+    // Determine WebSocket URL
+    let effective_ws_url = match ws_url.as_deref() {
+        Some("none") | Some("disabled") => None,
+        Some(url) => Some(url.to_string()),
+        None => Some(rpc_url.replace("https://", "wss://").replace("http://", "ws://")),
+    };
+
     info!("╔══════════════════════════════════════════════════════════════╗");
     info!("║       World ZK Compute - Optimized Prover Node               ║");
     info!("╚══════════════════════════════════════════════════════════════╝");
     info!("");
     info!("Configuration:");
     info!("  RPC URL:        {}", rpc_url);
+    info!("  WS URL:         {}", effective_ws_url.as_deref().unwrap_or("disabled (polling only)"));
     info!("  Engine:         {}", engine_address);
     info!("  Registry:       {}", registry_address.as_deref().unwrap_or("not configured (local only)"));
     info!("  Min tip:        {} ETH", min_tip);
@@ -318,7 +335,7 @@ async fn run_prover(
         engine_address: engine,
         registry_address: registry,
         min_tip_wei,
-        allowed_image_ids: allowed_images,
+        allowed_image_ids: allowed_images.clone(),
         poll_interval_secs: 5,
         proving_mode: mode.clone(),
         bonsai_config: bonsai::BonsaiConfig::from_env().ok(),
@@ -343,6 +360,59 @@ async fn run_prover(
     info!("  - IPFS: multi-gateway (4 fallbacks)");
     info!("  - Fast prover: preflight + strategy selection");
     info!("  - Metrics: tracking all operations");
+
+    // ════════════════════════════════════════════════════════════════════
+    // Start Event Subscription (if WebSocket URL provided)
+    // ════════════════════════════════════════════════════════════════════
+    // Create a notify to wake up main loop when events arrive
+    let event_notify = Arc::new(tokio::sync::Notify::new());
+    let event_notify_clone = event_notify.clone();
+
+    let _event_handle = if let Some(ws_url) = effective_ws_url.clone() {
+        info!("Starting event subscription...");
+
+        // Create event channel
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<events::NewJobEvent>(100);
+
+        // Create event subscriber config
+        let event_config = events::EventConfig {
+            ws_url: ws_url.clone(),
+            engine_address: engine,
+            reconnect_delay: std::time::Duration::from_secs(1),
+            max_reconnect_delay: std::time::Duration::from_secs(60),
+            min_tip: min_tip_wei,
+        };
+
+        // Start event subscriber in background
+        let subscriber = events::EventSubscriber::new(
+            event_config,
+            event_tx,
+            allowed_images.clone(),
+        );
+
+        let subscriber_handle = tokio::spawn(async move {
+            subscriber.run().await;
+        });
+
+        // Start event processor that notifies main loop
+        let notify = event_notify_clone;
+        let event_processor_handle = tokio::spawn(async move {
+            while let Some(event) = event_rx.recv().await {
+                info!(
+                    "Event received: request_id={}, image={}, tip={} wei (instant!)",
+                    event.request_id, event.image_id, event.tip
+                );
+                // Wake up the main loop immediately
+                notify.notify_one();
+            }
+        });
+
+        info!("✓ Event subscription: enabled (instant job detection)");
+        Some((subscriber_handle, event_processor_handle))
+    } else {
+        info!("Event subscription: disabled (using polling only)");
+        None
+    };
 
     // Start health server if enabled
     let health_state = if health_port > 0 {
@@ -373,7 +443,7 @@ async fn run_prover(
     let mut metrics_counter = 0u64;
     let metrics_interval = 12; // Log metrics every 12 iterations (60 seconds at 5s poll)
 
-    // Main loop
+    // Main loop with instant event notification
     loop {
         match processor.check_and_process(&provider, &config, &nonce_manager).await {
             Ok(processed) => {
@@ -412,7 +482,17 @@ async fn run_prover(
             }
         }
 
-        tokio::time::sleep(tokio::time::Duration::from_secs(config.poll_interval_secs)).await;
+        // Wait for either:
+        // 1. Event notification (instant wakeup when new job arrives)
+        // 2. Poll interval timeout (fallback for any missed events)
+        tokio::select! {
+            _ = event_notify.notified() => {
+                debug!("Woke up from event notification (instant!)");
+            }
+            _ = tokio::time::sleep(tokio::time::Duration::from_secs(config.poll_interval_secs)) => {
+                debug!("Woke up from poll interval");
+            }
+        }
     }
 }
 
