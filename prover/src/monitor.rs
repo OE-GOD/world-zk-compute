@@ -16,6 +16,7 @@ use crate::ipfs::{IpfsClient, IpfsConfig};
 use crate::metrics::{metrics, Timer};
 use crate::nonce::NonceManager;
 use crate::prefetch::{InputPrefetcher, PrefetchConfig};
+use crate::proof_cache::{ProofCache, ProofCacheKey, CachedProof};
 use crate::queue::{JobQueue, QueuedJob};
 use alloy::primitives::{B256, U256};
 use alloy::providers::fillers::{BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, WalletFiller};
@@ -66,6 +67,8 @@ pub struct OptimizedProcessor {
     fast_prover: Arc<FastProver>,
     /// Input prefetcher for reduced latency
     input_prefetcher: Arc<InputPrefetcher>,
+    /// Proof cache for instant results on repeated jobs
+    proof_cache: Arc<ProofCache>,
     /// Max concurrent jobs
     max_concurrent: usize,
 }
@@ -102,6 +105,9 @@ impl OptimizedProcessor {
         };
         let input_prefetcher = Arc::new(InputPrefetcher::new(ipfs_client.clone(), prefetch_config));
 
+        // Initialize proof cache for instant results on repeated jobs
+        let proof_cache = Arc::new(ProofCache::with_defaults());
+
         info!(
             "OptimizedProcessor initialized: max_concurrent={}, cache={}MB",
             max_concurrent, cache_size_mb
@@ -114,6 +120,7 @@ impl OptimizedProcessor {
             ipfs_client,
             fast_prover,
             input_prefetcher,
+            proof_cache,
             max_concurrent,
         })
     }
@@ -239,6 +246,7 @@ impl OptimizedProcessor {
             let fast_prover = self.fast_prover.clone();
             let nonce_mgr = nonce_manager.clone();
             let input_prefetcher = self.input_prefetcher.clone();
+            let proof_cache = self.proof_cache.clone();
 
             let handle = tokio::spawn(async move {
                 // Acquire semaphore permit
@@ -257,6 +265,7 @@ impl OptimizedProcessor {
                     &fast_prover,
                     &nonce_mgr,
                     &input_prefetcher,
+                    &proof_cache,
                 ).await;
 
                 // Record metrics
@@ -360,6 +369,7 @@ async fn process_single_job(
     fast_prover: &Arc<FastProver>,
     nonce_manager: &Arc<SigningNonceManager>,
     input_prefetcher: &Arc<InputPrefetcher>,
+    proof_cache: &Arc<ProofCache>,
 ) -> anyhow::Result<(u64, u64)> {
     let request_id = U256::from(job.request_id);
     info!("Processing job {} (tip: {} wei)", job.request_id, job.tip);
@@ -413,7 +423,53 @@ async fn process_single_job(
         input
     };
 
-    // Step 3: Preflight check
+    // Step 3: Check proof cache (instant if cached!)
+    let cache_key = ProofCacheKey::new(job.image_id, job.input_hash);
+
+    if let Some(cached_proof) = proof_cache.get(&cache_key).await {
+        info!(
+            "[Job {}] PROOF CACHE HIT! Using cached proof ({} bytes, {} cycles)",
+            job.request_id, cached_proof.proof.len(), cached_proof.cycles
+        );
+
+        // Fast path: claim and submit with cached proof
+        let retry_config = RetryConfig::default();
+
+        // Claim
+        info!("[Job {}] Claiming (cached path)...", job.request_id);
+        let claim_result = send_claim_with_retry(
+            &engine,
+            request_id,
+            nonce_manager,
+            job.request_id,
+            &retry_config,
+        ).await?;
+        info!("[Job {}] Claimed in tx: {:?}", job.request_id, claim_result.tx_hash);
+
+        // Submit cached proof
+        info!("[Job {}] Submitting cached proof...", job.request_id);
+        let submit_timer = Timer::start();
+
+        let submit_result = send_submit_with_retry(
+            &engine,
+            request_id,
+            cached_proof.proof.clone(),
+            cached_proof.journal.clone(),
+            nonce_manager,
+            job.request_id,
+            &retry_config,
+        ).await?;
+
+        metrics().record_submit_time(submit_timer.elapsed());
+        info!(
+            "[Job {}] Cached proof submitted in tx: {:?} (saved proving time!)",
+            job.request_id, submit_result.tx_hash
+        );
+
+        return Ok((cached_proof.cycles, input.len() as u64));
+    }
+
+    // Step 4: Preflight check (cache miss path)
     info!("[Job {}] Running preflight...", job.request_id);
     let preflight = fast_prover.preflight(&elf, &input).await?;
 
@@ -426,7 +482,7 @@ async fn process_single_job(
         job.request_id, preflight.cycles, preflight.strategy, preflight.estimated_proof_time
     );
 
-    // Step 4: Profitability check
+    // Step 5: Profitability check
     if !config.skip_profitability_check {
         let profitability = check_profitability(
             provider,
@@ -453,7 +509,7 @@ async fn process_single_job(
         );
     }
 
-    // Step 5: Claim the request (with retry logic)
+    // Step 6: Claim the request (with retry logic)
     info!("[Job {}] Claiming...", job.request_id);
     let retry_config = RetryConfig::default();
 
@@ -467,8 +523,9 @@ async fn process_single_job(
 
     info!("[Job {}] Claimed in tx: {:?}", job.request_id, claim_result.tx_hash);
 
-    // Step 6: Generate proof using fast prover
+    // Step 7: Generate proof using fast prover
     info!("[Job {}] Generating proof...", job.request_id);
+    let prove_timer = Timer::start();
     let prove_result = fast_prover.prove_fast(&elf, &input).await?;
 
     info!(
@@ -476,7 +533,16 @@ async fn process_single_job(
         job.request_id, prove_result.proof_time, prove_result.proof.len()
     );
 
-    // Step 7: Submit proof (with retry logic)
+    // Step 8: Cache the proof for future use
+    let cached = CachedProof::new(
+        prove_result.proof.clone(),
+        prove_result.journal.clone(),
+        prove_result.cycles,
+        prove_timer.elapsed(),
+    );
+    proof_cache.put(&cache_key, cached).await;
+
+    // Step 9: Submit proof (with retry logic)
     info!("[Job {}] Submitting proof...", job.request_id);
     let submit_timer = Timer::start();
 

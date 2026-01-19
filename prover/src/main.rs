@@ -32,6 +32,7 @@ mod monitor;
 mod nonce;
 mod parallel;
 mod prefetch;
+mod proof_cache;
 mod prover;
 mod queue;
 mod snark;
