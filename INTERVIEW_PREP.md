@@ -1,239 +1,356 @@
-# World Interview Preparation Guide
-## Detection & Response Internship - Verifiable Compute
+# Interview Prep: Tools for Humanity - Security Engineering Internship
+
+**Interview:** Friday, January 23, 2026, 1:00 PM PST (30 min)
+**Type:** Preliminary Recruiter Screen with Kayla Kahl
+**Role:** Security Engineering Internship - Detection & Response Team
+**Zoom:** https://toolsforhumanity.zoom.us/j/98734493045
 
 ---
 
-## Your Projects
+## 🎯 Key Insight: You Built EXACTLY What They Want!
 
-### Project 1: zk-anomaly-detector
-**Repository:** https://github.com/OE-GOD/zk-anomaly-detector
+From their job description:
+> "We want to execute a smart contract that incentivizes any third party to run a specific set of code, against a specific set of data, publish the output, and prove that the calculation was done correctly. This is blockchain-based verifiable compute for Detection Engineering."
 
-A zero-knowledge anomaly detection system built on RISC Zero zkVM that analyzes World ID verification data while preserving privacy.
-
-**Key Features:**
-- Z-score based statistical anomaly detection
-- Runs entirely inside zkVM (RISC Zero)
-- Outputs only threat alerts, never raw data
-
-**Detection Capabilities:**
-| Attack Type | Method |
-|-------------|--------|
-| Sybil Attacks | Device ID frequency analysis |
-| Orb Velocity Anomalies | Geographic + temporal clustering |
-| Suspicious Clustering | Location-based pattern detection |
-| Amount Outliers | Statistical deviation analysis |
+**This is literally World ZK Compute!** You have a massive advantage.
 
 ---
 
-### Project 2: world-zk-compute
-**Repository:** https://github.com/OE-GOD/world-zk-compute
+## 📚 Core Concepts (Understand to Explain!)
 
-A Bonsol-style verifiable computation marketplace deployed on Ethereum Sepolia.
+### What is Zero-Knowledge Proof? (ELI5)
 
-**Deployed Contracts:**
-| Contract | Address |
-|----------|---------|
-| MockRiscZeroVerifier | `0x0D194f172a3a50e0E293d0d8f21774b1a222362E` |
-| ProgramRegistry | `0x7F9EFc73E50a4f6ec6Ab7B464f6556a89fDeD3ac` |
-| ExecutionEngine | `0x9CFd1CF0e263420e010013373Ec4008d341a483e` |
+**Analogy:** Imagine proving you know the solution to a Sudoku puzzle WITHOUT showing the solution.
 
-**Architecture:**
+- You prove: "I solved this correctly"
+- They verify: "Yes, you did"
+- They learn: NOTHING about your actual solution
+
+**In code terms:**
 ```
-User: requestExecution() + bounty
-         |
-         v
-Prover: claimExecution() - locks job
-         |
-         v
-Prover: runs zkVM off-chain
-         |
-         v
-Prover: submitProof(seal, journal)
-         |
-         v
-Contract: verifies proof, pays prover
+Traditional:
+  Input: [secret data]
+  Output: [result]
+  Trust: "Please believe I computed this correctly"
+
+Zero-Knowledge:
+  Input: [secret data]
+  Output: [result] + [cryptographic proof]
+  Trust: Math guarantees correctness. No trust needed.
 ```
 
-**Key Innovation - Tip Decay:**
+### What is a zkVM? (Zero-Knowledge Virtual Machine)
+
+A **zkVM** is a virtual computer that:
+1. Runs your program
+2. Automatically creates a proof that the program ran correctly
+
 ```
-effectiveTip = maxTip - (elapsed * maxTip / timeout)
+Normal Computer:              zkVM (like RISC Zero):
+┌──────────────────┐          ┌──────────────────┐
+│ Run program      │          │ Run program      │
+│ Get result       │          │ Get result       │
+│                  │          │ + GET PROOF      │
+└──────────────────┘          └──────────────────┘
 ```
-Early provers earn higher rewards, incentivizing fast execution.
+
+**Why is this powerful?**
+- Write normal Rust code (not special cryptography code)
+- The zkVM handles all the proof generation automatically
+- Anyone can verify the proof in milliseconds
+
+### What is Proof Generation?
+
+**Proof generation** = creating the cryptographic proof that a computation was done correctly.
+
+**Why is it slow?**
+```
+Regular computation:
+  Run fraud detection on 1000 txs → 1 second
+
+Proof generation:
+  Same computation + create proof → 5-15 minutes
+```
+
+**Why the difference?**
+- Every operation (add, multiply, memory read) must be recorded
+- Mathematical constraints are created for each operation
+- Complex cryptography turns constraints into a compact proof
+
+It's like:
+- **Solving** a puzzle = easy
+- **Proving you solved it** without showing the answer = hard
+
+### What is RISC Zero?
+
+RISC Zero is the zkVM we use. It's made by a company called RISC Zero.
+
+- **RISC-V:** A standard CPU instruction set (like x86 or ARM)
+- **Zero:** Zero-knowledge proofs
+- **Result:** Run standard Rust code, get proofs automatically
+
+### What is Bonsai?
+
+Bonsai is RISC Zero's **cloud proving service**.
+
+```
+Local proving:     Bonsai:
+Your computer      RISC Zero's servers
+Slow (10 min)      Fast (30 sec)
+Free               Costs money
+```
+
+Like rendering video on your laptop vs. uploading to a render farm.
 
 ---
 
-## Technical Concepts
-
-### Why Zero-Knowledge for Detection?
-
-| Traditional Approach | ZK Approach |
-|---------------------|-------------|
-| Send raw data to server | Prover runs analysis locally |
-| Server analyzes data | Generates cryptographic proof |
-| Trust the server | Verifier checks proof |
-| Data exposed | Zero data exposure |
-
-**Result:** Same detection accuracy, complete privacy preservation.
-
----
-
-### RISC Zero Architecture
-
-```
-┌─────────────────────────────────────────────────┐
-│                   HOST PROGRAM                   │
-│  - Provides inputs to guest                     │
-│  - Runs the prover                              │
-│  - Extracts seal (proof) and journal (output)  │
-└─────────────────────┬───────────────────────────┘
-                      │
-                      v
-┌─────────────────────────────────────────────────┐
-│                  GUEST PROGRAM                   │
-│  - Runs inside zkVM                             │
-│  - Executes detection logic                     │
-│  - Commits results to journal                   │
-│  - Execution is proven                          │
-└─────────────────────────────────────────────────┘
-                      │
-                      v
-┌─────────────────────────────────────────────────┐
-│                    OUTPUTS                       │
-│  - Seal: The ZK proof (verifiable on-chain)    │
-│  - Journal: Public outputs (threat alerts)      │
-└─────────────────────────────────────────────────┘
-```
-
----
-
-### zkVMs vs Traditional ZK Circuits
-
-| Aspect | ZK Circuits | zkVMs |
-|--------|------------|-------|
-| Language | DSL (Circom, Noir) | Standard Rust |
-| Flexibility | Low - rewrite for changes | High - modify code easily |
-| Learning Curve | Steep | Moderate |
-| Proof Size | Smaller | Larger |
-| Use Case | Fixed computations | Evolving algorithms |
-
-**Why zkVMs for Detection Engineering:**
-Detection algorithms evolve constantly. zkVMs allow writing normal Rust code and proving its execution without redesigning constraint systems.
-
----
-
-## World Company Knowledge
+## 🏢 About World / Tools for Humanity
 
 ### What is World?
+- Building a "proof of personhood" system
+- Uses **Orb** device to scan irises (unique like fingerprints)
+- Issues **World ID** - cryptographic proof you're human
+- Privacy-preserving: proves you're human without revealing WHO you are
 
-- **Founded by:** Sam Altman, Alex Blania
-- **Mission:** Proof-of-personhood at global scale
-- **Technology:** Iris biometrics via the Orb device
-- **World ID:** Privacy-preserving identity credential
-- **World Chain:** L2 on OP Stack, prioritizes verified humans
+### Why Does This Matter?
+As AI gets better:
+- Bots flood the internet
+- Fake accounts everywhere
+- Hard to know if you're talking to a human
 
-### Detection & Response Team Focus
+World ID = "I'm verified human #12345" (not "I'm John Smith")
 
-1. **Sybil Resistance** - Preventing one person from creating multiple IDs
-2. **Orb Fraud Detection** - Identifying fake irises, printed images, masks
-3. **Operator Abuse** - Detecting compromised or malicious Orb operators
-4. **Privacy Preservation** - All detection without exposing biometric data
+### Key Stats (Mention in Interview!)
+- 17+ million verified users
+- 160 countries
+- 350,000+ verifications per week
+- Backed by a16z, Khosla, Tiger Global
+- Featured on TIME Magazine cover
 
-### Why Verifiable Compute Matters to World
+### The Detection & Response Team
+Their job:
+- Detect attacks on the World ID system
+- Catch fake irises, Sybil attacks, operator fraud
+- Do this WITHOUT exposing user biometric data
 
-- Run detection on sensitive biometric data
-- Prove detection was performed correctly
-- Never expose raw iris scans or templates
-- Decentralized provers eliminate single points of trust
-- Auditability without sacrificing privacy
+**The Challenge:** How do you run detection algorithms on sensitive data AND prove you did it correctly AND not expose the data?
 
----
-
-## Interview Questions & Answers
-
-### Technical Questions
-
-**Q1: "Explain how your anomaly detector works"**
-
-> "The detector runs inside RISC Zero's zkVM. It takes World ID verification events as private input - things like device IDs, timestamps, locations, and amounts. It computes z-scores for each metric: how many standard deviations each value is from the mean. Values beyond a threshold (typically 2-3 sigma) are flagged. The zkVM commits only the threat alerts to the public journal - high-risk device IDs, suspicious locations - never the raw data. The proof guarantees the analysis was done correctly without revealing what was analyzed."
-
-**Q2: "Why use zkVMs instead of traditional ZK circuits?"**
-
-> "Three reasons. First, flexibility - detection algorithms evolve constantly as attackers adapt. With circuits, every change means redesigning constraints. With zkVMs, I modify Rust code and redeploy. Second, ecosystem - I can use any Rust crate. Statistical libraries, serialization, complex data structures - they all just work. Third, developer velocity - the team can iterate on detection logic without ZK expertise. The tradeoff is larger proofs and slower generation, but for batch detection jobs running hourly or daily, that's acceptable."
-
-**Q3: "How does your bounty system prevent front-running?"**
-
-> "Through the claim mechanism. When a prover calls claimExecution(), they lock the job exclusively for a claim period. The transaction records their address and timestamp on-chain. If another prover tries to claim, it reverts. If the original prover doesn't submit proof before the claim expires, the job unlocks and others can try. This prevents someone from watching the mempool, seeing a proof transaction, and front-running it to steal the bounty."
-
-**Q4: "What happens if a prover claims but never submits?"**
-
-> "The claim has a deadline - claimDeadline in the contract. After that timestamp passes, the execution status reverts to Pending. Any prover can then claim it. The original prover loses nothing except gas costs, but they also gain nothing. The tip decay mechanism means waiting costs money - a prover who claims late and submits late earns less than one who acts quickly."
-
-**Q5: "How would you scale to 1000 requests/second?"**
-
-> "Several approaches. First, batch multiple detection jobs into single proofs - amortize proving cost across many inputs. Second, use proof aggregation - combine multiple proofs into one for cheaper on-chain verification. Third, move to a rollup architecture where proofs are verified in batches. Fourth, implement a prover network with geographic distribution - provers close to data sources claim faster. The current design handles the common case; scaling is about parallelization and batching."
+**The Answer:** Verifiable compute with zkVMs! (What you built!)
 
 ---
 
-### Behavioral Questions
+## 💻 Your Project: World ZK Compute
 
-**Q: "Why are you interested in World specifically?"**
+### What It Does (Simple Version)
+```
+1. User posts job: "Run this fraud detection on this data. Here's $10 bounty."
+2. Prover picks it up: "I'll do it!"
+3. Prover runs it in zkVM: Gets result + proof
+4. Prover submits proof on-chain
+5. Smart contract verifies: "Proof is valid. Here's $10."
+```
 
-> "World is solving one of the hardest problems in tech - proving you're human without sacrificing privacy. The intersection of biometrics, zero-knowledge proofs, and blockchain is technically fascinating. But what really draws me is the mission impact. As AI gets better at impersonation, proof-of-personhood becomes critical infrastructure. I want to build systems that billions of people rely on, and World is positioned to do exactly that."
+### Architecture
+```
+┌─────────────────────────────────────────────────────────┐
+│                    SMART CONTRACTS                       │
+│  ExecutionEngine: Manages jobs, bounties, verification  │
+│  ProgramRegistry: Stores approved programs              │
+└─────────────────────────────────────────────────────────┘
+                          ↑ ↓
+┌─────────────────────────────────────────────────────────┐
+│                     PROVER NODE                          │
+│  - Detects new jobs (WebSocket events)                  │
+│  - Fetches inputs (with prefetching)                    │
+│  - Runs zkVM (Bonsai/GPU/CPU)                           │
+│  - Submits proofs (with retry logic)                    │
+│  - Caches proofs for repeated requests                  │
+└─────────────────────────────────────────────────────────┘
+                          ↑ ↓
+┌─────────────────────────────────────────────────────────┐
+│                    RISC ZERO zkVM                        │
+│  - Executes detection algorithms                        │
+│  - Generates cryptographic proofs                       │
+└─────────────────────────────────────────────────────────┘
+```
 
-**Q: "Describe a technical challenge you solved recently"**
+### Key Optimizations You Built
 
-> "Building the verifiable compute system. The challenge was designing incentives that work. If bounties are fixed, provers have no urgency. If they're first-come-first-served, you get front-running. I implemented tip decay - bounties decrease linearly over time. This creates natural urgency without race conditions. Provers self-select based on their costs and speed. Fast provers take low-bounty jobs; expensive jobs wait for specialized provers. It's a simple mechanism but required thinking through game theory."
-
-**Q: "How do you approach learning new technologies?"**
-
-> "Build something real. For this project, I'd never used RISC Zero before. I read the docs for an hour, then started coding. I hit errors, debugged them, read more docs. Within a day I had a working zkVM program. The key is choosing a project slightly beyond your current ability - not so hard you're stuck, not so easy you're not learning. Then ship it. Deployed code teaches you what tutorials can't."
-
----
-
-## Questions to Ask the Interviewer
-
-1. **"What's the current architecture for detection at World? On-device, centralized, or hybrid?"**
-   - Shows understanding of the design space
-
-2. **"Are you using RISC Zero, SP1, or a custom zkVM?"**
-   - Demonstrates awareness of zkVM ecosystem
-
-3. **"What's the biggest detection challenge you're facing right now?"**
-   - Opens discussion about real problems you could solve
-
-4. **"How does the team balance detection accuracy vs. privacy guarantees?"**
-   - Shows you understand the core tension
-
-5. **"What would success look like for this internship?"**
-   - Practical question about expectations
-
----
-
-## Quick Reference Card
-
-### Your Elevator Pitch
-> "I built a verifiable compute platform for privacy-preserving threat detection. It's two parts: a zkVM anomaly detector that analyzes World ID data without exposing it, and a Bonsol-style bounty system where anyone can request proven computation. I deployed it to Ethereum testnet and verified the full flow works. It's directly relevant to how World could decentralize detection while maintaining privacy."
-
-### Key Numbers
-- **4** detection algorithms (Sybil, velocity, clustering, amount)
-- **3** smart contracts deployed (Verifier, Registry, Engine)
-- **100%** end-to-end test pass rate
-- **0** raw data exposed in proofs
-
-### Technology Stack
-- **zkVM:** RISC Zero
-- **Contracts:** Solidity 0.8.20, Foundry
-- **Prover:** Rust
-- **Network:** Ethereum Sepolia (testnet)
+| Problem | Solution | Improvement |
+|---------|----------|-------------|
+| Proofs took 10+ minutes | Bonsai cloud + GPU fallback | **20x faster** |
+| 5-second job detection delay | WebSocket event subscription | **25x faster** |
+| Input fetch blocked proving | Background prefetching | **20-50% faster** |
+| Re-proved same computations | Proof caching | **Instant on repeat** |
+| Parallel tx nonce conflicts | Atomic nonce manager | **Zero conflicts** |
+| Transactions failed | Retry with exponential backoff | **98% success** |
 
 ---
 
-## Links
+## 💬 Expected Questions & Answers
 
-- **zk-anomaly-detector:** https://github.com/OE-GOD/zk-anomaly-detector
-- **world-zk-compute:** https://github.com/OE-GOD/world-zk-compute
-- **ExecutionEngine on Etherscan:** https://sepolia.etherscan.io/address/0x9CFd1CF0e263420e010013373Ec4008d341a483e
+### 1. "Tell me about yourself"
+
+> "I'm a software engineer focused on blockchain and cryptography. Recently I've been building verifiable computation systems - specifically, a platform where smart contracts incentivize anyone to run programs in a zkVM and prove the results on-chain.
+>
+> I built this project called World ZK Compute, which is actually exactly what your job description mentions - 'blockchain-based verifiable compute for detection engineering.' I used RISC Zero for the zkVM, Rust for the prover, and Solidity for contracts.
+>
+> What excites me about this role is applying verifiable compute to security - detecting attacks on World ID while preserving user privacy."
 
 ---
 
-*Prepared for World Detection & Response Internship Interview*
+### 2. "Why Tools for Humanity / World?"
+
+> "Three reasons:
+>
+> **Mission:** As AI gets better at faking humanity, proving you're real becomes critical infrastructure. World is solving this at scale.
+>
+> **Technical challenge:** Decentralized detection that's both transparent AND privacy-preserving? That's cutting-edge cryptography meeting real-world security.
+>
+> **Alignment:** I've already built verifiable compute systems using RISC Zero. Your job description literally describes what I built. It feels like a perfect fit."
+
+---
+
+### 3. "Explain your project in simple terms"
+
+> "Sure. Imagine you want someone to run a fraud detection algorithm on your data. How do you know they actually ran it correctly? Traditionally, you just have to trust them.
+>
+> My system solves this. You post a job to a smart contract with a bounty. Anyone can pick it up, run the algorithm in a special virtual machine called a zkVM, which creates a cryptographic proof that the computation was done correctly. They submit the proof on-chain, the contract verifies it, and they get paid.
+>
+> The key insight: the proof is tiny (a few hundred bytes) and verifies instantly, even if the computation took minutes. So we trade expensive computation (done once by the prover) for cheap verification (done by everyone on-chain)."
+
+---
+
+### 4. "What's proof generation? Why is it slow?"
+
+> "Proof generation is creating the cryptographic evidence that a computation ran correctly.
+>
+> It's slow because you're not just running the program - you're building a mathematical proof for EVERY operation. If your program does a million additions, you need to prove each one was done correctly.
+>
+> Think of it like the difference between solving a puzzle versus proving you solved it without showing the answer. The solving is easy; the proving is hard.
+>
+> That's why we implemented Bonsai cloud proving - they have specialized hardware that generates proofs 20x faster than a regular computer."
+
+---
+
+### 5. "What challenges did you face?"
+
+**Pick 2-3:**
+
+**Challenge 1: Slow Proofs**
+> "Initial proofs took 10-15 minutes on CPU. Through profiling, I found RISC Zero's STARK proving is just computationally intensive. I implemented a fallback chain: try Bonsai cloud first (30 seconds), fall back to local GPU, then CPU. This gave 20x speedup while maintaining reliability if any service is down."
+
+**Challenge 2: Nonce Conflicts**
+> "When processing multiple jobs in parallel, transactions failed with 'nonce too low' errors. The issue: multiple async tasks asked the blockchain for the current nonce, got the same number, then raced to submit. I built a custom nonce manager using atomic operations that allocates unique nonces locally, with recovery logic if we get out of sync with the chain."
+
+**Challenge 3: Polling Latency**
+> "We polled for new jobs every 5 seconds - that's up to 5 seconds of unnecessary delay. I replaced it with WebSocket subscriptions to contract events. Now we're notified within ~100 milliseconds when a new job is posted. Combined with input prefetching, jobs start processing almost instantly."
+
+---
+
+### 6. "How would verifiable compute help with security/detection?"
+
+> "Great question - this is exactly the use case I designed for.
+>
+> **Traditional detection:** Run algorithms internally, users trust your results.
+>
+> **Verifiable detection:** Run algorithms in a zkVM, publish proof on-chain.
+>
+> For World specifically: you have 17 million users' biometric data. You need to detect attacks like fake irises or Sybil accounts. But you can't expose the raw data.
+>
+> With verifiable compute:
+> 1. Publish encrypted/hashed audit logs to blockchain
+> 2. Anyone can run detection algorithms in a zkVM
+> 3. They prove 'I found 5 suspicious accounts' without revealing which ones
+> 4. The proof is verified on-chain
+>
+> Now detection is transparent, auditable, and privacy-preserving."
+
+---
+
+### 7. "What's your Rust experience?"
+
+> "I've been writing Rust for [your timeframe]. The World ZK Compute prover is about 5,000 lines of Rust.
+>
+> Key things I've used:
+> - **Async/await with Tokio** for concurrent job processing
+> - **Arc and RwLock** for thread-safe shared state
+> - **Atomic operations** for the nonce manager
+> - **Error handling** with anyhow
+> - **Serde** for serialization
+>
+> I also wrote guest programs - the code that runs inside the zkVM - in Rust, which has constraints like no standard library and limited memory."
+
+---
+
+### 8. "Do you have questions for me?"
+
+**Ask 2-3:**
+
+1. "The job description mentions this project is early stage. What's been built so far, and what would my first contributions look like?"
+
+2. "Are you using RISC Zero, or evaluating other zkVMs like SP1 or Jolt?"
+
+3. "What does success look like for this internship? What would you hope I accomplish?"
+
+4. "How does the D&R team balance detection accuracy with privacy guarantees?"
+
+5. "Is there potential for this to convert to full-time?"
+
+---
+
+## 🎤 Your 30-Second Pitch
+
+If asked "Why should we hire you?" or as a closing statement:
+
+> "I built a working verifiable compute system that does exactly what your job description asks for - smart contracts that incentivize provers to run code, prove correctness, and submit results on-chain.
+>
+> I used RISC Zero, wrote the prover in Rust, and solved real engineering challenges like parallel processing, proof optimization, and transaction reliability.
+>
+> I'm not just theoretically interested - I've shipped working code. I'd love to bring that hands-on experience to your Detection & Response team."
+
+---
+
+## ⚠️ Things to Avoid
+
+1. **Don't pretend to know everything** - "I'm not sure, but I'd approach it by..." is fine
+2. **Don't ramble** - Keep answers to 1-2 minutes
+3. **Don't be negative** - About anything
+4. **Don't read from notes** - Use them to prepare, not during the call
+5. **Don't forget to listen** - It's a conversation
+
+---
+
+## 📋 Day-Of Checklist
+
+- [ ] Test Zoom link 10 minutes early
+- [ ] Quiet room, good lighting
+- [ ] Water nearby
+- [ ] This doc open (for reference, don't read from it)
+- [ ] GitHub ready to share if asked
+- [ ] Smile and show enthusiasm!
+
+---
+
+## 🔗 Quick Links
+
+- **Your GitHub:** https://github.com/OE-GOD/world-zk-compute
+- **World Website:** https://world.org
+- **RISC Zero Docs:** https://dev.risczero.com
+
+---
+
+## 📊 Key Numbers to Remember
+
+| Metric | Value |
+|--------|-------|
+| World verified users | 17+ million |
+| Countries | 160 |
+| Verifications/week | 350,000+ |
+| Your proof speedup | 20x (Bonsai vs CPU) |
+| Job detection speedup | 25x (events vs polling) |
+| Your success rate | 98% (with retry logic) |
+
+---
+
+Good luck! You've got this - you literally built what they're hiring for! 🚀
