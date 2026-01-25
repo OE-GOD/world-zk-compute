@@ -1,0 +1,106 @@
+# World ZK Compute Prover Configuration
+#
+# Copy this file to prover.toml and fill in your values.
+# Environment variables take precedence over config file values.
+#
+# Required env vars: PRIVATE_KEY
+# Optional env vars: RPC_URL, BONSAI_API_KEY, CONTRACT_ADDRESS, RUST_LOG, API_PORT
+
+[prover]
+# Private key for signing transactions (use PRIVATE_KEY env var instead for security)
+# private_key = "0x..."
+
+# RPC URL for World Chain
+rpc_url = "https://worldchain-mainnet.g.alchemy.com/v2/YOUR_API_KEY"
+
+# ExecutionEngine contract address
+# contract_address = "0x..."
+
+# World Chain ID
+chain_id = 480
+
+# Minimum tip to accept (in wei)
+# Set to 0 to accept all jobs, or higher to filter low-paying jobs
+min_tip_wei = 100000000000000  # 0.0001 ETH
+
+# Specific program image IDs to accept (empty = all programs)
+# Format: ["0x...", "0x..."]
+allowed_programs = []
+
+[proving]
+# Proving mode: local, bonsai, hybrid
+# - local:  CPU/GPU proving (slow but free)
+# - bonsai: Cloud proving (fast, requires API key)
+# - hybrid: Try Bonsai first, fall back to local
+mode = "local"
+
+# Bonsai API key (use BONSAI_API_KEY env var instead for security)
+# bonsai_api_key = "..."
+
+# Maximum concurrent proofs
+# Higher = more throughput but more memory usage
+# Recommended: 2-4 for CPU, 4-8 for GPU
+max_concurrent = 4
+
+# Enable GPU acceleration (requires --features cuda or metal)
+gpu_enabled = true
+
+# Proof cache directory
+cache_dir = "./data/cache"
+
+# Maximum cache size in MB
+cache_size_mb = 1024
+
+# Enable SNARK wrapping for cheaper on-chain verification
+snark_enabled = true
+
+[api]
+# Enable HTTP API server for metrics and health checks
+enabled = true
+
+# Host to bind to (0.0.0.0 for all interfaces)
+host = "0.0.0.0"
+
+# Port for API server
+port = 9090
+
+[cluster]
+# Enable cluster mode for multi-prover coordination
+enabled = false
+
+# Unique prover ID (auto-generated if not set)
+# prover_id = "prover-1"
+
+# Address for cluster communication
+listen_addr = "0.0.0.0:9091"
+
+# Seed peers to connect to on startup
+# Format: ["192.168.1.10:9091", "192.168.1.11:9091"]
+seed_peers = []
+
+# Heartbeat interval in seconds
+heartbeat_interval_secs = 5
+
+# Peer timeout in seconds
+peer_timeout_secs = 30
+
+[recovery]
+# Path to recovery file (for crash recovery)
+recovery_file = "./data/recovery.json"
+
+# Stale claim timeout in seconds (30 minutes default)
+stale_timeout_secs = 1800
+
+# Auto-resume incomplete jobs on startup
+auto_resume = true
+
+[logging]
+# Log level: trace, debug, info, warn, error
+level = "info"
+
+# Output format: text, json
+# Use "json" for production/log aggregation
+format = "text"
+
+# Log file path (optional)
+# file = "/var/log/world-zk-prover.log"

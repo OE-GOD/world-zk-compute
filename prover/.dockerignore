@@ -1,0 +1,40 @@
+# Build artifacts
+target/
+*.rs.bk
+
+# IDE/Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Environment files (may contain secrets)
+.env
+.env.*
+!.env.example
+
+# Git
+.git/
+.gitignore
+
+# Documentation (not needed in container)
+*.md
+docs/
+
+# Test data
+test_data/
+*.test
+
+# Benchmarks (not needed in runtime container)
+benches/
+
+# Local data
+data/
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+logs/

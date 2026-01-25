@@ -45,13 +45,44 @@ mod recovery;
 mod retry;
 mod shutdown;
 mod snark;
+mod validation;
 
 use bonsai::ProvingMode;
 use config::ProverConfig;
 
 #[derive(Parser)]
 #[command(name = "world-zk-prover")]
-#[command(about = "Prover node for World ZK Compute")]
+#[command(version = env!("CARGO_PKG_VERSION"))]
+#[command(about = "Prover node for World ZK Compute - Earn rewards by generating zero-knowledge proofs")]
+#[command(long_about = r#"
+World ZK Compute Prover Node
+
+This prover monitors the World Chain for execution requests, claims jobs,
+generates zero-knowledge proofs using RISC Zero zkVM, and submits results
+to earn rewards.
+
+QUICK START:
+  1. Set environment variables:
+     export PRIVATE_KEY="0x..."
+     export RPC_URL="https://worldchain-mainnet.g.alchemy.com/v2/..."
+     export ENGINE_ADDRESS="0x..."
+
+  2. Run the prover:
+     world-zk-prover run
+
+CONFIGURATION:
+  Use --help with any subcommand for detailed options.
+  Generate a sample config file with: world-zk-prover config --generate
+
+PROVING MODES:
+  - local:          CPU proving (slow, no cost)
+  - gpu:            GPU proving (fast, requires CUDA/Metal)
+  - gpu-fallback:   Try GPU, fall back to CPU
+  - bonsai:         Cloud proving (fastest, requires API key)
+  - bonsai-fallback: Try Bonsai, fall back to local
+
+For more information: https://github.com/worldcoin/world-zk-compute
+"#)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -154,6 +185,39 @@ enum Commands {
         #[arg(long, default_value = "10")]
         limit: u64,
     },
+
+    /// Configuration management
+    Config {
+        /// Generate a sample configuration file
+        #[arg(long)]
+        generate: bool,
+
+        /// Output path for generated config
+        #[arg(long, default_value = "prover.toml")]
+        output: String,
+
+        /// Validate an existing configuration file
+        #[arg(long)]
+        validate: Option<String>,
+    },
+
+    /// Show system information and capabilities
+    Info,
+
+    /// Validate inputs (for testing/debugging)
+    Validate {
+        /// Address to validate
+        #[arg(long)]
+        address: Option<String>,
+
+        /// Image ID to validate
+        #[arg(long)]
+        image_id: Option<String>,
+
+        /// URL to validate
+        #[arg(long)]
+        url: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -222,6 +286,26 @@ async fn main() -> anyhow::Result<()> {
             limit,
         } => {
             list_pending(rpc_url, engine_address, limit).await?;
+        }
+
+        Commands::Config {
+            generate,
+            output,
+            validate,
+        } => {
+            handle_config(generate, output, validate)?;
+        }
+
+        Commands::Info => {
+            show_info();
+        }
+
+        Commands::Validate {
+            address,
+            image_id,
+            url,
+        } => {
+            validate_inputs(address, image_id, url)?;
         }
     }
 
@@ -538,4 +622,158 @@ async fn list_pending(
     println!("Pending requests: (would query contract)");
 
     Ok(())
+}
+
+fn handle_config(generate: bool, output: String, validate: Option<String>) -> anyhow::Result<()> {
+    if generate {
+        let sample = config_file::Config::sample();
+        std::fs::write(&output, &sample)?;
+        println!("Generated sample configuration: {}", output);
+        println!("\nEdit the file and set required values:");
+        println!("  - prover.private_key (or use PRIVATE_KEY env var)");
+        println!("  - prover.rpc_url");
+        println!("  - prover.contract_address");
+        return Ok(());
+    }
+
+    if let Some(path) = validate {
+        match config_file::Config::from_file(&path) {
+            Ok(config) => {
+                match config.validate() {
+                    Ok(()) => {
+                        println!("✓ Configuration is valid: {}", path);
+                        println!("\nSettings:");
+                        println!("  RPC URL:     {}", config.prover.rpc_url);
+                        println!("  Chain ID:    {}", config.prover.chain_id);
+                        println!("  Proving:     {}", config.proving.mode);
+                        println!("  Concurrent:  {}", config.proving.max_concurrent);
+                        println!("  API enabled: {}", config.api.enabled);
+                    }
+                    Err(e) => {
+                        println!("✗ Configuration validation failed: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            }
+            Err(e) => {
+                println!("✗ Failed to parse configuration: {}", e);
+                std::process::exit(1);
+            }
+        }
+        return Ok(());
+    }
+
+    println!("Usage:");
+    println!("  world-zk-prover config --generate           Generate sample config");
+    println!("  world-zk-prover config --validate <path>    Validate config file");
+    Ok(())
+}
+
+fn show_info() {
+    let gpu_backend = gpu_optimize::GpuBackend::detect();
+
+    println!("World ZK Compute Prover");
+    println!("=======================");
+    println!();
+    println!("Version:  {}", env!("CARGO_PKG_VERSION"));
+    println!("Platform: {}", std::env::consts::OS);
+    println!("Arch:     {}", std::env::consts::ARCH);
+    println!();
+    println!("Hardware:");
+    println!("  CPU cores:  {}", num_cpus());
+    println!("  GPU:        {}", gpu_backend);
+    println!();
+    println!("Capabilities:");
+    println!("  RISC Zero:  zkVM 1.2.x");
+
+    #[cfg(feature = "cuda")]
+    println!("  CUDA:       enabled");
+    #[cfg(not(feature = "cuda"))]
+    println!("  CUDA:       disabled (build with --features cuda)");
+
+    #[cfg(feature = "metal")]
+    println!("  Metal:      enabled");
+    #[cfg(not(feature = "metal"))]
+    println!("  Metal:      disabled (build with --features metal)");
+
+    if std::env::var("BONSAI_API_KEY").is_ok() {
+        println!("  Bonsai:     API key configured");
+    } else {
+        println!("  Bonsai:     not configured (set BONSAI_API_KEY)");
+    }
+    println!();
+    println!("Environment:");
+    if std::env::var("PRIVATE_KEY").is_ok() {
+        println!("  PRIVATE_KEY:    set");
+    } else {
+        println!("  PRIVATE_KEY:    not set");
+    }
+    if let Ok(url) = std::env::var("RPC_URL") {
+        println!("  RPC_URL:        {}", mask_url(&url));
+    } else {
+        println!("  RPC_URL:        not set");
+    }
+    if std::env::var("ENGINE_ADDRESS").is_ok() {
+        println!("  ENGINE_ADDRESS: set");
+    } else {
+        println!("  ENGINE_ADDRESS: not set");
+    }
+}
+
+fn validate_inputs(
+    address: Option<String>,
+    image_id: Option<String>,
+    url: Option<String>,
+) -> anyhow::Result<()> {
+    let validator = validation::Validator::new();
+    let mut any_validated = false;
+
+    if let Some(addr) = address {
+        any_validated = true;
+        match validator.validate_address(&addr) {
+            Ok(normalized) => println!("✓ Address valid: {}", normalized),
+            Err(e) => println!("✗ Address invalid: {}", e),
+        }
+    }
+
+    if let Some(id) = image_id {
+        any_validated = true;
+        match validator.validate_image_id(&id) {
+            Ok(normalized) => println!("✓ Image ID valid: {}", normalized),
+            Err(e) => println!("✗ Image ID invalid: {}", e),
+        }
+    }
+
+    if let Some(u) = url {
+        any_validated = true;
+        match validator.validate_url(&u) {
+            Ok(validated) => println!("✓ URL valid: {}", validated),
+            Err(e) => println!("✗ URL invalid: {}", e),
+        }
+    }
+
+    if !any_validated {
+        println!("Usage:");
+        println!("  world-zk-prover validate --address 0x...");
+        println!("  world-zk-prover validate --image-id 0x...");
+        println!("  world-zk-prover validate --url https://...");
+    }
+
+    Ok(())
+}
+
+fn num_cpus() -> usize {
+    std::thread::available_parallelism()
+        .map(|p| p.get())
+        .unwrap_or(1)
+}
+
+fn mask_url(url: &str) -> String {
+    // Mask API keys in URLs
+    if let Some(pos) = url.find("/v2/") {
+        let prefix = &url[..pos + 4];
+        format!("{}[MASKED]", prefix)
+    } else {
+        url.to_string()
+    }
 }

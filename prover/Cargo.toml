@@ -56,8 +56,16 @@ rand = "0.8"
 # Cluster
 uuid = { version = "1.0", features = ["v4"] }
 
+# Validation
+regex-lite = "0.1"
+
 [dev-dependencies]
 tempfile = "3.10"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "prover_benchmarks"
+harness = false
 
 [features]
 default = []
