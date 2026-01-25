@@ -543,7 +543,9 @@ mod tests {
     #[tokio::test]
     async fn test_preflight() {
         let prover = FastProver::new(FastProveConfig::default());
-        let result = prover.preflight(&[], &[]).await.unwrap();
-        assert!(result.success);
+        // Empty ELF will fail to parse - this is expected
+        let result = prover.preflight(&[], &[]).await;
+        // Preflight with empty ELF should fail with parse error
+        assert!(result.is_err() || !result.unwrap().success);
     }
 }
