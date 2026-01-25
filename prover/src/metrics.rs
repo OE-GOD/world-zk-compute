@@ -229,6 +229,157 @@ impl Timer {
     }
 }
 
+/// Extended prover metrics for API
+pub struct ProverMetrics {
+    inner: Metrics,
+    jobs_processed: AtomicU64,
+    jobs_failed: AtomicU64,
+    total_earnings: AtomicU64,
+    cache_hits: AtomicU64,
+    cache_misses: AtomicU64,
+}
+
+impl ProverMetrics {
+    pub fn new() -> Self {
+        Self {
+            inner: Metrics::new(),
+            jobs_processed: AtomicU64::new(0),
+            jobs_failed: AtomicU64::new(0),
+            total_earnings: AtomicU64::new(0),
+            cache_hits: AtomicU64::new(0),
+            cache_misses: AtomicU64::new(0),
+        }
+    }
+
+    pub fn record_job_success(&self, earnings: u64, duration: Duration, cycles: u64, bytes: u64) {
+        self.jobs_processed.fetch_add(1, Ordering::Relaxed);
+        self.total_earnings.fetch_add(earnings, Ordering::Relaxed);
+        self.inner.record_proof_success(duration, cycles, bytes);
+    }
+
+    pub fn record_job_failure(&self) {
+        self.jobs_failed.fetch_add(1, Ordering::Relaxed);
+        self.inner.record_proof_failure();
+    }
+
+    pub fn record_cache_hit(&self) {
+        self.cache_hits.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_cache_miss(&self) {
+        self.cache_misses.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn get_stats(&self) -> ProverStats {
+        let snapshot = self.inner.snapshot();
+        ProverStats {
+            jobs_processed: self.jobs_processed.load(Ordering::Relaxed),
+            jobs_failed: self.jobs_failed.load(Ordering::Relaxed),
+            total_proofs: snapshot.proofs_generated,
+            total_earnings: self.total_earnings.load(Ordering::Relaxed),
+            cache_hits: self.cache_hits.load(Ordering::Relaxed),
+            cache_misses: self.cache_misses.load(Ordering::Relaxed),
+            avg_proof_time_ms: snapshot.avg_proof_time.as_millis() as u64,
+            uptime_seconds: snapshot.uptime.as_secs(),
+        }
+    }
+
+    pub fn to_prometheus(&self) -> String {
+        let stats = self.get_stats();
+        let snapshot = self.inner.snapshot();
+
+        format!(
+r#"# HELP prover_jobs_processed_total Total number of jobs processed
+# TYPE prover_jobs_processed_total counter
+prover_jobs_processed_total {}
+
+# HELP prover_jobs_failed_total Total number of failed jobs
+# TYPE prover_jobs_failed_total counter
+prover_jobs_failed_total {}
+
+# HELP prover_proofs_generated_total Total proofs generated
+# TYPE prover_proofs_generated_total counter
+prover_proofs_generated_total {}
+
+# HELP prover_earnings_wei_total Total earnings in wei
+# TYPE prover_earnings_wei_total counter
+prover_earnings_wei_total {}
+
+# HELP prover_cache_hits_total Total cache hits
+# TYPE prover_cache_hits_total counter
+prover_cache_hits_total {}
+
+# HELP prover_cache_misses_total Total cache misses
+# TYPE prover_cache_misses_total counter
+prover_cache_misses_total {}
+
+# HELP prover_proof_time_seconds Average proof generation time
+# TYPE prover_proof_time_seconds gauge
+prover_proof_time_seconds {}
+
+# HELP prover_active_proofs Current number of active proofs
+# TYPE prover_active_proofs gauge
+prover_active_proofs {}
+
+# HELP prover_uptime_seconds Prover uptime in seconds
+# TYPE prover_uptime_seconds gauge
+prover_uptime_seconds {}
+
+# HELP prover_success_rate Success rate percentage
+# TYPE prover_success_rate gauge
+prover_success_rate {}
+"#,
+            stats.jobs_processed,
+            stats.jobs_failed,
+            stats.total_proofs,
+            stats.total_earnings,
+            stats.cache_hits,
+            stats.cache_misses,
+            snapshot.avg_proof_time.as_secs_f64(),
+            snapshot.active_proofs,
+            stats.uptime_seconds,
+            stats.success_rate(),
+        )
+    }
+}
+
+impl Default for ProverMetrics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Stats for JSON export
+#[derive(Debug, Clone)]
+pub struct ProverStats {
+    pub jobs_processed: u64,
+    pub jobs_failed: u64,
+    pub total_proofs: u64,
+    pub total_earnings: u64,
+    pub cache_hits: u64,
+    pub cache_misses: u64,
+    pub avg_proof_time_ms: u64,
+    pub uptime_seconds: u64,
+}
+
+impl ProverStats {
+    pub fn success_rate(&self) -> f64 {
+        let total = self.jobs_processed + self.jobs_failed;
+        if total == 0 {
+            return 100.0;
+        }
+        (self.jobs_processed as f64 / total as f64) * 100.0
+    }
+
+    pub fn cache_hit_rate(&self) -> f64 {
+        let total = self.cache_hits + self.cache_misses;
+        if total == 0 {
+            return 0.0;
+        }
+        (self.cache_hits as f64 / total as f64) * 100.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

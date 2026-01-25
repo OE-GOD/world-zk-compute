@@ -16,8 +16,10 @@ use clap::{Parser, Subcommand};
 use std::sync::Arc;
 use tracing::{debug, info, error};
 
+mod api;
 mod bonsai;
 mod cache;
+mod cluster;
 mod config;
 mod continuations;
 mod contracts;
@@ -30,11 +32,13 @@ mod ipfs;
 mod metrics;
 mod monitor;
 mod nonce;
+mod p2p;
 mod parallel;
 mod prefetch;
 mod proof_cache;
 mod prover;
 mod queue;
+mod recovery;
 mod snark;
 
 use bonsai::ProvingMode;
