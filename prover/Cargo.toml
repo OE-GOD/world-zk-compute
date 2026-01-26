@@ -53,6 +53,11 @@ sha2 = "0.10"
 base64 = "0.22"
 rand = "0.8"
 
+# Compression
+zstd = "0.13"
+lz4 = "1.24"
+snap = "1.1"
+
 # Cluster
 uuid = { version = "1.0", features = ["v4"] }
 

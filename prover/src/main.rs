@@ -46,6 +46,10 @@ mod retry;
 mod shutdown;
 mod snark;
 mod validation;
+mod memory_pool;
+mod connection_pool;
+mod proof_compression;
+mod batch_tx;
 
 use bonsai::ProvingMode;
 use config::ProverConfig;
