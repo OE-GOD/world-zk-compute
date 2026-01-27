@@ -1,0 +1,167 @@
+groups:
+  - name: world-zk-prover
+    rules:
+      # === Prover Health ===
+      - alert: ProverDown
+        expr: up{job="world-zk-prover"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Prover node is down"
+          description: "Prover {{ $labels.instance }} has been down for more than 1 minute."
+
+      - alert: ProverHighErrorRate
+        expr: |
+          rate(prover_proofs_failed_total[5m]) /
+          (rate(prover_proofs_generated_total[5m]) + rate(prover_proofs_failed_total[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High proof failure rate"
+          description: "Prover {{ $labels.instance }} has error rate above 10% for 5 minutes."
+
+      - alert: ProverCriticalErrorRate
+        expr: |
+          rate(prover_proofs_failed_total[5m]) /
+          (rate(prover_proofs_generated_total[5m]) + rate(prover_proofs_failed_total[5m])) > 0.25
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical proof failure rate"
+          description: "Prover {{ $labels.instance }} has error rate above 25% for 2 minutes."
+
+      # === Queue Health ===
+      - alert: QueueBacklog
+        expr: prover_queue_size > 100
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Job queue backlog growing"
+          description: "Prover {{ $labels.instance }} has {{ $value }} jobs in queue."
+
+      - alert: QueueCriticalBacklog
+        expr: prover_queue_size > 500
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical job queue backlog"
+          description: "Prover {{ $labels.instance }} has {{ $value }} jobs in queue."
+
+      # === Performance ===
+      - alert: SlowProofGeneration
+        expr: prover_proof_duration_seconds > 1800
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Slow proof generation"
+          description: "Proof generation on {{ $labels.instance }} taking over 30 minutes."
+
+      - alert: ProverIdle
+        expr: rate(prover_proofs_generated_total[30m]) == 0 and prover_queue_size == 0
+        for: 1h
+        labels:
+          severity: info
+        annotations:
+          summary: "Prover is idle"
+          description: "Prover {{ $labels.instance }} has not generated proofs for 1 hour."
+
+      # === Cache Health ===
+      - alert: LowCacheHitRate
+        expr: |
+          prover_cache_hits_total / (prover_cache_hits_total + prover_cache_misses_total) < 0.5
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low cache hit rate"
+          description: "Cache hit rate on {{ $labels.instance }} is below 50%."
+
+      # === Resource Usage ===
+      - alert: HighMemoryUsage
+        expr: |
+          process_resident_memory_bytes{job="world-zk-prover"} /
+          node_memory_MemTotal_bytes * 100 > 80
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage"
+          description: "Prover {{ $labels.instance }} using over 80% of memory."
+
+      - alert: CriticalMemoryUsage
+        expr: |
+          process_resident_memory_bytes{job="world-zk-prover"} /
+          node_memory_MemTotal_bytes * 100 > 95
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical memory usage"
+          description: "Prover {{ $labels.instance }} using over 95% of memory."
+
+      - alert: HighDiskUsage
+        expr: |
+          100 - ((node_filesystem_avail_bytes{mountpoint="/"} /
+          node_filesystem_size_bytes{mountpoint="/"}) * 100) > 85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High disk usage"
+          description: "Disk usage on {{ $labels.instance }} is above 85%."
+
+      # === RPC Health ===
+      - alert: RPCErrors
+        expr: rate(prover_rpc_errors_total[5m]) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RPC errors detected"
+          description: "Prover {{ $labels.instance }} experiencing RPC errors."
+
+      - alert: HighRPCLatency
+        expr: prover_rpc_latency_ms > 5000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High RPC latency"
+          description: "RPC latency on {{ $labels.instance }} is above 5 seconds."
+
+      # === Transaction Health ===
+      - alert: TransactionFailures
+        expr: rate(prover_tx_failures_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Transaction failures detected"
+          description: "Prover {{ $labels.instance }} experiencing transaction failures."
+
+      - alert: NonceSyncIssue
+        expr: prover_nonce_sync_errors_total > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Nonce synchronization issue"
+          description: "Prover {{ $labels.instance }} has nonce sync errors."
+
+      # === Earnings ===
+      - alert: NoEarningsRecently
+        expr: |
+          increase(prover_total_earnings_wei[1h]) == 0 and
+          increase(prover_proofs_generated_total[1h]) > 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "No earnings despite generating proofs"
+          description: "Prover {{ $labels.instance }} generated proofs but received no earnings."

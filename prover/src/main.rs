@@ -50,6 +50,8 @@ mod memory_pool;
 mod connection_pool;
 mod proof_compression;
 mod batch_tx;
+mod alerting;
+mod limits;
 
 use bonsai::ProvingMode;
 use config::ProverConfig;
