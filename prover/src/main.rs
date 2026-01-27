@@ -55,6 +55,9 @@ mod limits;
 mod aggregation;
 mod tracing_ext;
 mod errors;
+mod redis_queue;
+mod scaling;
+mod sharding;
 
 use bonsai::ProvingMode;
 use config::ProverConfig;
