@@ -1,0 +1,70 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "worldzk"
+version = "1.0.0"
+description = "Python SDK for World ZK Compute - Decentralized ZK Proving Network"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.9"
+authors = [
+    { name = "World ZK Compute", email = "dev@worldzk.compute" }
+]
+keywords = ["zk", "zero-knowledge", "risc-v", "proof", "blockchain", "web3"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Security :: Cryptography",
+]
+dependencies = [
+    "httpx>=0.25.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "pytest-cov>=4.0",
+    "mypy>=1.0",
+    "ruff>=0.1",
+    "respx>=0.20",
+]
+requests = [
+    "requests>=2.28",
+]
+
+[project.urls]
+Homepage = "https://github.com/OE-GOD/world-zk-compute"
+Documentation = "https://github.com/OE-GOD/world-zk-compute#readme"
+Repository = "https://github.com/OE-GOD/world-zk-compute"
+Issues = "https://github.com/OE-GOD/world-zk-compute/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["worldzk"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.9"
+strict = true
+warn_return_any = true
+warn_unused_ignores = true
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["E501"]

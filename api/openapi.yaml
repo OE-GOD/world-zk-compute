@@ -1,0 +1,972 @@
+openapi: 3.1.0
+info:
+  title: World ZK Compute API
+  description: |
+    API for the World ZK Compute decentralized proving network.
+
+    ## Overview
+    World ZK Compute enables verifiable computation using RISC Zero zkVM proofs.
+    Users submit computation requests, provers generate proofs, and results are
+    verified on-chain.
+
+    ## Authentication
+    Most endpoints require authentication via API key or wallet signature.
+
+    ## Error Codes
+    All errors follow the format `WZK-XXXX`:
+    - `1xxx`: Client errors (bad request, validation)
+    - `2xxx`: Server errors (internal failures)
+    - `3xxx`: Proof errors (generation/verification)
+    - `4xxx`: Contract/chain errors
+    - `5xxx`: Network/external errors
+
+    ## Rate Limits
+    - Default: 100 requests/minute
+    - Authenticated: 1000 requests/minute
+
+  version: 1.0.0
+  contact:
+    name: World ZK Compute
+    url: https://github.com/OE-GOD/world-zk-compute
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: https://api.worldzk.compute/v1
+    description: Production
+  - url: https://testnet.worldzk.compute/v1
+    description: Testnet
+  - url: http://localhost:3000/v1
+    description: Local development
+
+tags:
+  - name: Requests
+    description: Execution request management
+  - name: Proofs
+    description: Proof generation and verification
+  - name: Programs
+    description: Program registry operations
+  - name: Provers
+    description: Prover registration and stats
+  - name: Health
+    description: Service health and status
+
+paths:
+  # ============================================================================
+  # Health & Status
+  # ============================================================================
+  /health:
+    get:
+      tags: [Health]
+      summary: Health check
+      description: Returns service health status
+      operationId: healthCheck
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: Service unhealthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /status:
+    get:
+      tags: [Health]
+      summary: Service status
+      description: Returns detailed service status including queue depth and active jobs
+      operationId: getStatus
+      responses:
+        '200':
+          description: Service status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+
+  # ============================================================================
+  # Execution Requests
+  # ============================================================================
+  /requests:
+    get:
+      tags: [Requests]
+      summary: List execution requests
+      description: Returns a paginated list of execution requests
+      operationId: listRequests
+      parameters:
+        - $ref: '#/components/parameters/StatusFilter'
+        - $ref: '#/components/parameters/ImageIdFilter'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: List of requests
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequestListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+    post:
+      tags: [Requests]
+      summary: Create execution request
+      description: Submit a new computation request
+      operationId: createRequest
+      security:
+        - ApiKeyAuth: []
+        - WalletSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRequestBody'
+      responses:
+        '201':
+          description: Request created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutionRequest'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /requests/{requestId}:
+    get:
+      tags: [Requests]
+      summary: Get execution request
+      description: Returns details of a specific execution request
+      operationId: getRequest
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Request details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutionRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags: [Requests]
+      summary: Cancel execution request
+      description: Cancel a pending execution request (only by requester)
+      operationId: cancelRequest
+      security:
+        - ApiKeyAuth: []
+        - WalletSignature: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Request cancelled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutionRequest'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /requests/{requestId}/claim:
+    post:
+      tags: [Requests]
+      summary: Claim execution request
+      description: Claim a request for proving (prover only)
+      operationId: claimRequest
+      security:
+        - ApiKeyAuth: []
+        - WalletSignature: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Request claimed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClaimResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /requests/{requestId}/proof:
+    post:
+      tags: [Requests]
+      summary: Submit proof
+      description: Submit a proof for a claimed request
+      operationId: submitProof
+      security:
+        - ApiKeyAuth: []
+        - WalletSignature: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitProofBody'
+      responses:
+        '200':
+          description: Proof submitted and verified
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProofSubmissionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  # ============================================================================
+  # Programs
+  # ============================================================================
+  /programs:
+    get:
+      tags: [Programs]
+      summary: List programs
+      description: Returns registered programs from the registry
+      operationId: listPrograms
+      parameters:
+        - name: active
+          in: query
+          description: Filter by active status
+          schema:
+            type: boolean
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: List of programs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProgramListResponse'
+
+  /programs/{imageId}:
+    get:
+      tags: [Programs]
+      summary: Get program
+      description: Returns details of a registered program
+      operationId: getProgram
+      parameters:
+        - $ref: '#/components/parameters/ImageId'
+      responses:
+        '200':
+          description: Program details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Program'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ============================================================================
+  # Provers
+  # ============================================================================
+  /provers:
+    get:
+      tags: [Provers]
+      summary: List provers
+      description: Returns registered provers with stats
+      operationId: listProvers
+      parameters:
+        - name: tier
+          in: query
+          description: Filter by reputation tier
+          schema:
+            type: string
+            enum: [unranked, bronze, silver, gold, platinum, diamond]
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: List of provers
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProverListResponse'
+
+  /provers/{address}:
+    get:
+      tags: [Provers]
+      summary: Get prover stats
+      description: Returns prover statistics and reputation
+      operationId: getProver
+      parameters:
+        - $ref: '#/components/parameters/ProverAddress'
+      responses:
+        '200':
+          description: Prover details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Prover'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /provers/register:
+    post:
+      tags: [Provers]
+      summary: Register as prover
+      description: Register a new prover address
+      operationId: registerProver
+      security:
+        - WalletSignature: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterProverBody'
+      responses:
+        '201':
+          description: Prover registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Prover'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  # ============================================================================
+  # Proofs
+  # ============================================================================
+  /proofs/verify:
+    post:
+      tags: [Proofs]
+      summary: Verify a proof
+      description: Verify a RISC Zero proof without submitting on-chain
+      operationId: verifyProof
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyProofBody'
+      responses:
+        '200':
+          description: Verification result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerifyProofResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+components:
+  # ============================================================================
+  # Security Schemes
+  # ============================================================================
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key for authentication
+
+    WalletSignature:
+      type: http
+      scheme: bearer
+      bearerFormat: EIP-191
+      description: EIP-191 signed message for wallet authentication
+
+  # ============================================================================
+  # Parameters
+  # ============================================================================
+  parameters:
+    RequestId:
+      name: requestId
+      in: path
+      required: true
+      description: Unique request identifier
+      schema:
+        type: integer
+        format: uint256
+        minimum: 1
+        example: 12345
+
+    ImageId:
+      name: imageId
+      in: path
+      required: true
+      description: Program image ID (32-byte hex)
+      schema:
+        type: string
+        pattern: '^0x[a-fA-F0-9]{64}$'
+        example: '0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef'
+
+    ProverAddress:
+      name: address
+      in: path
+      required: true
+      description: Ethereum address
+      schema:
+        type: string
+        pattern: '^0x[a-fA-F0-9]{40}$'
+        example: '0x742d35Cc6634C0532925a3b844Bc9e7595f1F123'
+
+    StatusFilter:
+      name: status
+      in: query
+      description: Filter by request status
+      schema:
+        type: string
+        enum: [pending, claimed, completed, expired, cancelled]
+
+    ImageIdFilter:
+      name: imageId
+      in: query
+      description: Filter by program image ID
+      schema:
+        type: string
+        pattern: '^0x[a-fA-F0-9]{64}$'
+
+    Limit:
+      name: limit
+      in: query
+      description: Maximum results to return
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+
+    Offset:
+      name: offset
+      in: query
+      description: Number of results to skip
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+
+  # ============================================================================
+  # Responses
+  # ============================================================================
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+          example:
+            code: 'WZK-1000'
+            message: 'Invalid request format or parameters'
+
+    Unauthorized:
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+          example:
+            code: 'WZK-1030'
+            message: 'Authentication required'
+
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+          example:
+            code: 'WZK-1021'
+            message: 'Request not found'
+
+    Conflict:
+      description: Conflict
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+          example:
+            code: 'WZK-1022'
+            message: 'Request has already been claimed by another prover'
+
+    RateLimited:
+      description: Rate limited
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+          example:
+            code: 'WZK-1040'
+            message: 'Too many requests, please slow down'
+            retry:
+              retryable: true
+              retry_after_ms: 5000
+
+  # ============================================================================
+  # Schemas
+  # ============================================================================
+  schemas:
+    # --------------------------------------------------------------------------
+    # Common
+    # --------------------------------------------------------------------------
+    ApiError:
+      type: object
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          pattern: '^WZK-[0-9]{4}$'
+          description: Error code
+          example: 'WZK-1000'
+        message:
+          type: string
+          description: Human-readable error message
+          example: 'Invalid request format'
+        details:
+          type: object
+          description: Additional error details
+          additionalProperties: true
+        request_id:
+          type: string
+          description: Request ID for tracing
+        trace_id:
+          type: string
+          description: Distributed trace ID
+        retry:
+          $ref: '#/components/schemas/RetryInfo'
+
+    RetryInfo:
+      type: object
+      properties:
+        retryable:
+          type: boolean
+          description: Whether the request can be retried
+        retry_after_ms:
+          type: integer
+          description: Suggested delay before retry (milliseconds)
+        max_retries:
+          type: integer
+          description: Maximum number of retries suggested
+
+    Pagination:
+      type: object
+      properties:
+        total:
+          type: integer
+          description: Total number of items
+        limit:
+          type: integer
+          description: Items per page
+        offset:
+          type: integer
+          description: Current offset
+        has_more:
+          type: boolean
+          description: Whether more items exist
+
+    # --------------------------------------------------------------------------
+    # Health
+    # --------------------------------------------------------------------------
+    HealthResponse:
+      type: object
+      required:
+        - status
+        - timestamp
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+        timestamp:
+          type: string
+          format: date-time
+        version:
+          type: string
+          example: '1.0.0'
+        checks:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              status:
+                type: string
+                enum: [pass, warn, fail]
+              message:
+                type: string
+
+    StatusResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [running, paused, maintenance]
+        queue_depth:
+          type: integer
+          description: Number of pending requests
+        active_jobs:
+          type: integer
+          description: Number of jobs being processed
+        total_completed:
+          type: integer
+          description: Total completed jobs
+        uptime_seconds:
+          type: integer
+        prover_count:
+          type: integer
+          description: Number of active provers
+
+    # --------------------------------------------------------------------------
+    # Requests
+    # --------------------------------------------------------------------------
+    ExecutionRequest:
+      type: object
+      required:
+        - id
+        - requester
+        - image_id
+        - input_hash
+        - status
+        - created_at
+      properties:
+        id:
+          type: integer
+          format: uint256
+          description: Unique request ID
+        requester:
+          type: string
+          pattern: '^0x[a-fA-F0-9]{40}$'
+          description: Requester address
+        image_id:
+          type: string
+          pattern: '^0x[a-fA-F0-9]{64}$'
+          description: Program image ID
+        input_hash:
+          type: string
+          pattern: '^0x[a-fA-F0-9]{64}$'
+          description: SHA256 hash of input
+        input_url:
+          type: string
+          format: uri
+          description: URL to fetch input data
+        callback_contract:
+          type: string
+          pattern: '^0x[a-fA-F0-9]{40}$'
+          description: Contract to call with result
+        tip:
+          type: string
+          description: Tip amount in wei
+        status:
+          type: string
+          enum: [pending, claimed, completed, expired, cancelled]
+        claimed_by:
+          type: string
+          pattern: '^0x[a-fA-F0-9]{40}$'
+          description: Prover address (if claimed)
+        claim_deadline:
+          type: string
+          format: date-time
+          description: Deadline to submit proof
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+        proof:
+          $ref: '#/components/schemas/ProofResult'
+
+    CreateRequestBody:
+      type: object
+      required:
+        - image_id
+        - input_hash
+      properties:
+        image_id:
+          type: string
+          pattern: '^0x[a-fA-F0-9]{64}$'
+          description: Program image ID
+        input_hash:
+          type: string
+          pattern: '^0x[a-fA-F0-9]{64}$'
+          description: SHA256 hash of input
+        input_url:
+          type: string
+          format: uri
+          description: URL to fetch input data (IPFS or HTTPS)
+        input_data:
+          type: string
+          format: byte
+          description: Base64-encoded input data (alternative to URL)
+        callback_contract:
+          type: string
+          pattern: '^0x[a-fA-F0-9]{40}$'
+          description: Contract to call with result
+        expiration_seconds:
+          type: integer
+          minimum: 60
+          maximum: 86400
+          default: 3600
+          description: Request expiration time
+        tip:
+          type: string
+          description: Tip amount in wei
+
+    RequestListResponse:
+      type: object
+      properties:
+        requests:
+          type: array
+          items:
+            $ref: '#/components/schemas/ExecutionRequest'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    ClaimResponse:
+      type: object
+      properties:
+        request:
+          $ref: '#/components/schemas/ExecutionRequest'
+        input_data:
+          type: string
+          format: byte
+          description: Base64-encoded input data
+        deadline:
+          type: string
+          format: date-time
+
+    # --------------------------------------------------------------------------
+    # Proofs
+    # --------------------------------------------------------------------------
+    ProofResult:
+      type: object
+      properties:
+        seal:
+          type: string
+          format: byte
+          description: Base64-encoded proof seal
+        journal:
+          type: string
+          format: byte
+          description: Base64-encoded journal (public outputs)
+        proof_type:
+          type: string
+          enum: [groth16, succinct, fake]
+        image_id:
+          type: string
+        verified:
+          type: boolean
+        verified_at:
+          type: string
+          format: date-time
+
+    SubmitProofBody:
+      type: object
+      required:
+        - seal
+        - journal
+      properties:
+        seal:
+          type: string
+          format: byte
+          description: Base64-encoded proof seal
+        journal:
+          type: string
+          format: byte
+          description: Base64-encoded journal
+
+    ProofSubmissionResponse:
+      type: object
+      properties:
+        request_id:
+          type: integer
+        status:
+          type: string
+          enum: [verified, rejected]
+        tx_hash:
+          type: string
+          pattern: '^0x[a-fA-F0-9]{64}$'
+          description: On-chain transaction hash
+        payout:
+          type: string
+          description: Payout amount in wei
+        verification_time_ms:
+          type: integer
+
+    VerifyProofBody:
+      type: object
+      required:
+        - image_id
+        - seal
+        - journal
+      properties:
+        image_id:
+          type: string
+          pattern: '^0x[a-fA-F0-9]{64}$'
+        seal:
+          type: string
+          format: byte
+        journal:
+          type: string
+          format: byte
+
+    VerifyProofResponse:
+      type: object
+      properties:
+        valid:
+          type: boolean
+        image_id:
+          type: string
+        journal_hash:
+          type: string
+        verification_time_ms:
+          type: integer
+        error:
+          type: string
+          description: Error message if invalid
+
+    # --------------------------------------------------------------------------
+    # Programs
+    # --------------------------------------------------------------------------
+    Program:
+      type: object
+      properties:
+        image_id:
+          type: string
+          pattern: '^0x[a-fA-F0-9]{64}$'
+        name:
+          type: string
+        description:
+          type: string
+        owner:
+          type: string
+          pattern: '^0x[a-fA-F0-9]{40}$'
+        source_url:
+          type: string
+          format: uri
+        is_active:
+          type: boolean
+        registered_at:
+          type: string
+          format: date-time
+        execution_count:
+          type: integer
+
+    ProgramListResponse:
+      type: object
+      properties:
+        programs:
+          type: array
+          items:
+            $ref: '#/components/schemas/Program'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    # --------------------------------------------------------------------------
+    # Provers
+    # --------------------------------------------------------------------------
+    Prover:
+      type: object
+      properties:
+        address:
+          type: string
+          pattern: '^0x[a-fA-F0-9]{40}$'
+        reputation:
+          $ref: '#/components/schemas/Reputation'
+        stats:
+          $ref: '#/components/schemas/ProverStats'
+        registered_at:
+          type: string
+          format: date-time
+        last_active_at:
+          type: string
+          format: date-time
+
+    Reputation:
+      type: object
+      properties:
+        score:
+          type: integer
+          minimum: 0
+          maximum: 10000
+          description: Score in basis points (0-10000)
+        tier:
+          type: string
+          enum: [unranked, bronze, silver, gold, platinum, diamond]
+        is_slashed:
+          type: boolean
+        is_banned:
+          type: boolean
+
+    ProverStats:
+      type: object
+      properties:
+        total_jobs:
+          type: integer
+        completed_jobs:
+          type: integer
+        failed_jobs:
+          type: integer
+        abandoned_jobs:
+          type: integer
+        success_rate:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 100
+        avg_proof_time_ms:
+          type: integer
+        total_earnings:
+          type: string
+          description: Total earnings in wei
+
+    ProverListResponse:
+      type: object
+      properties:
+        provers:
+          type: array
+          items:
+            $ref: '#/components/schemas/Prover'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    RegisterProverBody:
+      type: object
+      properties:
+        name:
+          type: string
+          maxLength: 64
+          description: Optional display name
+        endpoint:
+          type: string
+          format: uri
+          description: Prover API endpoint for P2P

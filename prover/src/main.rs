@@ -54,6 +54,7 @@ mod alerting;
 mod limits;
 mod aggregation;
 mod tracing_ext;
+mod errors;
 
 use bonsai::ProvingMode;
 use config::ProverConfig;
