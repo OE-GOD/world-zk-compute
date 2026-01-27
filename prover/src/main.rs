@@ -58,6 +58,9 @@ mod errors;
 mod redis_queue;
 mod scaling;
 mod sharding;
+mod circuit_breaker;
+mod health_checks;
+mod degradation;
 
 use bonsai::ProvingMode;
 use config::ProverConfig;
