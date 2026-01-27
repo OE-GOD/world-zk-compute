@@ -1,0 +1,29 @@
+[package]
+name = "e2e-tests"
+version = "0.1.0"
+edition = "2021"
+description = "End-to-end tests for World ZK Compute"
+publish = false
+
+[lib]
+name = "e2e_tests"
+path = "lib.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.0", features = ["full", "test-util"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Time
+chrono = "0.4"
+
+[dev-dependencies]
+# Testing
+tempfile = "3.10"
+
+[[test]]
+name = "e2e_tests"
+path = "tests/main.rs"
