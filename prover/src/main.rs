@@ -52,6 +52,8 @@ mod proof_compression;
 mod batch_tx;
 mod alerting;
 mod limits;
+mod aggregation;
+mod tracing_ext;
 
 use bonsai::ProvingMode;
 use config::ProverConfig;
