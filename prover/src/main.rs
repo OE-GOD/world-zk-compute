@@ -61,6 +61,11 @@ mod sharding;
 mod circuit_breaker;
 mod health_checks;
 mod degradation;
+mod key_management;
+mod audit;
+mod sanitization;
+mod proof_validation;
+mod private_input;
 
 use bonsai::ProvingMode;
 use config::ProverConfig;

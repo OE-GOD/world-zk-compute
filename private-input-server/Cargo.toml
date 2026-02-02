@@ -1,0 +1,52 @@
+[package]
+name = "private-input-server"
+version = "0.1.0"
+edition = "2021"
+description = "Private Input Server for World ZK Compute - Like Bonsol's approach"
+
+[[bin]]
+name = "private-input-server"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+
+# Web framework
+axum = { version = "0.7", features = ["macros"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+
+# Ethereum for signature verification
+alloy = { version = "0.8", features = ["full"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+hex = "0.4"
+base64 = "0.22"
+
+# Crypto
+sha2 = "0.10"
+aes-gcm = "0.10"
+rand = "0.8"
+
+# Storage
+dashmap = "6.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "2.0"
+
+# CLI
+clap = { version = "4.0", features = ["derive", "env"] }
+
+# Time
+chrono = "0.4"
+
+# Config
+dotenvy = "0.15"
