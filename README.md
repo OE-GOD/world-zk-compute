@@ -348,6 +348,56 @@ let input_url = "ipfs://QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG";
 // 4. Pinata (fallback)
 ```
 
+### Private Input Server
+
+For sensitive data that needs access control, we provide a **Private Input Server** (like [Bonsol](https://bonsol.sh)):
+
+```
+User uploads input → Server encrypts → Returns inputId
+User submits job with "private://<inputId>"
+Prover claims job on-chain
+Prover requests input (signs with wallet)
+Server verifies on-chain claim → Returns encrypted data + key
+Prover decrypts locally → Runs in zkVM
+```
+
+**Why use Private Input Server instead of IPFS?**
+
+| Aspect | IPFS | Private Input Server |
+|--------|------|---------------------|
+| Access control | None | On-chain claim verification |
+| Encryption | None | AES-256-GCM at rest |
+| Who can fetch | Anyone with CID | Only verified claimers |
+| Audit trail | None | Full access logging |
+
+**Start the server:**
+
+```bash
+cd private-input-server
+cargo run -- \
+  --rpc-url $RPC_URL \
+  --engine-address $ENGINE_ADDRESS \
+  --master-key $(openssl rand -hex 32)
+```
+
+**Upload input:**
+
+```bash
+curl -X POST http://localhost:3000/inputs \
+  -H "Content-Type: application/json" \
+  -d '{"data": "<base64-encoded-input>"}'
+# Returns: {"input_id": "abc123...", "input_digest": "..."}
+```
+
+**Use in execution request:**
+
+```bash
+cast send $ENGINE "requestExecution(...)" \
+  ... "private://abc123..." ...  # Use private:// URL scheme
+```
+
+The prover automatically handles authentication and decryption when fetching private inputs.
+
 ### Health Monitoring
 
 The prover exposes HTTP endpoints for monitoring:
@@ -430,6 +480,7 @@ This project is an **EVM port of Bonsol's architecture**:
 | Program Registry | ✅ | ✅ |
 | Callbacks | ✅ | ✅ |
 | Multi-Verifier | ✅ | ✅ |
+| Private Input Server | ✅ | ✅ |
 
 ## Platform: Detection-Agnostic Infrastructure
 
@@ -641,6 +692,7 @@ All optimization modules are wired together in `OptimizedProcessor`:
 - [x] Health monitoring & Prometheus metrics
 - [x] Smart job queue with priority scoring
 - [x] **Fully integrated OptimizedProcessor** (all modules wired together)
+- [x] **Private Input Server** (like Bonsol - on-chain claim verification)
 - [ ] Production RISC Zero verifier integration
 - [ ] World Chain mainnet deployment
 - [ ] Prover network incentives
