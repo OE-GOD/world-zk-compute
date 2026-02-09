@@ -50,9 +50,9 @@ struct SignedDetectionInput {
     threshold: f64,
     /// ECDSA signature over SHA256(data_points || threshold)
     /// 64 bytes: r (32 bytes) || s (32 bytes)
-    signature: [u8; 64],
+    signature: Vec<u8>,
     /// Compressed public key of the signer (33 bytes)
-    signer_pubkey: [u8; 33],
+    signer_pubkey: Vec<u8>,
     /// Expected signer address (for verification in output)
     expected_signer: [u8; 20],
 }
@@ -96,12 +96,21 @@ fn main() {
     // Read input from host
     let input: SignedDetectionInput = env::read();
 
+    // Convert Vec<u8> to fixed-size arrays
+    let mut signature = [0u8; 64];
+    assert!(input.signature.len() == 64, "signature must be 64 bytes");
+    signature.copy_from_slice(&input.signature);
+
+    let mut signer_pubkey = [0u8; 33];
+    assert!(input.signer_pubkey.len() == 33, "pubkey must be 33 bytes");
+    signer_pubkey.copy_from_slice(&input.signer_pubkey);
+
     // Step 1: Hash the data (ACCELERATED - uses SHA-256 precompile)
     let data_hash = hash_detection_data(&input.data_points, input.threshold);
 
     // Step 2: Verify signature (ACCELERATED - uses secp256k1 precompile)
     let (signature_valid, signer_address) =
-        verify_signature(&data_hash, &input.signature, &input.signer_pubkey);
+        verify_signature(&data_hash, &signature, &signer_pubkey);
 
     // Step 3: Check if signer matches expected
     let signer_matches = signer_address == input.expected_signer;
