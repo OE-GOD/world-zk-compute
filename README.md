@@ -438,6 +438,8 @@ Smart job selection with priority scoring:
 
 ## Testing
 
+### Contract Tests
+
 ```bash
 cd contracts
 
@@ -455,6 +457,41 @@ forge test --gas-report
 ```
 
 **Test Coverage:** 27 tests passing
+
+### E2E Tests
+
+Full end-to-end tests that deploy contracts to a local Anvil chain, register a program, submit an execution request, run the prover, and verify on-chain completion.
+
+**Prerequisites:**
+- [Foundry](https://book.getfoundry.sh) (anvil, forge, cast)
+- [Rust](https://rustup.rs) (cargo)
+- Python 3 with `ecdsa` package: `pip install ecdsa`
+
+**Run:**
+
+```bash
+# Anomaly detector example
+./scripts/e2e-test.sh --example anomaly-detector
+
+# Signature-verified example (requires pip install ecdsa)
+./scripts/e2e-test.sh --example signature-verified
+
+# Run all examples
+./scripts/e2e-test.sh --example all
+
+# GPU acceleration (Metal on macOS, CUDA on Linux)
+./scripts/e2e-test.sh --example anomaly-detector --gpu
+```
+
+**What it does:**
+1. Starts a local Anvil chain
+2. Deploys MockRiscZeroVerifier, ProgramRegistry, and ExecutionEngine
+3. Registers the guest program by image ID
+4. Generates serialized risc0 serde input using `scripts/generate-test-input.py`
+5. Submits an execution request with 0.01 ETH bounty
+6. Runs the prover which claims the job, executes the zkVM, and submits the proof
+7. Polls request status until completion or timeout (300s CPU / 120s GPU)
+8. Cleans up (kills Anvil and prover)
 
 ## Security
 
