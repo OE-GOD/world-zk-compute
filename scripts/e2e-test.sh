@@ -157,7 +157,7 @@ if [ ! -d "lib/forge-std" ]; then
     forge install --no-commit 2>/dev/null || true
 fi
 
-PRIVATE_KEY="$DEPLOYER_KEY" FEE_RECIPIENT="$DEPLOYER_ADDR" \
+PRIVATE_KEY="$DEPLOYER_KEY" FEE_RECIPIENT="$DEPLOYER_ADDR" ETHERSCAN_API_KEY="dummy" \
     forge script script/Deploy.s.sol:DeployScript \
     --rpc-url "$RPC_URL" \
     --broadcast \
@@ -260,14 +260,14 @@ run_example() {
         esac
     fi
 
-    # Build prover
+    # Build prover (prover has its own Cargo.toml, not a workspace member)
     log "Building prover (this may take a while on first run)..."
-    cargo build --release -p world-zk-prover $PROVE_FEATURES 2>&1 | tail -3
+    cargo build --release --manifest-path "$ROOT_DIR/prover/Cargo.toml" $PROVE_FEATURES 2>&1 | tail -3
 
-    # Run prover in background
+    # Run prover in background (run from repo root so ./programs/ is accessible)
     log "Running prover (mode: $PROVING_MODE, timeout: ${TIMEOUT}s)..."
 
-    "$ROOT_DIR/target/release/world-zk-prover" run \
+    "$ROOT_DIR/prover/target/release/world-zk-prover" run \
         --rpc-url "$RPC_URL" \
         --private-key "$PROVER_KEY" \
         --engine-address "$ENGINE_ADDR" \
@@ -298,10 +298,12 @@ run_example() {
             break
         fi
 
-        # Check request status (RequestStatus enum: 0=Pending, 1=Claimed, 2=Completed)
-        STATUS=$(cast call --rpc-url "$RPC_URL" "$ENGINE_ADDR" \
-            "getRequest(uint256)(uint256,address,bytes32,bytes32,string,address,uint256,uint256,uint256,uint256,uint8,address,uint256,uint256)" \
-            1 2>/dev/null | sed -n '11p' || echo "0")
+        # Check request status via raw hex (RequestStatus enum: 0=Pending, 1=Claimed, 2=Completed)
+        # Status is field 10 in the struct: skip 0x(2) + offset_ptr(64) + 10*field(640) = char 706, 64 chars wide
+        RAW_HEX=$(cast call --rpc-url "$RPC_URL" "$ENGINE_ADDR" "getRequest(uint256)" 1 2>/dev/null || echo "")
+        STATUS_WORD=$(echo "$RAW_HEX" | tr -d '[:space:]' | cut -c707-770)
+        STATUS=$(echo "$STATUS_WORD" | sed 's/^0*//')
+        STATUS=${STATUS:-0}
 
         case "$STATUS" in
             0) printf "\r  [%3ds] Status: Pending   " "$ELAPSED" ;;
