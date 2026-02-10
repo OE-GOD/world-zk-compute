@@ -476,6 +476,9 @@ Full end-to-end tests that deploy contracts to a local Anvil chain, register a p
 # Signature-verified example (requires pip install ecdsa)
 ./scripts/e2e-test.sh --example signature-verified
 
+# Sybil detector example (World ID registration pattern analysis)
+./scripts/e2e-test.sh --example sybil-detector
+
 # Run all examples
 ./scripts/e2e-test.sh --example all
 
@@ -550,7 +553,8 @@ YOUR SYSTEM                          DETECTION TEAM
 See [`examples/`](./examples/) for complete detection algorithm examples:
 
 - **Anomaly Detector** - Statistical anomaly detection using z-score analysis
-- More coming soon...
+- **Signature-Verified Detector** - Detection with ECDSA signature verification of data source
+- **Sybil Detector** - World ID registration pattern analysis to detect coordinated fake identities (temporal clustering, geographic impossibility, session anomaly, Orb rate abuse, quality score anomaly)
 
 ### Quick Start
 

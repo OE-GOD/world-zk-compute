@@ -10,6 +10,7 @@ set -euo pipefail
 # Usage:
 #   ./scripts/e2e-test.sh --example anomaly-detector
 #   ./scripts/e2e-test.sh --example signature-verified
+#   ./scripts/e2e-test.sh --example sybil-detector
 #   ./scripts/e2e-test.sh --example all
 #   ./scripts/e2e-test.sh --example anomaly-detector --gpu
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -41,6 +42,7 @@ ENGINE_ADDR="0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0"
 # Image IDs
 ANOMALY_DETECTOR_IMAGE_ID="0x24c3af8225689d633ce0b02a61cb6a58fe656db1f31185eedd69f656a982bc95"
 SIGNATURE_VERIFIED_IMAGE_ID="0x28d93899974adcfe07ccad0c251b65e4308f265b6e296b9b81f1267bbf3ddd34"
+SYBIL_DETECTOR_IMAGE_ID="0xee666bd16e310391f57cc2c65f301b06fcc018573913edf699ac3ad65db146e4"
 
 # Timeouts
 CPU_TIMEOUT=300
@@ -66,7 +68,7 @@ cleanup() {
 trap cleanup EXIT
 
 usage() {
-    echo "Usage: $0 --example <anomaly-detector|signature-verified|all> [--gpu]"
+    echo "Usage: $0 --example <anomaly-detector|signature-verified|sybil-detector|all> [--gpu]"
     echo ""
     echo "Options:"
     echo "  --example  Which example to test (required)"
@@ -90,8 +92,8 @@ if [ -z "$EXAMPLE" ]; then
     usage
 fi
 
-if [[ "$EXAMPLE" != "anomaly-detector" && "$EXAMPLE" != "signature-verified" && "$EXAMPLE" != "all" ]]; then
-    err "Invalid example: $EXAMPLE (must be anomaly-detector, signature-verified, or all)"
+if [[ "$EXAMPLE" != "anomaly-detector" && "$EXAMPLE" != "signature-verified" && "$EXAMPLE" != "sybil-detector" && "$EXAMPLE" != "all" ]]; then
+    err "Invalid example: $EXAMPLE (must be anomaly-detector, signature-verified, sybil-detector, or all)"
     usage
 fi
 
@@ -182,6 +184,7 @@ run_example() {
     case "$example_name" in
         anomaly-detector)    image_id="$ANOMALY_DETECTOR_IMAGE_ID" ;;
         signature-verified)  image_id="$SIGNATURE_VERIFIED_IMAGE_ID" ;;
+        sybil-detector)      image_id="$SYBIL_DETECTOR_IMAGE_ID" ;;
     esac
 
     log "━━━ Running E2E test: $example_name ━━━"
@@ -344,7 +347,7 @@ run_example() {
 FAILED=0
 
 if [[ "$EXAMPLE" == "all" ]]; then
-    for ex in anomaly-detector signature-verified; do
+    for ex in anomaly-detector signature-verified sybil-detector; do
         if ! run_example "$ex"; then
             FAILED=1
         fi

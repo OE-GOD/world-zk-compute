@@ -62,6 +62,36 @@ cd signature-verified
 cargo run --bin signature-verified-host
 ```
 
+### 3. Sybil Detector (`sybil-detector/`)
+
+World ID Sybil detection — analyzes registration patterns to detect coordinated fake identity creation.
+
+**Use cases:**
+- Detect temporal clustering of registrations at the same Orb
+- Flag impossible travel speeds between registrations
+- Identify suspiciously fast iris scan sessions
+- Detect Orb rate abuse (too many registrations per hour)
+- Flag statistical outliers in iris quality scores
+
+**Precompiles used:** SHA-256 (accelerated)
+
+**Detection heuristics (5 total):**
+| Heuristic | Max Score | What it detects |
+|-----------|-----------|-----------------|
+| Temporal Clustering | 200 | Burst of registrations at same Orb within time window |
+| Geographic Impossibility | 300 | Impossible travel speed between registrations |
+| Session Anomaly | 250 | Suspiciously fast iris scan sessions |
+| Orb Rate Abuse | 200 | Orb exceeding max registrations per hour |
+| Quality Score Anomaly | 250 | Statistical outliers in iris quality scores |
+
+Registrations scoring >= 500/1000 are flagged as suspicious.
+
+**Run the E2E test:**
+```bash
+./scripts/e2e-test.sh --example sybil-detector
+./scripts/e2e-test.sh --example sybil-detector --gpu
+```
+
 ## Writing Your Own Detection Algorithm
 
 ### Step 1: Create Guest Program
