@@ -479,6 +479,12 @@ Full end-to-end tests that deploy contracts to a local Anvil chain, register a p
 # Sybil detector example (World ID registration pattern analysis)
 ./scripts/e2e-test.sh --example sybil-detector
 
+# Rule engine (pattern matching, aggregation, comparison, logical rules)
+./scripts/e2e-test.sh --example rule-engine
+
+# XGBoost inference (decision tree model inference)
+./scripts/e2e-test.sh --example xgboost-inference
+
 # Run all examples
 ./scripts/e2e-test.sh --example all
 
@@ -555,6 +561,8 @@ See [`examples/`](./examples/) for complete detection algorithm examples:
 - **Anomaly Detector** - Statistical anomaly detection using z-score analysis
 - **Signature-Verified Detector** - Detection with ECDSA signature verification of data source
 - **Sybil Detector** - World ID registration pattern analysis to detect coordinated fake identities (temporal clustering, geographic impossibility, session anomaly, Orb rate abuse, quality score anomaly)
+- **Rule Engine** - Configurable rule evaluation covering pattern matching (glob), aggregation (count/sum/min/max), comparison, and logical rules (AND/OR)
+- **XGBoost Inference** - Decision tree ensemble model inference with threshold-based flagging
 
 ### Quick Start
 
