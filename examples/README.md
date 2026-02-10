@@ -92,6 +92,52 @@ Registrations scoring >= 500/1000 are flagged as suspicious.
 ./scripts/e2e-test.sh --example sybil-detector --gpu
 ```
 
+### 4. Rule Engine (`rule-engine/`)
+
+Configurable rule evaluation engine covering four core analysis capabilities in a single guest program:
+
+**Capabilities:**
+1. **Pattern matching** — glob, contains, prefix, suffix on byte strings
+2. **Aggregation** — count, sum, min, max over integer fields
+3. **Comparison** — gt, gte, lt, lte, eq, neq on integer fields
+4. **Rules** — logical AND/OR expressions combining multiple conditions
+
+**Precompiles used:** SHA-256 (accelerated)
+
+**Design:**
+- Records have typed fields: `int_fields: Vec<i64>` and `str_fields: Vec<Vec<u8>>`
+- Conditions dispatch on `cond_type` tag (flat struct, no Rust enums) for easy Python serialization
+- Rules combine conditions with AND (all must match) or OR (any must match) short-circuit logic
+- Aggregations optionally filter by a rule before computing count/sum/min/max
+
+**Run the E2E test:**
+```bash
+./scripts/e2e-test.sh --example rule-engine
+```
+
+### 5. XGBoost Inference (`xgboost-inference/`)
+
+XGBoost decision tree ensemble inference inside the zkVM — covers model-based analysis (capability 5).
+
+**Use cases:**
+- Run trained fraud detection models with provable correctness
+- Flag samples exceeding a score threshold with cryptographic proof
+- Verify model inference was applied consistently to all samples
+
+**Precompiles used:** SHA-256 (accelerated)
+
+**Design:**
+- Trees are serialized as flat node arrays with `is_leaf` tag for dispatch
+- Traversal is iterative (no recursion — friendlier to zkVM stack)
+- Scores are raw logits: `base_score + sum(leaf_values)` — no sigmoid
+- Threshold comparison is in raw logit space
+- Uses f64 floats (proven to work in existing anomaly-detector guest)
+
+**Run the E2E test:**
+```bash
+./scripts/e2e-test.sh --example xgboost-inference
+```
+
 ## Writing Your Own Detection Algorithm
 
 ### Step 1: Create Guest Program

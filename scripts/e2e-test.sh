@@ -11,6 +11,8 @@ set -euo pipefail
 #   ./scripts/e2e-test.sh --example anomaly-detector
 #   ./scripts/e2e-test.sh --example signature-verified
 #   ./scripts/e2e-test.sh --example sybil-detector
+#   ./scripts/e2e-test.sh --example rule-engine
+#   ./scripts/e2e-test.sh --example xgboost-inference
 #   ./scripts/e2e-test.sh --example all
 #   ./scripts/e2e-test.sh --example anomaly-detector --gpu
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -43,6 +45,8 @@ ENGINE_ADDR="0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0"
 ANOMALY_DETECTOR_IMAGE_ID="0x24c3af8225689d633ce0b02a61cb6a58fe656db1f31185eedd69f656a982bc95"
 SIGNATURE_VERIFIED_IMAGE_ID="0x28d93899974adcfe07ccad0c251b65e4308f265b6e296b9b81f1267bbf3ddd34"
 SYBIL_DETECTOR_IMAGE_ID="0xee666bd16e310391f57cc2c65f301b06fcc018573913edf699ac3ad65db146e4"
+RULE_ENGINE_IMAGE_ID="0xbed77c592fc7474e440deeaeab17ea29606b0d1cf0728bda7b70c9fabbb22f73"
+XGBOOST_INFERENCE_IMAGE_ID="0x689ce537e536fceed1efeeaf3a7eb4de7d8a026bde7ac0b2f456c6c5d9a379a6"
 
 # Timeouts
 CPU_TIMEOUT=300
@@ -68,7 +72,7 @@ cleanup() {
 trap cleanup EXIT
 
 usage() {
-    echo "Usage: $0 --example <anomaly-detector|signature-verified|sybil-detector|all> [--gpu]"
+    echo "Usage: $0 --example <anomaly-detector|signature-verified|sybil-detector|rule-engine|xgboost-inference|all> [--gpu]"
     echo ""
     echo "Options:"
     echo "  --example  Which example to test (required)"
@@ -92,8 +96,8 @@ if [ -z "$EXAMPLE" ]; then
     usage
 fi
 
-if [[ "$EXAMPLE" != "anomaly-detector" && "$EXAMPLE" != "signature-verified" && "$EXAMPLE" != "sybil-detector" && "$EXAMPLE" != "all" ]]; then
-    err "Invalid example: $EXAMPLE (must be anomaly-detector, signature-verified, sybil-detector, or all)"
+if [[ "$EXAMPLE" != "anomaly-detector" && "$EXAMPLE" != "signature-verified" && "$EXAMPLE" != "sybil-detector" && "$EXAMPLE" != "rule-engine" && "$EXAMPLE" != "xgboost-inference" && "$EXAMPLE" != "all" ]]; then
+    err "Invalid example: $EXAMPLE (must be anomaly-detector, signature-verified, sybil-detector, rule-engine, xgboost-inference, or all)"
     usage
 fi
 
@@ -182,9 +186,11 @@ run_example() {
     local image_id
 
     case "$example_name" in
-        anomaly-detector)    image_id="$ANOMALY_DETECTOR_IMAGE_ID" ;;
-        signature-verified)  image_id="$SIGNATURE_VERIFIED_IMAGE_ID" ;;
-        sybil-detector)      image_id="$SYBIL_DETECTOR_IMAGE_ID" ;;
+        anomaly-detector)      image_id="$ANOMALY_DETECTOR_IMAGE_ID" ;;
+        signature-verified)    image_id="$SIGNATURE_VERIFIED_IMAGE_ID" ;;
+        sybil-detector)        image_id="$SYBIL_DETECTOR_IMAGE_ID" ;;
+        rule-engine)           image_id="$RULE_ENGINE_IMAGE_ID" ;;
+        xgboost-inference)     image_id="$XGBOOST_INFERENCE_IMAGE_ID" ;;
     esac
 
     log "━━━ Running E2E test: $example_name ━━━"
@@ -347,7 +353,7 @@ run_example() {
 FAILED=0
 
 if [[ "$EXAMPLE" == "all" ]]; then
-    for ex in anomaly-detector signature-verified sybil-detector; do
+    for ex in anomaly-detector signature-verified sybil-detector rule-engine xgboost-inference; do
         if ! run_example "$ex"; then
             FAILED=1
         fi

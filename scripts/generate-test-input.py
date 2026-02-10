@@ -5,6 +5,8 @@ Usage:
     python3 generate-test-input.py anomaly-detector
     python3 generate-test-input.py signature-verified
     python3 generate-test-input.py sybil-detector
+    python3 generate-test-input.py rule-engine
+    python3 generate-test-input.py xgboost-inference
 
 Outputs parseable lines:
     DATA_URL=data:application/octet-stream;base64,...
@@ -94,6 +96,13 @@ def write_vec_i64(values):
     result = write_u32(len(values))
     for v in values:
         result += write_i64(v)
+    return result
+
+def write_vec_vec_u8(items):
+    """Vec<Vec<u8>> -> ONE u32 word for outer length, then each inner Vec<u8>"""
+    result = write_u32(len(items))
+    for item in items:
+        result += write_vec_u8(item)
     return result
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -398,12 +407,239 @@ def generate_sybil_detector_input():
     return buf
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Rule Engine Input Generation
+#
+# Struct layout:
+#   RuleEngineInput {
+#       records: Vec<Record>,
+#       rules: Vec<Rule>,
+#       aggregations: Vec<AggDef>,
+#   }
+#   Record { id: [u8;32], int_fields: Vec<i64>, str_fields: Vec<Vec<u8>> }
+#   Rule { conditions: Vec<Condition>, combine: u32 }
+#   Condition { cond_type: u32, field_idx: u32, compare_op: u32, int_value: i64, str_value: Vec<u8> }
+#   AggDef { agg_type: u32, field_idx: u32, filter_rule: u32 }
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def generate_rule_engine_input():
+    """Generate a RuleEngineInput with 10 records, 3 rules, 2 aggregations.
+
+    Test scenario:
+    - Records 0-4: normal (int_fields=[50,42,10], str_fields=[b"normal_op", b"clean"])
+    - Records 5-6: attack (int_fields=[200,42,-5], str_fields=[b"attack_vector_1", b"suspicious_payload"])
+    - Records 7-8: borderline (int_fields=[101,99,0], str_fields=[b"attack_scan", b"normal"])
+    - Record 9: outlier (int_fields=[500,1,100], str_fields=[b"benign", b"suspicious_activity"])
+
+    Rules:
+    - Rule 0: AND(int_field[0] > 100, str_field[0] glob "attack*") -> matches 5,6,7,8
+    - Rule 1: OR(int_field[1] == 42, int_field[2] < 0) -> matches 0-6
+    - Rule 2: AND(str_field[1] contains "suspicious") -> matches 5,6,9
+
+    Aggregations:
+    - Sum of int_field[0] filtered by rule 0
+    - Max of int_field[1] over all records
+    """
+    records = [
+        # Normal records (0-4)
+        {"id": bytes([0x00] + [0]*31), "int_fields": [50, 42, 10], "str_fields": [b"normal_op", b"clean"]},
+        {"id": bytes([0x01] + [0]*31), "int_fields": [50, 42, 10], "str_fields": [b"normal_op", b"clean"]},
+        {"id": bytes([0x02] + [0]*31), "int_fields": [50, 42, 10], "str_fields": [b"normal_op", b"clean"]},
+        {"id": bytes([0x03] + [0]*31), "int_fields": [50, 42, 10], "str_fields": [b"normal_op", b"clean"]},
+        {"id": bytes([0x04] + [0]*31), "int_fields": [50, 42, 10], "str_fields": [b"normal_op", b"clean"]},
+        # Attack records (5-6)
+        {"id": bytes([0x05] + [0]*31), "int_fields": [200, 42, -5], "str_fields": [b"attack_vector_1", b"suspicious_payload"]},
+        {"id": bytes([0x06] + [0]*31), "int_fields": [200, 42, -5], "str_fields": [b"attack_vector_1", b"suspicious_payload"]},
+        # Borderline records (7-8)
+        {"id": bytes([0x07] + [0]*31), "int_fields": [101, 99, 0], "str_fields": [b"attack_scan", b"normal"]},
+        {"id": bytes([0x08] + [0]*31), "int_fields": [101, 99, 0], "str_fields": [b"attack_scan", b"normal"]},
+        # Outlier record (9)
+        {"id": bytes([0x09] + [0]*31), "int_fields": [500, 1, 100], "str_fields": [b"benign", b"suspicious_activity"]},
+    ]
+
+    # Condition helper: (cond_type, field_idx, compare_op, int_value, str_value)
+    rules = [
+        # Rule 0: AND(int_field[0] > 100, str_field[0] glob "attack*")
+        {
+            "conditions": [
+                {"cond_type": 0, "field_idx": 0, "compare_op": 2, "int_value": 100, "str_value": b""},
+                {"cond_type": 5, "field_idx": 0, "compare_op": 0, "int_value": 0, "str_value": b"attack*"},
+            ],
+            "combine": 0,  # AND
+        },
+        # Rule 1: OR(int_field[1] == 42, int_field[2] < 0)
+        {
+            "conditions": [
+                {"cond_type": 0, "field_idx": 1, "compare_op": 0, "int_value": 42, "str_value": b""},
+                {"cond_type": 0, "field_idx": 2, "compare_op": 4, "int_value": 0, "str_value": b""},
+            ],
+            "combine": 1,  # OR
+        },
+        # Rule 2: AND(str_field[1] contains "suspicious")
+        {
+            "conditions": [
+                {"cond_type": 2, "field_idx": 1, "compare_op": 0, "int_value": 0, "str_value": b"suspicious"},
+            ],
+            "combine": 0,  # AND
+        },
+    ]
+
+    aggregations = [
+        # Sum of int_field[0] filtered by rule 0
+        {"agg_type": 1, "field_idx": 0, "filter_rule": 0},
+        # Max of int_field[1] over all records (0xFFFFFFFF = no filter)
+        {"agg_type": 3, "field_idx": 1, "filter_rule": 0xFFFFFFFF},
+    ]
+
+    buf = b''
+
+    # records: Vec<Record>
+    buf += write_u32(len(records))
+    for rec in records:
+        buf += write_byte_array_32(rec["id"])
+        buf += write_vec_i64(rec["int_fields"])
+        buf += write_vec_vec_u8(rec["str_fields"])
+
+    # rules: Vec<Rule>
+    buf += write_u32(len(rules))
+    for rule in rules:
+        # conditions: Vec<Condition>
+        buf += write_u32(len(rule["conditions"]))
+        for cond in rule["conditions"]:
+            buf += write_u32(cond["cond_type"])
+            buf += write_u32(cond["field_idx"])
+            buf += write_u32(cond["compare_op"])
+            buf += write_i64(cond["int_value"])
+            buf += write_vec_u8(cond["str_value"])
+        # combine: u32
+        buf += write_u32(rule["combine"])
+
+    # aggregations: Vec<AggDef>
+    buf += write_u32(len(aggregations))
+    for agg in aggregations:
+        buf += write_u32(agg["agg_type"])
+        buf += write_u32(agg["field_idx"])
+        buf += write_u32(agg["filter_rule"])
+
+    return buf
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# XGBoost Inference Input Generation
+#
+# Struct layout:
+#   XGBoostInput {
+#       model: XGBoostModel,
+#       samples: Vec<Sample>,
+#       threshold: f64,
+#   }
+#   XGBoostModel { num_features: u32, num_classes: u32, base_score: f64, trees: Vec<Tree> }
+#   Tree { nodes: Vec<TreeNode> }
+#   TreeNode { is_leaf: u32, feature_idx: u32, threshold: f64,
+#              left_child: u32, right_child: u32, value: f64 }
+#   Sample { id: [u8;32], features: Vec<f64> }
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def generate_xgboost_inference_input():
+    """Generate an XGBoostInput with 3-tree model, 2 features, 5 samples.
+
+    Model: 3 small trees (3-5 nodes), threshold=0.5, base_score=0.0
+    Samples: 3 normal (low scores), 2 anomalous (high scores)
+
+    Tree 0 (3 nodes):
+        node 0: feature[0] < 5.0 -> left=1, right=2
+        node 1: leaf, value = -0.3
+        node 2: leaf, value = 0.4
+
+    Tree 1 (5 nodes):
+        node 0: feature[1] < 3.0 -> left=1, right=2
+        node 1: leaf, value = -0.2
+        node 2: feature[0] < 7.0 -> left=3, right=4
+        node 3: leaf, value = 0.1
+        node 4: leaf, value = 0.5
+
+    Tree 2 (3 nodes):
+        node 0: feature[0] < 6.0 -> left=1, right=2
+        node 1: leaf, value = -0.1
+        node 2: leaf, value = 0.3
+    """
+    # TreeNode: (is_leaf, feature_idx, threshold, left_child, right_child, value)
+    tree0 = [
+        {"is_leaf": 0, "feature_idx": 0, "threshold": 5.0, "left_child": 1, "right_child": 2, "value": 0.0},
+        {"is_leaf": 1, "feature_idx": 0, "threshold": 0.0, "left_child": 0, "right_child": 0, "value": -0.3},
+        {"is_leaf": 1, "feature_idx": 0, "threshold": 0.0, "left_child": 0, "right_child": 0, "value": 0.4},
+    ]
+    tree1 = [
+        {"is_leaf": 0, "feature_idx": 1, "threshold": 3.0, "left_child": 1, "right_child": 2, "value": 0.0},
+        {"is_leaf": 1, "feature_idx": 0, "threshold": 0.0, "left_child": 0, "right_child": 0, "value": -0.2},
+        {"is_leaf": 0, "feature_idx": 0, "threshold": 7.0, "left_child": 3, "right_child": 4, "value": 0.0},
+        {"is_leaf": 1, "feature_idx": 0, "threshold": 0.0, "left_child": 0, "right_child": 0, "value": 0.1},
+        {"is_leaf": 1, "feature_idx": 0, "threshold": 0.0, "left_child": 0, "right_child": 0, "value": 0.5},
+    ]
+    tree2 = [
+        {"is_leaf": 0, "feature_idx": 0, "threshold": 6.0, "left_child": 1, "right_child": 2, "value": 0.0},
+        {"is_leaf": 1, "feature_idx": 0, "threshold": 0.0, "left_child": 0, "right_child": 0, "value": -0.1},
+        {"is_leaf": 1, "feature_idx": 0, "threshold": 0.0, "left_child": 0, "right_child": 0, "value": 0.3},
+    ]
+    trees = [tree0, tree1, tree2]
+
+    model = {
+        "num_features": 2,
+        "num_classes": 2,
+        "base_score": 0.0,
+        "trees": trees,
+    }
+
+    # Samples: 3 normal (features that go left/low), 2 anomalous (features that go right/high)
+    # Normal: feature[0] < 5.0, feature[1] < 3.0 => scores around -0.6
+    # Anomalous: feature[0] >= 7.0, feature[1] >= 3.0 => scores around 1.2
+    samples = [
+        {"id": bytes([0x01] + [0]*31), "features": [2.0, 1.0]},   # normal
+        {"id": bytes([0x02] + [0]*31), "features": [3.0, 2.0]},   # normal
+        {"id": bytes([0x03] + [0]*31), "features": [4.0, 1.5]},   # normal
+        {"id": bytes([0xA1] + [0]*31), "features": [8.0, 5.0]},   # anomalous
+        {"id": bytes([0xA2] + [0]*31), "features": [9.0, 4.0]},   # anomalous
+    ]
+
+    threshold = 0.5
+
+    buf = b''
+
+    # model: XGBoostModel
+    buf += write_u32(model["num_features"])
+    buf += write_u32(model["num_classes"])
+    buf += write_f64(model["base_score"])
+
+    # trees: Vec<Tree>
+    buf += write_u32(len(model["trees"]))
+    for tree in model["trees"]:
+        # nodes: Vec<TreeNode>
+        buf += write_u32(len(tree))
+        for node in tree:
+            buf += write_u32(node["is_leaf"])
+            buf += write_u32(node["feature_idx"])
+            buf += write_f64(node["threshold"])
+            buf += write_u32(node["left_child"])
+            buf += write_u32(node["right_child"])
+            buf += write_f64(node["value"])
+
+    # samples: Vec<Sample>
+    buf += write_u32(len(samples))
+    for sample in samples:
+        buf += write_byte_array_32(sample["id"])
+        buf += write_vec_f64(sample["features"])
+
+    # threshold: f64
+    buf += write_f64(threshold)
+
+    return buf
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Main
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def main():
-    if len(sys.argv) != 2 or sys.argv[1] not in ("anomaly-detector", "signature-verified", "sybil-detector"):
-        print("Usage: python3 generate-test-input.py [anomaly-detector|signature-verified|sybil-detector]", file=sys.stderr)
+    valid = ("anomaly-detector", "signature-verified", "sybil-detector", "rule-engine", "xgboost-inference")
+    if len(sys.argv) != 2 or sys.argv[1] not in valid:
+        print("Usage: python3 generate-test-input.py [anomaly-detector|signature-verified|sybil-detector|rule-engine|xgboost-inference]", file=sys.stderr)
         sys.exit(1)
 
     example = sys.argv[1]
@@ -412,8 +648,12 @@ def main():
         buf = generate_anomaly_detector_input()
     elif example == "signature-verified":
         buf = generate_signature_verified_input()
-    else:
+    elif example == "sybil-detector":
         buf = generate_sybil_detector_input()
+    elif example == "rule-engine":
+        buf = generate_rule_engine_input()
+    else:
+        buf = generate_xgboost_inference_input()
 
     # Create data URL
     b64 = base64.b64encode(buf).decode()
