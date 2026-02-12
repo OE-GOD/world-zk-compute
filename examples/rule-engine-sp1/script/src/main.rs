@@ -135,9 +135,9 @@ fn main() -> anyhow::Result<()> {
         let proof = client.prove(&pk, &stdin).compressed().run()?;
         let prove_time = start.elapsed();
 
-        let proof_bytes = proof.bytes();
+        let proof_size = bincode::serialize(&proof).map(|b| b.len()).unwrap_or(0);
         println!("SP1 Proof time: {:?}", prove_time);
-        println!("SP1 Proof size: {} bytes", proof_bytes.len());
+        println!("SP1 Proof size: {} bytes", proof_size);
 
         let start = Instant::now();
         client.verify(&proof, &vk)?;
