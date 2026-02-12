@@ -75,11 +75,13 @@ fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let execute = args.iter().any(|a| a == "--execute");
     let prove = args.iter().any(|a| a == "--prove");
+    let core_only = args.iter().any(|a| a == "--core");
 
     if !execute && !prove {
-        eprintln!("Usage: rule-engine-sp1-script [--execute] [--prove]");
+        eprintln!("Usage: rule-engine-sp1-script [--execute] [--prove] [--core]");
         eprintln!("  --execute   Execute only (no proof, reports cycle count)");
-        eprintln!("  --prove     Generate and verify a proof");
+        eprintln!("  --prove     Generate and verify a compressed proof");
+        eprintln!("  --core      Use core proof (no compression, faster but larger)");
         std::process::exit(1);
     }
 
@@ -128,11 +130,16 @@ fn main() -> anyhow::Result<()> {
     }
 
     if prove {
-        println!("\n--- Prove Mode ---");
+        let mode = if core_only { "Core" } else { "Compressed" };
+        println!("\n--- Prove Mode ({mode}) ---");
         let (pk, vk) = client.setup(ELF);
 
         let start = Instant::now();
-        let proof = client.prove(&pk, &stdin).compressed().run()?;
+        let proof = if core_only {
+            client.prove(&pk, &stdin).core().run()?
+        } else {
+            client.prove(&pk, &stdin).compressed().run()?
+        };
         let prove_time = start.elapsed();
 
         let proof_size = bincode::serialize(&proof).map(|b| b.len()).unwrap_or(0);
