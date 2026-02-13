@@ -1,19 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity ^0.8.20;
 
-/// @title IRiscZeroVerifier
-/// @notice Standard interface for RISC Zero verifiers
-interface IRiscZeroVerifier {
-    /// @notice Verify a RISC Zero proof
-    /// @param seal The proof seal (SNARK proof)
-    /// @param imageId The program image ID
-    /// @param journalDigest SHA256 hash of the journal (public outputs)
-    function verify(
-        bytes calldata seal,
-        bytes32 imageId,
-        bytes32 journalDigest
-    ) external view;
-}
+import {IRiscZeroVerifier, Receipt, VerificationFailed} from "risc0-ethereum/IRiscZeroVerifier.sol";
 
 /// @title RiscZeroVerifierRouter
 /// @notice Routes verification to the appropriate RISC Zero verifier based on proof type
@@ -63,7 +51,6 @@ contract RiscZeroVerifierRouter is IRiscZeroVerifier {
     error InvalidSeal();
     error NoVerifierFound();
     error VerifierNotActive();
-    error VerificationFailed();
 
     // ========================================================================
     // CONSTRUCTOR
@@ -105,6 +92,30 @@ contract RiscZeroVerifierRouter is IRiscZeroVerifier {
 
         // Call the verifier
         try IRiscZeroVerifier(verifier).verify(seal, imageId, journalDigest) {
+            // Verification succeeded
+        } catch {
+            revert VerificationFailed();
+        }
+    }
+
+    /// @notice Verify a receipt by routing to the appropriate verifier
+    function verifyIntegrity(Receipt calldata receipt) external view override {
+        bytes calldata seal = receipt.seal;
+        if (seal.length < 4) revert InvalidSeal();
+
+        bytes4 selector = bytes4(seal[:4]);
+
+        VerifierInfo storage info = verifiers[selector];
+        address verifier = info.verifier;
+
+        if (verifier == address(0)) {
+            verifier = defaultVerifier;
+        }
+
+        if (verifier == address(0)) revert NoVerifierFound();
+        if (!info.active && verifier != defaultVerifier) revert VerifierNotActive();
+
+        try IRiscZeroVerifier(verifier).verifyIntegrity(receipt) {
             // Verification succeeded
         } catch {
             revert VerificationFailed();

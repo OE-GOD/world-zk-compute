@@ -15,6 +15,7 @@ set -euo pipefail
 #   ./scripts/e2e-test.sh --example xgboost-inference
 #   ./scripts/e2e-test.sh --example all
 #   ./scripts/e2e-test.sh --example anomaly-detector --gpu
+#   ./scripts/e2e-test.sh --example anomaly-detector --network sepolia
 # ═══════════════════════════════════════════════════════════════════════════════
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -23,10 +24,15 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # ── Defaults ──────────────────────────────────────────────────────────────────
 EXAMPLE=""
 GPU=false
+NETWORK="local"
 ANVIL_PID=""
 PROVER_PID=""
 ANVIL_PORT=8545
 RPC_URL="http://127.0.0.1:${ANVIL_PORT}"
+
+# Known RISC Zero Verifier Router addresses
+SEPOLIA_VERIFIER_ADDRESS="0x925d8331ddc0a1F0d96E68CF073DFE1d92b69187"
+MAINNET_VERIFIER_ADDRESS="0x8EaB2D97Dfce405A1692a21b3ff3A172d593D319"
 
 # Anvil deterministic accounts (default mnemonic)
 DEPLOYER_KEY="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
@@ -72,11 +78,14 @@ cleanup() {
 trap cleanup EXIT
 
 usage() {
-    echo "Usage: $0 --example <anomaly-detector|signature-verified|sybil-detector|rule-engine|xgboost-inference|all> [--gpu]"
+    echo "Usage: $0 --example <anomaly-detector|signature-verified|sybil-detector|rule-engine|xgboost-inference|all> [--gpu] [--network <local|sepolia>]"
     echo ""
     echo "Options:"
     echo "  --example  Which example to test (required)"
     echo "  --gpu      Use GPU acceleration (Metal on macOS, CUDA on Linux)"
+    echo "  --network  Network to deploy to (default: local)"
+    echo "             local   - Anvil + MockVerifier (default)"
+    echo "             sepolia - Deploy to Sepolia with real RISC Zero verifier"
     exit 1
 }
 
@@ -86,6 +95,7 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --example) EXAMPLE="$2"; shift 2 ;;
         --gpu)     GPU=true; shift ;;
+        --network) NETWORK="$2"; shift 2 ;;
         -h|--help) usage ;;
         *) err "Unknown option: $1"; usage ;;
     esac
@@ -98,6 +108,11 @@ fi
 
 if [[ "$EXAMPLE" != "anomaly-detector" && "$EXAMPLE" != "signature-verified" && "$EXAMPLE" != "sybil-detector" && "$EXAMPLE" != "rule-engine" && "$EXAMPLE" != "xgboost-inference" && "$EXAMPLE" != "all" ]]; then
     err "Invalid example: $EXAMPLE (must be anomaly-detector, signature-verified, sybil-detector, rule-engine, xgboost-inference, or all)"
+    usage
+fi
+
+if [[ "$NETWORK" != "local" && "$NETWORK" != "sepolia" ]]; then
+    err "Invalid network: $NETWORK (must be local or sepolia)"
     usage
 fi
 
@@ -131,43 +146,80 @@ fi
 
 ok "All prerequisites met"
 
-# ── 2. Start Anvil ───────────────────────────────────────────────────────────
+# ── 2. Start Anvil (local only) ──────────────────────────────────────────────
 
-log "Starting Anvil on port ${ANVIL_PORT}..."
+if [[ "$NETWORK" == "local" ]]; then
+    log "Starting Anvil on port ${ANVIL_PORT}..."
 
-# Kill any existing anvil on that port
-if lsof -ti:${ANVIL_PORT} &>/dev/null; then
-    log "Killing existing process on port ${ANVIL_PORT}"
-    kill $(lsof -ti:${ANVIL_PORT}) 2>/dev/null || true
-    sleep 1
+    # Kill any existing anvil on that port
+    if lsof -ti:${ANVIL_PORT} &>/dev/null; then
+        log "Killing existing process on port ${ANVIL_PORT}"
+        kill $(lsof -ti:${ANVIL_PORT}) 2>/dev/null || true
+        sleep 1
+    fi
+
+    anvil --port ${ANVIL_PORT} --silent &
+    ANVIL_PID=$!
+    sleep 2
+
+    if ! kill -0 "$ANVIL_PID" 2>/dev/null; then
+        err "Failed to start Anvil"
+        exit 1
+    fi
+    ok "Anvil running (PID: $ANVIL_PID)"
+elif [[ "$NETWORK" == "sepolia" ]]; then
+    RPC_URL="${SEPOLIA_RPC_URL:?SEPOLIA_RPC_URL env var must be set}"
+    DEPLOYER_KEY="${PRIVATE_KEY:?PRIVATE_KEY env var must be set for testnet deployment}"
+    DEPLOYER_ADDR=$(cast wallet address "$DEPLOYER_KEY" 2>/dev/null)
+    PROVER_KEY="${PROVER_PRIVATE_KEY:?PROVER_PRIVATE_KEY env var must be set for testnet deployment}"
+    PROVER_ADDR=$(cast wallet address "$PROVER_KEY" 2>/dev/null)
+    REQUESTER_KEY="${REQUESTER_PRIVATE_KEY:?REQUESTER_PRIVATE_KEY env var must be set for testnet deployment}"
+    REQUESTER_ADDR=$(cast wallet address "$REQUESTER_KEY" 2>/dev/null)
+
+    log "Using Sepolia network"
+    log "RPC URL: $RPC_URL"
+    log "Deployer: $DEPLOYER_ADDR"
 fi
-
-anvil --port ${ANVIL_PORT} --silent &
-ANVIL_PID=$!
-sleep 2
-
-if ! kill -0 "$ANVIL_PID" 2>/dev/null; then
-    err "Failed to start Anvil"
-    exit 1
-fi
-ok "Anvil running (PID: $ANVIL_PID)"
 
 # ── 3. Deploy contracts ──────────────────────────────────────────────────────
 
-log "Deploying contracts..."
+log "Deploying contracts (network: $NETWORK)..."
 
 cd "$ROOT_DIR/contracts"
 
 # Install forge dependencies if needed
 if [ ! -d "lib/forge-std" ]; then
-    forge install --no-commit 2>/dev/null || true
+    forge install --no-git 2>/dev/null || true
 fi
 
-PRIVATE_KEY="$DEPLOYER_KEY" FEE_RECIPIENT="$DEPLOYER_ADDR" ETHERSCAN_API_KEY="dummy" \
-    forge script script/Deploy.s.sol:DeployScript \
-    --rpc-url "$RPC_URL" \
-    --broadcast \
-    --silent 2>&1 | tail -5
+if [[ "$NETWORK" == "local" ]]; then
+    PRIVATE_KEY="$DEPLOYER_KEY" FEE_RECIPIENT="$DEPLOYER_ADDR" ETHERSCAN_API_KEY="dummy" \
+        forge script script/DeployLocal.s.sol:DeployLocalScript \
+        --rpc-url "$RPC_URL" \
+        --broadcast \
+        --silent 2>&1 | tail -5
+elif [[ "$NETWORK" == "sepolia" ]]; then
+    PRIVATE_KEY="$DEPLOYER_KEY" FEE_RECIPIENT="$DEPLOYER_ADDR" \
+    VERIFIER_ADDRESS="$SEPOLIA_VERIFIER_ADDRESS" \
+        forge script script/DeployTestnet.s.sol:DeployTestnetScript \
+        --rpc-url "$RPC_URL" \
+        --broadcast \
+        2>&1 | tail -10
+
+    # For testnet, extract deployed addresses from forge output
+    FORGE_OUTPUT=$(PRIVATE_KEY="$DEPLOYER_KEY" FEE_RECIPIENT="$DEPLOYER_ADDR" \
+        VERIFIER_ADDRESS="$SEPOLIA_VERIFIER_ADDRESS" \
+        forge script script/DeployTestnet.s.sol:DeployTestnetScript \
+        --rpc-url "$RPC_URL" 2>&1)
+    REGISTRY_ADDR=$(echo "$FORGE_OUTPUT" | grep "ProgramRegistry deployed at:" | awk '{print $NF}')
+    ENGINE_ADDR=$(echo "$FORGE_OUTPUT" | grep "ExecutionEngine deployed at:" | awk '{print $NF}')
+    VERIFIER_ADDR="$SEPOLIA_VERIFIER_ADDRESS"
+
+    if [ -z "$REGISTRY_ADDR" ] || [ -z "$ENGINE_ADDR" ]; then
+        err "Failed to extract deployed contract addresses"
+        exit 1
+    fi
+fi
 
 cd "$ROOT_DIR"
 

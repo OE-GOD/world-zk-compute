@@ -6,14 +6,18 @@ import "../src/ProgramRegistry.sol";
 import "../src/ExecutionEngine.sol";
 import "../src/MockRiscZeroVerifier.sol";
 
-contract DeployScript is Script {
+/// @title DeployLocalScript
+/// @notice LOCAL DEPLOYMENT (Mock Verifier) — for Anvil testing only
+contract DeployLocalScript is Script {
     function run() external {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         address feeRecipient = vm.envAddress("FEE_RECIPIENT");
 
+        console.log("=== LOCAL DEPLOYMENT (Mock Verifier) ===");
+
         vm.startBroadcast(deployerPrivateKey);
 
-        // 1. Deploy Mock Verifier
+        // 1. Deploy Mock Verifier (accepts all proofs — NOT for production)
         MockRiscZeroVerifier verifier = new MockRiscZeroVerifier();
         console.log("MockRiscZeroVerifier deployed at:", address(verifier));
 
@@ -32,10 +36,10 @@ contract DeployScript is Script {
         vm.stopBroadcast();
 
         // Print summary
-        console.log("\n=== Deployment Summary ===");
-        console.log("Verifier:  ", address(verifier));
-        console.log("Registry:  ", address(registry));
-        console.log("Engine:    ", address(engine));
-        console.log("Fee Recipient:", feeRecipient);
+        console.log("\n=== Local Deployment Summary ===");
+        console.log("Verifier (MOCK):", address(verifier));
+        console.log("Registry:       ", address(registry));
+        console.log("Engine:         ", address(engine));
+        console.log("Fee Recipient:  ", feeRecipient);
     }
 }

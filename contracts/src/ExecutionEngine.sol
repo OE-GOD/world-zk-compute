@@ -2,16 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "./ProgramRegistry.sol";
-
-/// @title IRiscZeroVerifier
-/// @notice Interface for RISC Zero's on-chain verifier
-interface IRiscZeroVerifier {
-    function verify(
-        bytes calldata seal,
-        bytes32 imageId,
-        bytes32 journalDigest
-    ) external view;
-}
+import {IRiscZeroVerifier} from "risc0-ethereum/IRiscZeroVerifier.sol";
 
 /// @title IExecutionCallback
 /// @notice Interface for contracts that receive verified computation results
