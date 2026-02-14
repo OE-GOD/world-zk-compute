@@ -189,7 +189,12 @@ cd "$ROOT_DIR/contracts"
 
 # Install forge dependencies if needed
 if [ ! -d "lib/forge-std" ]; then
-    forge install --no-git 2>/dev/null || true
+    log "Installing forge-std..."
+    forge install foundry-rs/forge-std --no-git --no-commit
+fi
+if [ ! -d "lib/risc0-ethereum" ]; then
+    log "Installing risc0-ethereum..."
+    forge install risc0/risc0-ethereum --no-git --no-commit
 fi
 
 if [[ "$NETWORK" == "local" ]]; then

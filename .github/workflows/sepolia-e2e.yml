@@ -52,7 +52,8 @@ jobs:
       - name: Install Forge dependencies
         run: |
           cd contracts
-          forge install --no-git 2>/dev/null || true
+          forge install foundry-rs/forge-std --no-git --no-commit
+          forge install risc0/risc0-ethereum --no-git --no-commit
 
       - name: Build prover
         run: cargo build --release --manifest-path prover/Cargo.toml
