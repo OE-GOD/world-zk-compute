@@ -9,7 +9,7 @@
 //! - **BonsaiWithGpuFallback**: Try Bonsai first, fall back to GPU, then CPU
 
 use alloy::primitives::B256;
-use risc0_zkvm::{default_prover, ExecutorEnv, Receipt};
+use risc0_zkvm::{default_prover, ExecutorEnv, ProverOpts, Receipt, InnerReceipt};
 use std::path::PathBuf;
 use tracing::{info, debug, warn};
 
@@ -79,21 +79,40 @@ impl UnifiedProver {
         elf: &[u8],
         input: &[u8],
     ) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+        self.prove_inner(elf, input, false).await
+    }
+
+    /// Execute and prove, optionally generating a Groth16 SNARK for on-chain verification
+    pub async fn prove_with_snark(
+        &self,
+        elf: &[u8],
+        input: &[u8],
+        use_snark: bool,
+    ) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+        self.prove_inner(elf, input, use_snark).await
+    }
+
+    async fn prove_inner(
+        &self,
+        elf: &[u8],
+        input: &[u8],
+        use_snark: bool,
+    ) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
         match (&self.mode, &self.bonsai_prover) {
             // Bonsai mode with prover available
             (ProvingMode::Bonsai, Some(prover)) => {
                 info!("Using Bonsai cloud proving");
-                prover.prove(elf, input).await
+                prover.prove(elf, input, use_snark).await
             }
 
             // Bonsai with CPU fallback
             (ProvingMode::BonsaiWithFallback, Some(prover)) => {
                 info!("Trying Bonsai cloud proving...");
-                match prover.prove(elf, input).await {
+                match prover.prove(elf, input, use_snark).await {
                     Ok(result) => Ok(result),
                     Err(e) => {
                         warn!("Bonsai proving failed, falling back to local CPU: {}", e);
-                        Self::prove_local_cpu(elf, input).await
+                        Self::prove_local_cpu(elf, input, use_snark).await
                     }
                 }
             }
@@ -101,11 +120,11 @@ impl UnifiedProver {
             // Bonsai with GPU fallback (then CPU)
             (ProvingMode::BonsaiWithGpuFallback, Some(prover)) => {
                 info!("Trying Bonsai cloud proving...");
-                match prover.prove(elf, input).await {
+                match prover.prove(elf, input, use_snark).await {
                     Ok(result) => Ok(result),
                     Err(e) => {
                         warn!("Bonsai proving failed, falling back to GPU: {}", e);
-                        self.prove_with_gpu_fallback(elf, input).await
+                        self.prove_with_gpu_fallback(elf, input, use_snark).await
                     }
                 }
             }
@@ -119,19 +138,19 @@ impl UnifiedProver {
             // GPU with CPU fallback
             (ProvingMode::GpuWithCpuFallback, _) => {
                 info!("Trying local {} proving...", self.gpu_backend);
-                self.prove_with_gpu_fallback(elf, input).await
+                self.prove_with_gpu_fallback(elf, input, use_snark).await
             }
 
             // Local CPU mode or fallback
             _ => {
                 info!("Using local CPU proving");
-                Self::prove_local_cpu(elf, input).await
+                Self::prove_local_cpu(elf, input, use_snark).await
             }
         }
     }
 
     /// Prove with GPU, falling back to CPU on failure
-    async fn prove_with_gpu_fallback(&self, elf: &[u8], input: &[u8]) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+    async fn prove_with_gpu_fallback(&self, elf: &[u8], input: &[u8], use_snark: bool) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
         if self.gpu_backend.is_gpu() {
             match self.gpu_prover.prove_async(elf, input).await {
                 Ok(result) => return Ok(result),
@@ -140,14 +159,17 @@ impl UnifiedProver {
                 }
             }
         }
-        Self::prove_local_cpu(elf, input).await
+        Self::prove_local_cpu(elf, input, use_snark).await
     }
 
     /// Local CPU-based proving (async wrapper around blocking prover)
     ///
     /// Runs the blocking RISC Zero prover in a dedicated thread pool
     /// to avoid blocking the async runtime.
-    async fn prove_local_cpu(elf: &[u8], input: &[u8]) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+    ///
+    /// When `use_snark` is true, generates a Groth16 proof suitable for
+    /// on-chain verification. Requires Docker on x86_64 Linux (or Docker Desktop on macOS).
+    async fn prove_local_cpu(elf: &[u8], input: &[u8], use_snark: bool) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
         let elf = elf.to_vec();
         let input = input.to_vec();
 
@@ -160,16 +182,30 @@ impl UnifiedProver {
                 .write_slice(&input)
                 .build()?;
 
-            // Run prover (uses CPU when no GPU features enabled)
             let prover = default_prover();
-            let prove_info = prover.prove(env, &elf)?;
 
-            let elapsed = start.elapsed();
-            info!("Local CPU proof generated in {:.2?}", elapsed);
+            let receipt = if use_snark {
+                // Groth16 local proving requires x86_64 architecture + Docker
+                if cfg!(not(target_arch = "x86_64")) {
+                    anyhow::bail!(
+                        "Groth16 SNARK proving requires x86_64 architecture. \
+                         On Apple Silicon, use Bonsai cloud proving (--proving-mode bonsai) \
+                         or run on an x86_64 Linux machine."
+                    );
+                }
+                info!("Generating Groth16 SNARK proof (requires Docker)...");
+                let opts = ProverOpts::groth16();
+                let prove_info = prover.prove_with_opts(env, &elf, &opts)?;
+                let elapsed = start.elapsed();
+                info!("Groth16 proof generated in {:.2?}", elapsed);
+                prove_info.receipt
+            } else {
+                let prove_info = prover.prove(env, &elf)?;
+                let elapsed = start.elapsed();
+                info!("Local CPU proof generated in {:.2?}", elapsed);
+                prove_info.receipt
+            };
 
-            let receipt = prove_info.receipt;
-
-            // Note: Receipt verification happens on-chain via the RISC Zero verifier contract
             info!("Local proof generated, ready for on-chain verification");
 
             // Extract seal and journal
@@ -315,10 +351,29 @@ pub async fn fetch_program_elf(image_id: &B256) -> anyhow::Result<Vec<u8>> {
 }
 
 /// Extract the proof seal from receipt
-fn extract_seal(receipt: &Receipt) -> anyhow::Result<Vec<u8>> {
-    // Serialize the receipt's inner proof
-    let seal = bincode::serialize(&receipt.inner)?;
-    Ok(seal)
+///
+/// For Groth16 receipts, encodes as `selector || seal` where selector is the
+/// first 4 bytes of verifier_parameters — this is the format expected by the
+/// on-chain RiscZeroVerifierRouter.
+///
+/// For other receipt types (STARK), falls back to bincode serialization.
+pub fn extract_seal(receipt: &Receipt) -> anyhow::Result<Vec<u8>> {
+    match &receipt.inner {
+        InnerReceipt::Groth16(groth16_receipt) => {
+            let selector = &groth16_receipt.verifier_parameters.as_bytes()[..4];
+            let mut encoded = Vec::with_capacity(4 + groth16_receipt.seal.len());
+            encoded.extend_from_slice(selector);
+            encoded.extend_from_slice(&groth16_receipt.seal);
+            info!("Groth16 seal encoded: {} bytes (selector: {:02x}{:02x}{:02x}{:02x})",
+                encoded.len(), selector[0], selector[1], selector[2], selector[3]);
+            Ok(encoded)
+        }
+        _ => {
+            // STARK receipts: bincode serialize for local/dev usage
+            let seal = bincode::serialize(&receipt.inner)?;
+            Ok(seal)
+        }
+    }
 }
 
 #[cfg(test)]

@@ -199,24 +199,22 @@ if [[ "$NETWORK" == "local" ]]; then
         --broadcast \
         --silent 2>&1 | tail -5
 elif [[ "$NETWORK" == "sepolia" ]]; then
-    PRIVATE_KEY="$DEPLOYER_KEY" FEE_RECIPIENT="$DEPLOYER_ADDR" \
-    VERIFIER_ADDRESS="$SEPOLIA_VERIFIER_ADDRESS" \
+    FORGE_OUTPUT=$(PRIVATE_KEY="$DEPLOYER_KEY" FEE_RECIPIENT="$DEPLOYER_ADDR" \
+        VERIFIER_ADDRESS="$SEPOLIA_VERIFIER_ADDRESS" \
+        ETHERSCAN_API_KEY="${ETHERSCAN_API_KEY:-dummy}" \
         forge script script/DeployTestnet.s.sol:DeployTestnetScript \
         --rpc-url "$RPC_URL" \
         --broadcast \
-        2>&1 | tail -10
+        2>&1)
+    echo "$FORGE_OUTPUT" | tail -10
 
-    # For testnet, extract deployed addresses from forge output
-    FORGE_OUTPUT=$(PRIVATE_KEY="$DEPLOYER_KEY" FEE_RECIPIENT="$DEPLOYER_ADDR" \
-        VERIFIER_ADDRESS="$SEPOLIA_VERIFIER_ADDRESS" \
-        forge script script/DeployTestnet.s.sol:DeployTestnetScript \
-        --rpc-url "$RPC_URL" 2>&1)
     REGISTRY_ADDR=$(echo "$FORGE_OUTPUT" | grep "ProgramRegistry deployed at:" | awk '{print $NF}')
     ENGINE_ADDR=$(echo "$FORGE_OUTPUT" | grep "ExecutionEngine deployed at:" | awk '{print $NF}')
     VERIFIER_ADDR="$SEPOLIA_VERIFIER_ADDRESS"
 
     if [ -z "$REGISTRY_ADDR" ] || [ -z "$ENGINE_ADDR" ]; then
-        err "Failed to extract deployed contract addresses"
+        err "Failed to extract deployed contract addresses from forge output"
+        echo "$FORGE_OUTPUT" >&2
         exit 1
     fi
 fi
@@ -311,6 +309,7 @@ run_example() {
     local PROVE_FEATURES=""
     local TIMEOUT=$CPU_TIMEOUT
     local PROVING_MODE="local"
+    local SNARK_FLAG=""
 
     if [ "$GPU" = true ]; then
         TIMEOUT=$GPU_TIMEOUT
@@ -321,12 +320,25 @@ run_example() {
         esac
     fi
 
+    # On testnet, enable SNARK (Groth16) for real on-chain verification
+    if [[ "$NETWORK" != "local" ]]; then
+        SNARK_FLAG="--use-snark"
+        TIMEOUT=600  # Groth16 proving takes longer
+        log "SNARK mode enabled (Groth16 for on-chain verification)"
+
+        # Use Bonsai cloud proving if API key is available (works on any arch)
+        if [[ -n "${BONSAI_API_KEY:-}" ]]; then
+            PROVING_MODE="bonsai"
+            log "Bonsai cloud proving enabled (API key detected)"
+        fi
+    fi
+
     # Build prover (prover has its own Cargo.toml, not a workspace member)
     log "Building prover (this may take a while on first run)..."
     cargo build --release --manifest-path "$ROOT_DIR/prover/Cargo.toml" $PROVE_FEATURES 2>&1 | tail -3
 
     # Run prover in background (run from repo root so ./programs/ is accessible)
-    log "Running prover (mode: $PROVING_MODE, timeout: ${TIMEOUT}s)..."
+    log "Running prover (mode: $PROVING_MODE, snark: ${SNARK_FLAG:-off}, timeout: ${TIMEOUT}s)..."
 
     "$ROOT_DIR/prover/target/release/world-zk-prover" run \
         --rpc-url "$RPC_URL" \
@@ -337,6 +349,7 @@ run_example() {
         --min-tip 0 \
         --skip-profitability-check \
         --health-port 0 \
+        $SNARK_FLAG \
         2>&1 &
     PROVER_PID=$!
 

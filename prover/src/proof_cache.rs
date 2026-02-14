@@ -1,6 +1,6 @@
 //! Proof Caching for Instant Results
 //!
-//! Caches completed proofs by (image_id, input_hash) to skip re-proving
+//! Caches completed proofs by (image_id, input_hash, use_snark) to skip re-proving
 //! identical computations. If the same job is requested again, we return
 //! the cached proof instantly.
 //!
@@ -12,11 +12,14 @@
 //!
 //! ## Cache Key
 //!
-//! The cache key is `(image_id, input_hash)` which uniquely identifies a computation:
+//! The cache key is `(image_id, input_hash, use_snark)` which uniquely identifies a proof:
 //! - `image_id`: The program being executed (deterministic)
 //! - `input_hash`: Hash of the input data
+//! - `use_snark`: Whether a Groth16 SNARK proof is needed (for on-chain verification)
 //!
 //! Since zkVM execution is deterministic, same program + same input = same output.
+//! STARK and Groth16 proofs are cached separately to prevent stale STARK proofs
+//! from being submitted to the real on-chain verifier.
 
 use alloy::primitives::B256;
 use serde::{Deserialize, Serialize};
@@ -27,21 +30,27 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
-/// Cache key for a proof: (image_id, input_hash)
+/// Cache key for a proof: (image_id, input_hash, use_snark)
+///
+/// The `use_snark` field distinguishes STARK proofs from Groth16 SNARK proofs.
+/// A cached STARK proof must never be served when a SNARK proof is needed
+/// (e.g., for on-chain verification with the real RISC Zero verifier).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ProofCacheKey {
     pub image_id: B256,
     pub input_hash: B256,
+    pub use_snark: bool,
 }
 
 impl ProofCacheKey {
-    pub fn new(image_id: B256, input_hash: B256) -> Self {
-        Self { image_id, input_hash }
+    pub fn new(image_id: B256, input_hash: B256, use_snark: bool) -> Self {
+        Self { image_id, input_hash, use_snark }
     }
 
     /// Convert to hex string for file naming
     pub fn to_hex(&self) -> String {
-        format!("{}_{}", hex::encode(self.image_id), hex::encode(self.input_hash))
+        let suffix = if self.use_snark { "_snark" } else { "_stark" };
+        format!("{}_{}{}", hex::encode(self.image_id), hex::encode(self.input_hash), suffix)
     }
 }
 
@@ -345,7 +354,7 @@ mod tests {
     async fn test_cache_put_get() {
         let cache = ProofCache::new(10, None, Duration::from_secs(3600));
 
-        let key = ProofCacheKey::new(B256::ZERO, B256::repeat_byte(1));
+        let key = ProofCacheKey::new(B256::ZERO, B256::repeat_byte(1), false);
         let proof = CachedProof::new(
             vec![1, 2, 3],
             vec![4, 5, 6],
@@ -358,13 +367,17 @@ mod tests {
         let cached = cache.get(&key).await;
         assert!(cached.is_some());
         assert_eq!(cached.unwrap().cycles, 1000);
+
+        // SNARK key should NOT match STARK cache
+        let snark_key = ProofCacheKey::new(B256::ZERO, B256::repeat_byte(1), true);
+        assert!(cache.get(&snark_key).await.is_none());
     }
 
     #[tokio::test]
     async fn test_cache_miss() {
         let cache = ProofCache::new(10, None, Duration::from_secs(3600));
 
-        let key = ProofCacheKey::new(B256::ZERO, B256::ZERO);
+        let key = ProofCacheKey::new(B256::ZERO, B256::ZERO, false);
         let cached = cache.get(&key).await;
         assert!(cached.is_none());
 
@@ -377,9 +390,9 @@ mod tests {
     async fn test_cache_lru_eviction() {
         let cache = ProofCache::new(2, None, Duration::from_secs(3600));
 
-        let key1 = ProofCacheKey::new(B256::repeat_byte(1), B256::ZERO);
-        let key2 = ProofCacheKey::new(B256::repeat_byte(2), B256::ZERO);
-        let key3 = ProofCacheKey::new(B256::repeat_byte(3), B256::ZERO);
+        let key1 = ProofCacheKey::new(B256::repeat_byte(1), B256::ZERO, false);
+        let key2 = ProofCacheKey::new(B256::repeat_byte(2), B256::ZERO, false);
+        let key3 = ProofCacheKey::new(B256::repeat_byte(3), B256::ZERO, false);
 
         let proof = CachedProof::new(vec![1], vec![], 100, Duration::from_secs(1));
 
@@ -399,9 +412,13 @@ mod tests {
 
     #[test]
     fn test_cache_key_hex() {
-        let key = ProofCacheKey::new(B256::repeat_byte(0xAB), B256::repeat_byte(0xCD));
+        let key = ProofCacheKey::new(B256::repeat_byte(0xAB), B256::repeat_byte(0xCD), false);
         let hex = key.to_hex();
         assert!(hex.contains("abab"));
         assert!(hex.contains("cdcd"));
+        assert!(hex.ends_with("_stark"));
+
+        let snark_key = ProofCacheKey::new(B256::repeat_byte(0xAB), B256::repeat_byte(0xCD), true);
+        assert!(snark_key.to_hex().ends_with("_snark"));
     }
 }

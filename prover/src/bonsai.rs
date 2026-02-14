@@ -141,11 +141,12 @@ impl BonsaiProver {
     /// This is the main proving method. It:
     /// 1. Uploads the program (if needed)
     /// 2. Uploads the input
-    /// 3. Creates a proving session
+    /// 3. Creates a STARK proving session
     /// 4. Polls for completion using async sleep
-    /// 5. Downloads and returns the proof
-    pub async fn prove(&self, elf: &[u8], input: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
-        info!("Starting Bonsai proving session...");
+    /// 5. If `use_snark`, converts STARK → Groth16 SNARK via Bonsai
+    /// 6. Downloads and returns the proof
+    pub async fn prove(&self, elf: &[u8], input: &[u8], use_snark: bool) -> Result<(Vec<u8>, Vec<u8>)> {
+        info!("Starting Bonsai proving session (snark: {})...", use_snark);
         let start = std::time::Instant::now();
 
         // 1. Upload program if needed
@@ -160,11 +161,11 @@ impl BonsaiProver {
         })
         .await??;
 
-        // 3. Start proving session
+        // 3. Start STARK proving session
         let client = self.client.clone();
         let image_id_for_session = image_id_hex.clone();
         let session = tokio::task::spawn_blocking(move || {
-            info!("Starting proof generation...");
+            info!("Starting STARK proof generation...");
             client.create_session(
                 image_id_for_session,
                 input_id,
@@ -174,25 +175,106 @@ impl BonsaiProver {
         })
         .await??;
 
-        info!("Session created: {}", session.uuid);
+        info!("STARK session created: {}", session.uuid);
 
-        // 4. Poll for completion (async loop with tokio::time::sleep)
+        // 4. Poll for STARK completion (async loop with tokio::time::sleep)
         let receipt = self.wait_for_proof_async(&session).await?;
 
         let elapsed = start.elapsed();
-        info!("Bonsai proof generated in {:.2?}", elapsed);
+        info!("Bonsai STARK proof generated in {:.2?}", elapsed);
 
-        // 5. Extract seal and journal
-        let seal = Self::extract_seal(&receipt)?;
+        // 5. If SNARK requested, convert STARK → Groth16 via Bonsai
+        let receipt = if use_snark {
+            info!("Converting STARK → Groth16 SNARK via Bonsai...");
+            let snark_receipt = self.convert_to_snark(&session.uuid).await?;
+            info!("SNARK conversion completed in {:.2?} (total)", start.elapsed());
+            snark_receipt
+        } else {
+            receipt
+        };
+
+        // 6. Extract seal and journal
+        let seal = crate::prover::extract_seal(&receipt)?;
         let journal = receipt.journal.bytes.clone();
 
         info!(
-            "Proof ready: seal={} bytes, journal={} bytes",
+            "Proof ready: seal={} bytes, journal={} bytes, type={}",
             seal.len(),
-            journal.len()
+            journal.len(),
+            if use_snark { "Groth16" } else { "STARK" }
         );
 
         Ok((seal, journal))
+    }
+
+    /// Convert a completed STARK session to Groth16 SNARK via Bonsai (async)
+    async fn convert_to_snark(&self, stark_session_uuid: &str) -> Result<Receipt> {
+        // Create SNARK session from STARK session
+        let client = self.client.clone();
+        let session_id = stark_session_uuid.to_string();
+        let snark_session = tokio::task::spawn_blocking(move || {
+            info!("Creating SNARK conversion session...");
+            client.create_snark(session_id)
+        })
+        .await??;
+
+        info!("SNARK session created: {}", snark_session.uuid);
+
+        // Poll for SNARK completion
+        let timeout = Duration::from_secs(600); // 10 minutes for SNARK
+        let poll_interval = Duration::from_secs(self.config.poll_interval_secs);
+        let start = std::time::Instant::now();
+
+        loop {
+            if start.elapsed() > timeout {
+                anyhow::bail!("SNARK conversion timed out after {:?}", timeout);
+            }
+
+            let client = self.client.clone();
+            let snark_uuid = snark_session.uuid.clone();
+
+            let status = tokio::task::spawn_blocking(move || {
+                let snark_id = bonsai_sdk::blocking::SnarkId { uuid: snark_uuid };
+                snark_id.status(&client)
+            })
+            .await??;
+
+            match status.status.as_str() {
+                "RUNNING" => {
+                    debug!("SNARK conversion in progress...");
+                }
+                "SUCCEEDED" => {
+                    info!("SNARK conversion succeeded!");
+                    let output_url = status.output
+                        .context("No output URL in successful SNARK session")?;
+
+                    let client = self.client.clone();
+                    let receipt = tokio::task::spawn_blocking(move || {
+                        let receipt_bytes = client.download(&output_url)?;
+                        let receipt: Receipt = bincode::deserialize(&receipt_bytes)?;
+                        Ok::<_, anyhow::Error>(receipt)
+                    })
+                    .await??;
+
+                    return Ok(receipt);
+                }
+                "FAILED" => {
+                    let error = status.error_msg.unwrap_or_else(|| "Unknown error".to_string());
+                    anyhow::bail!("SNARK conversion failed: {}", error);
+                }
+                "TIMED_OUT" => {
+                    anyhow::bail!("SNARK session timed out on Bonsai");
+                }
+                "ABORTED" => {
+                    anyhow::bail!("SNARK session was aborted");
+                }
+                other => {
+                    warn!("Unknown SNARK status: {}", other);
+                }
+            }
+
+            tokio::time::sleep(poll_interval).await;
+        }
     }
 
     /// Wait for proof to complete using async polling
@@ -270,11 +352,6 @@ impl BonsaiProver {
         }
     }
 
-    /// Extract seal from receipt
-    fn extract_seal(receipt: &Receipt) -> Result<Vec<u8>> {
-        let seal = bincode::serialize(&receipt.inner)?;
-        Ok(seal)
-    }
 }
 
 /// Proving mode selection

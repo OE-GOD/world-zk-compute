@@ -33,6 +33,9 @@ pub struct ProverConfig {
 
     /// Skip profitability check (for testing)
     pub skip_profitability_check: bool,
+
+    /// Enable SNARK (Groth16) proof generation for on-chain verification
+    pub use_snark: bool,
 }
 
 impl ProverConfig {
@@ -75,6 +78,7 @@ impl Default for ProverConfig {
             bonsai_config: None,
             min_profit_margin: 0.2, // 20% minimum profit
             skip_profitability_check: false,
+            use_snark: false,
         }
     }
 }

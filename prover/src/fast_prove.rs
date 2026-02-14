@@ -97,6 +97,8 @@ pub struct FastProver {
     gpu_semaphore: Arc<Semaphore>,
     /// Proving mode (Local, Bonsai, or BonsaiWithFallback)
     proving_mode: ProvingMode,
+    /// Enable SNARK (Groth16) proof generation
+    use_snark: bool,
 }
 
 impl FastProver {
@@ -107,6 +109,11 @@ impl FastProver {
 
     /// Create a new fast prover with specified proving mode
     pub fn with_mode(config: FastProveConfig, proving_mode: ProvingMode) -> Self {
+        Self::with_mode_and_snark(config, proving_mode, false)
+    }
+
+    /// Create a new fast prover with proving mode and SNARK option
+    pub fn with_mode_and_snark(config: FastProveConfig, proving_mode: ProvingMode, use_snark: bool) -> Self {
         let gpu_slots = if config.gpu_memory_pool { 4 } else { 1 };
 
         Self {
@@ -115,6 +122,7 @@ impl FastProver {
             trace_cache: Arc::new(RwLock::new(HashMap::new())),
             gpu_semaphore: Arc::new(Semaphore::new(gpu_slots)),
             proving_mode,
+            use_snark,
         }
     }
 
@@ -298,7 +306,7 @@ impl FastProver {
 
         // Use UnifiedProver which handles Local/Bonsai/BonsaiWithFallback
         let prover = UnifiedProver::new(self.proving_mode.clone())?;
-        let (seal, journal) = prover.prove(elf, input).await?;
+        let (seal, journal) = prover.prove_with_snark(elf, input, self.use_snark).await?;
 
         Ok((seal, journal))
     }
@@ -319,7 +327,7 @@ impl FastProver {
         // The segment count is informational for logging/metrics
 
         let prover = UnifiedProver::new(self.proving_mode.clone())?;
-        let (seal, journal) = prover.prove(elf, input).await?;
+        let (seal, journal) = prover.prove_with_snark(elf, input, self.use_snark).await?;
 
         Ok((seal, journal))
     }
@@ -337,7 +345,7 @@ impl FastProver {
         // For local mode, the default prover handles it
 
         let prover = UnifiedProver::new(self.proving_mode.clone())?;
-        let (seal, journal) = prover.prove(elf, input).await?;
+        let (seal, journal) = prover.prove_with_snark(elf, input, self.use_snark).await?;
 
         Ok((seal, journal))
     }

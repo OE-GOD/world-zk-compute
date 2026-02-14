@@ -455,6 +455,7 @@ async fn run_prover(
         bonsai_config: bonsai::BonsaiConfig::from_env().ok(),
         min_profit_margin,
         skip_profitability_check,
+        use_snark,
     };
 
     // ════════════════════════════════════════════════════════════════════
@@ -466,6 +467,7 @@ async fn run_prover(
         min_tip_wei,
         cache_size_mb,
         mode.clone(),
+        use_snark,
     )?;
     info!("✓ Optimized processor ready");
     info!("  - Parallel processing: {} concurrent jobs", max_concurrent);

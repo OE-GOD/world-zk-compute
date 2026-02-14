@@ -71,6 +71,8 @@ pub struct OptimizedProcessor {
     proof_cache: Arc<ProofCache>,
     /// Max concurrent jobs
     max_concurrent: usize,
+    /// Enable SNARK (Groth16) proof generation
+    use_snark: bool,
 }
 
 impl OptimizedProcessor {
@@ -80,6 +82,7 @@ impl OptimizedProcessor {
         min_tip_wei: U256,
         cache_size_mb: usize,
         proving_mode: crate::bonsai::ProvingMode,
+        use_snark: bool,
     ) -> anyhow::Result<Self> {
         // Initialize job queue
         let job_queue = Arc::new(RwLock::new(JobQueue::new(1000, min_tip_wei)));
@@ -95,7 +98,7 @@ impl OptimizedProcessor {
         let ipfs_client = Arc::new(IpfsClient::new(IpfsConfig::default()));
 
         // Initialize fast prover with proving mode (Local, Bonsai, or BonsaiWithFallback)
-        let fast_prover = Arc::new(FastProver::with_mode(FastProveConfig::default(), proving_mode));
+        let fast_prover = Arc::new(FastProver::with_mode_and_snark(FastProveConfig::default(), proving_mode, use_snark));
 
         // Initialize input prefetcher for reduced latency
         let prefetch_config = PrefetchConfig {
@@ -122,6 +125,7 @@ impl OptimizedProcessor {
             input_prefetcher,
             proof_cache,
             max_concurrent,
+            use_snark,
         })
     }
 
@@ -424,7 +428,7 @@ async fn process_single_job(
     };
 
     // Step 3: Check proof cache (instant if cached!)
-    let cache_key = ProofCacheKey::new(job.image_id, job.input_hash);
+    let cache_key = ProofCacheKey::new(job.image_id, job.input_hash, config.use_snark);
 
     if let Some(cached_proof) = proof_cache.get(&cache_key).await {
         info!(
@@ -1113,6 +1117,7 @@ pub async fn check_and_process_requests(
         config.min_tip_wei,          // min_tip
         256,                         // cache_size_mb
         config.proving_mode.clone(), // proving_mode from config
+        config.use_snark,            // SNARK mode from config
     )?;
 
     processor.check_and_process(provider, config, nonce_manager).await
