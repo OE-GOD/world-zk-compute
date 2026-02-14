@@ -1,0 +1,67 @@
+name: Sepolia E2E Test (Real Verifier)
+
+on:
+  workflow_dispatch:
+    inputs:
+      example:
+        description: 'Example to test'
+        required: true
+        default: 'rule-engine'
+        type: choice
+        options:
+          - rule-engine
+          - anomaly-detector
+          - sybil-detector
+          - signature-verified
+          - xgboost-inference
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_LOG: info
+
+jobs:
+  sepolia-e2e:
+    name: Sepolia E2E (${{ inputs.example }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            prover/target
+          key: ${{ runner.os }}-cargo-prover-${{ hashFiles('prover/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-prover-
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Install Python dependencies
+        run: pip install ecdsa
+
+      - name: Install Forge dependencies
+        run: |
+          cd contracts
+          forge install --no-git 2>/dev/null || true
+
+      - name: Build prover
+        run: cargo build --release --manifest-path prover/Cargo.toml
+
+      - name: Run Sepolia E2E test
+        env:
+          SEPOLIA_RPC_URL: ${{ secrets.SEPOLIA_RPC_URL }}
+          PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
+          PROVER_PRIVATE_KEY: ${{ secrets.PROVER_PRIVATE_KEY }}
+          REQUESTER_PRIVATE_KEY: ${{ secrets.REQUESTER_PRIVATE_KEY }}
+        run: |
+          ./scripts/e2e-test.sh --example ${{ inputs.example }} --network sepolia
