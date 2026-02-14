@@ -38,10 +38,17 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            ~/.risc0
             prover/target
           key: ${{ runner.os }}-cargo-prover-${{ hashFiles('prover/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-prover-
+
+      - name: Install RISC Zero toolchain
+        run: |
+          curl -L https://risczero.com/install | bash
+          ~/.risc0/bin/rzup install
+          echo "$HOME/.risc0/bin" >> $GITHUB_PATH
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
