@@ -5,7 +5,10 @@ libs = ["lib"]
 solc = "0.8.20"
 optimizer = true
 optimizer_runs = 200
-remappings = ["risc0-ethereum/=lib/risc0-ethereum/contracts/src/"]
+remappings = [
+    "risc0-ethereum/=lib/risc0-ethereum/contracts/src/",
+    "@openzeppelin/contracts/=lib/risc0-ethereum/lib/openzeppelin-contracts/contracts/"
+]
 
 [rpc_endpoints]
 sepolia = "https://rpc.sepolia.org"
