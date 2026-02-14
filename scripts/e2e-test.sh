@@ -204,14 +204,23 @@ if [[ "$NETWORK" == "local" ]]; then
         --broadcast \
         --silent 2>&1 | tail -5
 elif [[ "$NETWORK" == "sepolia" ]]; then
+    FORGE_OUTPUT=""
+    FORGE_EXIT=0
     FORGE_OUTPUT=$(PRIVATE_KEY="$DEPLOYER_KEY" FEE_RECIPIENT="$DEPLOYER_ADDR" \
         VERIFIER_ADDRESS="$SEPOLIA_VERIFIER_ADDRESS" \
         ETHERSCAN_API_KEY="${ETHERSCAN_API_KEY:-dummy}" \
         forge script script/DeployTestnet.s.sol:DeployTestnetScript \
         --rpc-url "$RPC_URL" \
         --broadcast \
-        2>&1)
-    echo "$FORGE_OUTPUT" | tail -10
+        2>&1) || FORGE_EXIT=$?
+
+    echo "$FORGE_OUTPUT" | tail -20
+
+    if [ "$FORGE_EXIT" -ne 0 ]; then
+        err "Forge deployment failed (exit code: $FORGE_EXIT)"
+        echo "$FORGE_OUTPUT" >&2
+        exit 1
+    fi
 
     REGISTRY_ADDR=$(echo "$FORGE_OUTPUT" | grep "ProgramRegistry deployed at:" | awk '{print $NF}')
     ENGINE_ADDR=$(echo "$FORGE_OUTPUT" | grep "ExecutionEngine deployed at:" | awk '{print $NF}')
