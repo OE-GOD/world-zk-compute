@@ -17,7 +17,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_LOG: info
+  RUST_LOG: world_zk_prover=debug,info
 
 jobs:
   sepolia-e2e:
