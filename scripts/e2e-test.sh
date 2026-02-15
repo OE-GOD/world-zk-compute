@@ -315,7 +315,34 @@ run_example() {
         echo "$TX_OUTPUT" >&2
         return 1
     fi
-    ok "Execution request submitted"
+
+    # Extract tx hash and verify mining
+    TX_HASH=$(echo "$TX_OUTPUT" | grep "transactionHash" | awk '{print $2}')
+    if [ -n "$TX_HASH" ]; then
+        log "Transaction hash: $TX_HASH"
+    fi
+
+    # Wait for confirmation on testnet (Sepolia block time ~12s)
+    if [[ "$NETWORK" != "local" ]]; then
+        log "Waiting for transaction confirmation..."
+        for i in $(seq 1 6); do
+            TX_STATUS=$(cast receipt --rpc-url "$RPC_URL" "$TX_HASH" status 2>/dev/null || echo "")
+            if [ "$TX_STATUS" = "1" ]; then
+                break
+            fi
+            sleep 5
+        done
+        if [ "$TX_STATUS" != "1" ]; then
+            err "Transaction not confirmed after 30s (hash: $TX_HASH)"
+            return 1
+        fi
+    fi
+    ok "Execution request submitted and confirmed"
+
+    # Verify request exists on-chain
+    NEXT_ID=$(cast call --rpc-url "$RPC_URL" "$ENGINE_ADDR" "nextRequestId()(uint256)" 2>/dev/null || echo "0")
+    PENDING_COUNT=$(cast call --rpc-url "$RPC_URL" "$ENGINE_ADDR" "getPendingRequests(uint256,uint256)(uint256[])" 0 50 2>/dev/null || echo "[]")
+    log "Contract state: nextRequestId=$NEXT_ID, pending=$PENDING_COUNT"
 
     # ── 7. Run prover ─────────────────────────────────────────────────────
     log "Starting prover..."
