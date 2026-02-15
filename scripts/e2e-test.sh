@@ -308,6 +308,7 @@ run_example() {
         "0x0000000000000000000000000000000000000000" \
         3600 \
         --value 0.01ether \
+        --gas-limit 3000000 \
         2>&1)
 
     # Check for failure
