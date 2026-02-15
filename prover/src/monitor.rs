@@ -150,7 +150,7 @@ impl OptimizedProcessor {
         let request_ids = pending._0;
 
         if request_ids.is_empty() {
-            debug!("No pending requests");
+            info!("No pending requests (engine: {:?})", config.engine_address);
             return Ok(0);
         }
 
