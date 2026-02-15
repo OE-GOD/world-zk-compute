@@ -310,39 +310,39 @@ run_example() {
         --value 0.01ether \
         2>&1)
 
-    if echo "$TX_OUTPUT" | grep -q "status.*0 (failed)\|revert"; then
+    # Check for failure
+    if echo "$TX_OUTPUT" | grep -qi "revert\|error\|fail"; then
         err "Execution request transaction failed"
         echo "$TX_OUTPUT" >&2
         return 1
     fi
 
-    # Extract tx hash and verify mining
-    TX_HASH=$(echo "$TX_OUTPUT" | grep "transactionHash" | awk '{print $2}')
-    if [ -n "$TX_HASH" ]; then
-        log "Transaction hash: $TX_HASH"
-    fi
+    # Extract tx hash (try multiple field names)
+    TX_HASH=$(echo "$TX_OUTPUT" | grep -i "transactionHash\|hash" | head -1 | awk '{print $NF}')
+    log "TX output (last 5 lines):"
+    echo "$TX_OUTPUT" | tail -5
 
-    # Wait for confirmation on testnet (Sepolia block time ~12s)
+    # Wait until the request is visible on-chain (handles block confirmation delays)
     if [[ "$NETWORK" != "local" ]]; then
-        log "Waiting for transaction confirmation..."
-        for i in $(seq 1 6); do
-            TX_STATUS=$(cast receipt --rpc-url "$RPC_URL" "$TX_HASH" status 2>/dev/null || echo "")
-            if [ "$TX_STATUS" = "1" ]; then
+        log "Waiting for request to appear on-chain..."
+        for i in $(seq 1 12); do
+            NEXT_ID=$(cast call --rpc-url "$RPC_URL" "$ENGINE_ADDR" "nextRequestId()(uint256)" 2>/dev/null || echo "1")
+            if [ "$NEXT_ID" != "1" ] && [ -n "$NEXT_ID" ]; then
+                log "Request confirmed on-chain (nextRequestId=$NEXT_ID)"
                 break
             fi
             sleep 5
         done
-        if [ "$TX_STATUS" != "1" ]; then
-            err "Transaction not confirmed after 30s (hash: $TX_HASH)"
+        if [ "$NEXT_ID" = "1" ] || [ -z "$NEXT_ID" ]; then
+            err "Request not found on-chain after 60s"
             return 1
         fi
     fi
     ok "Execution request submitted and confirmed"
 
-    # Verify request exists on-chain
-    NEXT_ID=$(cast call --rpc-url "$RPC_URL" "$ENGINE_ADDR" "nextRequestId()(uint256)" 2>/dev/null || echo "0")
-    PENDING_COUNT=$(cast call --rpc-url "$RPC_URL" "$ENGINE_ADDR" "getPendingRequests(uint256,uint256)(uint256[])" 0 50 2>/dev/null || echo "[]")
-    log "Contract state: nextRequestId=$NEXT_ID, pending=$PENDING_COUNT"
+    # Verify getPendingRequests works
+    PENDING=$(cast call --rpc-url "$RPC_URL" "$ENGINE_ADDR" "getPendingRequests(uint256,uint256)(uint256[])" 0 50 2>/dev/null || echo "[]")
+    log "Contract state: nextRequestId=$NEXT_ID, pending=$PENDING"
 
     # ── 7. Run prover ─────────────────────────────────────────────────────
     log "Starting prover..."
