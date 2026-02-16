@@ -422,38 +422,26 @@ def generate_sybil_detector_input():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def generate_rule_engine_input():
-    """Generate a RuleEngineInput with 10 records, 3 rules, 2 aggregations.
+    """Generate a RuleEngineInput with 3 records, 3 rules, 2 aggregations.
 
-    Test scenario:
-    - Records 0-4: normal (int_fields=[50,42,10], str_fields=[b"normal_op", b"clean"])
-    - Records 5-6: attack (int_fields=[200,42,-5], str_fields=[b"attack_vector_1", b"suspicious_payload"])
-    - Records 7-8: borderline (int_fields=[101,99,0], str_fields=[b"attack_scan", b"normal"])
-    - Record 9: outlier (int_fields=[500,1,100], str_fields=[b"benign", b"suspicious_activity"])
+    Minimal test scenario (kept small for gas-efficient on-chain storage):
+    - Record 0: normal (int_fields=[50,42,10], str_fields=[b"n", b"c"])
+    - Record 1: attack (int_fields=[200,42,-5], str_fields=[b"attack", b"suspicious"])
+    - Record 2: borderline (int_fields=[101,99,0], str_fields=[b"attack", b"c"])
 
     Rules:
-    - Rule 0: AND(int_field[0] > 100, str_field[0] glob "attack*") -> matches 5,6,7,8
-    - Rule 1: OR(int_field[1] == 42, int_field[2] < 0) -> matches 0-6
-    - Rule 2: AND(str_field[1] contains "suspicious") -> matches 5,6,9
+    - Rule 0: AND(int_field[0] > 100, str_field[0] glob "attack*") -> matches 1,2
+    - Rule 1: OR(int_field[1] == 42, int_field[2] < 0) -> matches 0,1
+    - Rule 2: AND(str_field[1] contains "suspicious") -> matches 1
 
     Aggregations:
     - Sum of int_field[0] filtered by rule 0
     - Max of int_field[1] over all records
     """
     records = [
-        # Normal records (0-4)
-        {"id": bytes([0x00] + [0]*31), "int_fields": [50, 42, 10], "str_fields": [b"normal_op", b"clean"]},
-        {"id": bytes([0x01] + [0]*31), "int_fields": [50, 42, 10], "str_fields": [b"normal_op", b"clean"]},
-        {"id": bytes([0x02] + [0]*31), "int_fields": [50, 42, 10], "str_fields": [b"normal_op", b"clean"]},
-        {"id": bytes([0x03] + [0]*31), "int_fields": [50, 42, 10], "str_fields": [b"normal_op", b"clean"]},
-        {"id": bytes([0x04] + [0]*31), "int_fields": [50, 42, 10], "str_fields": [b"normal_op", b"clean"]},
-        # Attack records (5-6)
-        {"id": bytes([0x05] + [0]*31), "int_fields": [200, 42, -5], "str_fields": [b"attack_vector_1", b"suspicious_payload"]},
-        {"id": bytes([0x06] + [0]*31), "int_fields": [200, 42, -5], "str_fields": [b"attack_vector_1", b"suspicious_payload"]},
-        # Borderline records (7-8)
-        {"id": bytes([0x07] + [0]*31), "int_fields": [101, 99, 0], "str_fields": [b"attack_scan", b"normal"]},
-        {"id": bytes([0x08] + [0]*31), "int_fields": [101, 99, 0], "str_fields": [b"attack_scan", b"normal"]},
-        # Outlier record (9)
-        {"id": bytes([0x09] + [0]*31), "int_fields": [500, 1, 100], "str_fields": [b"benign", b"suspicious_activity"]},
+        {"id": bytes([0x00] + [0]*31), "int_fields": [50, 42, 10], "str_fields": [b"n", b"c"]},
+        {"id": bytes([0x01] + [0]*31), "int_fields": [200, 42, -5], "str_fields": [b"attack", b"suspicious"]},
+        {"id": bytes([0x02] + [0]*31), "int_fields": [101, 99, 0], "str_fields": [b"attack", b"c"]},
     ]
 
     # Condition helper: (cond_type, field_idx, compare_op, int_value, str_value)

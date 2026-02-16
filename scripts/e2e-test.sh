@@ -243,6 +243,29 @@ if [ "$DEPLOYED_CODE" = "0x" ] || [ -z "$DEPLOYED_CODE" ]; then
 fi
 ok "Contracts deployed (Verifier=$VERIFIER_ADDR, Registry=$REGISTRY_ADDR, Engine=$ENGINE_ADDR)"
 
+# Fund requester and prover wallets from deployer (testnet only)
+if [[ "$NETWORK" != "local" ]]; then
+    log "Checking wallet balances..."
+    DEPLOYER_BAL=$(cast balance --rpc-url "$RPC_URL" "$DEPLOYER_ADDR" --ether 2>/dev/null || echo "0")
+    REQUESTER_BAL=$(cast balance --rpc-url "$RPC_URL" "$REQUESTER_ADDR" --ether 2>/dev/null || echo "0")
+    PROVER_BAL=$(cast balance --rpc-url "$RPC_URL" "$PROVER_ADDR" --ether 2>/dev/null || echo "0")
+    log "Balances: deployer=$DEPLOYER_BAL, requester=$REQUESTER_BAL, prover=$PROVER_BAL"
+
+    # Fund requester (needs gas for requestExecution + tip)
+    log "Funding requester wallet..."
+    cast send --rpc-url "$RPC_URL" --private-key "$DEPLOYER_KEY" \
+        "$REQUESTER_ADDR" --value 0.01ether >/dev/null 2>&1 && \
+        ok "Transferred 0.01 ETH to requester" || \
+        log "Warning: Could not fund requester (deployer may be low on ETH)"
+
+    # Fund prover (needs gas for submitResult)
+    log "Funding prover wallet..."
+    cast send --rpc-url "$RPC_URL" --private-key "$DEPLOYER_KEY" \
+        "$PROVER_ADDR" --value 0.01ether >/dev/null 2>&1 && \
+        ok "Transferred 0.01 ETH to prover" || \
+        log "Warning: Could not fund prover (deployer may be low on ETH)"
+fi
+
 # ── Run a single example ─────────────────────────────────────────────────────
 
 run_example() {
@@ -308,7 +331,7 @@ run_example() {
         "0x0000000000000000000000000000000000000000" \
         3600 \
         --value 0.001ether \
-        --gas-limit 5000000 \
+        --gas-limit 1500000 \
         2>&1)
 
     # Check for failure
