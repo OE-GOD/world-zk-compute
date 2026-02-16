@@ -15,8 +15,8 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{mpsc, Mutex, Notify};
-use tracing::{debug, error, info, warn};
+use tokio::sync::{Mutex, Notify};
+use tracing::{debug, error, info};
 
 /// Batch configuration
 #[derive(Debug, Clone)]
@@ -459,30 +459,118 @@ impl BatchCollector {
     }
 }
 
-/// Create batched transaction calldata
-pub fn encode_batch_calldata(proofs: &[ProofSubmission]) -> Vec<u8> {
-    // This would encode the actual smart contract call
-    // For now, we'll create a mock encoding
+/// Function selector for `submitProof(uint256,bytes,bytes)`.
+///
+/// Computed as `keccak256("submitProof(uint256,bytes,bytes)")[0..4]`.
+pub const SUBMIT_PROOF_SELECTOR: [u8; 4] = [0x79, 0x6f, 0xd7, 0xf9];
+
+/// Encode calldata for a single `submitProof(uint256 requestId, bytes seal, bytes journal)`.
+///
+/// Uses standard Solidity ABI encoding (ABI spec v2):
+/// - 4-byte function selector
+/// - uint256 requestId (32 bytes, big-endian, zero-padded)
+/// - offset to `seal` bytes (32 bytes)
+/// - offset to `journal` bytes (32 bytes)
+/// - seal: length (32 bytes) + data (padded to 32-byte boundary)
+/// - journal: length (32 bytes) + data (padded to 32-byte boundary)
+pub fn encode_submit_proof(request_id: u64, seal: &[u8], journal: &[u8]) -> Vec<u8> {
     let mut calldata = Vec::new();
 
-    // Function selector for submitProofBatch(bytes32[],bytes[],bytes[],bytes32[])
-    calldata.extend_from_slice(&[0x12, 0x34, 0x56, 0x78]); // Mock selector
+    // Function selector
+    calldata.extend_from_slice(&SUBMIT_PROOF_SELECTOR);
 
-    // Encode number of proofs
-    let count = proofs.len() as u32;
-    calldata.extend_from_slice(&count.to_be_bytes());
+    // Param 1: uint256 requestId
+    let mut id_word = [0u8; 32];
+    id_word[24..32].copy_from_slice(&request_id.to_be_bytes());
+    calldata.extend_from_slice(&id_word);
 
-    // Encode each proof
-    for proof in proofs {
-        calldata.extend_from_slice(&proof.task_id);
-        calldata.extend_from_slice(&(proof.proof.len() as u32).to_be_bytes());
-        calldata.extend_from_slice(&proof.proof);
-        calldata.extend_from_slice(&(proof.journal.len() as u32).to_be_bytes());
-        calldata.extend_from_slice(&proof.journal);
-        calldata.extend_from_slice(&proof.image_id);
-    }
+    // Param 2: offset to seal (dynamic type, starts after 3 head words = 96)
+    let seal_offset: u64 = 96; // 3 * 32
+    let mut offset_word = [0u8; 32];
+    offset_word[24..32].copy_from_slice(&seal_offset.to_be_bytes());
+    calldata.extend_from_slice(&offset_word);
+
+    // Param 3: offset to journal
+    let seal_padded_len = (seal.len() + 31) / 32 * 32;
+    let journal_offset: u64 = seal_offset + 32 + seal_padded_len as u64; // length word + padded data
+    let mut offset_word = [0u8; 32];
+    offset_word[24..32].copy_from_slice(&journal_offset.to_be_bytes());
+    calldata.extend_from_slice(&offset_word);
+
+    // Seal: length + padded data
+    let mut len_word = [0u8; 32];
+    len_word[24..32].copy_from_slice(&(seal.len() as u64).to_be_bytes());
+    calldata.extend_from_slice(&len_word);
+    calldata.extend_from_slice(seal);
+    // Pad to 32-byte boundary
+    let seal_padding = seal_padded_len - seal.len();
+    calldata.extend_from_slice(&vec![0u8; seal_padding]);
+
+    // Journal: length + padded data
+    let mut len_word = [0u8; 32];
+    len_word[24..32].copy_from_slice(&(journal.len() as u64).to_be_bytes());
+    calldata.extend_from_slice(&len_word);
+    calldata.extend_from_slice(journal);
+    let journal_padded_len = (journal.len() + 31) / 32 * 32;
+    let journal_padding = journal_padded_len - journal.len();
+    calldata.extend_from_slice(&vec![0u8; journal_padding]);
 
     calldata
+}
+
+/// Encode calldata for a batch of proof submissions.
+///
+/// Since the on-chain contract only has `submitProof(uint256,bytes,bytes)`,
+/// this returns a vector of individually ABI-encoded calls. The caller can
+/// submit them as separate transactions or via a multicall contract.
+///
+/// The `task_id` field is interpreted as a big-endian uint256 request ID.
+pub fn encode_batch_calldata(proofs: &[ProofSubmission]) -> Vec<u8> {
+    // Encode as a packed sequence: [u32 count][u32 len_0][calldata_0][u32 len_1][calldata_1]...
+    // This is our wire format for the batch manager — each entry is a complete
+    // submitProof calldata that can be sent as an individual transaction.
+    let mut batch = Vec::new();
+
+    // Number of calls
+    batch.extend_from_slice(&(proofs.len() as u32).to_be_bytes());
+
+    for proof in proofs {
+        // Extract request ID from task_id (first 8 bytes, big-endian u64)
+        let request_id = u64::from_be_bytes(proof.task_id[24..32].try_into().unwrap_or([0; 8]));
+        let calldata = encode_submit_proof(request_id, &proof.proof, &proof.journal);
+
+        batch.extend_from_slice(&(calldata.len() as u32).to_be_bytes());
+        batch.extend_from_slice(&calldata);
+    }
+
+    batch
+}
+
+/// Decode a batch into individual calldata entries.
+pub fn decode_batch_calldata(batch: &[u8]) -> Result<Vec<Vec<u8>>, String> {
+    if batch.len() < 4 {
+        return Err("Batch too short".to_string());
+    }
+
+    let count = u32::from_be_bytes(batch[0..4].try_into().unwrap()) as usize;
+    let mut offset = 4;
+    let mut entries = Vec::with_capacity(count);
+
+    for _ in 0..count {
+        if offset + 4 > batch.len() {
+            return Err("Truncated batch entry length".to_string());
+        }
+        let len = u32::from_be_bytes(batch[offset..offset + 4].try_into().unwrap()) as usize;
+        offset += 4;
+
+        if offset + len > batch.len() {
+            return Err("Truncated batch entry data".to_string());
+        }
+        entries.push(batch[offset..offset + len].to_vec());
+        offset += len;
+    }
+
+    Ok(entries)
 }
 
 #[cfg(test)]
@@ -552,13 +640,63 @@ mod tests {
     }
 
     #[test]
-    fn test_encode_calldata() {
-        let proofs = vec![test_submission(), test_submission()];
-        let calldata = encode_batch_calldata(&proofs);
+    fn test_encode_submit_proof() {
+        let calldata = encode_submit_proof(42, &[0xAA; 100], &[0xBB; 32]);
 
-        // Should have selector + count + encoded proofs
-        assert!(calldata.len() > 8);
-        assert_eq!(&calldata[0..4], &[0x12, 0x34, 0x56, 0x78]);
+        // Starts with function selector
+        assert_eq!(&calldata[0..4], &SUBMIT_PROOF_SELECTOR);
+
+        // Request ID at offset 4: uint256(42)
+        assert_eq!(calldata[35], 42); // last byte of the 32-byte word
+
+        // Seal offset at offset 36: should be 96 (0x60)
+        assert_eq!(calldata[67], 96);
+
+        // Seal length at offset 100: should be 100
+        assert_eq!(calldata[131], 100);
+
+        // Verify round-trip: seal data starts at offset 132
+        assert_eq!(&calldata[132..232], &[0xAA; 100]);
+    }
+
+    #[test]
+    fn test_encode_batch_calldata() {
+        let proofs = vec![test_submission(), test_submission()];
+        let batch = encode_batch_calldata(&proofs);
+
+        // First 4 bytes: count = 2
+        let count = u32::from_be_bytes(batch[0..4].try_into().unwrap());
+        assert_eq!(count, 2);
+
+        // Decode and verify each entry starts with the selector
+        let entries = decode_batch_calldata(&batch).unwrap();
+        assert_eq!(entries.len(), 2);
+
+        for entry in &entries {
+            assert_eq!(&entry[0..4], &SUBMIT_PROOF_SELECTOR);
+        }
+    }
+
+    #[test]
+    fn test_decode_batch_roundtrip() {
+        let proofs = vec![test_submission(), test_submission(), test_submission()];
+        let batch = encode_batch_calldata(&proofs);
+        let entries = decode_batch_calldata(&batch).unwrap();
+        assert_eq!(entries.len(), 3);
+
+        // Re-encode and compare
+        let batch2 = encode_batch_calldata(&proofs);
+        assert_eq!(batch, batch2);
+    }
+
+    #[test]
+    fn test_abi_padding() {
+        // Seal of 33 bytes should be padded to 64 bytes
+        let calldata = encode_submit_proof(1, &[0xFF; 33], &[0xEE; 1]);
+
+        // Total: 4 (selector) + 32 (id) + 32 (seal_offset) + 32 (journal_offset)
+        //      + 32 (seal_len) + 64 (seal_padded) + 32 (journal_len) + 32 (journal_padded)
+        assert_eq!(calldata.len(), 4 + 32 + 32 + 32 + 32 + 64 + 32 + 32);
     }
 
     #[tokio::test]

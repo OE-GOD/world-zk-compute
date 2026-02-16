@@ -42,6 +42,7 @@ from .errors import (
     ProofError,
     NetworkError,
 )
+from .xgboost import XGBoostConverter, XGBoostModel, ModelParseError
 
 __version__ = "1.0.0"
 __all__ = [
@@ -68,4 +69,8 @@ __all__ = [
     "RateLimitError",
     "ProofError",
     "NetworkError",
+    # XGBoost
+    "XGBoostConverter",
+    "XGBoostModel",
+    "ModelParseError",
 ]

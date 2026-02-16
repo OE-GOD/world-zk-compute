@@ -8,6 +8,10 @@ description = "Prover node for World ZK Compute"
 name = "world-zk-prover"
 path = "src/main.rs"
 
+[[bin]]
+name = "prove_benchmark"
+path = "src/bin/prove_benchmark.rs"
+
 [dependencies]
 # Async runtime
 tokio = { version = "1.0", features = ["full"] }

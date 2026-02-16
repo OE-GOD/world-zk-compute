@@ -15,6 +15,7 @@ use crate::fast_prove::{FastProveConfig, FastProver, ProvingStrategy};
 use crate::ipfs::{IpfsClient, IpfsConfig};
 use crate::metrics::{metrics, Timer};
 use crate::nonce::NonceManager;
+use crate::prove_metrics::{pipeline_metrics, ProveStage, ProveTimeline};
 use crate::prefetch::{InputPrefetcher, PrefetchConfig};
 use crate::proof_cache::{ProofCache, ProofCacheKey, CachedProof};
 use crate::queue::{JobQueue, QueuedJob};
@@ -378,9 +379,13 @@ async fn process_single_job(
     let request_id = U256::from(job.request_id);
     info!("Processing job {} (tip: {} wei)", job.request_id, job.tip);
 
+    // Start pipeline timeline for stage-level instrumentation
+    let mut timeline = ProveTimeline::start(job.request_id);
+
     let engine = IExecutionEngine::new(config.engine_address, provider.clone());
 
     // Step 1: Fetch program ELF (with caching)
+    timeline.enter_stage(ProveStage::Fetch);
     info!("[Job {}] Fetching program ELF...", job.request_id);
     let fetch_timer = Timer::start();
 
@@ -428,6 +433,7 @@ async fn process_single_job(
     };
 
     // Step 3: Check proof cache (instant if cached!)
+    timeline.enter_stage(ProveStage::Preflight);
     let cache_key = ProofCacheKey::new(job.image_id, job.input_hash, config.use_snark);
 
     if let Some(cached_proof) = proof_cache.get(&cache_key).await {
@@ -451,6 +457,7 @@ async fn process_single_job(
         info!("[Job {}] Claimed in tx: {:?}", job.request_id, claim_result.tx_hash);
 
         // Submit cached proof
+        timeline.enter_stage(ProveStage::Submission);
         info!("[Job {}] Submitting cached proof...", job.request_id);
         let submit_timer = Timer::start();
 
@@ -470,10 +477,15 @@ async fn process_single_job(
             job.request_id, submit_result.tx_hash
         );
 
+        let finished = timeline.finish(true);
+        info!("[Job {}] {}", job.request_id, finished);
+        pipeline_metrics().record(&finished);
+
         return Ok((cached_proof.cycles, input.len() as u64));
     }
 
     // Step 4: Preflight check (cache miss path)
+    timeline.enter_stage(ProveStage::Preflight);
     info!("[Job {}] Running preflight...", job.request_id);
     let preflight = fast_prover.preflight(&elf, &input).await?;
 
@@ -481,6 +493,10 @@ async fn process_single_job(
         anyhow::bail!("Job {} too complex: {} cycles", job.request_id, preflight.cycles);
     }
 
+    timeline.enter_stage_with_meta(
+        ProveStage::Strategy,
+        &format!("{:?}, {} cycles", preflight.strategy, preflight.cycles),
+    );
     info!(
         "[Job {}] Preflight: {} cycles, strategy: {:?}, est. time: {:?}",
         job.request_id, preflight.cycles, preflight.strategy, preflight.estimated_proof_time
@@ -528,6 +544,7 @@ async fn process_single_job(
     info!("[Job {}] Claimed in tx: {:?}", job.request_id, claim_result.tx_hash);
 
     // Step 7: Generate proof using fast prover
+    timeline.enter_stage(ProveStage::Proving);
     info!("[Job {}] Generating proof...", job.request_id);
     let prove_timer = Timer::start();
     let prove_result = fast_prover.prove_fast(&elf, &input).await?;
@@ -547,6 +564,7 @@ async fn process_single_job(
     proof_cache.put(&cache_key, cached).await;
 
     // Step 9: Submit proof (with retry logic)
+    timeline.enter_stage(ProveStage::Submission);
     info!("[Job {}] Submitting proof...", job.request_id);
     let submit_timer = Timer::start();
 
@@ -566,6 +584,11 @@ async fn process_single_job(
         "[Job {}] Proof submitted in tx: {:?}",
         job.request_id, submit_result.tx_hash
     );
+
+    // Record pipeline timeline
+    let finished = timeline.finish(true);
+    info!("[Job {}] {}", job.request_id, finished);
+    pipeline_metrics().record(&finished);
 
     Ok((prove_result.cycles, input.len() as u64))
 }

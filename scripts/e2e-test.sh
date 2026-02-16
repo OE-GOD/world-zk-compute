@@ -365,6 +365,7 @@ run_example() {
     ok "Execution request submitted and confirmed"
 
     # Verify getPendingRequests works
+    NEXT_ID=${NEXT_ID:-$(cast call --rpc-url "$RPC_URL" "$ENGINE_ADDR" "nextRequestId()(uint256)" 2>/dev/null || echo "?")}
     PENDING=$(cast call --rpc-url "$RPC_URL" "$ENGINE_ADDR" "getPendingRequests(uint256,uint256)(uint256[])" 0 50 2>/dev/null || echo "[]")
     log "Contract state: nextRequestId=$NEXT_ID, pending=$PENDING"
 

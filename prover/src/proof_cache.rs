@@ -323,6 +323,78 @@ impl ProofCache {
         self.memory.read().await.len()
     }
 
+    /// Start a background task that periodically cleans up expired entries.
+    ///
+    /// Returns a JoinHandle that can be used to cancel the task.
+    /// The task runs every `interval` and evicts expired entries from both
+    /// memory and disk caches.
+    pub fn start_cleanup_task(
+        self: &Arc<Self>,
+        interval: Duration,
+    ) -> tokio::task::JoinHandle<()> {
+        let cache = Arc::clone(self);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(interval);
+            loop {
+                tick.tick().await;
+                let memory_removed = cache.cleanup_expired().await;
+                let disk_removed = cache.cleanup_disk_expired().await;
+                if memory_removed > 0 || disk_removed > 0 {
+                    info!(
+                        "Cache cleanup: {} memory + {} disk entries removed",
+                        memory_removed, disk_removed
+                    );
+                }
+            }
+        })
+    }
+
+    /// Clean up expired entries from disk cache.
+    async fn cleanup_disk_expired(&self) -> usize {
+        let disk_path = match &self.disk_path {
+            Some(p) => p.clone(),
+            None => return 0,
+        };
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let ttl_secs = self.ttl.as_secs();
+        let mut removed = 0;
+
+        let mut entries = match tokio::fs::read_dir(&disk_path).await {
+            Ok(e) => e,
+            Err(_) => return 0,
+        };
+
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("bin") {
+                continue;
+            }
+
+            // Read and check TTL
+            if let Ok(data) = tokio::fs::read(&path).await {
+                if let Ok(proof) = bincode::deserialize::<CachedProof>(&data) {
+                    if now.saturating_sub(proof.generated_at) > ttl_secs {
+                        if let Err(e) = tokio::fs::remove_file(&path).await {
+                            warn!("Failed to remove expired disk cache entry: {}", e);
+                        } else {
+                            removed += 1;
+                        }
+                    }
+                } else {
+                    // Corrupted file, remove it
+                    let _ = tokio::fs::remove_file(&path).await;
+                    removed += 1;
+                }
+            }
+        }
+
+        removed
+    }
+
     /// Clear expired entries
     pub async fn cleanup_expired(&self) -> usize {
         let mut memory = self.memory.write().await;

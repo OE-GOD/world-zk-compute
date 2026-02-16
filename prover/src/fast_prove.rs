@@ -22,6 +22,10 @@ use tracing::{debug, info};
 
 use crate::bonsai::ProvingMode;
 use crate::prover::UnifiedProver;
+use crate::segment_prover::{
+    optimal_po2, recommended_thread_count, estimate_segments_for_po2,
+    SegmentProver, SegmentProverConfig,
+};
 
 /// Fast proving configuration
 #[derive(Clone, Debug)]
@@ -311,59 +315,97 @@ impl FastProver {
         Ok((seal, journal))
     }
 
-    /// Segmented proving (for medium-complexity programs)
-    /// Note: RISC Zero handles segmentation internally, so we just prove directly
-    /// but with awareness that the prover will segment automatically
+    /// Segmented proving for medium-complexity programs (20M–100M cycles).
+    ///
+    /// Tunes `segment_limit_po2` to create more parallel segments and
+    /// configures thread count to match. This is the key optimization over
+    /// prove_direct: risc0 uses default segment size otherwise, which may
+    /// not fully utilize available parallelism.
     async fn prove_segmented(
         &self,
         elf: &[u8],
         input: &[u8],
         num_segments: usize,
     ) -> Result<(Vec<u8>, Vec<u8>)> {
-        info!("Using segmented proving (estimated {} segments)", num_segments);
+        // Calculate optimal po2 for this program's cycle count.
+        // We use the preflight segment count to estimate total cycles,
+        // then choose a po2 that gives roughly num_segments segments.
+        let estimated_cycles = num_segments as u64 * self.config.segment_threshold;
+        let po2 = optimal_po2(estimated_cycles);
+        let est_segments = estimate_segments_for_po2(estimated_cycles, po2);
+        let threads = recommended_thread_count(est_segments);
 
-        // RISC Zero automatically handles segmentation internally
-        // For medium-complexity programs, we let it handle the optimization
-        // The segment count is informational for logging/metrics
+        info!(
+            "Segmented proving: est_cycles={}, po2={}, est_segments={}, threads={}",
+            estimated_cycles, po2, est_segments, threads
+        );
 
-        let prover = UnifiedProver::new(self.proving_mode.clone())?;
-        let (seal, journal) = prover.prove_with_snark(elf, input, self.use_snark).await?;
+        let config = SegmentProverConfig {
+            segment_limit_po2: Some(po2),
+            proving_threads: threads,
+            cache_executions: false, // preflight already ran
+            ..Default::default()
+        };
 
-        Ok((seal, journal))
+        let segment_prover = SegmentProver::new(
+            config,
+            self.proving_mode.clone(),
+            self.use_snark,
+        );
+        let result = segment_prover.prove_optimized(elf, input).await?;
+
+        info!(
+            "Segmented proof complete: {} segments, po2={}, {:?}",
+            result.segment_count, result.po2_used, result.prove_time
+        );
+
+        Ok((result.seal, result.journal))
     }
 
-    /// Continuation proving (for very large programs)
-    /// Uses RISC Zero's continuation support for programs > 100M cycles
+    /// Continuation proving for very large programs (100M–500M cycles).
+    ///
+    /// Uses smaller segment size (po2=18–19) for maximum parallelism.
+    /// For Bonsai-capable configurations, offloads to cloud proving since
+    /// large programs benefit most from GPU acceleration.
     async fn prove_continuation(&self, elf: &[u8], input: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
         info!("Using continuation proving strategy (large program)");
 
-        // For very large programs, we rely on RISC Zero's built-in continuation
-        // support. The prover automatically handles splitting execution into
-        // multiple segments and composing proofs.
-
-        // For Bonsai mode, continuations are handled server-side
-        // For local mode, the default prover handles it
-
-        let prover = UnifiedProver::new(self.proving_mode.clone())?;
-        let (seal, journal) = prover.prove_with_snark(elf, input, self.use_snark).await?;
-
-        Ok((seal, journal))
-    }
-
-    /// Compose multiple proofs into one
-    async fn compose_proofs(&self, proofs: Vec<Vec<u8>>) -> Result<Vec<u8>> {
-        debug!("Composing {} proofs", proofs.len());
-
-        // In production, use recursive composition:
-        // let composed = risc0_zkvm::recursion::compose(&proofs)?;
-
-        // Mock - just concatenate for now
-        let total_size: usize = proofs.iter().map(|p| p.len()).sum();
-        let mut composed = Vec::with_capacity(total_size);
-        for proof in proofs {
-            composed.extend(proof);
+        // For Bonsai modes, offload to cloud — large programs benefit most
+        // from Bonsai's GPU cluster.
+        if matches!(
+            self.proving_mode,
+            ProvingMode::Bonsai
+                | ProvingMode::BonsaiWithFallback
+                | ProvingMode::BonsaiWithGpuFallback
+        ) {
+            info!("Offloading large program to Bonsai cloud proving");
+            let prover = UnifiedProver::new(self.proving_mode.clone())?;
+            return prover.prove_with_snark(elf, input, self.use_snark).await;
         }
-        Ok(composed)
+
+        // Local proving: use aggressive segment tuning for max parallelism
+        let config = SegmentProverConfig {
+            segment_limit_po2: Some(18), // ~256K cycles/segment → many parallel segments
+            proving_threads: 0,           // auto-detect
+            cache_executions: false,
+            max_cycles: 500_000_000,
+            max_segments: 4000,           // allow more segments for large programs
+            bonsai_threshold_cycles: u64::MAX, // don't redirect to bonsai (already checked)
+        };
+
+        let segment_prover = SegmentProver::new(
+            config,
+            self.proving_mode.clone(),
+            self.use_snark,
+        );
+        let result = segment_prover.prove_optimized(elf, input).await?;
+
+        info!(
+            "Continuation proof complete: {} segments, po2={}, {:?}",
+            result.segment_count, result.po2_used, result.prove_time
+        );
+
+        Ok((result.seal, result.journal))
     }
 
     /// Prove from cached trace

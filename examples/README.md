@@ -138,6 +138,54 @@ XGBoost decision tree ensemble inference inside the zkVM — covers model-based 
 ./scripts/e2e-test.sh --example xgboost-inference
 ```
 
+## Multi-zkVM Benchmarks
+
+The same detection algorithms can be run on multiple zkVMs for side-by-side comparison.
+Currently supported: **RISC Zero** and **SP1**.
+
+### SP1 Variants
+
+| Example | RISC Zero | SP1 |
+|---------|-----------|-----|
+| Anomaly Detector | `anomaly-detector/` | `anomaly-detector-sp1/` |
+
+### Prerequisites
+
+**RISC Zero** (already installed if you've been using the examples):
+```bash
+curl -L https://risczero.com/install | bash
+rzup
+```
+
+**SP1:**
+```bash
+curl -L https://sp1.succinct.xyz | bash
+sp1up
+```
+
+### Running the SP1 Anomaly Detector
+
+```bash
+# Execute only (no proof, fast — reports cycle count)
+cd examples/anomaly-detector-sp1
+cargo run --release -p anomaly-detector-sp1-script -- --execute
+
+# Generate and verify proof
+cargo run --release -p anomaly-detector-sp1-script -- --prove
+```
+
+### Running the Benchmark Comparison
+
+```bash
+# Execute-only comparison
+./scripts/benchmark-zkvm.sh anomaly-detector
+
+# Full comparison including proof generation
+./scripts/benchmark-zkvm.sh anomaly-detector --prove
+```
+
+---
+
 ## Writing Your Own Detection Algorithm
 
 ### Step 1: Create Guest Program

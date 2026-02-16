@@ -57,6 +57,9 @@ mod tracing_ext;
 mod errors;
 mod redis_queue;
 mod scaling;
+mod segment_prover;
+mod input_decomposer;
+mod prove_metrics;
 mod sharding;
 mod circuit_breaker;
 mod health_checks;
@@ -554,6 +557,13 @@ async fn run_prover(
     info!("═══════════════════════════════════════════════════════════════");
     info!("");
 
+    // Start background cache cleanup (every 5 minutes)
+    let proof_cache_for_cleanup = Arc::new(proof_cache::ProofCache::with_defaults());
+    let _cache_cleanup_handle = proof_cache_for_cleanup.start_cleanup_task(
+        std::time::Duration::from_secs(300),
+    );
+    info!("✓ Proof cache cleanup: every 5 minutes");
+
     // Metrics logging interval
     let mut metrics_counter = 0u64;
     let metrics_interval = 12; // Log metrics every 12 iterations (60 seconds at 5s poll)
@@ -588,13 +598,16 @@ async fn run_prover(
         if metrics_counter % metrics_interval == 0 {
             let snapshot = metrics::metrics().snapshot();
             if snapshot.proofs_generated > 0 || snapshot.proofs_failed > 0 {
-                info!("📊 Metrics: {} proofs ({:.1}% success), {:.1}/hr, avg {:?}",
+                info!("Metrics: {} proofs ({:.1}% success), {:.1}/hr, avg {:?}",
                     snapshot.proofs_generated + snapshot.proofs_failed,
                     snapshot.success_rate(),
                     snapshot.proofs_per_hour(),
                     snapshot.avg_proof_time
                 );
             }
+
+            // Log pipeline stage-level metrics
+            prove_metrics::pipeline_metrics().log_summary();
         }
 
         // Wait for either:
