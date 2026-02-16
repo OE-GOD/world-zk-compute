@@ -23,7 +23,7 @@ jobs:
   sepolia-e2e:
     name: Sepolia E2E (${{ inputs.example }})
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
@@ -49,7 +49,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           curl -L https://risczero.com/install | bash
-          ~/.risc0/bin/rzup install r0vm 1.2.6
+          ~/.risc0/bin/rzup install r0vm 3.0.5
           echo "$HOME/.risc0/bin" >> $GITHUB_PATH
 
       - name: Install Foundry
