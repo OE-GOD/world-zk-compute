@@ -112,6 +112,7 @@ contract ExecutionEngine {
     event ExecutionExpired(uint256 indexed requestId);
     event ExecutionCancelled(uint256 indexed requestId);
     event ClaimExpired(uint256 indexed requestId, address indexed prover);
+    event CallbackFailed(uint256 indexed requestId, address indexed callbackContract);
 
     // ========================================================================
     // ERRORS
@@ -128,7 +129,9 @@ contract ExecutionEngine {
     error RequestExpired();
     error ClaimDeadlinePassed();
     error InvalidProof();
-    error CallbackFailed();
+    error EmptySeal();
+    error EmptyJournal();
+    error TransferFailed();
 
     // ========================================================================
     // CONSTRUCTOR
@@ -207,7 +210,8 @@ contract ExecutionEngine {
         req.status = RequestStatus.Cancelled;
 
         // Refund tip
-        payable(msg.sender).transfer(req.tip);
+        (bool success, ) = payable(msg.sender).call{value: req.tip}("");
+        if (!success) revert TransferFailed();
 
         emit ExecutionCancelled(requestId);
     }
@@ -253,6 +257,8 @@ contract ExecutionEngine {
         if (req.status != RequestStatus.Claimed) revert RequestNotClaimed();
         if (req.claimedBy != msg.sender) revert NotClaimant();
         if (block.timestamp > req.claimDeadline) revert ClaimDeadlinePassed();
+        if (seal.length == 0) revert EmptySeal();
+        if (journal.length == 0) revert EmptyJournal();
 
         // Verify the proof
         bytes32 journalDigest = sha256(journal);
@@ -272,12 +278,14 @@ contract ExecutionEngine {
         proverCompletedCount[msg.sender]++;
         proverEarnings[msg.sender] += proverPayout;
 
-        // Pay prover
-        payable(msg.sender).transfer(proverPayout);
+        // Pay prover (using call instead of transfer for contract wallet compatibility)
+        (bool proverPaid, ) = payable(msg.sender).call{value: proverPayout}("");
+        if (!proverPaid) revert TransferFailed();
 
         // Pay protocol fee
         if (fee > 0) {
-            payable(feeRecipient).transfer(fee);
+            (bool feePaid, ) = payable(feeRecipient).call{value: fee}("");
+            if (!feePaid) revert TransferFailed();
         }
 
         emit ExecutionCompleted(requestId, msg.sender, journalDigest, proverPayout);
@@ -289,8 +297,8 @@ contract ExecutionEngine {
                 req.imageId,
                 journal
             ) {} catch {
-                // Callback failed but proof is still valid
-                // Could emit an event here
+                // Callback failed but proof is still valid — emit event for observability
+                emit CallbackFailed(requestId, req.callbackContract);
             }
         }
     }

@@ -411,6 +411,8 @@ contract ProverReputation {
     // ========================================================================
 
     /// @notice Get score with time decay applied
+    /// @dev Uses capped iteration (max 120 periods = ~10 years) to prevent gas DoS.
+    /// Beyond 120 periods of inactivity, score is effectively 0 (0.99^120 ≈ 0.30).
     function _getScoreWithDecay(address prover) internal view returns (uint256) {
         Reputation storage rep = reputations[prover];
 
@@ -425,11 +427,19 @@ contract ProverReputation {
             return uint256(rep.score);
         }
 
-        // Apply decay for each period
+        // Cap iterations to prevent gas DoS for long-inactive provers
+        // 120 periods ≈ 10 years, score * 0.99^120 ≈ 30% — anything beyond is negligible
+        uint256 maxPeriods = 120;
+        if (decayPeriods > maxPeriods) {
+            decayPeriods = maxPeriods;
+        }
+
+        // Apply multiplicative decay: score = score * (1 - DECAY_RATE/10000)^periods
         uint256 decayedScore = uint256(rep.score);
         for (uint256 i = 0; i < decayPeriods && decayedScore > 0; i++) {
             uint256 decay = (decayedScore * DECAY_RATE) / 10000;
-            decayedScore = decayedScore > decay ? decayedScore - decay : 0;
+            if (decay == 0) break; // Score too small for further decay
+            decayedScore = decayedScore - decay;
         }
 
         return decayedScore;

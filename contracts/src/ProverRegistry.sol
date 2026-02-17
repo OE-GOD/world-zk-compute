@@ -292,8 +292,8 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
 
         if (totalWeight == 0) return activeProvers[seed % count];
 
-        // Weighted random selection
-        uint256 random = uint256(keccak256(abi.encodePacked(seed, block.timestamp))) % totalWeight;
+        // Weighted random selection (seed should be blockhash or VRF output)
+        uint256 random = uint256(keccak256(abi.encodePacked(seed))) % totalWeight;
         uint256 cumulative = 0;
 
         for (uint256 i = 0; i < count; i++) {
@@ -385,7 +385,7 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
 
     /// @notice Update slash percentage
     function setSlashBasisPoints(uint256 _slashBasisPoints) external onlyOwner {
-        require(_slashBasisPoints <= 10000, "Max 100%");
+        require(_slashBasisPoints <= 5000, "Max 50%");
         slashBasisPoints = _slashBasisPoints;
     }
 
@@ -411,6 +411,7 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
 
     function _deactivateProver(address prover) internal {
         Prover storage p = provers[prover];
+        if (!p.active) return; // Guard against double-deactivation
         p.active = false;
 
         // Remove from active list (swap with last element)

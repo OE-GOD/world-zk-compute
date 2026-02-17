@@ -12,13 +12,17 @@ use crate::cache::ProgramCache;
 use crate::config::ProverConfig;
 use crate::contracts::{IExecutionEngine, IProgramRegistry};
 use crate::fast_prove::{FastProveConfig, FastProver, ProvingStrategy};
+use crate::input_decomposer::{DecomposerConfig, InputDecomposer, StrategyRegistry};
+use crate::recursive_wrapper::{self, RecursiveWrapper};
 use crate::ipfs::{IpfsClient, IpfsConfig};
 use crate::metrics::{metrics, Timer};
+use crate::multi_vm::MultiVmProver;
 use crate::nonce::NonceManager;
 use crate::prove_metrics::{pipeline_metrics, ProveStage, ProveTimeline};
 use crate::prefetch::{InputPrefetcher, PrefetchConfig};
 use crate::proof_cache::{ProofCache, ProofCacheKey, CachedProof};
 use crate::queue::{JobQueue, QueuedJob};
+use crate::xgboost_decomp::XGBoostDecompStrategy;
 use alloy::primitives::{B256, U256};
 use alloy::providers::fillers::{BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, WalletFiller};
 use alloy::providers::Provider;
@@ -70,6 +74,10 @@ pub struct OptimizedProcessor {
     input_prefetcher: Arc<InputPrefetcher>,
     /// Proof cache for instant results on repeated jobs
     proof_cache: Arc<ProofCache>,
+    /// Multi-VM router (risc0 / SP1)
+    multi_vm: Arc<MultiVmProver>,
+    /// Strategy registry for input decomposition
+    strategy_registry: Arc<StrategyRegistry>,
     /// Max concurrent jobs
     max_concurrent: usize,
     /// Enable SNARK (Groth16) proof generation
@@ -98,8 +106,31 @@ impl OptimizedProcessor {
         // Initialize IPFS client
         let ipfs_client = Arc::new(IpfsClient::new(IpfsConfig::default()));
 
-        // Initialize fast prover with proving mode (Local, Bonsai, or BonsaiWithFallback)
-        let fast_prover = Arc::new(FastProver::with_mode_and_snark(FastProveConfig::default(), proving_mode, use_snark));
+        // Initialize multi-VM router
+        let multi_vm = Arc::new(MultiVmProver::new(proving_mode.clone()));
+
+        // Initialize fast prover with multi-VM router
+        let fast_prover = Arc::new(FastProver::with_multi_vm(
+            FastProveConfig::default(),
+            proving_mode,
+            use_snark,
+            multi_vm.clone(),
+        ));
+
+        // Initialize strategy registry for input decomposition
+        let mut strategy_registry = StrategyRegistry::new();
+
+        // Register XGBoost decomposition strategy
+        let xgboost_image_id = {
+            let bytes = hex::decode("1b1e0e6ea0bbefbbb2ccfe269a687b2e46efaa243f36664776b49dc15716e2ac")
+                .map_err(|e| anyhow::anyhow!("Invalid xgboost image ID hex: {}", e))?;
+            B256::from_slice(&bytes)
+        };
+        strategy_registry.register(
+            xgboost_image_id,
+            std::sync::Arc::new(XGBoostDecompStrategy::new()),
+        );
+        let strategy_registry = Arc::new(strategy_registry);
 
         // Initialize input prefetcher for reduced latency
         let prefetch_config = PrefetchConfig {
@@ -125,6 +156,8 @@ impl OptimizedProcessor {
             fast_prover,
             input_prefetcher,
             proof_cache,
+            multi_vm,
+            strategy_registry,
             max_concurrent,
             use_snark,
         })
@@ -252,6 +285,8 @@ impl OptimizedProcessor {
             let nonce_mgr = nonce_manager.clone();
             let input_prefetcher = self.input_prefetcher.clone();
             let proof_cache = self.proof_cache.clone();
+            let strategy_registry = self.strategy_registry.clone();
+            let use_snark = self.use_snark;
 
             let handle = tokio::spawn(async move {
                 // Acquire semaphore permit
@@ -271,6 +306,8 @@ impl OptimizedProcessor {
                     &nonce_mgr,
                     &input_prefetcher,
                     &proof_cache,
+                    &strategy_registry,
+                    use_snark,
                 ).await;
 
                 // Record metrics
@@ -343,14 +380,22 @@ async fn fetch_request_details(
     let program_cached = program_cache.get(&request.imageId).is_some();
 
     // Create queued job
+    let request_id_u64: u64 = request_id.try_into().map_err(|_| {
+        anyhow::anyhow!("Request ID {} overflows u64", request_id)
+    })?;
+    let expires_at_u64: u64 = request.expiresAt.try_into().unwrap_or_else(|_| {
+        warn!("Expiration {} overflows u64, capping at u64::MAX", request.expiresAt);
+        u64::MAX
+    });
+
     let job = QueuedJob {
-        request_id: request_id.try_into().unwrap_or(0),
+        request_id: request_id_u64,
         image_id: request.imageId,
         input_hash: request.inputDigest,
         input_url: request.inputUrl.clone(),
         tip: current_tip,
         requester: request.requester,
-        expires_at: request.expiresAt.try_into().unwrap_or(u64::MAX),
+        expires_at: expires_at_u64,
         queued_at: Instant::now(),
         estimated_cycles: None, // Will be filled by preflight
         program_cached,
@@ -375,6 +420,8 @@ async fn process_single_job(
     nonce_manager: &Arc<SigningNonceManager>,
     input_prefetcher: &Arc<InputPrefetcher>,
     proof_cache: &Arc<ProofCache>,
+    strategy_registry: &Arc<StrategyRegistry>,
+    use_snark: bool,
 ) -> anyhow::Result<(u64, u64)> {
     let request_id = U256::from(job.request_id);
     info!("Processing job {} (tip: {} wei)", job.request_id, job.tip);
@@ -502,6 +549,147 @@ async fn process_single_job(
         job.request_id, preflight.cycles, preflight.strategy, preflight.estimated_proof_time
     );
 
+    // Step 4b: Check for input decomposition opportunity
+    // If a decomposition strategy is registered for this image ID and the input
+    // is decomposable with enough cycles, use decomposed proving with recursive
+    // verification wrapper.
+    let decomp_threshold_cycles = 20_000_000; // 20M cycles minimum for decomposition
+    if let Some(strategy) = strategy_registry.get(&job.image_id) {
+        if preflight.cycles > decomp_threshold_cycles && strategy.can_decompose(&input) {
+            info!(
+                "[Job {}] Input decomposition available ({} strategy, {} items)",
+                job.request_id,
+                strategy.name(),
+                strategy.item_count(&input).unwrap_or(0),
+            );
+
+            let decomposer = InputDecomposer::new(
+                DecomposerConfig::default(),
+                config.proving_mode.clone(),
+                use_snark,
+            );
+
+            // Use receipt-preserving path for recursive wrapping
+            match decomposer
+                .prove_decomposed_with_receipts(&elf, strategy.as_ref(), &input)
+                .await
+            {
+                Ok(decomp_result) => {
+                    info!(
+                        "[Job {}] Decomposed proving complete: {} sub-jobs, {:.1}x speedup, {:?}",
+                        job.request_id,
+                        decomp_result.sub_job_count,
+                        decomp_result.speedup,
+                        decomp_result.total_time,
+                    );
+
+                    // Try recursive wrapping for trustless verification.
+                    // Returns Some((seal, journal)) if we have a valid proof to submit,
+                    // or None if we should fall through to standard proving.
+                    let decomp_proof = match try_recursive_wrap(
+                        &job.image_id,
+                        &decomp_result,
+                        strategy.as_ref(),
+                        use_snark,
+                    )
+                    .await
+                    {
+                        Ok(wrap_result) => {
+                            info!(
+                                "[Job {}] Recursive wrapper proof complete: {:?}",
+                                job.request_id, wrap_result.wrap_time,
+                            );
+                            Some((wrap_result.first_sub_seal, wrap_result.merged_journal))
+                        }
+                        Err(e) if decomp_result.sub_job_count == 1 => {
+                            // Single sub-job: the first seal/journal is a complete proof
+                            warn!(
+                                "[Job {}] Recursive wrapping failed but only 1 sub-job, using directly: {}",
+                                job.request_id, e
+                            );
+                            let seal = decomp_result
+                                .seals
+                                .into_iter()
+                                .next()
+                                .unwrap_or_default();
+                            let journal = decomp_result
+                                .journals
+                                .into_iter()
+                                .next()
+                                .unwrap_or_default();
+                            Some((seal, journal))
+                        }
+                        Err(e) => {
+                            // Multiple sub-jobs but wrapper failed: each seal only proves
+                            // a subset of data. Submitting any single sub-proof with the
+                            // merged journal would fail verification (proof/journal mismatch).
+                            // Fall through to standard (non-decomposed) proving.
+                            warn!(
+                                "[Job {}] Recursive wrapping failed for {} sub-jobs, \
+                                 cannot submit partial proof. Falling back to standard proving: {}",
+                                job.request_id, decomp_result.sub_job_count, e
+                            );
+                            None
+                        }
+                    };
+
+                    // Only submit if we have a valid proof from decomposition
+                    if let Some((seal, journal)) = decomp_proof {
+                        let retry_config = RetryConfig::default();
+                        info!("[Job {}] Claiming (decomposed path)...", job.request_id);
+                        let claim_result = send_claim_with_retry(
+                            &engine,
+                            request_id,
+                            nonce_manager,
+                            job.request_id,
+                            &retry_config,
+                        )
+                        .await?;
+                        info!(
+                            "[Job {}] Claimed in tx: {:?}",
+                            job.request_id, claim_result.tx_hash
+                        );
+
+                        timeline.enter_stage(ProveStage::Submission);
+                        info!("[Job {}] Submitting decomposed proof...", job.request_id);
+                        let submit_timer = Timer::start();
+
+                        let submit_result = send_submit_with_retry(
+                            &engine,
+                            request_id,
+                            seal,
+                            journal,
+                            nonce_manager,
+                            job.request_id,
+                            &retry_config,
+                        )
+                        .await?;
+
+                        metrics().record_submit_time(submit_timer.elapsed());
+                        info!(
+                            "[Job {}] Decomposed proof submitted in tx: {:?}",
+                            job.request_id, submit_result.tx_hash
+                        );
+
+                        let finished = timeline.finish(true);
+                        info!("[Job {}] {}", job.request_id, finished);
+                        pipeline_metrics().record(&finished);
+
+                        return Ok((decomp_result.total_cycles, input.len() as u64));
+                    }
+                    // else: fall through to standard proving below
+                }
+                Err(e) => {
+                    warn!(
+                        "[Job {}] Decomposed proving failed, falling back to standard: {}",
+                        job.request_id, e
+                    );
+                    // Fall through to standard proving
+                }
+            }
+        }
+    }
+
     // Step 5: Profitability check
     if !config.skip_profitability_check {
         let profitability = check_profitability(
@@ -591,6 +779,34 @@ async fn process_single_job(
     pipeline_metrics().record(&finished);
 
     Ok((prove_result.cycles, input.len() as u64))
+}
+
+/// Try to recursively wrap decomposed sub-proofs into a single verified proof.
+///
+/// Loads the wrapper ELF from disk. If not available, returns an error so the
+/// caller can fall back to using the first sub-proof seal.
+async fn try_recursive_wrap(
+    image_id: &B256,
+    decomp_result: &crate::input_decomposer::DecomposedReceiptResult,
+    strategy: &dyn crate::input_decomposer::DecompositionStrategy,
+    use_snark: bool,
+) -> anyhow::Result<recursive_wrapper::RecursiveWrapResult> {
+    let wrapper = recursive_wrapper::try_load_wrapper(use_snark)
+        .ok_or_else(|| anyhow::anyhow!("Recursive wrapper ELF not available"))?;
+
+    let mut inner_image_id = [0u8; 32];
+    inner_image_id.copy_from_slice(image_id.as_slice());
+
+    // Clone receipts for the wrapper (it takes ownership)
+    let receipts = decomp_result
+        .receipts
+        .iter()
+        .map(|r| r.clone())
+        .collect();
+
+    wrapper
+        .wrap(inner_image_id, receipts, strategy)
+        .await
 }
 
 /// Fetch program ELF from registry
