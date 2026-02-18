@@ -15,6 +15,7 @@ use alloy::{
 use clap::{Parser, Subcommand};
 use std::sync::Arc;
 use tracing::{debug, info, error};
+use futures::future::join_all;
 
 mod api;
 mod bonsai;
@@ -666,15 +667,65 @@ async fn check_status(
     engine_address: String,
     request_id: u64,
 ) -> anyhow::Result<()> {
-    let _provider = ProviderBuilder::new().on_http(rpc_url.parse()?);
-    let _engine: Address = engine_address.parse()?;
+    let provider = ProviderBuilder::new().on_http(rpc_url.parse()?);
+    let engine_addr: Address = engine_address.parse()?;
+    let engine = contracts::IExecutionEngine::new(engine_addr, &provider);
 
-    // TODO: Call getRequest on the contract
-    info!("Checking status of request {}...", request_id);
+    let request_id_u256 = U256::from(request_id);
 
-    // This would call the contract - simplified for now
-    println!("Request ID: {}", request_id);
-    println!("Status: (would query contract)");
+    // Fetch request details and current tip in parallel
+    let request_call = engine.getRequest(request_id_u256);
+    let tip_call = engine.getCurrentTip(request_id_u256);
+    let (request_result, tip_result) = tokio::join!(request_call.call(), tip_call.call());
+
+    let req = request_result
+        .map_err(|e| anyhow::anyhow!("Failed to fetch request {}: {}", request_id, e))?
+        ._0;
+
+    if req.id == U256::ZERO {
+        println!("Request {} not found", request_id);
+        return Ok(());
+    }
+
+    let current_tip = tip_result.map(|t| t._0).unwrap_or(U256::ZERO);
+
+    let status_str = match req.status {
+        0 => "Pending",
+        1 => "Claimed",
+        2 => "Completed",
+        3 => "Expired",
+        4 => "Cancelled",
+        s => {
+            println!("Unknown status: {}", s);
+            "Unknown"
+        }
+    };
+
+    let tip_eth = format_wei_as_eth(req.tip);
+    let max_tip_eth = format_wei_as_eth(req.maxTip);
+    let current_tip_eth = format_wei_as_eth(current_tip);
+
+    println!("Request #{}", request_id);
+    println!("  Status:      {}", status_str);
+    println!("  Image ID:    {}", req.imageId);
+    println!("  Requester:   {}", req.requester);
+    println!("  Input URL:   {}", req.inputUrl);
+    println!("  Tip:         {} ETH (max: {} ETH)", tip_eth, max_tip_eth);
+    if req.status == 0 {
+        println!("  Current Tip: {} ETH (with decay)", current_tip_eth);
+    }
+    println!("  Created:     {}", format_timestamp(req.createdAt));
+    println!("  Expires:     {}", format_timestamp(req.expiresAt));
+
+    if req.status == 1 {
+        println!("  Claimed By:  {}", req.claimedBy);
+        println!("  Claimed At:  {}", format_timestamp(req.claimedAt));
+        println!("  Deadline:    {}", format_timestamp(req.claimDeadline));
+    }
+
+    if req.callbackContract != Address::ZERO {
+        println!("  Callback:    {}", req.callbackContract);
+    }
 
     Ok(())
 }
@@ -684,15 +735,90 @@ async fn list_pending(
     engine_address: String,
     limit: u64,
 ) -> anyhow::Result<()> {
-    let _provider = ProviderBuilder::new().on_http(rpc_url.parse()?);
-    let _engine: Address = engine_address.parse()?;
+    let provider = ProviderBuilder::new().on_http(rpc_url.parse()?);
+    let engine_addr: Address = engine_address.parse()?;
+    let engine = contracts::IExecutionEngine::new(engine_addr, &provider);
 
-    info!("Listing pending requests (limit: {})...", limit);
+    let pending = engine
+        .getPendingRequests(U256::from(0), U256::from(limit))
+        .call()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to fetch pending requests: {}", e))?;
 
-    // TODO: Call getPendingRequests on the contract
-    println!("Pending requests: (would query contract)");
+    let request_ids = pending._0;
+
+    if request_ids.is_empty() {
+        println!("No pending requests.");
+        return Ok(());
+    }
+
+    println!("Found {} pending request(s):\n", request_ids.len());
+    println!(
+        "{:<6} {:<12} {:<44} {:<14} {}",
+        "ID", "Tip (ETH)", "Image ID", "Current Tip", "Expires"
+    );
+    println!("{}", "-".repeat(100));
+
+    // Fetch details for each request in parallel
+    let futures: Vec<_> = request_ids
+        .iter()
+        .map(|&rid| {
+            let request_call = engine.getRequest(rid);
+            let tip_call = engine.getCurrentTip(rid);
+            async move {
+                let (req_res, tip_res) = tokio::join!(request_call.call(), tip_call.call());
+                (rid, req_res, tip_res)
+            }
+        })
+        .collect();
+
+    let results = futures::future::join_all(futures).await;
+
+    for (rid, req_res, tip_res) in results {
+        match req_res {
+            Ok(r) => {
+                let req = r._0;
+                let current_tip = tip_res.map(|t| t._0).unwrap_or(U256::ZERO);
+                let rid_u64: u64 = rid.try_into().unwrap_or(0);
+                let image_short = format!("{}..{}", &format!("{}", req.imageId)[..8], &format!("{}", req.imageId)[62..]);
+
+                println!(
+                    "{:<6} {:<12} {:<44} {:<14} {}",
+                    rid_u64,
+                    format_wei_as_eth(req.maxTip),
+                    image_short,
+                    format_wei_as_eth(current_tip),
+                    format_timestamp(req.expiresAt),
+                );
+            }
+            Err(e) => {
+                let rid_u64: u64 = rid.try_into().unwrap_or(0);
+                println!("{:<6} (error: {})", rid_u64, e);
+            }
+        }
+    }
 
     Ok(())
+}
+
+fn format_wei_as_eth(wei: U256) -> String {
+    let eth_divisor = U256::from(1_000_000_000_000_000_000u64);
+    let whole = wei / eth_divisor;
+    let frac = wei % eth_divisor;
+    // Show 6 decimal places
+    let frac_scaled = frac * U256::from(1_000_000u64) / eth_divisor;
+    let frac_u64: u64 = frac_scaled.try_into().unwrap_or(0);
+    format!("{}.{:06}", whole, frac_u64)
+}
+
+fn format_timestamp(ts: U256) -> String {
+    let secs: i64 = ts.try_into().unwrap_or(0);
+    if secs == 0 {
+        return "N/A".to_string();
+    }
+    chrono::DateTime::from_timestamp(secs, 0)
+        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+        .unwrap_or_else(|| format!("{}s", secs))
 }
 
 fn handle_config(generate: bool, output: String, validate: Option<String>) -> anyhow::Result<()> {
