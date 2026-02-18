@@ -2,7 +2,9 @@
 pragma solidity ^0.8.20;
 
 import "./ProgramRegistry.sol";
+import "./ProverReputation.sol";
 import {IRiscZeroVerifier} from "risc0-ethereum/IRiscZeroVerifier.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @title IExecutionCallback
 /// @notice Interface for contracts that receive verified computation results
@@ -17,7 +19,7 @@ interface IExecutionCallback {
 /// @title ExecutionEngine
 /// @notice Core engine for verifiable computation on World Chain
 /// @dev Handles the full lifecycle: request → claim → prove → callback
-contract ExecutionEngine {
+contract ExecutionEngine is ReentrancyGuard {
 
     // ========================================================================
     // TYPES
@@ -61,11 +63,17 @@ contract ExecutionEngine {
     // STATE
     // ========================================================================
 
+    /// @notice Contract owner (admin)
+    address public owner;
+
     /// @notice The program registry
     ProgramRegistry public immutable registry;
 
     /// @notice The RISC Zero verifier contract
     IRiscZeroVerifier public immutable verifier;
+
+    /// @notice ProverReputation contract (optional)
+    ProverReputation public reputation;
 
     /// @notice All execution requests
     mapping(uint256 => ExecutionRequest) public requests;
@@ -113,11 +121,14 @@ contract ExecutionEngine {
     event ExecutionCancelled(uint256 indexed requestId);
     event ClaimExpired(uint256 indexed requestId, address indexed prover);
     event CallbackFailed(uint256 indexed requestId, address indexed callbackContract);
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event ReputationContractSet(address indexed reputation);
 
     // ========================================================================
     // ERRORS
     // ========================================================================
 
+    error NotOwner();
     error InsufficientTip();
     error ProgramNotActive();
     error RequestNotFound();
@@ -142,6 +153,7 @@ contract ExecutionEngine {
         address _verifier,
         address _feeRecipient
     ) {
+        owner = msg.sender;
         registry = ProgramRegistry(_registry);
         verifier = IRiscZeroVerifier(_verifier);
         feeRecipient = _feeRecipient;
@@ -201,7 +213,7 @@ contract ExecutionEngine {
     }
 
     /// @notice Cancel a pending execution request
-    function cancelExecution(uint256 requestId) external {
+    function cancelExecution(uint256 requestId) external nonReentrant {
         ExecutionRequest storage req = requests[requestId];
         if (req.id == 0) revert RequestNotFound();
         if (req.requester != msg.sender) revert NotRequester();
@@ -222,7 +234,7 @@ contract ExecutionEngine {
 
     /// @notice Claim an execution request (prover)
     /// @param requestId The request to claim
-    function claimExecution(uint256 requestId) external {
+    function claimExecution(uint256 requestId) external nonReentrant {
         ExecutionRequest storage req = requests[requestId];
         if (req.id == 0) revert RequestNotFound();
         if (block.timestamp > req.expiresAt) revert RequestExpired();
@@ -230,6 +242,10 @@ contract ExecutionEngine {
         // If previously claimed but deadline passed, allow reclaim
         if (req.status == RequestStatus.Claimed) {
             if (block.timestamp <= req.claimDeadline) revert ClaimNotExpired();
+            // Record abandon in reputation system
+            if (address(reputation) != address(0)) {
+                try reputation.recordAbandon(req.claimedBy, requestId) {} catch {}
+            }
             emit ClaimExpired(requestId, req.claimedBy);
         } else if (req.status != RequestStatus.Pending) {
             revert RequestNotPending();
@@ -251,7 +267,7 @@ contract ExecutionEngine {
         uint256 requestId,
         bytes calldata seal,
         bytes calldata journal
-    ) external {
+    ) external nonReentrant {
         ExecutionRequest storage req = requests[requestId];
         if (req.id == 0) revert RequestNotFound();
         if (req.status != RequestStatus.Claimed) revert RequestNotClaimed();
@@ -277,6 +293,12 @@ contract ExecutionEngine {
         // Update prover stats
         proverCompletedCount[msg.sender]++;
         proverEarnings[msg.sender] += proverPayout;
+
+        // Update reputation if configured
+        if (address(reputation) != address(0)) {
+            uint256 proofTimeMs = (block.timestamp - req.claimedAt) * 1000;
+            try reputation.recordSuccess(msg.sender, proofTimeMs, proverPayout) {} catch {}
+        }
 
         // Pay prover (using call instead of transfer for contract wallet compatibility)
         (bool proverPaid, ) = payable(msg.sender).call{value: proverPayout}("");
@@ -382,13 +404,26 @@ contract ExecutionEngine {
     // ========================================================================
 
     function setProtocolFee(uint256 _feeBps) external {
-        require(msg.sender == feeRecipient, "Not authorized");
+        if (msg.sender != owner) revert NotOwner();
         require(_feeBps <= 1000, "Fee too high"); // Max 10%
         protocolFeeBps = _feeBps;
     }
 
     function setFeeRecipient(address _recipient) external {
-        require(msg.sender == feeRecipient, "Not authorized");
+        if (msg.sender != owner) revert NotOwner();
         feeRecipient = _recipient;
+    }
+
+    function setReputation(address _reputation) external {
+        if (msg.sender != owner) revert NotOwner();
+        reputation = ProverReputation(_reputation);
+        emit ReputationContractSet(_reputation);
+    }
+
+    function transferOwnership(address newOwner) external {
+        if (msg.sender != owner) revert NotOwner();
+        require(newOwner != address(0), "Invalid owner");
+        emit OwnershipTransferred(owner, newOwner);
+        owner = newOwner;
     }
 }

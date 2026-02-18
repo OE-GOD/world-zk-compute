@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
@@ -9,6 +10,7 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 /// @notice Manages prover registration, staking, reputation, and slashing
 /// @dev Provers stake tokens to participate, earn rewards, and can be slashed for misbehavior
 contract ProverRegistry is ReentrancyGuard, Ownable {
+    using SafeERC20 for IERC20;
     // ============================================================
     // TYPES
     // ============================================================
@@ -116,7 +118,7 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
         if (stake < minStake) revert InsufficientStake();
 
         // Transfer stake
-        stakingToken.transferFrom(msg.sender, address(this), stake);
+        stakingToken.safeTransferFrom(msg.sender, address(this), stake);
 
         // Create prover record
         provers[msg.sender] = Prover({
@@ -147,7 +149,7 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
         Prover storage prover = provers[msg.sender];
         if (prover.registeredAt == 0) revert ProverNotRegistered();
 
-        stakingToken.transferFrom(msg.sender, address(this), amount);
+        stakingToken.safeTransferFrom(msg.sender, address(this), amount);
 
         prover.stake += amount;
         totalStaked += amount;
@@ -177,7 +179,7 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
         prover.stake = newStake;
         totalStaked -= amount;
 
-        stakingToken.transfer(msg.sender, amount);
+        stakingToken.safeTransfer(msg.sender, amount);
 
         emit StakeWithdrawn(msg.sender, amount, newStake);
     }
@@ -240,7 +242,7 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
         }));
 
         // Slashed funds go to treasury (owner)
-        stakingToken.transfer(owner(), slashAmount);
+        stakingToken.safeTransfer(owner(), slashAmount);
 
         emit ProverSlashed(prover, slashAmount, reason);
     }

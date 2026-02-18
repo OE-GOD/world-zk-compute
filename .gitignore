@@ -31,3 +31,24 @@ Thumbs.db
 *.elf
 *.receipt
 !programs/*.elf
+
+# Interview prep / personal notes
+HIRING_MANAGER_*.md
+INTERVIEW_*.md
+TEAM_MATCHING_*.md
+ZKP_*.md
+ZKVM_*.md
+WORLD_INTERVIEW_QA.md
+ARCHITECTURE_EXPLAINED.md
+BONSOL_VS_MINE.md
+INPUT_DECOMPOSITION.md
+P0_FIXES_EXPLAINED.md
+PRIVATE_INPUT_SERVER_QA.md
+PROOF_MATH_EXPLAINED.md
+SCALING_ZKVM.md
+
+# Local cache
+cache/
+
+# Forge broadcast artifacts
+contracts/broadcast/

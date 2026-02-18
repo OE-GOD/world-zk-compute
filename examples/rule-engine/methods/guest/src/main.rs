@@ -215,7 +215,7 @@ fn evaluate_condition(cond: &Condition, record: &Record) -> bool {
 
 fn evaluate_rule(rule: &Rule, record: &Record) -> bool {
     if rule.conditions.is_empty() {
-        return true;
+        return false;
     }
 
     if rule.combine == 0 {

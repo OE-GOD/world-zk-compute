@@ -36,7 +36,7 @@
 //! one core free for the async runtime.
 
 use anyhow::{anyhow, Result};
-use risc0_zkvm::{default_executor, default_prover, ExecutorEnv, ProverOpts};
+use risc0_zkvm::{default_executor, default_prover, ExecutorEnv, ProverOpts, Receipt};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -73,8 +73,8 @@ impl Default for SegmentProverConfig {
             segment_limit_po2: None, // auto-tune
             proving_threads: 0,      // auto-detect
             cache_executions: true,
-            max_cycles: 500_000_000,       // 500M cycles
-            max_segments: 2000,
+            max_cycles: 1_000_000_000,     // 1B cycles (raised from 500M)
+            max_segments: 4000,            // raised from 2000
             bonsai_threshold_cycles: 100_000_000, // 100M → prefer Bonsai
         }
     }
@@ -321,6 +321,79 @@ impl SegmentProver {
         po2: u32,
         threads: usize,
     ) -> Result<(Vec<u8>, Vec<u8>)> {
+        let (receipt, seal, journal) = self
+            .prove_with_config_receipt(elf, input, po2, threads)
+            .await?;
+        drop(receipt); // Discard receipt in this path
+        Ok((seal, journal))
+    }
+
+    /// Prove with explicit configuration, returning the full Receipt.
+    ///
+    /// Used by the recursive wrapper to collect sub-proof receipts that
+    /// can be passed as assumptions to the wrapper guest's `env::verify()`.
+    pub async fn prove_with_receipt(
+        &self,
+        elf: &[u8],
+        input: &[u8],
+    ) -> Result<(ProveResult, Receipt)> {
+        let start = Instant::now();
+
+        let plan = self.analyze(elf, input).await?;
+
+        let po2 = self
+            .config
+            .segment_limit_po2
+            .unwrap_or(plan.recommended_po2);
+
+        let est_segments = estimate_segments_for_po2(plan.cycles, po2);
+        if est_segments > self.config.max_segments {
+            return Err(anyhow!(
+                "Too many segments: estimated {} with po2={} exceeds limit {}",
+                est_segments,
+                po2,
+                self.config.max_segments
+            ));
+        }
+
+        let threads = if self.config.proving_threads > 0 {
+            self.config.proving_threads
+        } else {
+            plan.recommended_threads
+        };
+
+        let (receipt, seal, journal) = self
+            .prove_with_config_receipt(elf, input, po2, threads)
+            .await?;
+
+        let total_time = start.elapsed();
+
+        if self.config.cache_executions {
+            let cache_key = Self::cache_key(elf, input);
+            self.plan_cache.write().await.remove(&cache_key);
+        }
+
+        let result = ProveResult {
+            seal,
+            journal,
+            cycles: plan.cycles,
+            segment_count: est_segments,
+            po2_used: po2,
+            threads_used: threads,
+            prove_time: total_time,
+        };
+
+        Ok((result, receipt))
+    }
+
+    /// Internal: prove and return (Receipt, seal, journal).
+    async fn prove_with_config_receipt(
+        &self,
+        elf: &[u8],
+        input: &[u8],
+        po2: u32,
+        threads: usize,
+    ) -> Result<(Receipt, Vec<u8>, Vec<u8>)> {
         let elf_owned = elf.to_vec();
         let input_owned = input.to_vec();
         let use_snark = self.use_snark;
@@ -365,7 +438,7 @@ impl SegmentProver {
             let seal = extract_seal(&receipt)?;
             let journal = receipt.journal.bytes.clone();
 
-            Ok((seal, journal))
+            Ok((receipt, seal, journal))
         })
         .await?
     }
@@ -600,6 +673,7 @@ mod tests {
         assert!(config.segment_limit_po2.is_none());
         assert_eq!(config.proving_threads, 0);
         assert!(config.cache_executions);
-        assert_eq!(config.max_cycles, 500_000_000);
+        assert_eq!(config.max_cycles, 1_000_000_000);
+        assert_eq!(config.max_segments, 4000);
     }
 }

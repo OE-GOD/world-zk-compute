@@ -194,10 +194,12 @@ fn detect_sybils(
         }
         if same_orb_nearby >= cfg.min_cluster_size {
             // Score scales with cluster density: 200 * min(cluster_size/min_cluster_size, 1)
-            let pts = if same_orb_nearby >= cfg.min_cluster_size * 2 {
+            let pts = if same_orb_nearby >= cfg.min_cluster_size.saturating_mul(2) {
                 200
             } else {
-                100 + (100 * (same_orb_nearby - cfg.min_cluster_size)) / cfg.min_cluster_size
+                100u32.saturating_add(
+                    100u32.saturating_mul(same_orb_nearby - cfg.min_cluster_size) / cfg.min_cluster_size
+                )
             };
             scores[i].temporal = pts;
 
@@ -247,7 +249,7 @@ fn detect_sybils(
 
             // Approximate: geo_dist units ≈ km, speed = dist / (dt/3600)
             // speed_kmh = geo_dist * 3600 / dt
-            let speed_kmh = (geo_dist as u64 * 3600) / dt;
+            let speed_kmh = (geo_dist as u64).saturating_mul(3600) / dt;
 
             if speed_kmh > cfg.velocity_threshold_kmh as u64 {
                 scores[i].geographic = 300;

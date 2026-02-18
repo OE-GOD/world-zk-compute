@@ -216,13 +216,29 @@ impl EventSubscriber {
 
         let inner = event.inner.data;
 
+        let request_id: u64 = match inner.requestId.try_into() {
+            Ok(id) => id,
+            Err(e) => {
+                warn!("Request ID overflow ({}), skipping event: {:?}", inner.requestId, e);
+                return Ok(None);
+            }
+        };
+
+        let expires_at: u64 = match inner.expiresAt.try_into() {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("expires_at overflow ({}), using u64::MAX: {:?}", inner.expiresAt, e);
+                u64::MAX
+            }
+        };
+
         Ok(Some(NewJobEvent {
-            request_id: inner.requestId.try_into().unwrap_or(0),
+            request_id,
             requester: inner.requester,
             image_id: inner.imageId,
             input_digest: inner.inputDigest,
             tip: inner.tip,
-            expires_at: inner.expiresAt.try_into().unwrap_or(u64::MAX),
+            expires_at,
         }))
     }
 }

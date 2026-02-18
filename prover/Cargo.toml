@@ -12,6 +12,10 @@ path = "src/main.rs"
 name = "prove_benchmark"
 path = "src/bin/prove_benchmark.rs"
 
+[[bin]]
+name = "test_recursive_wrapper"
+path = "src/bin/test_recursive_wrapper.rs"
+
 [dependencies]
 # Async runtime
 tokio = { version = "1.0", features = ["full"] }
@@ -24,8 +28,14 @@ alloy = { version = "0.8", features = ["full"] }
 # Enable cuda or metal features for GPU acceleration:
 #   cargo build --release --features cuda    # NVIDIA GPU
 #   cargo build --release --features metal   # Apple GPU
-risc0-zkvm = { version = "3.0" }
+risc0-zkvm = { version = "3.0", features = ["prove"] }
 bonsai-sdk = { version = "1.2" }
+
+# SP1 (optional, enable with --features sp1)
+sp1-sdk = { version = "4.0.0", optional = true }
+
+# Async traits
+async-trait = "0.1"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -54,6 +64,7 @@ once_cell = "1.19"
 
 # Crypto
 sha2 = "0.10"
+k256 = { version = "0.13", features = ["ecdsa"] }
 base64 = "0.22"
 rand = "0.8"
 aes-gcm = "0.10"
@@ -86,3 +97,5 @@ default = []
 cuda = ["risc0-zkvm/cuda"]
 # Metal GPU acceleration (Apple) - macOS only
 metal = ["risc0-zkvm/metal"]
+# SP1 proving backend
+sp1 = ["sp1-sdk"]

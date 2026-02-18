@@ -34,6 +34,7 @@
 #![allow(dead_code)]
 
 use anyhow::{anyhow, Result};
+use risc0_zkvm::Receipt;
 use std::time::{Duration, Instant};
 use tracing::info;
 
@@ -116,6 +117,46 @@ pub struct DecomposedProofResult {
     /// Number of sub-jobs.
     pub sub_job_count: usize,
     /// Speedup factor (sum_time / wall_time).
+    pub speedup: f64,
+}
+
+/// Result of a single sub-proof that preserves the Receipt.
+#[derive(Debug)]
+pub struct SubProofWithReceipt {
+    /// Sub-job index.
+    pub index: usize,
+    /// The full Receipt (needed for recursive verification).
+    pub receipt: Receipt,
+    /// Proof seal bytes.
+    pub seal: Vec<u8>,
+    /// Journal (public outputs) from this sub-proof.
+    pub journal: Vec<u8>,
+    /// Proving time for this sub-job.
+    pub prove_time: Duration,
+    /// Cycles used.
+    pub cycles: u64,
+}
+
+/// Decomposed proof result that preserves Receipts for recursive wrapping.
+#[derive(Debug)]
+pub struct DecomposedReceiptResult {
+    /// All sub-proof Receipts (for recursive verification).
+    pub receipts: Vec<Receipt>,
+    /// All sub-proof seals.
+    pub seals: Vec<Vec<u8>>,
+    /// All sub-proof journals (in order).
+    pub journals: Vec<Vec<u8>>,
+    /// Merged journal from all sub-proofs.
+    pub merged_journal: Vec<u8>,
+    /// Total proving time (wall clock).
+    pub total_time: Duration,
+    /// Sum of individual sub-proof times.
+    pub sum_prove_time: Duration,
+    /// Total cycles across all sub-proofs.
+    pub total_cycles: u64,
+    /// Number of sub-jobs.
+    pub sub_job_count: usize,
+    /// Speedup factor.
     pub speedup: f64,
 }
 
@@ -291,6 +332,57 @@ impl DecompositionStrategy for ChunkStrategy {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// Strategy Registry
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Maps program image IDs to their decomposition strategies.
+///
+/// The monitor checks this registry after preflight to decide whether
+/// to use decomposed proving for a given program.
+pub struct StrategyRegistry {
+    strategies: std::collections::HashMap<alloy::primitives::B256, std::sync::Arc<dyn DecompositionStrategy>>,
+}
+
+impl StrategyRegistry {
+    /// Create an empty registry.
+    pub fn new() -> Self {
+        Self {
+            strategies: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Register a decomposition strategy for a program image ID.
+    pub fn register(
+        &mut self,
+        image_id: alloy::primitives::B256,
+        strategy: std::sync::Arc<dyn DecompositionStrategy>,
+    ) {
+        tracing::info!(
+            "Registered decomposition strategy '{}' for image {}",
+            strategy.name(),
+            image_id
+        );
+        self.strategies.insert(image_id, strategy);
+    }
+
+    /// Look up the strategy for a given image ID.
+    pub fn get(&self, image_id: &alloy::primitives::B256) -> Option<&std::sync::Arc<dyn DecompositionStrategy>> {
+        self.strategies.get(image_id)
+    }
+
+    /// Check if a strategy is registered for this image ID.
+    pub fn has_strategy(&self, image_id: &alloy::primitives::B256) -> bool {
+        self.strategies.contains_key(image_id)
+    }
+}
+
+impl Default for StrategyRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // Input Decomposer
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -460,6 +552,134 @@ impl InputDecomposer {
 
         Ok(DecomposedProofResult {
             seals,
+            merged_journal,
+            total_time,
+            sum_prove_time,
+            total_cycles,
+            sub_job_count: n,
+            speedup,
+        })
+    }
+
+    /// Decompose input and prove all sub-jobs, preserving Receipts.
+    ///
+    /// Same as `prove_decomposed()` but returns the full Receipt for each
+    /// sub-proof so they can be passed to the recursive wrapper's
+    /// `env::verify()` via `add_assumption()`.
+    pub async fn prove_decomposed_with_receipts(
+        &self,
+        elf: &[u8],
+        strategy: &dyn DecompositionStrategy,
+        input: &[u8],
+    ) -> Result<DecomposedReceiptResult> {
+        let wall_start = Instant::now();
+
+        if input.len() < self.config.min_input_size || !strategy.can_decompose(input) {
+            return Err(anyhow!(
+                "Input not suitable for decomposition (size={}, can_decompose={})",
+                input.len(),
+                strategy.can_decompose(input)
+            ));
+        }
+
+        let n = self.plan_split(strategy, input)?;
+        if n <= 1 {
+            return Err(anyhow!("Decomposition produced only 1 sub-job, not worthwhile"));
+        }
+
+        let sub_inputs = strategy.split(input, n)?;
+        info!(
+            "Split into {} sub-jobs (with receipts): {:?} bytes each",
+            sub_inputs.len(),
+            sub_inputs.iter().map(|s| s.len()).collect::<Vec<_>>()
+        );
+
+        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(
+            self.config.max_concurrent_proofs,
+        ));
+
+        let mut handles = Vec::new();
+
+        for (i, sub_input) in sub_inputs.into_iter().enumerate() {
+            let elf_owned = elf.to_vec();
+            let sem = semaphore.clone();
+            let proving_mode = self.proving_mode.clone();
+            let use_snark = self.use_snark;
+            let total = n;
+
+            let handle = tokio::spawn(async move {
+                let _permit = sem
+                    .acquire()
+                    .await
+                    .map_err(|e| anyhow!("Semaphore error: {}", e))?;
+
+                info!("Proving sub-job {}/{} (with receipt)", i + 1, total);
+                let start = Instant::now();
+
+                let config = SegmentProverConfig::default();
+                let prover = SegmentProver::new(config, proving_mode, use_snark);
+                let (result, receipt) = prover
+                    .prove_with_receipt(&elf_owned, &sub_input)
+                    .await?;
+
+                let prove_time = start.elapsed();
+                info!(
+                    "Sub-job {}/{} complete (with receipt): {} cycles, {:?}",
+                    i + 1,
+                    total,
+                    result.cycles,
+                    prove_time
+                );
+
+                Ok::<_, anyhow::Error>(SubProofWithReceipt {
+                    index: i,
+                    receipt,
+                    seal: result.seal,
+                    journal: result.journal,
+                    prove_time,
+                    cycles: result.cycles,
+                })
+            });
+
+            handles.push(handle);
+        }
+
+        let mut sub_results: Vec<SubProofWithReceipt> = Vec::with_capacity(n);
+        for handle in handles {
+            let result = handle
+                .await
+                .map_err(|e| anyhow!("Sub-job panicked: {}", e))??;
+            sub_results.push(result);
+        }
+
+        sub_results.sort_by_key(|r| r.index);
+
+        // Capture timing stats before destructuring
+        let sum_prove_time: Duration = sub_results.iter().map(|r| r.prove_time).sum();
+        let total_cycles: u64 = sub_results.iter().map(|r| r.cycles).sum();
+
+        let journals: Vec<Vec<u8>> = sub_results.iter().map(|r| r.journal.clone()).collect();
+        let merged_journal = strategy.merge_journals(&journals)?;
+        let seals: Vec<Vec<u8>> = sub_results.iter().map(|r| r.seal.clone()).collect();
+        let receipts: Vec<Receipt> = sub_results.into_iter().map(|r| r.receipt).collect();
+
+        let total_time = wall_start.elapsed();
+        let speedup = if total_time.as_secs_f64() > 0.0 {
+            sum_prove_time.as_secs_f64() / total_time.as_secs_f64()
+        } else {
+            1.0
+        };
+
+        info!(
+            "Decomposed proving (with receipts) complete: {} sub-jobs, {} total cycles, \
+             {:.1}x speedup ({:?} wall vs {:?} sum)",
+            n, total_cycles, speedup, total_time, sum_prove_time
+        );
+
+        Ok(DecomposedReceiptResult {
+            receipts,
+            seals,
+            journals,
             merged_journal,
             total_time,
             sum_prove_time,

@@ -68,8 +68,8 @@ impl Default for LargeProgramConfig {
         Self {
             max_cycles_per_segment: 50_000_000,
             enable_compression: true,
-            max_segments: 2000,
-            memory_limit_mb: 256,
+            max_segments: 4000,        // raised from 2000
+            memory_limit_mb: 512,      // raised from 256
             bonsai_threshold_cycles: 100_000_000,
         }
     }
@@ -431,7 +431,8 @@ mod tests {
     fn test_config_defaults() {
         let config = LargeProgramConfig::default();
         assert_eq!(config.max_cycles_per_segment, 50_000_000);
-        assert_eq!(config.max_segments, 2000);
+        assert_eq!(config.max_segments, 4000);
+        assert_eq!(config.memory_limit_mb, 512);
         assert!(config.enable_compression);
     }
 
