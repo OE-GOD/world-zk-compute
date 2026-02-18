@@ -199,14 +199,14 @@ fn verify_signature(
 /// address = keccak256(uncompressed_pubkey[1..])[12..32]
 fn pubkey_to_eth_address(pubkey: &VerifyingKey) -> [u8; 20] {
     use k256::elliptic_curve::sec1::ToEncodedPoint;
+    use sha3::{Digest as _, Keccak256};
 
     // Get uncompressed public key (65 bytes: 0x04 || x || y)
     let uncompressed = pubkey.to_encoded_point(false);
     let pubkey_bytes = uncompressed.as_bytes();
 
-    // For simplicity, we use SHA256 instead of Keccak256
-    // In production, you'd use the Keccak precompile when available
-    let mut hasher = Sha256::new();
+    // Ethereum address = last 20 bytes of keccak256(uncompressed_pubkey[1..])
+    let mut hasher = Keccak256::new();
     hasher.update(&pubkey_bytes[1..]); // Skip 0x04 prefix
     let hash = hasher.finalize();
 

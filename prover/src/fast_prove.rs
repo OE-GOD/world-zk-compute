@@ -13,7 +13,6 @@
 
 use alloy::primitives::B256;
 use anyhow::{anyhow, Result};
-use risc0_zkvm::{default_executor, ExecutorEnv};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -21,11 +20,13 @@ use tokio::sync::{RwLock, Semaphore};
 use tracing::{debug, info};
 
 use crate::bonsai::ProvingMode;
+use crate::multi_vm::MultiVmProver;
 use crate::prover::UnifiedProver;
 use crate::segment_prover::{
     optimal_po2, recommended_thread_count, estimate_segments_for_po2,
     SegmentProver, SegmentProverConfig,
 };
+use crate::zkvm_backend::{detect_vm_type, ZkVmType};
 
 /// Fast proving configuration
 #[derive(Clone, Debug)]
@@ -44,6 +45,8 @@ pub struct FastProveConfig {
     pub witness_threads: usize,
     /// Cache execution traces
     pub trace_caching: bool,
+    /// Maximum time for proof generation before timeout
+    pub proof_timeout: Duration,
 }
 
 impl Default for FastProveConfig {
@@ -56,6 +59,7 @@ impl Default for FastProveConfig {
             parallel_witness: true,
             witness_threads: num_cpus::get().min(8),
             trace_caching: true,
+            proof_timeout: Duration::from_secs(30 * 60), // 30 minutes
         }
     }
 }
@@ -103,6 +107,8 @@ pub struct FastProver {
     proving_mode: ProvingMode,
     /// Enable SNARK (Groth16) proof generation
     use_snark: bool,
+    /// Multi-VM router for risc0/SP1 dispatch
+    multi_vm: Arc<MultiVmProver>,
 }
 
 impl FastProver {
@@ -119,6 +125,7 @@ impl FastProver {
     /// Create a new fast prover with proving mode and SNARK option
     pub fn with_mode_and_snark(config: FastProveConfig, proving_mode: ProvingMode, use_snark: bool) -> Self {
         let gpu_slots = if config.gpu_memory_pool { 4 } else { 1 };
+        let multi_vm = Arc::new(MultiVmProver::new(proving_mode.clone()));
 
         Self {
             config: config.clone(),
@@ -127,6 +134,27 @@ impl FastProver {
             gpu_semaphore: Arc::new(Semaphore::new(gpu_slots)),
             proving_mode,
             use_snark,
+            multi_vm,
+        }
+    }
+
+    /// Create a new fast prover with an explicit multi-VM router.
+    pub fn with_multi_vm(
+        config: FastProveConfig,
+        proving_mode: ProvingMode,
+        use_snark: bool,
+        multi_vm: Arc<MultiVmProver>,
+    ) -> Self {
+        let gpu_slots = if config.gpu_memory_pool { 4 } else { 1 };
+
+        Self {
+            config: config.clone(),
+            session_pool: Arc::new(RwLock::new(SessionPool::new(4))),
+            trace_cache: Arc::new(RwLock::new(HashMap::new())),
+            gpu_semaphore: Arc::new(Semaphore::new(gpu_slots)),
+            proving_mode,
+            use_snark,
+            multi_vm,
         }
     }
 
@@ -160,8 +188,9 @@ impl FastProver {
         // Rule of thumb: ~1 second per 1M cycles on Bonsai GPU
         let estimated_proof_time = Duration::from_secs((cycles / 1_000_000).max(1));
 
-        // Determine strategy
-        let strategy = self.select_strategy(cycles, memory_bytes);
+        // Determine strategy (VM-type aware)
+        let vm_type = detect_vm_type(elf);
+        let strategy = self.select_strategy_for_vm(cycles, memory_bytes, vm_type);
 
         let output_hash = output.map(|o| {
             use sha2::{Sha256, Digest};
@@ -179,40 +208,43 @@ impl FastProver {
         })
     }
 
-    /// Execute without generating proof (for preflight)
+    /// Execute without generating proof (for preflight).
+    ///
+    /// Uses the multi-VM router to automatically dispatch to the correct
+    /// backend (risc0 or SP1) based on the ELF binary.
     async fn execute_only(
         &self,
         elf: &[u8],
         input: &[u8],
     ) -> Result<(u64, usize, Option<Vec<u8>>)> {
-        // Use actual RISC Zero executor for accurate cycle count
-        let elf_owned = elf.to_vec();
-        let input_owned = input.to_vec();
-
-        // Run in blocking task since executor is sync
-        let result = tokio::task::spawn_blocking(move || {
-            let env = ExecutorEnv::builder()
-                .write_slice(&input_owned)
-                .build()
-                .map_err(|e| anyhow!("Failed to build executor env: {}", e))?;
-
-            let executor = default_executor();
-            let exec_info = executor.execute(env, &elf_owned)
-                .map_err(|e| anyhow!("Execution failed: {}", e))?;
-
-            let cycles = exec_info.cycles();
-            // Estimate memory from segments (rough approximation)
-            let memory_estimate = exec_info.segments.len() * 16 * 1024 * 1024; // ~16MB per segment
-            let journal = exec_info.journal.bytes.clone();
-
-            Ok::<_, anyhow::Error>((cycles, memory_estimate, Some(journal)))
-        }).await??;
-
-        Ok(result)
+        let result = self.multi_vm.execute(elf, input).await?;
+        Ok((
+            result.cycles,
+            result.memory_estimate_bytes,
+            Some(result.journal),
+        ))
     }
 
-    /// Select optimal proving strategy
+    /// Select optimal proving strategy.
+    ///
+    /// SP1 programs always use Direct — SP1 manages segments internally.
+    /// For risc0 programs, selects based on cycle count and memory.
     fn select_strategy(&self, cycles: u64, memory_bytes: usize) -> ProvingStrategy {
+        self.select_strategy_for_vm(cycles, memory_bytes, ZkVmType::Risc0)
+    }
+
+    /// Select strategy with explicit VM type awareness.
+    fn select_strategy_for_vm(
+        &self,
+        cycles: u64,
+        memory_bytes: usize,
+        vm_type: ZkVmType,
+    ) -> ProvingStrategy {
+        // SP1 manages its own segmentation — always use Direct
+        if vm_type == ZkVmType::Sp1 {
+            return ProvingStrategy::Direct;
+        }
+
         let memory_mb = memory_bytes / (1024 * 1024);
 
         match (cycles, memory_mb) {
@@ -225,8 +257,8 @@ impl FastProver {
                 ProvingStrategy::Segmented { num_segments }
             }
 
-            // Large programs - use continuations
-            (c, m) if c < 500_000_000 && m < 512 => ProvingStrategy::Continuation,
+            // Large programs - use continuations (raised to 1B cycles)
+            (c, m) if c < 1_000_000_000 && m < 512 => ProvingStrategy::Continuation,
 
             // Too complex
             _ => ProvingStrategy::TooComplex,
@@ -276,19 +308,24 @@ impl FastProver {
             None
         };
 
-        // Step 4: Prove based on strategy using real RISC Zero prover
-        let (proof, journal) = match preflight.strategy {
-            ProvingStrategy::Direct => {
-                self.prove_direct(elf, input).await?
+        // Step 4: Prove based on strategy using real RISC Zero prover (with timeout)
+        let timeout_duration = self.config.proof_timeout;
+        let (proof, journal) = tokio::time::timeout(timeout_duration, async {
+            match preflight.strategy {
+                ProvingStrategy::Direct => {
+                    self.prove_direct(elf, input).await
+                }
+                ProvingStrategy::Segmented { num_segments } => {
+                    self.prove_segmented(elf, input, num_segments).await
+                }
+                ProvingStrategy::Continuation => {
+                    self.prove_continuation(elf, input).await
+                }
+                ProvingStrategy::TooComplex => unreachable!(),
             }
-            ProvingStrategy::Segmented { num_segments } => {
-                self.prove_segmented(elf, input, num_segments).await?
-            }
-            ProvingStrategy::Continuation => {
-                self.prove_continuation(elf, input).await?
-            }
-            ProvingStrategy::TooComplex => unreachable!(),
-        };
+        })
+        .await
+        .map_err(|_| anyhow!("Proof generation timed out after {:?}", timeout_duration))??;
 
         let total_time = start.elapsed();
         info!("Proof generated in {:?} ({} bytes seal, {} bytes journal)",
@@ -304,11 +341,25 @@ impl FastProver {
         })
     }
 
-    /// Direct proving (fastest for small programs)
+    /// Direct proving (fastest for small programs).
+    ///
+    /// Uses the multi-VM router which auto-detects risc0 vs SP1 and
+    /// dispatches to the correct backend.
     async fn prove_direct(&self, elf: &[u8], input: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
         debug!("Using direct proving strategy with {:?}", self.proving_mode);
 
-        // Use UnifiedProver which handles Local/Bonsai/BonsaiWithFallback
+        // For SP1 programs or when multi-VM handles it
+        let vm_type = detect_vm_type(elf);
+        if vm_type == ZkVmType::Sp1 {
+            let result = if self.use_snark {
+                self.multi_vm.prove_with_snark(elf, input).await?
+            } else {
+                self.multi_vm.prove(elf, input).await?
+            };
+            return Ok((result.seal, result.journal));
+        }
+
+        // For risc0, use UnifiedProver (preserves existing behavior)
         let prover = UnifiedProver::new(self.proving_mode.clone())?;
         let (seal, journal) = prover.prove_with_snark(elf, input, self.use_snark).await?;
 
@@ -318,15 +369,19 @@ impl FastProver {
     /// Segmented proving for medium-complexity programs (20M–100M cycles).
     ///
     /// Tunes `segment_limit_po2` to create more parallel segments and
-    /// configures thread count to match. This is the key optimization over
-    /// prove_direct: risc0 uses default segment size otherwise, which may
-    /// not fully utilize available parallelism.
+    /// configures thread count to match. For SP1 programs, falls back to
+    /// direct proving since SP1 manages segments internally.
     async fn prove_segmented(
         &self,
         elf: &[u8],
         input: &[u8],
         num_segments: usize,
     ) -> Result<(Vec<u8>, Vec<u8>)> {
+        // SP1 manages its own segments — fall back to direct
+        if detect_vm_type(elf) == ZkVmType::Sp1 {
+            return self.prove_direct(elf, input).await;
+        }
+
         // Calculate optimal po2 for this program's cycle count.
         // We use the preflight segment count to estimate total cycles,
         // then choose a po2 that gives roughly num_segments segments.
@@ -362,12 +417,18 @@ impl FastProver {
         Ok((result.seal, result.journal))
     }
 
-    /// Continuation proving for very large programs (100M–500M cycles).
+    /// Continuation proving for very large programs (100M–1B cycles).
     ///
     /// Uses smaller segment size (po2=18–19) for maximum parallelism.
     /// For Bonsai-capable configurations, offloads to cloud proving since
     /// large programs benefit most from GPU acceleration.
+    /// SP1 programs fall back to direct proving.
     async fn prove_continuation(&self, elf: &[u8], input: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
+        // SP1 manages its own segments — fall back to direct
+        if detect_vm_type(elf) == ZkVmType::Sp1 {
+            return self.prove_direct(elf, input).await;
+        }
+
         info!("Using continuation proving strategy (large program)");
 
         // For Bonsai modes, offload to cloud — large programs benefit most
@@ -388,7 +449,7 @@ impl FastProver {
             segment_limit_po2: Some(18), // ~256K cycles/segment → many parallel segments
             proving_threads: 0,           // auto-detect
             cache_executions: false,
-            max_cycles: 500_000_000,
+            max_cycles: 1_000_000_000,    // 1B cycles (raised from 500M)
             max_segments: 4000,           // allow more segments for large programs
             bonsai_threshold_cycles: u64::MAX, // don't redirect to bonsai (already checked)
         };
@@ -583,10 +644,22 @@ mod tests {
             ProvingStrategy::Segmented { .. }
         ));
 
-        // Large program -> Continuation
+        // Large program -> Continuation (threshold raised to 1B)
         assert_eq!(
             prover.select_strategy(200_000_000, 256 * 1024 * 1024),
             ProvingStrategy::Continuation
+        );
+
+        // Very large but under 1B -> still Continuation
+        assert_eq!(
+            prover.select_strategy(800_000_000, 256 * 1024 * 1024),
+            ProvingStrategy::Continuation
+        );
+
+        // SP1 programs always get Direct
+        assert_eq!(
+            prover.select_strategy_for_vm(200_000_000, 256 * 1024 * 1024, ZkVmType::Sp1),
+            ProvingStrategy::Direct
         );
     }
 

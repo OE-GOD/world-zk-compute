@@ -69,6 +69,13 @@ mod audit;
 mod sanitization;
 mod proof_validation;
 mod private_input;
+mod zkvm_backend;
+mod risc0_backend;
+mod multi_vm;
+mod xgboost_decomp;
+mod recursive_wrapper;
+#[cfg(feature = "sp1")]
+mod sp1_prover;
 
 use bonsai::ProvingMode;
 use config::ProverConfig;
@@ -564,12 +571,25 @@ async fn run_prover(
     );
     info!("✓ Proof cache cleanup: every 5 minutes");
 
+    // ════════════════════════════════════════════════════════════════════
+    // Install Graceful Shutdown Handler
+    // ════════════════════════════════════════════════════════════════════
+    let shutdown_controller = Arc::new(shutdown::ShutdownController::new());
+    shutdown::install_signal_handlers(shutdown_controller.clone()).await;
+    let mut shutdown_signal = shutdown_controller.signal();
+
     // Metrics logging interval
     let mut metrics_counter = 0u64;
     let metrics_interval = 12; // Log metrics every 12 iterations (60 seconds at 5s poll)
 
-    // Main loop with instant event notification
+    // Main loop with instant event notification and graceful shutdown
     loop {
+        // Check shutdown before processing
+        if shutdown_controller.is_shutdown() {
+            info!("Shutdown requested, stopping main loop...");
+            break;
+        }
+
         match processor.check_and_process(&provider, &config, &nonce_manager).await {
             Ok(processed) => {
                 if processed > 0 {
@@ -611,9 +631,14 @@ async fn run_prover(
         }
 
         // Wait for either:
-        // 1. Event notification (instant wakeup when new job arrives)
-        // 2. Poll interval timeout (fallback for any missed events)
+        // 1. Shutdown signal (graceful stop)
+        // 2. Event notification (instant wakeup when new job arrives)
+        // 3. Poll interval timeout (fallback for any missed events)
         tokio::select! {
+            _ = shutdown_signal.wait() => {
+                info!("Shutdown signal received, exiting main loop...");
+                break;
+            }
             _ = event_notify.notified() => {
                 debug!("Woke up from event notification (instant!)");
             }
@@ -622,6 +647,18 @@ async fn run_prover(
             }
         }
     }
+
+    // Graceful shutdown: wait for in-flight work to complete
+    info!("Waiting for in-flight tasks to complete (30s grace period)...");
+    let shutdown_config = shutdown::ShutdownConfig::default();
+    shutdown::graceful_shutdown(
+        &shutdown_controller,
+        &shutdown_config,
+        || Box::pin(async { Ok(()) }),
+    ).await?;
+
+    info!("Prover node shut down cleanly.");
+    Ok(())
 }
 
 async fn check_status(

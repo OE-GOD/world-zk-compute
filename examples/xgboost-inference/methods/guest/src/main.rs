@@ -132,10 +132,25 @@ fn main() {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Traverse a single tree iteratively, returning the leaf value.
+///
+/// Guards against malformed models:
+/// - Bounds-checks node indices before access
+/// - Caps iterations at tree size to prevent infinite loops from cycles
 fn traverse_tree(tree: &Tree, features: &[f64]) -> f64 {
+    let num_nodes = tree.nodes.len();
+    if num_nodes == 0 {
+        return 0.0;
+    }
+
     let mut node_idx = 0u32;
 
-    loop {
+    // Max iterations = number of nodes (a valid tree visits each node at most once)
+    for _ in 0..num_nodes {
+        if node_idx as usize >= num_nodes {
+            // Out-of-bounds child index — malformed model
+            return 0.0;
+        }
+
         let node = &tree.nodes[node_idx as usize];
 
         if node.is_leaf == 1 {
@@ -155,6 +170,9 @@ fn traverse_tree(tree: &Tree, features: &[f64]) -> f64 {
             node_idx = node.right_child;
         }
     }
+
+    // Exceeded max depth — likely a cycle in the tree
+    0.0
 }
 
 /// Predict a single sample: base_score + sum of all tree leaf values.

@@ -17,6 +17,9 @@ risc0-bigint2 = "=1.2.6"
 # SHA-256: ~100x faster (500K cycles → 5K cycles)
 sha2 = "=0.10.6"
 
+# Keccak-256: Required for Ethereum address derivation (keccak256, NOT SHA-3)
+sha3 = { version = "0.10.8", default-features = false }
+
 # secp256k1 ECDSA (Ethereum): ~100x faster (10M cycles → 100K cycles)
 k256 = { version = "=0.13.3", default-features = false, features = ["ecdsa"] }
 
