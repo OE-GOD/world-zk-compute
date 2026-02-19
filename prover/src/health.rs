@@ -85,16 +85,6 @@ impl SharedState {
         state.state = ProverState::Error(error);
     }
 
-    pub async fn update_block(&self, block: u64) {
-        let mut state = self.inner.write().await;
-        state.last_block = block;
-    }
-
-    pub async fn update_queue(&self, size: usize) {
-        let mut state = self.inner.write().await;
-        state.queue_size = size;
-    }
-
     pub async fn update_active_proofs(&self, count: u64) {
         let mut state = self.inner.write().await;
         state.active_proofs = count;
@@ -313,10 +303,6 @@ mod tests {
         let status = state.get_status().await;
         assert!(status.running);
         assert_eq!(status.state, ProverState::Running);
-
-        state.update_block(100).await;
-        let status = state.get_status().await;
-        assert_eq!(status.last_block, 100);
     }
 
     #[test]

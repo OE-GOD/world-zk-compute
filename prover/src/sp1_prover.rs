@@ -13,7 +13,7 @@ use sp1_sdk::{ProverClient, SP1Stdin};
 use std::time::Instant;
 use tracing::info;
 
-use crate::zkvm_backend::{ExecutionResult, ProofResult, ZkVmBackend, ZkVmType};
+use crate::zkvm_backend::{ExecutionResult, ProofResult, ZkVmBackend};
 
 /// SP1 proving backend.
 ///
@@ -44,14 +44,6 @@ impl Sp1Backend {
 
 #[async_trait]
 impl ZkVmBackend for Sp1Backend {
-    fn name(&self) -> &str {
-        "sp1"
-    }
-
-    fn vm_type(&self) -> ZkVmType {
-        ZkVmType::Sp1
-    }
-
     async fn execute(&self, elf: &[u8], input: &[u8]) -> Result<ExecutionResult> {
         let elf_owned = elf.to_vec();
         let input_owned = input.to_vec();

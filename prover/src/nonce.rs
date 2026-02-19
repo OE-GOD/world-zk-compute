@@ -132,15 +132,6 @@ where
         Ok(chain_nonce)
     }
 
-    /// Reset nonce to a specific value
-    ///
-    /// Use with caution - primarily for error recovery when you know
-    /// the correct nonce value.
-    pub fn reset_to(&self, nonce: u64) {
-        let old = self.current_nonce.swap(nonce, Ordering::SeqCst);
-        warn!("Nonce manually reset: {} -> {}", old, nonce);
-    }
-
     /// Handle a nonce-related transaction error
     ///
     /// Analyzes the error and takes appropriate action:
@@ -174,69 +165,6 @@ where
 
         self.transaction_completed();
         Ok(())
-    }
-}
-
-/// Wrapper that provides nonce to transactions
-///
-/// Use this with alloy's transaction builder to inject managed nonces.
-#[derive(Clone)]
-pub struct ManagedNonce<P, T, N> {
-    manager: Arc<NonceManager<P, T, N>>,
-}
-
-impl<P, T, N> ManagedNonce<P, T, N>
-where
-    P: Provider<T, N> + Clone + 'static,
-    T: Transport + Clone,
-    N: Network,
-{
-    pub fn new(manager: Arc<NonceManager<P, T, N>>) -> Self {
-        Self { manager }
-    }
-
-    /// Get manager reference
-    pub fn manager(&self) -> &Arc<NonceManager<P, T, N>> {
-        &self.manager
-    }
-
-    /// Get next nonce
-    pub fn next(&self) -> u64 {
-        self.manager.next_nonce()
-    }
-}
-
-/// Statistics about nonce management
-#[derive(Debug, Clone)]
-pub struct NonceStats {
-    pub current_nonce: u64,
-    pub pending_transactions: u64,
-    pub address: Address,
-}
-
-impl<P, T, N> NonceManager<P, T, N>
-where
-    P: Provider<T, N> + Clone + 'static,
-    T: Transport + Clone,
-    N: Network,
-{
-    /// Get current statistics
-    pub fn stats(&self) -> NonceStats {
-        NonceStats {
-            current_nonce: self.current(),
-            pending_transactions: self.pending(),
-            address: self.address,
-        }
-    }
-}
-
-impl std::fmt::Display for NonceStats {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "NonceStats {{ address: {}, nonce: {}, pending: {} }}",
-            self.address, self.current_nonce, self.pending_transactions
-        )
     }
 }
 

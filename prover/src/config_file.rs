@@ -23,7 +23,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use tracing::{info, warn};
+use tracing::info;
 
 /// Root configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -234,36 +234,6 @@ impl Config {
         Ok(config)
     }
 
-    /// Load configuration from file or use defaults
-    pub fn load(path: Option<&str>) -> anyhow::Result<Self> {
-        let mut config = if let Some(path) = path {
-            Self::from_file(path)?
-        } else {
-            // Try default paths
-            let default_paths = ["prover.toml", "config/prover.toml", "/etc/world-zk-prover/config.toml"];
-
-            let mut loaded = None;
-            for path in default_paths {
-                if Path::new(path).exists() {
-                    match Self::from_file(path) {
-                        Ok(cfg) => {
-                            loaded = Some(cfg);
-                            break;
-                        }
-                        Err(e) => warn!("Failed to load {}: {}", path, e),
-                    }
-                }
-            }
-
-            loaded.unwrap_or_default()
-        };
-
-        // Always apply env overrides
-        config.apply_env_overrides();
-
-        Ok(config)
-    }
-
     /// Apply environment variable overrides
     fn apply_env_overrides(&mut self) {
         // Private key
@@ -350,12 +320,6 @@ impl Config {
         format!("{}{}", header, sample)
     }
 
-    /// Save configuration to file
-    pub fn save(&self, path: impl AsRef<Path>) -> anyhow::Result<()> {
-        let content = toml::to_string_pretty(self)?;
-        std::fs::write(path, content)?;
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -400,7 +364,8 @@ port = 8080
         let path = dir.path().join("config.toml");
 
         let config = Config::default();
-        config.save(&path).unwrap();
+        let content = toml::to_string_pretty(&config).unwrap();
+        std::fs::write(&path, content).unwrap();
 
         let loaded = Config::from_file(&path).unwrap();
         assert_eq!(loaded.prover.chain_id, config.prover.chain_id);

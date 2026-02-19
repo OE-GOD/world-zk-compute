@@ -12,7 +12,7 @@ use tracing::info;
 
 use crate::bonsai::ProvingMode;
 use crate::prover::UnifiedProver;
-use crate::zkvm_backend::{ExecutionResult, ProofResult, ZkVmBackend, ZkVmType};
+use crate::zkvm_backend::{ExecutionResult, ProofResult, ZkVmBackend};
 
 /// Risc0 proving backend.
 ///
@@ -31,14 +31,6 @@ impl Risc0Backend {
 
 #[async_trait]
 impl ZkVmBackend for Risc0Backend {
-    fn name(&self) -> &str {
-        "risc0"
-    }
-
-    fn vm_type(&self) -> ZkVmType {
-        ZkVmType::Risc0
-    }
-
     async fn execute(&self, elf: &[u8], input: &[u8]) -> Result<ExecutionResult> {
         let elf_owned = elf.to_vec();
         let input_owned = input.to_vec();
@@ -111,8 +103,7 @@ mod tests {
 
     #[test]
     fn test_risc0_backend_new() {
-        let backend = Risc0Backend::new(ProvingMode::Local);
-        assert_eq!(backend.name(), "risc0");
-        assert_eq!(backend.vm_type(), ZkVmType::Risc0);
+        let _backend = Risc0Backend::new(ProvingMode::Local);
+        // Verify construction succeeds
     }
 }

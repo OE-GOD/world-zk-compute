@@ -63,16 +63,6 @@ impl UnifiedProver {
         Ok(Self { mode, bonsai_prover, gpu_prover, gpu_backend })
     }
 
-    /// Get the current GPU backend
-    pub fn gpu_backend(&self) -> GpuBackend {
-        self.gpu_backend
-    }
-
-    /// Check if GPU is available
-    pub fn has_gpu(&self) -> bool {
-        self.gpu_backend.is_gpu()
-    }
-
     /// Execute and prove with the configured mode
     pub async fn prove(
         &self,

@@ -67,21 +67,9 @@ sha2 = "0.10"
 k256 = { version = "0.13", features = ["ecdsa"] }
 base64 = "0.22"
 rand = "0.8"
-aes-gcm = "0.10"
-
-# Compression
-zstd = "0.13"
-lz4 = "1.24"
-snap = "1.1"
 
 # Time
 chrono = "0.4"
-
-# Cluster
-uuid = { version = "1.0", features = ["v4"] }
-
-# Validation
-regex-lite = "0.1"
 
 [dev-dependencies]
 tempfile = "3.10"

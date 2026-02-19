@@ -86,6 +86,7 @@ impl Default for SegmentProverConfig {
 
 /// Analysis of a program execution — produced by preflight, consumed by proving.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ExecutionPlan {
     /// Total cycle count from execution.
     pub cycles: u64,
@@ -479,15 +480,6 @@ impl SegmentProver {
         key
     }
 
-    /// Clear the execution plan cache.
-    pub async fn clear_cache(&self) {
-        self.plan_cache.write().await.clear();
-    }
-
-    /// Get the number of cached execution plans.
-    pub async fn cache_size(&self) -> usize {
-        self.plan_cache.read().await.len()
-    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

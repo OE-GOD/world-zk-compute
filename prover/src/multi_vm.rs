@@ -100,20 +100,6 @@ impl MultiVmProver {
         backend.prove_with_snark(elf, input).await
     }
 
-    /// Check if a specific VM backend is available.
-    pub fn has_backend(&self, vm_type: ZkVmType) -> bool {
-        self.backends.contains_key(&vm_type)
-    }
-
-    /// List available backends.
-    pub fn available_backends(&self) -> Vec<ZkVmType> {
-        self.backends.keys().copied().collect()
-    }
-
-    /// Detect the VM type for an ELF binary (delegates to `detect_vm_type`).
-    pub fn detect(&self, elf: &[u8]) -> ZkVmType {
-        detect_vm_type(elf)
-    }
 }
 
 #[cfg(test)]
@@ -123,31 +109,21 @@ mod tests {
     #[test]
     fn test_multi_vm_new() {
         let router = MultiVmProver::new(ProvingMode::Local);
-        assert!(router.has_backend(ZkVmType::Risc0));
-        // SP1 may or may not be available depending on feature flags
+        // Risc0 backend should always be available
+        assert!(router.get_backend(ZkVmType::Risc0).is_ok());
     }
 
     #[test]
     fn test_multi_vm_detect_risc0() {
-        let router = MultiVmProver::new(ProvingMode::Local);
         let elf = vec![0x7f, 0x45, 0x4c, 0x46]; // standard ELF
-        assert_eq!(router.detect(&elf), ZkVmType::Risc0);
-    }
-
-    #[test]
-    fn test_multi_vm_available_backends() {
-        let router = MultiVmProver::new(ProvingMode::Local);
-        let backends = router.available_backends();
-        assert!(backends.contains(&ZkVmType::Risc0));
+        assert_eq!(detect_vm_type(&elf), ZkVmType::Risc0);
     }
 
     #[test]
     fn test_get_backend_missing() {
         let router = MultiVmProver::new(ProvingMode::Local);
         // Without sp1 feature, SP1 backend won't be available
-        if !router.has_backend(ZkVmType::Sp1) {
-            let result = router.get_backend(ZkVmType::Sp1);
-            assert!(result.is_err());
-        }
+        #[cfg(not(feature = "sp1"))]
+        assert!(router.get_backend(ZkVmType::Sp1).is_err());
     }
 }

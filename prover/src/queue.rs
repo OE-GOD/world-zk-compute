@@ -26,6 +26,7 @@ use tracing::{debug, info};
 
 /// A job in the queue
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct QueuedJob {
     /// Request ID
     pub request_id: u64,
@@ -95,6 +96,7 @@ impl QueuedJob {
 
 /// Composite score for job prioritization
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub struct JobScore {
     pub tip_score: u64,
     pub urgency_boost: u64,
@@ -230,86 +232,11 @@ impl JobQueue {
         None
     }
 
-    /// Peek at the next job without removing
-    pub fn peek(&self) -> Option<&QueuedJob> {
-        self.heap.peek().map(|s| &s.job)
-    }
-
-    /// Current queue size
-    pub fn len(&self) -> usize {
-        self.heap.len()
-    }
-
-    /// Check if queue is empty
-    pub fn is_empty(&self) -> bool {
-        self.heap.is_empty()
-    }
-
     /// Iterate over jobs in the queue (for prefetching)
     pub fn iter_jobs(&self) -> impl Iterator<Item = &QueuedJob> {
         self.heap.iter().map(|scored| &scored.job)
     }
 
-    /// Remove expired jobs
-    pub fn cleanup_expired(&mut self) -> usize {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-
-        let before = self.heap.len();
-
-        // Rebuild heap without expired jobs
-        let jobs: Vec<_> = std::mem::take(&mut self.heap)
-            .into_iter()
-            .filter(|s| s.job.expires_at > now)
-            .collect();
-
-        self.seen.clear();
-        for scored in jobs {
-            self.seen.insert(scored.job.request_id);
-            self.heap.push(scored);
-        }
-
-        let removed = before - self.heap.len();
-        if removed > 0 {
-            info!("Cleaned up {} expired jobs", removed);
-        }
-        removed
-    }
-
-    /// Get queue statistics
-    pub fn stats(&self) -> QueueStats {
-        let mut total_tip = U256::ZERO;
-        let mut min_tip = U256::MAX;
-        let mut max_tip = U256::ZERO;
-
-        for scored in self.heap.iter() {
-            total_tip += scored.job.tip;
-            if scored.job.tip < min_tip {
-                min_tip = scored.job.tip;
-            }
-            if scored.job.tip > max_tip {
-                max_tip = scored.job.tip;
-            }
-        }
-
-        QueueStats {
-            size: self.heap.len(),
-            total_tip_wei: total_tip,
-            min_tip_wei: if self.heap.is_empty() { U256::ZERO } else { min_tip },
-            max_tip_wei: max_tip,
-        }
-    }
-}
-
-/// Queue statistics
-#[derive(Debug)]
-pub struct QueueStats {
-    pub size: usize,
-    pub total_tip_wei: U256,
-    pub min_tip_wei: U256,
-    pub max_tip_wei: U256,
 }
 
 #[cfg(test)]
@@ -373,7 +300,9 @@ mod tests {
         assert!(queue.push(make_job(1, 0.01, 3600)));
         assert!(!queue.push(make_job(1, 0.01, 3600))); // Duplicate
 
-        assert_eq!(queue.len(), 1);
+        // Only one job should be in the queue
+        assert!(queue.pop().is_some());
+        assert!(queue.pop().is_none());
     }
 
     #[test]
@@ -384,6 +313,8 @@ mod tests {
         assert!(!queue.push(make_job(1, 0.001, 3600))); // Below threshold
         assert!(queue.push(make_job(2, 0.02, 3600)));   // Above threshold
 
-        assert_eq!(queue.len(), 1);
+        // Only one job should be in the queue
+        assert!(queue.pop().is_some());
+        assert!(queue.pop().is_none());
     }
 }

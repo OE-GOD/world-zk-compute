@@ -100,26 +100,6 @@ impl ProgramCache {
         self.cache_dir.join(format!("{}.elf", hex::encode(image_id)))
     }
 
-    /// Get cache statistics
-    pub fn stats(&self) -> CacheStats {
-        let memory_entries = self.memory_cache.read()
-            .map(|c| c.len())
-            .unwrap_or(0);
-        let memory_bytes = *self.current_memory_bytes.read().unwrap();
-
-        // Count disk entries
-        let disk_entries = std::fs::read_dir(&self.cache_dir)
-            .map(|entries| entries.count())
-            .unwrap_or(0);
-
-        CacheStats {
-            memory_entries,
-            memory_bytes,
-            disk_entries,
-            max_memory_bytes: self.max_memory_bytes,
-        }
-    }
-
     /// Clear the cache
     #[allow(dead_code)]
     pub fn clear(&self) -> std::io::Result<()> {
@@ -140,28 +120,6 @@ impl ProgramCache {
 
         info!("Cache cleared");
         Ok(())
-    }
-}
-
-/// Cache statistics
-#[derive(Debug, Clone)]
-pub struct CacheStats {
-    pub memory_entries: usize,
-    pub memory_bytes: usize,
-    pub disk_entries: usize,
-    pub max_memory_bytes: usize,
-}
-
-impl std::fmt::Display for CacheStats {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Cache: {} in memory ({:.2} MB / {:.2} MB), {} on disk",
-            self.memory_entries,
-            self.memory_bytes as f64 / 1024.0 / 1024.0,
-            self.max_memory_bytes as f64 / 1024.0 / 1024.0,
-            self.disk_entries
-        )
     }
 }
 

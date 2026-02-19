@@ -46,21 +46,6 @@ pub struct WrapperInput {
     pub merged_journal: Vec<u8>,
 }
 
-/// Output committed by the wrapper guest.
-///
-/// Must match `WrapperOutput` in the guest exactly.
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct WrapperOutput {
-    /// Image ID of the inner guest.
-    pub inner_image_id: [u8; 32],
-    /// Number of verified sub-proofs.
-    pub sub_proof_count: u32,
-    /// SHA-256 hash of all sub-journals.
-    pub journals_hash: [u8; 32],
-    /// The merged journal.
-    pub merged_journal: Vec<u8>,
-}
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // Configuration
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -92,12 +77,13 @@ impl Default for RecursiveWrapperConfig {
 
 /// Result of recursive wrapping.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct RecursiveWrapResult {
     /// The wrapper Receipt (proves all sub-proofs valid + merge).
     pub wrapper_receipt: Receipt,
     /// Seal extracted from the wrapper receipt (for on-chain submission).
     pub wrapper_seal: Vec<u8>,
-    /// Journal from the wrapper receipt (WrapperOutput encoded).
+    /// Journal from the wrapper receipt.
     pub wrapper_journal: Vec<u8>,
     /// The merged journal from all sub-computations.
     pub merged_journal: Vec<u8>,
@@ -325,24 +311,6 @@ mod tests {
         assert_eq!(decoded.sub_proof_count, 3);
         assert_eq!(decoded.sub_journals.len(), 3);
         assert_eq!(decoded.merged_journal, vec![10, 11, 12]);
-    }
-
-    #[test]
-    fn test_wrapper_output_serialization() {
-        let output = WrapperOutput {
-            inner_image_id: [0xBB; 32],
-            sub_proof_count: 2,
-            journals_hash: [0xCC; 32],
-            merged_journal: vec![1, 2, 3, 4],
-        };
-
-        let encoded = bincode::serialize(&output).unwrap();
-        let decoded: WrapperOutput = bincode::deserialize(&encoded).unwrap();
-
-        assert_eq!(decoded.inner_image_id, [0xBB; 32]);
-        assert_eq!(decoded.sub_proof_count, 2);
-        assert_eq!(decoded.journals_hash, [0xCC; 32]);
-        assert_eq!(decoded.merged_journal, vec![1, 2, 3, 4]);
     }
 
     #[test]

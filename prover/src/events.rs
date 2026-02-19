@@ -20,17 +20,12 @@
 //! ```
 
 use crate::contracts::IExecutionEngine;
-use crate::queue::{JobQueue, QueuedJob};
-use crate::cache::ProgramCache;
-use crate::prefetch::InputPrefetcher;
 use alloy::primitives::{Address, B256, U256};
 use alloy::providers::{Provider, ProviderBuilder};
 use alloy::rpc::types::Filter;
 use alloy::sol_types::SolEvent;
 use futures::StreamExt;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
@@ -49,29 +44,9 @@ pub struct EventConfig {
     pub min_tip: U256,
 }
 
-impl EventConfig {
-    /// Create config from HTTP URL (converts to WS)
-    pub fn from_http_url(http_url: &str, engine_address: Address, min_tip: U256) -> Self {
-        let ws_url = http_to_ws_url(http_url);
-        Self {
-            ws_url,
-            engine_address,
-            reconnect_delay: Duration::from_secs(1),
-            max_reconnect_delay: Duration::from_secs(60),
-            min_tip,
-        }
-    }
-}
-
-/// Convert HTTP URL to WebSocket URL
-fn http_to_ws_url(http_url: &str) -> String {
-    http_url
-        .replace("https://", "wss://")
-        .replace("http://", "ws://")
-}
-
 /// Event data extracted from ExecutionRequested event
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct NewJobEvent {
     pub request_id: u64,
     pub requester: Address,
@@ -240,151 +215,5 @@ impl EventSubscriber {
             tip: inner.tip,
             expires_at,
         }))
-    }
-}
-
-/// Event processor that adds events to the job queue
-pub struct EventProcessor {
-    /// Receiver for new job events
-    event_rx: mpsc::Receiver<NewJobEvent>,
-    /// Job queue to add to
-    job_queue: Arc<RwLock<JobQueue>>,
-    /// Program cache to check for cached programs
-    program_cache: Arc<ProgramCache>,
-    /// Input prefetcher to start prefetching
-    input_prefetcher: Arc<InputPrefetcher>,
-}
-
-impl EventProcessor {
-    /// Create a new event processor
-    pub fn new(
-        event_rx: mpsc::Receiver<NewJobEvent>,
-        job_queue: Arc<RwLock<JobQueue>>,
-        program_cache: Arc<ProgramCache>,
-        input_prefetcher: Arc<InputPrefetcher>,
-    ) -> Self {
-        Self {
-            event_rx,
-            job_queue,
-            program_cache,
-            input_prefetcher,
-        }
-    }
-
-    /// Process events from the channel
-    pub async fn run(mut self) {
-        info!("Event processor started");
-
-        while let Some(event) = self.event_rx.recv().await {
-            self.process_event(event).await;
-        }
-
-        info!("Event processor stopped");
-    }
-
-    /// Process a single event
-    async fn process_event(&self, event: NewJobEvent) {
-        debug!("Processing event for request {}", event.request_id);
-
-        // Check if program is cached (bonus priority)
-        let program_cached = self.program_cache.get(&event.image_id).is_some();
-
-        // Create queued job
-        // Note: input_url will be fetched when we call getRequest
-        // For now, we create a placeholder job with the event data
-        let job = QueuedJob {
-            request_id: event.request_id,
-            image_id: event.image_id,
-            input_hash: event.input_digest,
-            input_url: String::new(), // Will be filled when processing
-            tip: event.tip,
-            requester: event.requester,
-            expires_at: event.expires_at,
-            queued_at: Instant::now(),
-            estimated_cycles: None,
-            program_cached,
-            prefetched_input: None,
-        };
-
-        // Add to queue
-        {
-            let mut queue = self.job_queue.write().await;
-            if queue.push(job.clone()) {
-                info!(
-                    "Added job {} from event (instant detection!)",
-                    event.request_id
-                );
-            } else {
-                debug!("Job {} not added (filtered or duplicate)", event.request_id);
-            }
-        }
-    }
-}
-
-/// Hybrid subscriber that combines event subscription with periodic polling
-/// as a fallback for missed events
-pub struct HybridEventSubscriber {
-    /// Event subscriber for real-time updates
-    subscriber: EventSubscriber,
-    /// Polling interval as fallback
-    poll_interval: Duration,
-}
-
-impl HybridEventSubscriber {
-    /// Create a new hybrid subscriber
-    pub fn new(
-        config: EventConfig,
-        event_tx: mpsc::Sender<NewJobEvent>,
-        allowed_images: Vec<B256>,
-        poll_interval: Duration,
-    ) -> Self {
-        let subscriber = EventSubscriber::new(config, event_tx, allowed_images);
-        Self {
-            subscriber,
-            poll_interval,
-        }
-    }
-
-    /// Start both event subscription and periodic polling
-    pub async fn run(self) {
-        // Run event subscription (this never returns normally)
-        self.subscriber.run().await;
-    }
-}
-
-/// Statistics for event subscription
-#[derive(Debug, Default)]
-pub struct EventStats {
-    pub events_received: u64,
-    pub events_processed: u64,
-    pub events_filtered: u64,
-    pub reconnections: u64,
-    pub last_event_at: Option<Instant>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_http_to_ws_url() {
-        assert_eq!(
-            http_to_ws_url("https://rpc.world.org"),
-            "wss://rpc.world.org"
-        );
-        assert_eq!(
-            http_to_ws_url("http://localhost:8545"),
-            "ws://localhost:8545"
-        );
-    }
-
-    #[test]
-    fn test_event_config_from_http() {
-        let config = EventConfig::from_http_url(
-            "https://rpc.world.org",
-            Address::ZERO,
-            U256::ZERO,
-        );
-        assert_eq!(config.ws_url, "wss://rpc.world.org");
     }
 }

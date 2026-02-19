@@ -75,6 +75,7 @@ pub struct OptimizedProcessor {
     /// Proof cache for instant results on repeated jobs
     proof_cache: Arc<ProofCache>,
     /// Multi-VM router (risc0 / SP1)
+    #[allow(dead_code)]
     multi_vm: Arc<MultiVmProver>,
     /// Strategy registry for input decomposition
     strategy_registry: Arc<StrategyRegistry>,
@@ -1071,6 +1072,7 @@ fn is_retryable_error(error: &str) -> bool {
 /// Result of a transaction with retry
 pub struct TransactionResult {
     pub tx_hash: alloy::primitives::TxHash,
+    #[allow(dead_code)]
     pub attempts: u32,
 }
 
@@ -1340,24 +1342,3 @@ async fn check_profitability(
     })
 }
 
-// ============================================================================
-// Legacy function for backwards compatibility
-// ============================================================================
-
-/// Check for pending requests and process them (legacy sequential version)
-pub async fn check_and_process_requests(
-    provider: &Arc<SigningProvider>,
-    config: &ProverConfig,
-    nonce_manager: &Arc<SigningNonceManager>,
-) -> anyhow::Result<u64> {
-    // Create processor with defaults
-    let processor = OptimizedProcessor::new(
-        4,                           // max_concurrent
-        config.min_tip_wei,          // min_tip
-        256,                         // cache_size_mb
-        config.proving_mode.clone(), // proving_mode from config
-        config.use_snark,            // SNARK mode from config
-    )?;
-
-    processor.check_and_process(provider, config, nonce_manager).await
-}

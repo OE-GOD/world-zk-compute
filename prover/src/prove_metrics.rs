@@ -158,11 +158,6 @@ impl ProveTimeline {
         self.current_metadata = Some(metadata.to_string());
     }
 
-    /// Add metadata to the current stage.
-    pub fn set_metadata(&mut self, metadata: &str) {
-        self.current_metadata = Some(metadata.to_string());
-    }
-
     /// Close the current stage and record its timing.
     fn close_current_stage(&mut self) {
         if let Some(stage) = self.current_stage.take() {
@@ -188,10 +183,6 @@ impl ProveTimeline {
         }
     }
 
-    /// Get elapsed time since timeline started.
-    pub fn elapsed(&self) -> Duration {
-        self.start_time.elapsed()
-    }
 }
 
 /// Completed timeline with all stage timings.
@@ -216,18 +207,6 @@ impl FinishedTimeline {
     /// Get the proving stage duration (the main bottleneck).
     pub fn prove_duration(&self) -> Duration {
         self.stage_duration(ProveStage::Proving)
-    }
-
-    /// Fraction of total time spent in each stage.
-    pub fn stage_fractions(&self) -> Vec<(ProveStage, f64)> {
-        let total = self.total_time.as_secs_f64();
-        if total == 0.0 {
-            return vec![];
-        }
-        self.stages
-            .iter()
-            .map(|s| (s.stage, s.duration.as_secs_f64() / total))
-            .collect()
     }
 
     /// Overhead: total time minus proving time.
@@ -451,58 +430,11 @@ impl PipelineSnapshot {
         (self.successful_jobs as f64 / self.total_jobs as f64) * 100.0
     }
 
-    /// Average total proving time (sum of all stage averages).
-    pub fn avg_total_time(&self) -> Duration {
-        self.stage_stats.iter().map(|s| s.avg).sum()
-    }
-
     /// Which stage dominates (highest average time)?
     pub fn bottleneck(&self) -> Option<&StageStats> {
         self.stage_stats.iter().max_by_key(|s| s.avg)
     }
 
-    /// Format as Prometheus metrics.
-    pub fn to_prometheus(&self) -> String {
-        let mut out = String::new();
-
-        out.push_str("# HELP prove_pipeline_jobs_total Total proving jobs\n");
-        out.push_str("# TYPE prove_pipeline_jobs_total counter\n");
-        out.push_str(&format!("prove_pipeline_jobs_total {}\n\n", self.total_jobs));
-
-        out.push_str("# HELP prove_pipeline_success_total Successful proving jobs\n");
-        out.push_str("# TYPE prove_pipeline_success_total counter\n");
-        out.push_str(&format!(
-            "prove_pipeline_success_total {}\n\n",
-            self.successful_jobs
-        ));
-
-        out.push_str(
-            "# HELP prove_pipeline_stage_seconds_avg Average stage duration in seconds\n",
-        );
-        out.push_str("# TYPE prove_pipeline_stage_seconds_avg gauge\n");
-        for s in &self.stage_stats {
-            out.push_str(&format!(
-                "prove_pipeline_stage_seconds_avg{{stage=\"{}\"}} {:.6}\n",
-                s.stage.name(),
-                s.avg.as_secs_f64()
-            ));
-        }
-        out.push('\n');
-
-        out.push_str(
-            "# HELP prove_pipeline_stage_seconds_p95 P95 stage duration in seconds\n",
-        );
-        out.push_str("# TYPE prove_pipeline_stage_seconds_p95 gauge\n");
-        for s in &self.stage_stats {
-            out.push_str(&format!(
-                "prove_pipeline_stage_seconds_p95{{stage=\"{}\"}} {:.6}\n",
-                s.stage.name(),
-                s.p95.as_secs_f64()
-            ));
-        }
-
-        out
-    }
 }
 
 impl std::fmt::Display for PipelineSnapshot {
@@ -635,32 +567,6 @@ mod tests {
     }
 
     #[test]
-    fn test_stage_fractions() {
-        let finished = FinishedTimeline {
-            request_id: 1,
-            success: true,
-            total_time: Duration::from_secs(10),
-            stages: vec![
-                StageTiming {
-                    stage: ProveStage::Fetch,
-                    duration: Duration::from_secs(1),
-                    metadata: None,
-                },
-                StageTiming {
-                    stage: ProveStage::Proving,
-                    duration: Duration::from_secs(9),
-                    metadata: None,
-                },
-            ],
-        };
-
-        let fractions = finished.stage_fractions();
-        assert_eq!(fractions.len(), 2);
-        assert!((fractions[0].1 - 0.1).abs() < 0.01); // Fetch ~10%
-        assert!((fractions[1].1 - 0.9).abs() < 0.01); // Proving ~90%
-    }
-
-    #[test]
     fn test_pipeline_metrics() {
         let metrics = PipelineMetrics::new();
 
@@ -725,28 +631,6 @@ mod tests {
     }
 
     #[test]
-    fn test_prometheus_output() {
-        let metrics = PipelineMetrics::new();
-
-        let finished = FinishedTimeline {
-            request_id: 1,
-            success: true,
-            total_time: Duration::from_secs(5),
-            stages: vec![StageTiming {
-                stage: ProveStage::Proving,
-                duration: Duration::from_secs(4),
-                metadata: None,
-            }],
-        };
-        metrics.record(&finished);
-
-        let prom = metrics.snapshot().to_prometheus();
-        assert!(prom.contains("prove_pipeline_jobs_total 1"));
-        assert!(prom.contains("prove_pipeline_success_total 1"));
-        assert!(prom.contains("stage=\"proving\""));
-    }
-
-    #[test]
     fn test_empty_metrics() {
         let metrics = PipelineMetrics::new();
         let snapshot = metrics.snapshot();
@@ -754,7 +638,6 @@ mod tests {
         assert_eq!(snapshot.total_jobs, 0);
         assert_eq!(snapshot.success_rate(), 100.0);
         assert!(snapshot.bottleneck().is_none());
-        assert_eq!(snapshot.avg_total_time(), Duration::ZERO);
     }
 
     #[test]

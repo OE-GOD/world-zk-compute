@@ -55,25 +55,6 @@ impl Default for IpfsConfig {
     }
 }
 
-impl IpfsConfig {
-    /// Create config with custom gateway
-    pub fn with_gateway(mut self, gateway: &str) -> Self {
-        // Add custom gateway as first option
-        self.gateways.insert(0, gateway.to_string());
-        self
-    }
-
-    /// Create config for local IPFS node
-    pub fn local_node() -> Self {
-        Self {
-            gateways: vec!["http://localhost:8080/ipfs/".to_string()],
-            timeout: Duration::from_secs(60),
-            max_retries: 1,
-            max_size: 500 * 1024 * 1024, // 500 MB for local
-        }
-    }
-}
-
 /// IPFS client for fetching content
 pub struct IpfsClient {
     http: Client,
@@ -192,33 +173,6 @@ impl IpfsClient {
             || url.starts_with("bafy") // CIDv1
     }
 
-    /// Fetch JSON content and deserialize
-    pub async fn fetch_json<T: serde::de::DeserializeOwned>(&self, cid: &str) -> Result<T> {
-        let data = self.fetch(cid).await?;
-        let value: T = serde_json::from_slice(&data)?;
-        Ok(value)
-    }
-}
-
-/// Helper to resolve input URLs (supports both HTTP and IPFS)
-pub async fn resolve_input_url(url: &str, ipfs_client: Option<&IpfsClient>) -> Result<Vec<u8>> {
-    if IpfsClient::is_ipfs_url(url) {
-        match ipfs_client {
-            Some(client) => client.fetch(url).await,
-            None => {
-                // Use default client for one-off fetch
-                let client = IpfsClient::new(IpfsConfig::default());
-                client.fetch(url).await
-            }
-        }
-    } else {
-        // Regular HTTP fetch
-        let response = reqwest::get(url).await?;
-        if !response.status().is_success() {
-            return Err(anyhow!("HTTP error: {}", response.status()));
-        }
-        Ok(response.bytes().await?.to_vec())
-    }
 }
 
 #[cfg(test)]

@@ -14,6 +14,7 @@ use tracing::{info, warn, error};
 
 /// Shutdown signal that can be cloned and shared
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct ShutdownSignal {
     /// Whether shutdown has been initiated
     shutdown: Arc<AtomicBool>,
@@ -22,11 +23,6 @@ pub struct ShutdownSignal {
 }
 
 impl ShutdownSignal {
-    /// Check if shutdown has been requested
-    pub fn is_shutdown(&self) -> bool {
-        self.shutdown.load(Ordering::SeqCst)
-    }
-
     /// Wait for shutdown signal
     pub async fn wait(&mut self) {
         // If already shutdown, return immediately
@@ -37,16 +33,6 @@ impl ShutdownSignal {
         let _ = self.receiver.wait_for(|&v| v).await;
     }
 
-    /// Create a future that completes when shutdown is signaled
-    pub fn notified(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
-        let mut receiver = self.receiver.clone();
-        async move {
-            if *receiver.borrow() {
-                return;
-            }
-            let _ = receiver.wait_for(|&v| v).await;
-        }
-    }
 }
 
 /// Shutdown controller that manages the shutdown process
@@ -59,8 +45,6 @@ pub struct ShutdownController {
     receiver: watch::Receiver<bool>,
     /// Broadcast channel for shutdown complete notifications
     complete_tx: broadcast::Sender<()>,
-    /// Number of active tasks to wait for
-    active_tasks: Arc<AtomicBool>,
 }
 
 impl ShutdownController {
@@ -74,7 +58,6 @@ impl ShutdownController {
             sender,
             receiver,
             complete_tx,
-            active_tasks: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -115,46 +98,11 @@ impl ShutdownController {
         }
     }
 
-    /// Signal that shutdown is complete
-    pub fn complete(&self) {
-        let _ = self.complete_tx.send(());
-    }
 }
 
 impl Default for ShutdownController {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-/// Task guard that tracks active tasks during shutdown
-pub struct TaskGuard {
-    signal: ShutdownSignal,
-    name: String,
-}
-
-impl TaskGuard {
-    /// Create a new task guard
-    pub fn new(signal: ShutdownSignal, name: impl Into<String>) -> Self {
-        let name = name.into();
-        info!("Task started: {}", name);
-        Self { signal, name }
-    }
-
-    /// Check if should continue running
-    pub fn should_run(&self) -> bool {
-        !self.signal.is_shutdown()
-    }
-
-    /// Get the shutdown signal
-    pub fn signal(&self) -> &ShutdownSignal {
-        &self.signal
-    }
-}
-
-impl Drop for TaskGuard {
-    fn drop(&mut self) {
-        info!("Task stopped: {}", self.name);
     }
 }
 
@@ -203,6 +151,7 @@ pub async fn install_signal_handlers(controller: Arc<ShutdownController>) {
 
 /// Graceful shutdown configuration
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ShutdownConfig {
     /// Maximum time to wait for in-flight tasks
     pub grace_period: Duration,
@@ -258,13 +207,13 @@ mod tests {
     #[tokio::test]
     async fn test_shutdown_signal() {
         let controller = ShutdownController::new();
-        let signal = controller.signal();
+        let _signal = controller.signal();
 
-        assert!(!signal.is_shutdown());
+        assert!(!controller.is_shutdown());
 
         controller.shutdown();
 
-        assert!(signal.is_shutdown());
+        assert!(controller.is_shutdown());
     }
 
     #[tokio::test]
@@ -284,37 +233,7 @@ mod tests {
         // Wait should complete when shutdown is triggered
         signal.wait().await;
 
-        assert!(signal.is_shutdown());
-    }
-
-    #[tokio::test]
-    async fn test_multiple_signals() {
-        let controller = ShutdownController::new();
-        let signal1 = controller.signal();
-        let signal2 = controller.signal();
-        let signal3 = controller.signal();
-
-        assert!(!signal1.is_shutdown());
-        assert!(!signal2.is_shutdown());
-        assert!(!signal3.is_shutdown());
-
-        controller.shutdown();
-
-        assert!(signal1.is_shutdown());
-        assert!(signal2.is_shutdown());
-        assert!(signal3.is_shutdown());
-    }
-
-    #[tokio::test]
-    async fn test_task_guard() {
-        let controller = ShutdownController::new();
-        let signal = controller.signal();
-
-        let guard = TaskGuard::new(signal, "test-task");
-        assert!(guard.should_run());
-
-        controller.shutdown();
-        assert!(!guard.should_run());
+        assert!(controller_clone.is_shutdown());
     }
 
     #[tokio::test]
@@ -326,23 +245,6 @@ mod tests {
         controller.shutdown(); // Should not panic
 
         assert!(controller.is_shutdown());
-    }
-
-    #[tokio::test]
-    async fn test_completion_signal() {
-        let controller = Arc::new(ShutdownController::new());
-        let controller_clone = controller.clone();
-
-        // Spawn task that signals completion
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            controller_clone.complete();
-        });
-
-        controller.shutdown();
-        let completed = controller.wait_for_completion(Duration::from_secs(1)).await;
-
-        assert!(completed);
     }
 
     #[tokio::test]

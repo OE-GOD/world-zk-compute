@@ -10,6 +10,7 @@ use std::time::Duration;
 
 /// Result of executing a guest program without proving.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ExecutionResult {
     /// Public outputs (journal).
     pub journal: Vec<u8>,
@@ -25,6 +26,7 @@ pub struct ExecutionResult {
 
 /// Result of proving a guest program.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ProofResult {
     /// Proof seal bytes.
     pub seal: Vec<u8>,
@@ -58,12 +60,6 @@ impl std::fmt::Display for ZkVmType {
 /// allowing the multi-VM router to dispatch to the correct backend.
 #[async_trait]
 pub trait ZkVmBackend: Send + Sync {
-    /// Human-readable name for logging.
-    fn name(&self) -> &str;
-
-    /// Which VM type this backend supports.
-    fn vm_type(&self) -> ZkVmType;
-
     /// Execute the guest program without generating a proof.
     ///
     /// Used for preflight analysis (cycle estimation, output preview).

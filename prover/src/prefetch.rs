@@ -36,6 +36,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 /// Configuration for the input prefetcher
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct PrefetchConfig {
     /// Maximum number of concurrent prefetch operations
@@ -91,11 +92,6 @@ impl InputPrefetcher {
             cache_size: Arc::new(RwLock::new(0)),
             in_progress: Arc::new(RwLock::new(std::collections::HashSet::new())),
         }
-    }
-
-    /// Create with default config
-    pub fn with_defaults(ipfs_client: Arc<IpfsClient>) -> Self {
-        Self::new(ipfs_client, PrefetchConfig::default())
     }
 
     /// Start prefetching input for a job (non-blocking)
@@ -209,13 +205,6 @@ impl InputPrefetcher {
         });
     }
 
-    /// Prefetch inputs for multiple jobs
-    pub fn prefetch_batch(&self, jobs: &[QueuedJob]) {
-        for job in jobs {
-            self.prefetch(job);
-        }
-    }
-
     /// Get cached input if available
     ///
     /// Returns the input data if it was prefetched and is still valid.
@@ -244,40 +233,6 @@ impl InputPrefetcher {
         }
 
         None
-    }
-
-    /// Remove entry from cache
-    pub async fn invalidate(&self, url: &str) {
-        let mut cache = self.cache.write().await;
-        let mut size = self.cache_size.write().await;
-
-        if let Some(removed) = cache.remove(url) {
-            *size -= removed.size;
-            debug!("[Prefetch] Invalidated cache for {}", url);
-        }
-    }
-
-    /// Clear expired entries
-    pub async fn cleanup_expired(&self) -> usize {
-        let mut cache = self.cache.write().await;
-        let mut size = self.cache_size.write().await;
-        let ttl = self.config.cache_ttl;
-
-        let before = cache.len();
-
-        cache.retain(|_, entry| {
-            let expired = entry.fetched_at.elapsed() > ttl;
-            if expired {
-                *size -= entry.size;
-            }
-            !expired
-        });
-
-        let removed = before - cache.len();
-        if removed > 0 {
-            info!("[Prefetch] Cleaned up {} expired entries", removed);
-        }
-        removed
     }
 
     /// Get cache statistics
@@ -377,7 +332,7 @@ mod tests {
     #[tokio::test]
     async fn test_prefetch_stats() {
         let ipfs = Arc::new(IpfsClient::new(IpfsConfig::default()));
-        let prefetcher = InputPrefetcher::with_defaults(ipfs);
+        let prefetcher = InputPrefetcher::new(ipfs, PrefetchConfig::default());
 
         let stats = prefetcher.stats().await;
         assert_eq!(stats.cached_entries, 0);

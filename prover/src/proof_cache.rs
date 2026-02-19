@@ -117,17 +117,6 @@ pub struct CacheStats {
     pub disk_hits: u64,
 }
 
-impl CacheStats {
-    pub fn hit_rate(&self) -> f64 {
-        let total = self.hits + self.misses;
-        if total == 0 {
-            0.0
-        } else {
-            self.hits as f64 / total as f64
-        }
-    }
-}
-
 impl ProofCache {
     /// Create a new proof cache
     pub fn new(max_memory_entries: usize, disk_path: Option<PathBuf>, ttl: Duration) -> Self {
@@ -313,16 +302,6 @@ impl ProofCache {
         }
     }
 
-    /// Get cache statistics
-    pub async fn stats(&self) -> CacheStats {
-        self.stats.read().await.clone()
-    }
-
-    /// Get current cache size
-    pub async fn size(&self) -> usize {
-        self.memory.read().await.len()
-    }
-
     /// Start a background task that periodically cleans up expired entries.
     ///
     /// Returns a JoinHandle that can be used to cancel the task.
@@ -452,10 +431,6 @@ mod tests {
         let key = ProofCacheKey::new(B256::ZERO, B256::ZERO, false);
         let cached = cache.get(&key).await;
         assert!(cached.is_none());
-
-        let stats = cache.stats().await;
-        assert_eq!(stats.misses, 1);
-        assert_eq!(stats.hits, 0);
     }
 
     #[tokio::test]

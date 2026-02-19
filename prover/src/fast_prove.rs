@@ -29,6 +29,7 @@ use crate::zkvm_backend::{detect_vm_type, ZkVmType};
 
 /// Fast proving configuration
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct FastProveConfig {
     /// Enable preflight to estimate cycles
     pub preflight_enabled: bool,
@@ -65,6 +66,7 @@ impl Default for FastProveConfig {
 
 /// Execution preflight result
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct PreflightResult {
     /// Estimated cycle count
     pub cycles: u64,
@@ -94,6 +96,7 @@ pub enum ProvingStrategy {
 }
 
 /// Fast prover with optimizations
+#[allow(dead_code)]
 pub struct FastProver {
     config: FastProveConfig,
     /// Session pool for reuse
@@ -110,6 +113,7 @@ pub struct FastProver {
     multi_vm: Arc<MultiVmProver>,
 }
 
+#[allow(dead_code)]
 impl FastProver {
     /// Create a new fast prover
     pub fn new(config: FastProveConfig) -> Self {
@@ -487,17 +491,11 @@ impl FastProver {
         })
     }
 
-    /// Create a new proving session
-    async fn create_session(&self, _elf: &[u8]) -> Result<ProvingSession> {
-        Ok(ProvingSession {
-            id: rand::random(),
-            created_at: Instant::now(),
-        })
-    }
 }
 
 /// Result of fast proving
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct FastProofResult {
     /// The proof seal bytes
     pub proof: Vec<u8>,
@@ -513,46 +511,16 @@ pub struct FastProofResult {
     pub output_hash: B256,
 }
 
-/// Proving session (reusable)
-#[derive(Debug)]
-struct ProvingSession {
-    id: u64,
-    created_at: Instant,
-}
-
 /// Pool of proving sessions for reuse
+#[allow(dead_code)]
 struct SessionPool {
-    sessions: Vec<ProvingSession>,
     max_size: usize,
 }
 
 impl SessionPool {
     fn new(max_size: usize) -> Self {
         Self {
-            sessions: Vec::with_capacity(max_size),
             max_size,
-        }
-    }
-
-    async fn get_or_create(&mut self, _elf: &[u8]) -> Result<ProvingSession> {
-        // Try to reuse existing session
-        if let Some(session) = self.sessions.pop() {
-            if session.created_at.elapsed() < Duration::from_secs(300) {
-                debug!("Reusing cached session {}", session.id);
-                return Ok(session);
-            }
-        }
-
-        // Create new session
-        Ok(ProvingSession {
-            id: rand::random(),
-            created_at: Instant::now(),
-        })
-    }
-
-    fn return_session(&mut self, session: ProvingSession) {
-        if self.sessions.len() < self.max_size {
-            self.sessions.push(session);
         }
     }
 }
@@ -566,52 +534,6 @@ struct ExecutionTrace {
     /// Cycle count
     #[allow(dead_code)]
     cycles: u64,
-}
-
-/// Benchmark different proving strategies
-pub async fn benchmark_strategies(elf: &[u8], input: &[u8]) -> BenchmarkResult {
-    let prover = FastProver::new(FastProveConfig::default());
-
-    info!("Benchmarking proving strategies...");
-
-    // Test preflight
-    let preflight_start = Instant::now();
-    let preflight = prover.preflight(elf, input).await.ok();
-    let preflight_time = preflight_start.elapsed();
-
-    // Test full prove
-    let prove_start = Instant::now();
-    let result = prover.prove_fast(elf, input).await.ok();
-    let prove_time = prove_start.elapsed();
-
-    BenchmarkResult {
-        preflight_time,
-        preflight_cycles: preflight.as_ref().map(|p| p.cycles).unwrap_or(0),
-        recommended_strategy: preflight.map(|p| p.strategy).unwrap_or(ProvingStrategy::Direct),
-        actual_prove_time: prove_time,
-        proof_size: result.as_ref().map(|r| r.proof.len()).unwrap_or(0),
-    }
-}
-
-/// Benchmark results
-#[derive(Debug)]
-pub struct BenchmarkResult {
-    pub preflight_time: Duration,
-    pub preflight_cycles: u64,
-    pub recommended_strategy: ProvingStrategy,
-    pub actual_prove_time: Duration,
-    pub proof_size: usize,
-}
-
-impl std::fmt::Display for BenchmarkResult {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "=== Proving Benchmark ===")?;
-        writeln!(f, "Preflight: {:?} ({} cycles)", self.preflight_time, self.preflight_cycles)?;
-        writeln!(f, "Strategy: {:?}", self.recommended_strategy)?;
-        writeln!(f, "Prove time: {:?}", self.actual_prove_time)?;
-        writeln!(f, "Proof size: {} bytes", self.proof_size)?;
-        Ok(())
-    }
 }
 
 /// Number of CPUs helper
