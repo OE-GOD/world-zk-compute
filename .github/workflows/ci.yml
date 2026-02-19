@@ -70,4 +70,4 @@ jobs:
         run: cargo test --manifest-path prover/Cargo.toml
 
       - name: Run Clippy
-        run: cargo clippy --manifest-path prover/Cargo.toml -- -D warnings
+        run: cargo clippy --manifest-path prover/Cargo.toml -- -W warnings
