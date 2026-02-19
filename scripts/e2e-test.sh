@@ -446,12 +446,12 @@ run_example() {
         fi
 
         # Check request status (RequestStatus enum: 0=Pending, 1=Claimed, 2=Completed)
-        # Use cast with return type decoding for reliability across struct layout changes
-        # Struct fields: id, imageId, inputDigest, requester, createdAt, expiresAt, callbackContract, status, ...
-        STATUS=$(cast call --rpc-url "$RPC_URL" "$ENGINE_ADDR" \
-            "getRequest(uint256)((uint256,bytes32,bytes32,address,uint48,uint48,address,uint8,address,uint48,uint48,uint256,uint256))" 1 2>/dev/null \
-            | sed -n '8p' | tr -d '[:space:]')
-        STATUS=${STATUS:-0}
+        # Parse raw ABI hex — status is the 8th word (index 7) in the struct encoding.
+        # Each word is 64 hex chars; skip 0x prefix (2 chars) + 7 words (448 chars).
+        RAW_HEX=$(cast call --rpc-url "$RPC_URL" "$ENGINE_ADDR" \
+            "getRequest(uint256)" 1 2>/dev/null | tr -d '[:space:]')
+        STATUS_HEX=${RAW_HEX:450:64}
+        STATUS=$((16#${STATUS_HEX:-0})) 2>/dev/null || STATUS=0
 
         case "$STATUS" in
             0) printf "\r  [%3ds] Status: Pending   " "$ELAPSED" ;;
