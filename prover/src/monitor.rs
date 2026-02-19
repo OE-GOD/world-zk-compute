@@ -496,6 +496,7 @@ async fn fetch_request_details(
 }
 
 /// Process a single job with all optimizations
+#[allow(clippy::too_many_arguments)]
 async fn process_single_job(
     provider: &Arc<SigningProvider>,
     config: &ProverConfig,
@@ -884,11 +885,7 @@ async fn try_recursive_wrap(
     inner_image_id.copy_from_slice(image_id.as_slice());
 
     // Clone receipts for the wrapper (it takes ownership)
-    let receipts = decomp_result
-        .receipts
-        .iter()
-        .map(|r| r.clone())
-        .collect();
+    let receipts = decomp_result.receipts.to_vec();
 
     wrapper
         .wrap(inner_image_id, receipts, strategy)

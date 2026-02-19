@@ -26,7 +26,7 @@ use std::path::Path;
 use tracing::info;
 
 /// Root configuration structure
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     /// Prover identity and connection settings
@@ -43,18 +43,6 @@ pub struct Config {
     pub logging: LoggingSection,
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            prover: ProverSection::default(),
-            proving: ProvingSection::default(),
-            api: ApiSection::default(),
-            cluster: ClusterSection::default(),
-            recovery: RecoverySection::default(),
-            logging: LoggingSection::default(),
-        }
-    }
-}
 
 /// Prover identity and connection settings
 #[derive(Debug, Clone, Serialize, Deserialize)]

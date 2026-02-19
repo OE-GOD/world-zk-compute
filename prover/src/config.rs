@@ -64,7 +64,7 @@ impl ProverConfig {
     #[allow(dead_code)]
     pub fn is_bonsai_enabled(&self) -> bool {
         self.proving_mode.uses_bonsai()
-            && self.bonsai_config.as_ref().map_or(false, |c| c.is_configured())
+            && self.bonsai_config.as_ref().is_some_and(|c| c.is_configured())
     }
 
     /// Check if GPU proving is enabled

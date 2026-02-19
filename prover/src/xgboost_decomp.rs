@@ -89,7 +89,7 @@ fn risc0_serialize<T: Serialize>(value: &T) -> Result<Vec<u8>> {
 /// Deserialize bytes using risc0 serde format.
 fn risc0_deserialize<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
     // risc0 serde requires u32-aligned input; reject unaligned data early
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return Err(anyhow!("risc0 deserialize: input length {} not u32-aligned", bytes.len()));
     }
     risc0_zkvm::serde::from_slice::<T, u8>(bytes)

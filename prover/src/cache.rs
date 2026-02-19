@@ -113,7 +113,7 @@ impl ProgramCache {
         // Clear disk
         for entry in std::fs::read_dir(&self.cache_dir)? {
             let entry = entry?;
-            if entry.path().extension().map_or(false, |e| e == "elf") {
+            if entry.path().extension().is_some_and(|e| e == "elf") {
                 std::fs::remove_file(entry.path())?;
             }
         }

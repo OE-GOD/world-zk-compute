@@ -419,13 +419,13 @@ fn generate_signature_verified_input(n: usize) -> Vec<u8> {
     // Compute data hash matching guest's hash_detection_data()
     let mut hasher = Sha256::new();
     for point in &data_points {
-        hasher.update(&point.id);
+        hasher.update(point.id);
         for &feature in &point.features {
-            hasher.update(&feature.to_le_bytes());
+            hasher.update(feature.to_le_bytes());
         }
-        hasher.update(&point.timestamp.to_le_bytes());
+        hasher.update(point.timestamp.to_le_bytes());
     }
-    hasher.update(&threshold.to_le_bytes());
+    hasher.update(threshold.to_le_bytes());
     let data_hash: [u8; 32] = hasher.finalize().into();
 
     // Sign: k256's sign() hashes with SHA-256 internally, matching guest's verify()
@@ -679,7 +679,7 @@ fn optimal_po2(cycles: u64) -> u32 {
 
 fn estimate_segments_for_po2(cycles: u64, po2: u32) -> usize {
     let cycles_per_segment = 1u64 << po2;
-    ((cycles + cycles_per_segment - 1) / cycles_per_segment) as usize
+    cycles.div_ceil(cycles_per_segment) as usize
 }
 
 fn recommended_thread_count(segment_count: usize) -> usize {

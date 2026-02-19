@@ -48,7 +48,7 @@ impl ProofCacheKey {
     }
 
     /// Convert to hex string for file naming
-    pub fn to_hex(&self) -> String {
+    pub fn as_hex(&self) -> String {
         let suffix = if self.use_snark { "_snark" } else { "_stark" };
         format!("{}_{}{}", hex::encode(self.image_id), hex::encode(self.input_hash), suffix)
     }
@@ -271,8 +271,8 @@ impl ProofCache {
     }
 
     /// Load proof from disk
-    async fn load_from_disk(&self, disk_path: &PathBuf, key: &ProofCacheKey) -> Option<CachedProof> {
-        let file_path = disk_path.join(format!("{}.bin", key.to_hex()));
+    async fn load_from_disk(&self, disk_path: &std::path::Path, key: &ProofCacheKey) -> Option<CachedProof> {
+        let file_path = disk_path.join(format!("{}.bin", key.as_hex()));
 
         match tokio::fs::read(&file_path).await {
             Ok(data) => match bincode::deserialize(&data) {
@@ -287,8 +287,8 @@ impl ProofCache {
     }
 
     /// Save proof to disk
-    async fn save_to_disk(&self, disk_path: &PathBuf, key: &ProofCacheKey, proof: &CachedProof) {
-        let file_path = disk_path.join(format!("{}.bin", key.to_hex()));
+    async fn save_to_disk(&self, disk_path: &std::path::Path, key: &ProofCacheKey, proof: &CachedProof) {
+        let file_path = disk_path.join(format!("{}.bin", key.as_hex()));
 
         match bincode::serialize(proof) {
             Ok(data) => {
@@ -460,12 +460,12 @@ mod tests {
     #[test]
     fn test_cache_key_hex() {
         let key = ProofCacheKey::new(B256::repeat_byte(0xAB), B256::repeat_byte(0xCD), false);
-        let hex = key.to_hex();
+        let hex = key.as_hex();
         assert!(hex.contains("abab"));
         assert!(hex.contains("cdcd"));
         assert!(hex.ends_with("_stark"));
 
         let snark_key = ProofCacheKey::new(B256::repeat_byte(0xAB), B256::repeat_byte(0xCD), true);
-        assert!(snark_key.to_hex().ends_with("_snark"));
+        assert!(snark_key.as_hex().ends_with("_snark"));
     }
 }

@@ -769,7 +769,7 @@ fn main() -> Result<()> {
             inner_image_id,
             succinct_receipts,
             &succinct_journals,
-            &succinct_sub_times_opt.as_ref().unwrap(),
+            succinct_sub_times_opt.as_ref().unwrap(),
         )?;
         succinct_wrapped_time = succinct_wrapped.wrapper_time;
         print!("{}", succinct_wrapped);

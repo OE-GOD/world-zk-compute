@@ -549,7 +549,7 @@ pub fn optimal_po2(cycles: u64) -> u32 {
 /// Estimate segment count for a given cycle count and po2.
 pub fn estimate_segments_for_po2(cycles: u64, po2: u32) -> usize {
     let cycles_per_segment = 1u64 << po2;
-    ((cycles + cycles_per_segment - 1) / cycles_per_segment) as usize
+    cycles.div_ceil(cycles_per_segment) as usize
 }
 
 /// Recommend thread count based on segment count and available hardware.

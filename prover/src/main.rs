@@ -324,6 +324,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_prover(
     rpc_url: String,
     ws_url: Option<String>,
@@ -633,7 +634,7 @@ async fn run_prover(
 
         // Periodic metrics logging
         metrics_counter += 1;
-        if metrics_counter % metrics_interval == 0 {
+        if metrics_counter.is_multiple_of(metrics_interval) {
             let snapshot = metrics::metrics().snapshot();
             if snapshot.proofs_generated > 0 || snapshot.proofs_failed > 0 {
                 info!("Metrics: {} proofs ({:.1}% success), {:.1}/hr, avg {:?}",
@@ -770,8 +771,8 @@ async fn list_pending(
 
     println!("Found {} pending request(s):\n", request_ids.len());
     println!(
-        "{:<6} {:<12} {:<44} {:<14} {}",
-        "ID", "Tip (ETH)", "Image ID", "Current Tip", "Expires"
+        "{:<6} {:<12} {:<44} {:<14} Expires",
+        "ID", "Tip (ETH)", "Image ID", "Current Tip"
     );
     println!("{}", "-".repeat(100));
 
