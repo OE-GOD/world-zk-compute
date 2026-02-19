@@ -36,6 +36,14 @@ pub struct ProverConfig {
 
     /// Enable SNARK (Groth16) proof generation for on-chain verification
     pub use_snark: bool,
+
+    /// Maximum concurrent GPU proving jobs (0 = auto-detect from GPU count)
+    #[allow(dead_code)]
+    pub max_gpu_concurrent: usize,
+
+    /// Maximum concurrent CPU proving jobs (0 = auto-detect from CPU count - 1)
+    #[allow(dead_code)]
+    pub max_cpu_concurrent: usize,
 }
 
 impl ProverConfig {
@@ -79,6 +87,8 @@ impl Default for ProverConfig {
             min_profit_margin: 0.2, // 20% minimum profit
             skip_profitability_check: false,
             use_snark: false,
+            max_gpu_concurrent: 0, // Auto-detect
+            max_cpu_concurrent: 0, // Auto-detect
         }
     }
 }

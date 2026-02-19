@@ -1,0 +1,99 @@
+# World ZK Compute Prover - CUDA Production Image
+#
+# Build:
+#   docker build -f Dockerfile.cuda -t world-zk-prover:cuda .
+#
+# Run (single GPU):
+#   docker run --gpus all -e PRIVATE_KEY=0x... -e RPC_URL=https://... world-zk-prover:cuda
+#
+# Run (multi-GPU, 4x A100):
+#   docker run --gpus all -e MAX_GPU_CONCURRENT=4 ... world-zk-prover:cuda
+#
+# Requires: NVIDIA Container Toolkit (nvidia-docker2)
+
+# ── Build stage ──────────────────────────────────────────────────────
+FROM nvidia/cuda:12.6.0-devel-ubuntu22.04 AS builder
+
+# Install Rust and build dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    pkg-config \
+    libssl-dev \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+WORKDIR /app
+
+# Copy manifests for dependency caching
+COPY prover/Cargo.toml prover/Cargo.lock* ./prover/
+
+# Create dummy source for dependency compilation
+RUN mkdir -p prover/src && echo "fn main() {}" > prover/src/main.rs \
+    && mkdir -p prover/src/bin && echo "fn main() {}" > prover/src/bin/prove_benchmark.rs \
+    && echo "fn main() {}" > prover/src/bin/test_recursive_wrapper.rs \
+    && mkdir -p prover/benches && echo "fn main() {}" > prover/benches/prover_benchmarks.rs
+
+# Build dependencies only (cached layer)
+RUN cd prover && cargo build --release --features cuda 2>/dev/null || true
+RUN rm -rf prover/src prover/benches
+
+# Copy actual source code
+COPY prover/src ./prover/src
+COPY prover/benches ./prover/benches
+
+# Touch main.rs to force rebuild of our code
+RUN touch prover/src/main.rs
+
+# Build the binary with CUDA support
+RUN cd prover && cargo build --release --features cuda
+
+# ── Runtime stage ────────────────────────────────────────────────────
+FROM nvidia/cuda:12.6.0-runtime-ubuntu22.04
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install r0vm for Groth16 SNARK conversion
+RUN curl -L https://risczero.com/install | bash \
+    && /root/.risc0/bin/rzup install r0vm 3.0.5 \
+    || true
+ENV PATH="/root/.risc0/bin:${PATH}"
+
+# Create non-root user
+RUN useradd -m -u 1000 prover
+
+WORKDIR /app
+
+# Copy binary from builder
+COPY --from=builder /app/prover/target/release/world-zk-prover /usr/local/bin/
+
+# Create directories
+RUN mkdir -p /app/programs /app/cache /app/data \
+    && chown -R prover:prover /app
+
+# Copy pre-compiled programs if they exist
+COPY programs/ /app/programs/
+
+USER prover
+
+# Default environment for GPU proving
+ENV RUST_LOG=info
+ENV PROVING_MODE=gpu-fallback
+ENV HEALTH_PORT=8081
+ENV MAX_CONCURRENT=4
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD curl -sf http://localhost:8081/health || exit 1
+
+EXPOSE 8081
+
+ENTRYPOINT ["world-zk-prover"]
+CMD ["run"]

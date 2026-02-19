@@ -9,9 +9,11 @@
 //! - Profitability checking
 
 use crate::cache::ProgramCache;
+use crate::concurrency::ConcurrencyManager;
 use crate::config::ProverConfig;
 use crate::contracts::{IExecutionEngine, IProgramRegistry};
 use crate::fast_prove::{FastProveConfig, FastProver, ProvingStrategy};
+use crate::gpu_manager::GpuDeviceManager;
 use crate::input_decomposer::{DecomposerConfig, InputDecomposer, StrategyRegistry};
 use crate::recursive_wrapper;
 use crate::ipfs::{IpfsClient, IpfsConfig};
@@ -33,7 +35,7 @@ use alloy::transports::http::{Client, Http};
 use futures::future::join_all;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{RwLock, Semaphore};
+use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 /// Provider type alias with wallet for signing transactions
@@ -64,8 +66,8 @@ pub type SigningNonceManager = NonceManager<SigningProvider, Http<Client>, Ether
 pub struct OptimizedProcessor {
     /// Job queue for priority ordering
     job_queue: Arc<RwLock<JobQueue>>,
-    /// Semaphore for parallel processing
-    parallel_semaphore: Arc<Semaphore>,
+    /// GPU-aware concurrency manager (replaces bare semaphore)
+    concurrency: Arc<ConcurrencyManager>,
     /// Program cache
     program_cache: Arc<ProgramCache>,
     /// IPFS client with multi-gateway
@@ -89,6 +91,7 @@ pub struct OptimizedProcessor {
 
 impl OptimizedProcessor {
     /// Create a new optimized processor
+    #[allow(dead_code)]
     pub fn new(
         max_concurrent: usize,
         min_tip_wei: U256,
@@ -96,11 +99,35 @@ impl OptimizedProcessor {
         proving_mode: crate::bonsai::ProvingMode,
         use_snark: bool,
     ) -> anyhow::Result<Self> {
+        Self::with_gpu_config(max_concurrent, min_tip_wei, cache_size_mb, proving_mode, use_snark, 0, 0)
+    }
+
+    /// Create a new optimized processor with explicit GPU/CPU concurrency config.
+    ///
+    /// - `max_gpu_concurrent`: GPU concurrency slots (0 = auto-detect from GPU count)
+    /// - `max_cpu_concurrent`: CPU concurrency slots (0 = auto-detect from CPU count - 1)
+    pub fn with_gpu_config(
+        max_concurrent: usize,
+        min_tip_wei: U256,
+        cache_size_mb: usize,
+        proving_mode: crate::bonsai::ProvingMode,
+        use_snark: bool,
+        max_gpu_concurrent: usize,
+        max_cpu_concurrent: usize,
+    ) -> anyhow::Result<Self> {
         // Initialize job queue
         let job_queue = Arc::new(RwLock::new(JobQueue::new(1000, min_tip_wei)));
 
-        // Initialize parallel semaphore
-        let parallel_semaphore = Arc::new(Semaphore::new(max_concurrent));
+        // Initialize multi-GPU device manager
+        let gpu_manager = if max_gpu_concurrent > 0 {
+            let backend = crate::gpu_optimize::GpuBackend::detect();
+            Arc::new(GpuDeviceManager::with_device_count(backend, max_gpu_concurrent))
+        } else {
+            Arc::new(GpuDeviceManager::detect())
+        };
+
+        // Initialize GPU-aware concurrency manager
+        let concurrency = Arc::new(ConcurrencyManager::new(gpu_manager.clone(), max_cpu_concurrent));
 
         // Initialize program cache
         let cache_dir = std::path::PathBuf::from("./cache/programs");
@@ -112,12 +139,13 @@ impl OptimizedProcessor {
         // Initialize multi-VM router
         let multi_vm = Arc::new(MultiVmProver::new(proving_mode.clone()));
 
-        // Initialize fast prover with multi-VM router
-        let fast_prover = Arc::new(FastProver::with_multi_vm(
+        // Initialize fast prover with multi-VM router and GPU manager
+        let fast_prover = Arc::new(FastProver::with_gpu_manager(
             FastProveConfig::default(),
             proving_mode,
             use_snark,
             multi_vm.clone(),
+            gpu_manager,
         ));
 
         // Initialize strategy registry for input decomposition
@@ -153,7 +181,7 @@ impl OptimizedProcessor {
 
         Ok(Self {
             job_queue,
-            parallel_semaphore,
+            concurrency,
             program_cache,
             ipfs_client,
             fast_prover,
@@ -164,6 +192,11 @@ impl OptimizedProcessor {
             max_concurrent,
             use_snark,
         })
+    }
+
+    /// Get the concurrency manager (for metrics/health reporting).
+    pub fn concurrency(&self) -> &Arc<ConcurrencyManager> {
+        &self.concurrency
     }
 
     /// Check for pending requests and process them in parallel
@@ -286,7 +319,7 @@ impl OptimizedProcessor {
         for job in jobs {
             let provider = provider.clone();
             let config = config.clone();
-            let semaphore = self.parallel_semaphore.clone();
+            let concurrency = self.concurrency.clone();
             let program_cache = self.program_cache.clone();
             let ipfs_client = self.ipfs_client.clone();
             let fast_prover = self.fast_prover.clone();
@@ -297,8 +330,12 @@ impl OptimizedProcessor {
             let use_snark = self.use_snark;
 
             let handle = tokio::spawn(async move {
-                // Acquire semaphore permit
-                let _permit = semaphore.acquire().await?;
+                // Classify job and acquire from appropriate pool (GPU or CPU)
+                let resource = concurrency.classify_job(
+                    job.estimated_cycles.unwrap_or(10_000_000),
+                    0, // Memory not known at this stage
+                );
+                let _guard = concurrency.acquire(resource).await?;
 
                 // Track metrics
                 metrics().start_proof();
