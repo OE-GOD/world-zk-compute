@@ -8,19 +8,18 @@ sol! {
     interface IExecutionEngine {
         struct ExecutionRequest {
             uint256 id;
-            address requester;
             bytes32 imageId;
             bytes32 inputDigest;
-            string inputUrl;
+            address requester;
+            uint48 createdAt;
+            uint48 expiresAt;
             address callbackContract;
-            uint256 tip;
-            uint256 maxTip;
-            uint256 createdAt;
-            uint256 expiresAt;
             uint8 status;
             address claimedBy;
-            uint256 claimedAt;
-            uint256 claimDeadline;
+            uint48 claimedAt;
+            uint48 claimDeadline;
+            uint256 tip;
+            uint256 maxTip;
         }
 
         // Events for subscription
@@ -30,6 +29,7 @@ sol! {
             address indexed requester,
             bytes32 indexed imageId,
             bytes32 inputDigest,
+            string inputUrl,
             uint256 tip,
             uint256 expiresAt
         );

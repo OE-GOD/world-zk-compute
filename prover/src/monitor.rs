@@ -27,6 +27,8 @@ use alloy::primitives::{B256, U256};
 use alloy::providers::fillers::{BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, WalletFiller};
 use alloy::providers::Provider;
 use alloy::network::{EthereumWallet, Ethereum};
+use alloy::rpc::types::Filter;
+use alloy::sol_types::SolEvent;
 use alloy::transports::http::{Client, Http};
 use futures::future::join_all;
 use std::sync::Arc;
@@ -377,6 +379,23 @@ async fn fetch_request_details(
         return Ok(false);
     }
 
+    // Query ExecutionRequested event for this request's inputUrl
+    // (inputUrl is no longer stored on-chain, only emitted in the event)
+    let filter = Filter::new()
+        .address(config.engine_address)
+        .event_signature(IExecutionEngine::ExecutionRequested::SIGNATURE_HASH)
+        .topic1(B256::from(request_id.to_be_bytes::<32>()))
+        .from_block(0);
+    let logs = provider.get_logs(&filter).await?;
+    let input_url = if let Some(log) = logs.first() {
+        log.log_decode::<IExecutionEngine::ExecutionRequested>()
+            .map(|decoded| decoded.inner.data.inputUrl.clone())
+            .unwrap_or_default()
+    } else {
+        warn!("No ExecutionRequested event found for request {}", request_id);
+        String::new()
+    };
+
     // Check if program is cached (bonus priority)
     let program_cached = program_cache.get(&request.imageId).is_some();
 
@@ -384,16 +403,13 @@ async fn fetch_request_details(
     let request_id_u64: u64 = request_id.try_into().map_err(|_| {
         anyhow::anyhow!("Request ID {} overflows u64", request_id)
     })?;
-    let expires_at_u64: u64 = request.expiresAt.try_into().unwrap_or_else(|_| {
-        warn!("Expiration {} overflows u64, capping at u64::MAX", request.expiresAt);
-        u64::MAX
-    });
+    let expires_at_u64: u64 = request.expiresAt.to::<u64>();
 
     let job = QueuedJob {
         request_id: request_id_u64,
         image_id: request.imageId,
         input_hash: request.inputDigest,
-        input_url: request.inputUrl.clone(),
+        input_url,
         tip: current_tip,
         requester: request.requester,
         expires_at: expires_at_u64,

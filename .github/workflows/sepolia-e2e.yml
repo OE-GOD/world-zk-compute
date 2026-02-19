@@ -65,7 +65,7 @@ jobs:
           forge install risc0/risc0-ethereum --no-git
 
       - name: Build prover
-        run: cargo build --release --manifest-path prover/Cargo.toml
+        run: cargo build --release --bin world-zk-prover --manifest-path prover/Cargo.toml
 
       - name: Run Sepolia E2E test
         env:

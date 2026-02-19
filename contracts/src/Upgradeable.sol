@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity ^0.8.20;
 
+import {IRiscZeroVerifier} from "risc0-ethereum/IRiscZeroVerifier.sol";
+
 /// @title ERC1967 Storage Slots
 /// @notice Standard storage slots for proxy contracts
 library StorageSlot {
@@ -248,20 +250,19 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
     /// @notice Next request ID
     uint256 public nextRequestId;
 
-    // Request storage
+    // Request storage (packed for gas efficiency)
     struct ExecutionRequest {
-        uint256 id;
-        address requester;
-        bytes32 imageId;
-        bytes32 inputDigest;
-        string inputUrl;
-        address callbackContract;
-        uint256 tip;
-        uint256 createdAt;
-        uint256 expiresAt;
-        uint8 status; // 0=Pending, 1=Claimed, 2=Completed, 3=Expired, 4=Cancelled
-        address claimedBy;
-        uint256 claimDeadline;
+        uint256 id;                  // Slot 0
+        bytes32 imageId;             // Slot 1
+        bytes32 inputDigest;         // Slot 2
+        address requester;           // Slot 3: requester(20) + createdAt(6) + expiresAt(6)
+        uint48 createdAt;
+        uint48 expiresAt;
+        address callbackContract;    // Slot 4: callback(20) + status(1)
+        uint8 status;                // 0=Pending, 1=Claimed, 2=Completed, 3=Expired, 4=Cancelled
+        address claimedBy;           // Slot 5: claimedBy(20) + claimDeadline(6)
+        uint48 claimDeadline;
+        uint256 tip;                 // Slot 6
     }
 
     mapping(uint256 => ExecutionRequest) public requests;
@@ -279,6 +280,7 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
         uint256 indexed requestId,
         address indexed requester,
         bytes32 indexed imageId,
+        string inputUrl,
         uint256 tip
     );
     event ExecutionClaimed(uint256 indexed requestId, address indexed prover);
@@ -353,20 +355,19 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
 
         requests[requestId] = ExecutionRequest({
             id: requestId,
-            requester: msg.sender,
             imageId: imageId,
             inputDigest: inputDigest,
-            inputUrl: inputUrl,
+            requester: msg.sender,
+            createdAt: uint48(block.timestamp),
+            expiresAt: uint48(block.timestamp + (expirationSeconds > 0 ? expirationSeconds : 1 hours)),
             callbackContract: callbackContract,
-            tip: msg.value,
-            createdAt: block.timestamp,
-            expiresAt: block.timestamp + (expirationSeconds > 0 ? expirationSeconds : 1 hours),
             status: 0, // Pending
             claimedBy: address(0),
-            claimDeadline: 0
+            claimDeadline: 0,
+            tip: msg.value
         });
 
-        emit ExecutionRequested(requestId, msg.sender, imageId, msg.value);
+        emit ExecutionRequested(requestId, msg.sender, imageId, inputUrl, msg.value);
     }
 
     /// @notice Claim execution
@@ -378,7 +379,7 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
 
         req.status = 1; // Claimed
         req.claimedBy = msg.sender;
-        req.claimDeadline = block.timestamp + 10 minutes;
+        req.claimDeadline = uint48(block.timestamp + 10 minutes);
 
         emit ExecutionClaimed(requestId, msg.sender);
     }
@@ -394,9 +395,12 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
         require(req.status == 1, "Not claimed");
         require(req.claimedBy == msg.sender, "Not claimant");
         require(block.timestamp <= req.claimDeadline, "Deadline passed");
+        require(seal.length > 0, "Empty seal");
+        require(journal.length > 0, "Empty journal");
 
-        // Verify proof (simplified - would call verifier in production)
-        // verifier.verify(seal, req.imageId, sha256(journal));
+        // Verify the proof - reverts if invalid
+        bytes32 journalDigest = sha256(journal);
+        IRiscZeroVerifier(verifier).verify(seal, req.imageId, journalDigest);
 
         req.status = 2; // Completed
 

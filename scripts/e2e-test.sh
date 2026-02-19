@@ -408,7 +408,7 @@ run_example() {
 
     # Build prover (prover has its own Cargo.toml, not a workspace member)
     log "Building prover (this may take a while on first run)..."
-    cargo build --release --manifest-path "$ROOT_DIR/prover/Cargo.toml" $PROVE_FEATURES 2>&1 | tail -3
+    cargo build --release --bin world-zk-prover --manifest-path "$ROOT_DIR/prover/Cargo.toml" $PROVE_FEATURES 2>&1 | tail -3
 
     # Run prover in background (run from repo root so ./programs/ is accessible)
     log "Running prover (mode: $PROVING_MODE, snark: ${SNARK_FLAG:-off}, timeout: ${TIMEOUT}s)..."
@@ -445,11 +445,12 @@ run_example() {
             break
         fi
 
-        # Check request status via raw hex (RequestStatus enum: 0=Pending, 1=Claimed, 2=Completed)
-        # Status is field 10 in the struct: skip 0x(2) + offset_ptr(64) + 10*field(640) = char 706, 64 chars wide
-        RAW_HEX=$(cast call --rpc-url "$RPC_URL" "$ENGINE_ADDR" "getRequest(uint256)" 1 2>/dev/null || echo "")
-        STATUS_WORD=$(echo "$RAW_HEX" | tr -d '[:space:]' | cut -c707-770)
-        STATUS=$(echo "$STATUS_WORD" | sed 's/^0*//')
+        # Check request status (RequestStatus enum: 0=Pending, 1=Claimed, 2=Completed)
+        # Use cast with return type decoding for reliability across struct layout changes
+        # Struct fields: id, imageId, inputDigest, requester, createdAt, expiresAt, callbackContract, status, ...
+        STATUS=$(cast call --rpc-url "$RPC_URL" "$ENGINE_ADDR" \
+            "getRequest(uint256)((uint256,bytes32,bytes32,address,uint48,uint48,address,uint8,address,uint48,uint48,uint256,uint256))" 1 2>/dev/null \
+            | sed -n '8p' | tr -d '[:space:]')
         STATUS=${STATUS:-0}
 
         case "$STATUS" in

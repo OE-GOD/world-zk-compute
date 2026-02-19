@@ -677,18 +677,17 @@ async fn check_status(
     println!("  Status:      {}", status_str);
     println!("  Image ID:    {}", req.imageId);
     println!("  Requester:   {}", req.requester);
-    println!("  Input URL:   {}", req.inputUrl);
     println!("  Tip:         {} ETH (max: {} ETH)", tip_eth, max_tip_eth);
     if req.status == 0 {
         println!("  Current Tip: {} ETH (with decay)", current_tip_eth);
     }
-    println!("  Created:     {}", format_timestamp(req.createdAt));
-    println!("  Expires:     {}", format_timestamp(req.expiresAt));
+    println!("  Created:     {}", format_timestamp(req.createdAt.to::<u64>()));
+    println!("  Expires:     {}", format_timestamp(req.expiresAt.to::<u64>()));
 
     if req.status == 1 {
         println!("  Claimed By:  {}", req.claimedBy);
-        println!("  Claimed At:  {}", format_timestamp(req.claimedAt));
-        println!("  Deadline:    {}", format_timestamp(req.claimDeadline));
+        println!("  Claimed At:  {}", format_timestamp(req.claimedAt.to::<u64>()));
+        println!("  Deadline:    {}", format_timestamp(req.claimDeadline.to::<u64>()));
     }
 
     if req.callbackContract != Address::ZERO {
@@ -756,7 +755,7 @@ async fn list_pending(
                     format_wei_as_eth(req.maxTip),
                     image_short,
                     format_wei_as_eth(current_tip),
-                    format_timestamp(req.expiresAt),
+                    format_timestamp(req.expiresAt.to::<u64>()),
                 );
             }
             Err(e) => {
@@ -779,12 +778,11 @@ fn format_wei_as_eth(wei: U256) -> String {
     format!("{}.{:06}", whole, frac_u64)
 }
 
-fn format_timestamp(ts: U256) -> String {
-    let secs: i64 = ts.try_into().unwrap_or(0);
+fn format_timestamp(secs: u64) -> String {
     if secs == 0 {
         return "N/A".to_string();
     }
-    chrono::DateTime::from_timestamp(secs, 0)
+    chrono::DateTime::from_timestamp(secs as i64, 0)
         .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
         .unwrap_or_else(|| format!("{}s", secs))
 }

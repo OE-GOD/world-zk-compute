@@ -34,20 +34,19 @@ contract ExecutionEngine is ReentrancyGuard {
     }
 
     struct ExecutionRequest {
-        uint256 id;
-        address requester;
-        bytes32 imageId;           // Program to execute
-        bytes32 inputDigest;       // Hash of inputs (actual inputs stored off-chain/IPFS)
-        string inputUrl;           // URL to fetch inputs
-        address callbackContract;  // Where to send results
-        uint256 tip;               // Payment for prover
-        uint256 maxTip;            // Starting tip (decreases over time)
-        uint256 createdAt;
-        uint256 expiresAt;         // Request expiration
+        uint256 id;                  // Slot 0
+        bytes32 imageId;             // Slot 1: program to execute
+        bytes32 inputDigest;         // Slot 2: hash of inputs (actual inputs stored off-chain)
+        address requester;           // Slot 3: requester(20) + createdAt(6) + expiresAt(6)
+        uint48 createdAt;
+        uint48 expiresAt;
+        address callbackContract;    // Slot 4: callback(20) + status(1)
         RequestStatus status;
-        address claimedBy;         // Prover who claimed
-        uint256 claimedAt;
-        uint256 claimDeadline;     // When claim expires if no proof
+        address claimedBy;           // Slot 5: claimedBy(20) + claimedAt(6) + claimDeadline(6)
+        uint48 claimedAt;
+        uint48 claimDeadline;
+        uint256 tip;                 // Slot 6: payment for prover
+        uint256 maxTip;              // Slot 7: starting tip (decreases over time)
     }
 
     // ========================================================================
@@ -100,6 +99,7 @@ contract ExecutionEngine is ReentrancyGuard {
         address indexed requester,
         bytes32 indexed imageId,
         bytes32 inputDigest,
+        string inputUrl,
         uint256 tip,
         uint256 expiresAt
     );
@@ -187,19 +187,18 @@ contract ExecutionEngine is ReentrancyGuard {
 
         requests[requestId] = ExecutionRequest({
             id: requestId,
-            requester: msg.sender,
             imageId: imageId,
             inputDigest: inputDigest,
-            inputUrl: inputUrl,
+            requester: msg.sender,
+            createdAt: uint48(block.timestamp),
+            expiresAt: uint48(block.timestamp + expiration),
             callbackContract: callbackContract,
-            tip: msg.value,
-            maxTip: msg.value,
-            createdAt: block.timestamp,
-            expiresAt: block.timestamp + expiration,
             status: RequestStatus.Pending,
             claimedBy: address(0),
             claimedAt: 0,
-            claimDeadline: 0
+            claimDeadline: 0,
+            tip: msg.value,
+            maxTip: msg.value
         });
 
         emit ExecutionRequested(
@@ -207,6 +206,7 @@ contract ExecutionEngine is ReentrancyGuard {
             msg.sender,
             imageId,
             inputDigest,
+            inputUrl,
             msg.value,
             block.timestamp + expiration
         );
@@ -253,8 +253,8 @@ contract ExecutionEngine is ReentrancyGuard {
 
         req.status = RequestStatus.Claimed;
         req.claimedBy = msg.sender;
-        req.claimedAt = block.timestamp;
-        req.claimDeadline = block.timestamp + CLAIM_WINDOW;
+        req.claimedAt = uint48(block.timestamp);
+        req.claimDeadline = uint48(block.timestamp + CLAIM_WINDOW);
 
         emit ExecutionClaimed(requestId, msg.sender, req.claimDeadline);
     }
