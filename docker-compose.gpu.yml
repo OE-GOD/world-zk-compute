@@ -1,0 +1,53 @@
+# Docker Compose for GPU-accelerated prover deployment
+#
+# Usage:
+#   docker compose -f docker-compose.gpu.yml up -d
+#
+# Prerequisites:
+#   - NVIDIA GPU(s) with CUDA 12.x drivers
+#   - NVIDIA Container Toolkit installed
+#   - .env file with PRIVATE_KEY, RPC_URL, ENGINE_ADDRESS
+
+services:
+  prover:
+    build:
+      context: .
+      dockerfile: Dockerfile.cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - PRIVATE_KEY=${PRIVATE_KEY}
+      - RPC_URL=${RPC_URL}
+      - WS_URL=${WS_URL:-}
+      - ENGINE_ADDRESS=${ENGINE_ADDRESS}
+      - REGISTRY_ADDRESS=${REGISTRY_ADDRESS:-}
+      - PROVING_MODE=${PROVING_MODE:-gpu-fallback}
+      - MAX_CONCURRENT=${MAX_CONCURRENT:-4}
+      - MAX_GPU_CONCURRENT=${MAX_GPU_CONCURRENT:-0}
+      - MAX_CPU_CONCURRENT=${MAX_CPU_CONCURRENT:-0}
+      - USE_SNARK=${USE_SNARK:-false}
+      - CACHE_SIZE_MB=${CACHE_SIZE_MB:-256}
+      - HEALTH_PORT=8081
+      - RUST_LOG=${RUST_LOG:-info}
+    ports:
+      - "${HEALTH_PORT:-8081}:8081"
+    volumes:
+      - prover-cache:/app/cache
+      - prover-data:/app/data
+      - ./programs:/app/programs:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8081/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  prover-cache:
+  prover-data:

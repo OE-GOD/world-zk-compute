@@ -31,6 +31,11 @@ pub struct Metrics {
     // Current state
     active_proofs: AtomicU64,
     start_time: Instant,
+
+    // GPU metrics
+    gpu_device_count: AtomicU64,
+    gpu_jobs_completed: AtomicU64,
+    gpu_jobs_in_progress: AtomicU64,
 }
 
 impl Metrics {
@@ -46,6 +51,9 @@ impl Metrics {
             submit_times: RwLock::new(Vec::new()),
             active_proofs: AtomicU64::new(0),
             start_time: Instant::now(),
+            gpu_device_count: AtomicU64::new(0),
+            gpu_jobs_completed: AtomicU64::new(0),
+            gpu_jobs_in_progress: AtomicU64::new(0),
         }
     }
 
@@ -99,6 +107,24 @@ impl Metrics {
         self.active_proofs.fetch_sub(1, Ordering::Relaxed);
     }
 
+    /// Set the number of GPU devices (called once at startup)
+    pub fn set_gpu_device_count(&self, count: u64) {
+        self.gpu_device_count.store(count, Ordering::Relaxed);
+    }
+
+    /// Record a GPU job starting
+    #[allow(dead_code)]
+    pub fn start_gpu_job(&self) {
+        self.gpu_jobs_in_progress.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a GPU job completing
+    #[allow(dead_code)]
+    pub fn end_gpu_job(&self) {
+        self.gpu_jobs_in_progress.fetch_sub(1, Ordering::Relaxed);
+        self.gpu_jobs_completed.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Get current snapshot
     pub fn snapshot(&self) -> MetricsSnapshot {
         let proof_times = self.proof_times.read()
@@ -124,6 +150,9 @@ impl Metrics {
             p99_proof_time: Self::percentile(&proof_times, 99),
             avg_fetch_time: Self::avg(&fetch_times),
             avg_submit_time: Self::avg(&submit_times),
+            gpu_device_count: self.gpu_device_count.load(Ordering::Relaxed),
+            gpu_jobs_completed: self.gpu_jobs_completed.load(Ordering::Relaxed),
+            gpu_jobs_in_progress: self.gpu_jobs_in_progress.load(Ordering::Relaxed),
         }
     }
 
@@ -166,6 +195,9 @@ pub struct MetricsSnapshot {
     pub p99_proof_time: Duration,
     pub avg_fetch_time: Duration,
     pub avg_submit_time: Duration,
+    pub gpu_device_count: u64,
+    pub gpu_jobs_completed: u64,
+    pub gpu_jobs_in_progress: u64,
 }
 
 impl MetricsSnapshot {
@@ -210,6 +242,11 @@ impl std::fmt::Display for MetricsSnapshot {
                  self.total_cycles, self.avg_cycles_per_proof())?;
         writeln!(f, "Data processed: {:.2} MB",
                  self.total_bytes_processed as f64 / 1024.0 / 1024.0)?;
+        if self.gpu_device_count > 0 {
+            writeln!(f, "GPU devices: {}", self.gpu_device_count)?;
+            writeln!(f, "GPU jobs: {} completed, {} in progress",
+                     self.gpu_jobs_completed, self.gpu_jobs_in_progress)?;
+        }
         Ok(())
     }
 }
@@ -261,6 +298,9 @@ mod tests {
             p99_proof_time: Duration::ZERO,
             avg_fetch_time: Duration::ZERO,
             avg_submit_time: Duration::ZERO,
+            gpu_device_count: 0,
+            gpu_jobs_completed: 0,
+            gpu_jobs_in_progress: 0,
         };
 
         assert_eq!(snapshot.success_rate(), 90.0);

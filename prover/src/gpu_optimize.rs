@@ -138,12 +138,30 @@ impl std::fmt::Display for GpuBackend {
 /// Wraps RISC Zero's prover with GPU-aware configuration
 pub struct LocalGpuProver {
     backend: GpuBackend,
+    /// When set, `prove_sync` sets `CUDA_VISIBLE_DEVICES` to this device
+    /// before calling the risc0 prover. Used by multi-GPU device manager.
+    gpu_device_id: Option<usize>,
 }
 
 impl LocalGpuProver {
     /// Create with specific backend
     pub fn with_backend(backend: GpuBackend) -> Self {
-        Self { backend }
+        Self {
+            backend,
+            gpu_device_id: None,
+        }
+    }
+
+    /// Create with specific backend and GPU device ID.
+    ///
+    /// When `gpu_device_id` is set, `prove_sync` will set
+    /// `CUDA_VISIBLE_DEVICES` to route to the assigned GPU.
+    #[allow(dead_code)]
+    pub fn with_backend_and_device(backend: GpuBackend, device_id: usize) -> Self {
+        Self {
+            backend,
+            gpu_device_id: Some(device_id),
+        }
     }
 
     /// Execute and prove using GPU (or CPU fallback)
@@ -151,7 +169,17 @@ impl LocalGpuProver {
     /// This method runs in a blocking context - use `prove_async` for async code.
     pub fn prove_sync(&self, elf: &[u8], input: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
         let start = Instant::now();
-        info!("Starting {} proof generation...", self.backend);
+
+        // Set CUDA_VISIBLE_DEVICES if a specific device is assigned
+        if let Some(device_id) = self.gpu_device_id {
+            std::env::set_var("CUDA_VISIBLE_DEVICES", device_id.to_string());
+            info!(
+                "Starting {} proof generation on GPU device {}...",
+                self.backend, device_id
+            );
+        } else {
+            info!("Starting {} proof generation...", self.backend);
+        }
 
         // Build executor environment
         let env = ExecutorEnv::builder()

@@ -18,11 +18,13 @@ use tracing::{debug, info, error};
 
 mod bonsai;
 mod cache;
+mod concurrency;
 mod config;
 mod config_file;
 mod contracts;
 mod events;
 mod fast_prove;
+mod gpu_manager;
 mod gpu_optimize;
 mod health;
 mod input_decomposer;
@@ -134,6 +136,14 @@ enum Commands {
         #[arg(long, env = "MAX_CONCURRENT", default_value = "4")]
         max_concurrent: usize,
 
+        /// Maximum concurrent GPU proving jobs (0 = auto-detect from GPU count)
+        #[arg(long, env = "MAX_GPU_CONCURRENT", default_value = "0")]
+        max_gpu_concurrent: usize,
+
+        /// Maximum concurrent CPU proving jobs (0 = auto-detect from CPU count - 1)
+        #[arg(long, env = "MAX_CPU_CONCURRENT", default_value = "0")]
+        max_cpu_concurrent: usize,
+
         /// Convert STARK proofs to SNARKs (smaller, cheaper on-chain)
         #[arg(long, env = "USE_SNARK")]
         use_snark: bool,
@@ -244,6 +254,8 @@ async fn main() -> anyhow::Result<()> {
             image_ids,
             proving_mode,
             max_concurrent,
+            max_gpu_concurrent,
+            max_cpu_concurrent,
             use_snark,
             cache_size_mb,
             health_port,
@@ -261,6 +273,8 @@ async fn main() -> anyhow::Result<()> {
                 image_ids,
                 proving_mode,
                 max_concurrent,
+                max_gpu_concurrent,
+                max_cpu_concurrent,
                 use_snark,
                 cache_size_mb,
                 health_port,
@@ -320,6 +334,8 @@ async fn run_prover(
     image_ids: String,
     proving_mode: String,
     max_concurrent: usize,
+    max_gpu_concurrent: usize,
+    max_cpu_concurrent: usize,
     use_snark: bool,
     cache_size_mb: usize,
     health_port: u16,
@@ -330,13 +346,23 @@ async fn run_prover(
     // Parse proving mode
     let mode = ProvingMode::from_str(&proving_mode);
 
-    // Detect GPU backend
-    let gpu_backend = gpu_optimize::GpuBackend::detect();
-    let gpu_status = if gpu_backend.is_gpu() {
-        format!("{} (GPU detected)", gpu_backend)
+    // Detect GPU devices
+    let gpu_manager = if max_gpu_concurrent > 0 {
+        let backend = gpu_optimize::GpuBackend::detect();
+        gpu_manager::GpuDeviceManager::with_device_count(backend, max_gpu_concurrent)
+    } else {
+        gpu_manager::GpuDeviceManager::detect()
+    };
+    let gpu_backend = gpu_manager.backend();
+    let gpu_device_count = gpu_manager.device_count();
+    let gpu_status = if gpu_manager.has_gpu() {
+        format!("{} ({} device(s))", gpu_backend, gpu_device_count)
     } else {
         "CPU only".to_string()
     };
+
+    // Set GPU device count in metrics
+    metrics::metrics().set_gpu_device_count(gpu_device_count as u64);
 
     // Determine WebSocket URL
     let effective_ws_url = match ws_url.as_deref() {
@@ -359,6 +385,8 @@ async fn run_prover(
     info!("  GPU backend:    {}", gpu_status);
     info!("  Max concurrent: {}", max_concurrent);
     info!("  SNARK:          {}", if use_snark { "enabled" } else { "disabled" });
+    info!("  GPU concurrent: {}", if max_gpu_concurrent > 0 { max_gpu_concurrent.to_string() } else { format!("auto ({})", gpu_device_count) });
+    info!("  CPU concurrent: {}", if max_cpu_concurrent > 0 { max_cpu_concurrent.to_string() } else { "auto".to_string() });
     info!("  Cache size:     {} MB", cache_size_mb);
     info!("  Queue size:     {}", queue_size);
     info!("  Health port:    {}", if health_port > 0 { health_port.to_string() } else { "disabled".to_string() });
@@ -434,18 +462,22 @@ async fn run_prover(
         min_profit_margin,
         skip_profitability_check,
         use_snark,
+        max_gpu_concurrent,
+        max_cpu_concurrent,
     };
 
     // ════════════════════════════════════════════════════════════════════
     // Initialize OptimizedProcessor (wires everything together!)
     // ════════════════════════════════════════════════════════════════════
     info!("Initializing optimized processor...");
-    let processor = monitor::OptimizedProcessor::new(
+    let processor = monitor::OptimizedProcessor::with_gpu_config(
         max_concurrent,
         min_tip_wei,
         cache_size_mb,
         mode.clone(),
         use_snark,
+        max_gpu_concurrent,
+        max_cpu_concurrent,
     )?;
     info!("✓ Optimized processor ready");
     info!("  - Parallel processing: {} concurrent jobs", max_concurrent);
@@ -515,6 +547,23 @@ async fn run_prover(
             engine_address.clone(),
         );
         state.set_running(true).await;
+
+        // Update GPU health info from concurrency manager
+        let gpu_stats = processor.concurrency().gpu_manager().stats();
+        let gpu_health = health::GpuHealthInfo {
+            device_count: processor.concurrency().gpu_manager().device_count(),
+            backend: processor.concurrency().gpu_manager().backend().to_string(),
+            devices: gpu_stats
+                .iter()
+                .map(|s| health::GpuDeviceHealth {
+                    id: s.id,
+                    name: s.name.clone(),
+                    memory_bytes: s.memory_bytes,
+                    available: s.available > 0,
+                })
+                .collect(),
+        };
+        state.update_gpu_health(gpu_health).await;
 
         let health_server = health::HealthServer::new(health_port, state.clone());
         let _health_handle = health_server.start().await;
@@ -833,7 +882,8 @@ fn handle_config(generate: bool, output: String, validate: Option<String>) -> an
 }
 
 fn show_info() {
-    let gpu_backend = gpu_optimize::GpuBackend::detect();
+    let gpu_mgr = gpu_manager::GpuDeviceManager::detect();
+    let gpu_backend = gpu_mgr.backend();
 
     println!("World ZK Compute Prover");
     println!("=======================");
@@ -844,7 +894,10 @@ fn show_info() {
     println!();
     println!("Hardware:");
     println!("  CPU cores:  {}", num_cpus());
-    println!("  GPU:        {}", gpu_backend);
+    println!("  GPU:        {} ({} device(s))", gpu_backend, gpu_mgr.device_count());
+    for stat in gpu_mgr.stats() {
+        println!("    Device {}: {} ({:.0} MB)", stat.id, stat.name, stat.memory_bytes as f64 / 1024.0 / 1024.0);
+    }
     println!();
     println!("Capabilities:");
     println!("  RISC Zero:  zkVM 3.0");

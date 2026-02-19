@@ -41,6 +41,29 @@ pub struct ProverStatus {
     pub active_proofs: u64,
     /// Version
     pub version: &'static str,
+    /// GPU device info
+    pub gpu: GpuHealthInfo,
+}
+
+/// GPU health information
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub struct GpuHealthInfo {
+    /// Number of GPU devices
+    pub device_count: usize,
+    /// GPU backend name (CUDA, Metal, CPU)
+    pub backend: String,
+    /// Per-device status
+    pub devices: Vec<GpuDeviceHealth>,
+}
+
+/// Per-device GPU health
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct GpuDeviceHealth {
+    pub id: usize,
+    pub name: String,
+    pub memory_bytes: u64,
+    /// Whether the device is currently available (not busy)
+    pub available: bool,
 }
 
 /// Prover operational state
@@ -70,8 +93,14 @@ impl SharedState {
                 queue_size: 0,
                 active_proofs: 0,
                 version: env!("CARGO_PKG_VERSION"),
+                gpu: GpuHealthInfo::default(),
             })),
         }
+    }
+
+    pub async fn update_gpu_health(&self, gpu: GpuHealthInfo) {
+        let mut state = self.inner.write().await;
+        state.gpu = gpu;
     }
 
     pub async fn set_running(&self, running: bool) {
@@ -244,6 +273,19 @@ impl HealthServer {
         output.push_str("# TYPE prover_throughput_per_hour gauge\n");
         output.push_str(&format!("prover_throughput_per_hour {:.2}\n", snapshot.proofs_per_hour()));
 
+        // GPU metrics
+        output.push_str("# HELP prover_gpu_device_count Number of GPU devices available\n");
+        output.push_str("# TYPE prover_gpu_device_count gauge\n");
+        output.push_str(&format!("prover_gpu_device_count {}\n", snapshot.gpu_device_count));
+
+        output.push_str("# HELP prover_gpu_jobs_total Total GPU proving jobs completed\n");
+        output.push_str("# TYPE prover_gpu_jobs_total counter\n");
+        output.push_str(&format!("prover_gpu_jobs_total {}\n", snapshot.gpu_jobs_completed));
+
+        output.push_str("# HELP prover_gpu_jobs_in_progress GPU proving jobs currently running\n");
+        output.push_str("# TYPE prover_gpu_jobs_in_progress gauge\n");
+        output.push_str(&format!("prover_gpu_jobs_in_progress {}\n", snapshot.gpu_jobs_in_progress));
+
         output
     }
 
@@ -262,6 +304,9 @@ impl HealthServer {
                 "p99_proof_time_ms": snapshot.p99_proof_time.as_millis(),
                 "total_cycles": snapshot.total_cycles,
                 "uptime_secs": snapshot.uptime.as_secs(),
+                "gpu_device_count": snapshot.gpu_device_count,
+                "gpu_jobs_completed": snapshot.gpu_jobs_completed,
+                "gpu_jobs_in_progress": snapshot.gpu_jobs_in_progress,
             }
         }).to_string();
 
@@ -318,10 +363,15 @@ mod tests {
             p99_proof_time: std::time::Duration::from_secs(120),
             avg_fetch_time: std::time::Duration::from_millis(500),
             avg_submit_time: std::time::Duration::from_millis(200),
+            gpu_device_count: 4,
+            gpu_jobs_completed: 50,
+            gpu_jobs_in_progress: 2,
         };
 
         let output = HealthServer::format_prometheus_metrics(&snapshot);
         assert!(output.contains("prover_proofs_total{status=\"success\"} 100"));
         assert!(output.contains("prover_active_proofs 2"));
+        assert!(output.contains("prover_gpu_device_count 4"));
+        assert!(output.contains("prover_gpu_jobs_total 50"));
     }
 }
