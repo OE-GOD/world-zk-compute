@@ -1,15 +1,13 @@
-//! Rule Engine Guest Program
+//! Rule Engine Guest Program — Optimized
 //!
-//! A configurable rule evaluation engine that covers four core analysis capabilities:
+//! Manual wire format parsing replaces serde deserialization for reduced cycle count.
+//! The wire format (risc0 serde u32 LE words) is unchanged — no host/script changes needed.
+//!
+//! Covers four core analysis capabilities:
 //! 1. Pattern matching (glob/contains/prefix/suffix on byte strings)
 //! 2. Aggregation (count, sum, min, max over integer fields)
 //! 3. Comparison (gt, gte, lt, lte, eq, neq on integer fields)
 //! 4. Rules (logical AND/OR expressions combining multiple conditions)
-//!
-//! Runs inside the RISC Zero zkVM and produces a proof that:
-//! - All rules were evaluated correctly against every record
-//! - Aggregation results are mathematically correct
-//! - The input data was not tampered with (SHA-256 commitment)
 
 #![no_main]
 #![no_std]
@@ -21,31 +19,21 @@ use risc0_zkvm::guest::env;
 risc0_zkvm::guest::entry!(main);
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Input types
+// Data types
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[derive(serde::Deserialize)]
-struct RuleEngineInput {
-    records: Vec<Record>,
-    rules: Vec<Rule>,
-    aggregations: Vec<AggDef>,
-}
-
-#[derive(serde::Deserialize)]
 struct Record {
     id: [u8; 32],
     int_fields: Vec<i64>,
     str_fields: Vec<Vec<u8>>,
 }
 
-#[derive(serde::Deserialize)]
 struct Rule {
     conditions: Vec<Condition>,
     /// 0 = AND, 1 = OR
     combine: u32,
 }
 
-#[derive(serde::Deserialize)]
 struct Condition {
     /// 0=int_cmp, 1=str_eq, 2=str_contains, 3=str_prefix, 4=str_suffix, 5=str_glob
     cond_type: u32,
@@ -56,7 +44,6 @@ struct Condition {
     str_value: Vec<u8>,
 }
 
-#[derive(serde::Deserialize)]
 struct AggDef {
     /// 0=count, 1=sum, 2=min, 3=max
     agg_type: u32,
@@ -65,28 +52,112 @@ struct AggDef {
     filter_rule: u32,
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// Output types
-// ═══════════════════════════════════════════════════════════════════════════════
-
-#[derive(serde::Serialize)]
-struct RuleEngineOutput {
-    total_records: u32,
-    rule_results: Vec<RuleResult>,
-    agg_results: Vec<AggResult>,
-    input_hash: [u8; 32],
-}
-
-#[derive(serde::Serialize)]
+// Output types — no serde, manually serialized via commit_output()
 struct RuleResult {
     matching_count: u32,
     flagged_ids: Vec<[u8; 32]>,
 }
 
-#[derive(serde::Serialize)]
 struct AggResult {
     value: i64,
     count: u32,
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Manual wire format reader — bypasses serde visitor pattern
+//
+// Wire format (risc0 serde u32 LE words):
+//   u32       → 1 word
+//   i64       → 2 words (low, high)
+//   u8        → 1 word (zero-extended)
+//   [u8; 32]  → 32 words (each byte as u32)
+//   Vec<T>    → 1 word (length) + length × T
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[inline(always)]
+fn read_word() -> u32 {
+    env::read::<u32>()
+}
+
+#[inline(always)]
+fn read_i64_val() -> i64 {
+    let low = read_word() as u64;
+    let high = read_word() as u64;
+    ((high << 32) | low) as i64
+}
+
+fn read_byte_array_32() -> [u8; 32] {
+    let mut arr = [0u8; 32];
+    for b in arr.iter_mut() {
+        *b = read_word() as u8;
+    }
+    arr
+}
+
+fn read_vec_i64() -> Vec<i64> {
+    let len = read_word() as usize;
+    let mut v = Vec::with_capacity(len);
+    for _ in 0..len {
+        v.push(read_i64_val());
+    }
+    v
+}
+
+fn read_vec_u8() -> Vec<u8> {
+    let len = read_word() as usize;
+    let mut v = Vec::with_capacity(len);
+    for _ in 0..len {
+        v.push(read_word() as u8);
+    }
+    v
+}
+
+fn read_input() -> (Vec<Record>, Vec<Rule>, Vec<AggDef>) {
+    // Records
+    let num_records = read_word() as usize;
+    let mut records = Vec::with_capacity(num_records);
+    for _ in 0..num_records {
+        let id = read_byte_array_32();
+        let int_fields = read_vec_i64();
+        let num_str_fields = read_word() as usize;
+        let mut str_fields = Vec::with_capacity(num_str_fields);
+        for _ in 0..num_str_fields {
+            str_fields.push(read_vec_u8());
+        }
+        records.push(Record { id, int_fields, str_fields });
+    }
+
+    // Rules
+    let num_rules = read_word() as usize;
+    let mut rules = Vec::with_capacity(num_rules);
+    for _ in 0..num_rules {
+        let num_conditions = read_word() as usize;
+        let mut conditions = Vec::with_capacity(num_conditions);
+        for _ in 0..num_conditions {
+            conditions.push(Condition {
+                cond_type: read_word(),
+                field_idx: read_word(),
+                compare_op: read_word(),
+                int_value: read_i64_val(),
+                str_value: read_vec_u8(),
+            });
+        }
+        let combine = read_word();
+        rules.push(Rule { conditions, combine });
+    }
+
+    // Aggregations
+    let num_aggs = read_word() as usize;
+    let mut aggregations = Vec::with_capacity(num_aggs);
+    for _ in 0..num_aggs {
+        aggregations.push(AggDef {
+            agg_type: read_word(),
+            field_idx: read_word(),
+            filter_rule: read_word(),
+        });
+    }
+
+    (records, rules, aggregations)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -94,21 +165,20 @@ struct AggResult {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 fn main() {
-    let input: RuleEngineInput = env::read();
+    let (records, rules, aggregations) = read_input();
 
-    let input_hash = compute_input_hash(&input);
+    let input_hash = compute_input_hash(&records, &rules, &aggregations);
 
     // Evaluate each rule against all records
-    let mut rule_results = Vec::with_capacity(input.rules.len());
-    // Cache per-rule match results: rule_matches[r][i] = true if record i matches rule r
-    let mut rule_matches: Vec<Vec<bool>> = Vec::with_capacity(input.rules.len());
+    let mut rule_results = Vec::with_capacity(rules.len());
+    let mut rule_matches: Vec<Vec<bool>> = Vec::with_capacity(rules.len());
 
-    for rule in &input.rules {
+    for rule in &rules {
         let mut matching_count = 0u32;
         let mut flagged_ids = Vec::new();
-        let mut matches = Vec::with_capacity(input.records.len());
+        let mut matches = Vec::with_capacity(records.len());
 
-        for record in &input.records {
+        for record in &records {
             let matched = evaluate_rule(rule, record);
             matches.push(matched);
             if matched {
@@ -125,21 +195,65 @@ fn main() {
     }
 
     // Compute aggregations
-    let mut agg_results = Vec::with_capacity(input.aggregations.len());
+    let mut agg_results = Vec::with_capacity(aggregations.len());
 
-    for agg in &input.aggregations {
-        let result = compute_aggregation(agg, &input.records, &rule_matches);
+    for agg in &aggregations {
+        let result = compute_aggregation(agg, &records, &rule_matches);
         agg_results.push(result);
     }
 
-    let output = RuleEngineOutput {
-        total_records: input.records.len() as u32,
-        rule_results,
-        agg_results,
-        input_hash,
-    };
+    commit_output(records.len() as u32, &rule_results, &agg_results, &input_hash);
+}
 
-    env::commit(&output);
+// ═══════════════════════════════════════════════════════════════════════════════
+// Manual output serialization — writes u32 words matching risc0 serde format
+// ═══════════════════════════════════════════════════════════════════════════════
+
+fn commit_output(
+    total_records: u32,
+    rule_results: &[RuleResult],
+    agg_results: &[AggResult],
+    input_hash: &[u8; 32],
+) {
+    // Pre-calculate total words needed to avoid reallocations
+    let mut word_count = 1 + 1 + 1 + 32; // total_records + rule_results len + agg_results len + hash
+    for r in rule_results {
+        word_count += 1 + 1 + r.flagged_ids.len() * 32; // matching_count + vec len + ids
+    }
+    word_count += agg_results.len() * 3; // each: value(2 words) + count(1 word)
+
+    let mut words = Vec::with_capacity(word_count);
+
+    // total_records: u32
+    words.push(total_records);
+
+    // rule_results: Vec<RuleResult>
+    words.push(rule_results.len() as u32);
+    for result in rule_results {
+        words.push(result.matching_count);
+        words.push(result.flagged_ids.len() as u32);
+        for id in &result.flagged_ids {
+            for &byte in id {
+                words.push(byte as u32);
+            }
+        }
+    }
+
+    // agg_results: Vec<AggResult>
+    words.push(agg_results.len() as u32);
+    for result in agg_results {
+        let val = result.value as u64;
+        words.push(val as u32);        // low
+        words.push((val >> 32) as u32); // high
+        words.push(result.count);
+    }
+
+    // input_hash: [u8; 32]
+    for &byte in input_hash {
+        words.push(byte as u32);
+    }
+
+    env::commit_slice(&words);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -359,11 +473,11 @@ fn glob_match(pattern: &[u8], text: &[u8]) -> bool {
 // Input hashing
 // ═══════════════════════════════════════════════════════════════════════════════
 
-fn compute_input_hash(input: &RuleEngineInput) -> [u8; 32] {
+fn compute_input_hash(records: &[Record], rules: &[Rule], aggregations: &[AggDef]) -> [u8; 32] {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
 
-    for record in &input.records {
+    for record in records {
         hasher.update(&record.id);
         for &v in &record.int_fields {
             hasher.update(&v.to_le_bytes());
@@ -374,7 +488,7 @@ fn compute_input_hash(input: &RuleEngineInput) -> [u8; 32] {
         }
     }
 
-    for rule in &input.rules {
+    for rule in rules {
         hasher.update(&rule.combine.to_le_bytes());
         for cond in &rule.conditions {
             hasher.update(&cond.cond_type.to_le_bytes());
@@ -386,7 +500,7 @@ fn compute_input_hash(input: &RuleEngineInput) -> [u8; 32] {
         }
     }
 
-    for agg in &input.aggregations {
+    for agg in aggregations {
         hasher.update(&agg.agg_type.to_le_bytes());
         hasher.update(&agg.field_idx.to_le_bytes());
         hasher.update(&agg.filter_rule.to_le_bytes());

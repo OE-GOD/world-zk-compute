@@ -627,7 +627,7 @@ fn main() -> Result<()> {
     }
 
     // ── Load ELFs ────────────────────────────────────────────────────────
-    let rule_engine_image_id = "aa98ec7c0ddfaa7a7861f96f7edb1fe8ba247e86f598674a36ccc1db0551c8ec";
+    let rule_engine_image_id = "f85c194e1a8e2c2e38746c6d81c7ac9ddf25848a8dfc049db7f4725b3ab56e33";
     let rule_elf_path = format!("../programs/{}.elf", rule_engine_image_id);
 
     let rule_elf = std::fs::read(&rule_elf_path)

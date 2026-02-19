@@ -7,7 +7,6 @@ edition = "2021"
 
 [dependencies]
 risc0-zkvm = { version = "3.0", default-features = false, features = ["std"] }
-serde = { version = "1.0", default-features = false, features = ["derive"] }
 
 # ACCELERATED: Use RISC Zero's precompile version for 100x faster hashing
 # See sdk/PRECOMPILES.md for more accelerated crates

@@ -478,7 +478,7 @@ fn image_id_for_program(program: &str) -> Option<&'static str> {
         "xgboost-inference" => Some("1b1e0e6ea0bbefbbb2ccfe269a687b2e46efaa243f36664776b49dc15716e2ac"),
         "anomaly-detector" => Some("24c3af8225689d633ce0b02a61cb6a58fe656db1f31185eedd69f656a982bc95"),
         "signature-verified" => Some("28d93899974adcfe07ccad0c251b65e4308f265b6e296b9b81f1267bbf3ddd34"),
-        "rule-engine" => Some("aa98ec7c0ddfaa7a7861f96f7edb1fe8ba247e86f598674a36ccc1db0551c8ec"),
+        "rule-engine" => Some("f85c194e1a8e2c2e38746c6d81c7ac9ddf25848a8dfc049db7f4725b3ab56e33"),
         "sybil-detector" => Some("ee666bd16e310391f57cc2c65f301b06fcc018573913edf699ac3ad65db146e4"),
         _ => None,
     }
