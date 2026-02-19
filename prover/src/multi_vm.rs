@@ -3,11 +3,10 @@
 //! Auto-detects whether an ELF binary targets risc0 or SP1, then
 //! dispatches execution and proving to the correct backend.
 
-#![allow(dead_code)]
 
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::bonsai::ProvingMode;
 use crate::risc0_backend::Risc0Backend;

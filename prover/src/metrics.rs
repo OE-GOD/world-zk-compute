@@ -2,7 +2,6 @@
 //!
 //! Track prover performance for optimization and debugging.
 
-#![allow(dead_code)]
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;

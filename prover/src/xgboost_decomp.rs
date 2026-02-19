@@ -11,7 +11,6 @@
 //! The guest program deserializes via `env::read()` (risc0 serde), so we use
 //! `risc0_zkvm::serde` here to match.
 
-#![allow(dead_code)]
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};

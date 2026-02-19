@@ -3,7 +3,6 @@
 //! Wraps the existing `UnifiedProver` behind the `ZkVmBackend` trait.
 //! No behavior change — just restructuring for multi-VM support.
 
-#![allow(dead_code)]
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;

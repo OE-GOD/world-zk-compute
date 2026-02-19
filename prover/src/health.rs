@@ -15,7 +15,6 @@
 //! server.start().await;
 //! ```
 
-#![allow(dead_code)]
 
 use crate::metrics::{metrics, MetricsSnapshot};
 use std::net::SocketAddr;

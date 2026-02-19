@@ -31,7 +31,6 @@
 //! it works with a `DecompositionStrategy` that defines how to split and
 //! merge for a specific program type.
 
-#![allow(dead_code)]
 
 use anyhow::{anyhow, Result};
 use risc0_zkvm::Receipt;

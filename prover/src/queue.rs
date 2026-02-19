@@ -17,7 +17,6 @@
 //! 3. **Program familiarity** - Cached programs preferred
 //! 4. **Estimated complexity** - Simpler jobs first for throughput
 
-#![allow(dead_code)]
 
 use alloy::primitives::{Address, B256, U256};
 use std::collections::{BinaryHeap, HashSet};

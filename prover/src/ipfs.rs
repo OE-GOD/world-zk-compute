@@ -17,7 +17,6 @@
 //! 3. dweb.link (fallback)
 //! 4. Custom gateway (if configured)
 
-#![allow(dead_code)]
 
 use anyhow::{anyhow, Result};
 use reqwest::Client;

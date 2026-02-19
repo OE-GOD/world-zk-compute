@@ -13,7 +13,6 @@
 //! - Injection attacks
 //! - Resource exhaustion
 
-use std::str::FromStr;
 use thiserror::Error;
 
 /// Validation errors
@@ -376,8 +375,6 @@ pub fn validate_tip(tip: u128, max_tip: u128) -> Result<u128, ValidationError> {
 
 /// Quick validation helpers
 pub mod quick {
-    use super::*;
-
     /// Check if string is valid hex
     pub fn is_hex(s: &str) -> bool {
         let s = s.strip_prefix("0x").unwrap_or(s);

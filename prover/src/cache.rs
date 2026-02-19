@@ -2,7 +2,6 @@
 //!
 //! Caches downloaded program ELFs to avoid re-downloading and re-uploading.
 
-#![allow(dead_code)]
 
 use alloy::primitives::B256;
 use std::collections::HashMap;

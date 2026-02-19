@@ -6,7 +6,6 @@
 //! SP1 guest programs use `sp1_zkvm::io::read::<T>()` which reads bincode
 //! from stdin. The prover passes raw bytes via `SP1Stdin::write_slice()`.
 
-#![allow(dead_code)]
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;

@@ -9,7 +9,6 @@
 //! 5. **GPU Memory Pools** - Pre-allocate GPU memory
 //! 6. **Witness Precomputation** - Compute witnesses in parallel
 
-#![allow(dead_code)]
 
 use alloy::primitives::B256;
 use anyhow::{anyhow, Result};

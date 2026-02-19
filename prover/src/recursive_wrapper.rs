@@ -16,7 +16,6 @@
 //!                        → extract_seal() → one on-chain proof
 //! ```
 
-#![allow(dead_code)]
 
 use anyhow::{anyhow, Result};
 use risc0_zkvm::{default_prover, ExecutorEnv, ProverOpts, Receipt};

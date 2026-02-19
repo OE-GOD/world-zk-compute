@@ -13,7 +13,7 @@ use crate::config::ProverConfig;
 use crate::contracts::{IExecutionEngine, IProgramRegistry};
 use crate::fast_prove::{FastProveConfig, FastProver, ProvingStrategy};
 use crate::input_decomposer::{DecomposerConfig, InputDecomposer, StrategyRegistry};
-use crate::recursive_wrapper::{self, RecursiveWrapper};
+use crate::recursive_wrapper;
 use crate::ipfs::{IpfsClient, IpfsConfig};
 use crate::metrics::{metrics, Timer};
 use crate::multi_vm::MultiVmProver;
