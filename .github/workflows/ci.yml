@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  solidity:
+    name: Solidity Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Install forge dependencies
+        run: |
+          cd contracts
+          forge install foundry-rs/forge-std --no-git
+          forge install risc0/risc0-ethereum --no-git
+
+      - name: Run Solidity tests
+        run: |
+          cd contracts
+          forge test -vv
+
+  rust:
+    name: Rust Build & Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.risc0
+            prover/target
+          key: ${{ runner.os }}-cargo-prover-${{ hashFiles('prover/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-prover-
+
+      - name: Install RISC Zero toolchain
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -L https://risczero.com/install | bash
+          ~/.risc0/bin/rzup install r0vm 3.0.5
+          echo "$HOME/.risc0/bin" >> $GITHUB_PATH
+
+      - name: Run Rust tests
+        run: cargo test --manifest-path prover/Cargo.toml
+
+      - name: Run Clippy
+        run: cargo clippy --manifest-path prover/Cargo.toml -- -D warnings
