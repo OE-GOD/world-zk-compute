@@ -23,7 +23,7 @@ use crate::prefetch::{InputPrefetcher, PrefetchConfig};
 use crate::proof_cache::{ProofCache, ProofCacheKey, CachedProof};
 use crate::queue::{JobQueue, QueuedJob};
 use crate::xgboost_decomp::XGBoostDecompStrategy;
-use alloy::primitives::{B256, U256};
+use alloy::primitives::{Address, B256, U256};
 use alloy::providers::fillers::{BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, WalletFiller};
 use alloy::providers::Provider;
 use alloy::network::{EthereumWallet, Ethereum};
@@ -193,6 +193,10 @@ impl OptimizedProcessor {
 
         info!("Found {} pending requests", request_ids.len());
 
+        // Batch-fetch inputUrls from events for all pending requests in a single RPC call
+        // (inputUrl is no longer stored on-chain, only emitted in the ExecutionRequested event)
+        let input_urls = batch_fetch_input_urls(provider, config.engine_address, &request_ids).await;
+
         // Fetch details and add to queue IN PARALLEL
         let fetch_futures: Vec<_> = request_ids
             .iter()
@@ -201,8 +205,9 @@ impl OptimizedProcessor {
                 let config = config.clone();
                 let program_cache = self.program_cache.clone();
                 let job_queue = self.job_queue.clone();
+                let input_url = input_urls.get(&request_id).cloned().unwrap_or_default();
                 async move {
-                    fetch_request_details(&provider, &config, request_id, &program_cache, &job_queue).await
+                    fetch_request_details(&provider, &config, request_id, input_url, &program_cache, &job_queue).await
                 }
             })
             .collect();
@@ -343,6 +348,49 @@ impl OptimizedProcessor {
     }
 }
 
+/// Batch-fetch inputUrls from ExecutionRequested events for multiple request IDs.
+///
+/// Performs a single `get_logs` RPC call with all request IDs, returning a map
+/// of request_id → inputUrl. Much more efficient than one query per request.
+async fn batch_fetch_input_urls(
+    provider: &Arc<SigningProvider>,
+    engine_address: Address,
+    request_ids: &[U256],
+) -> std::collections::HashMap<U256, String> {
+    use std::collections::HashMap;
+
+    let mut result: HashMap<U256, String> = HashMap::new();
+
+    // Build topic1 filter with all request IDs
+    let topic_values: Vec<B256> = request_ids
+        .iter()
+        .map(|id| B256::from(id.to_be_bytes::<32>()))
+        .collect();
+
+    let filter = Filter::new()
+        .address(engine_address)
+        .event_signature(IExecutionEngine::ExecutionRequested::SIGNATURE_HASH)
+        .topic1(topic_values);
+
+    match provider.get_logs(&filter).await {
+        Ok(logs) => {
+            for log in logs {
+                if let Ok(decoded) = log.log_decode::<IExecutionEngine::ExecutionRequested>() {
+                    let req_id = decoded.inner.data.requestId;
+                    let url = decoded.inner.data.inputUrl.clone();
+                    result.insert(req_id, url);
+                }
+            }
+            debug!("Batch-fetched {} inputUrls from events", result.len());
+        }
+        Err(e) => {
+            warn!("Failed to batch-fetch inputUrls from events: {}", e);
+        }
+    }
+
+    result
+}
+
 /// Fetch request details and add to queue (standalone for parallel execution)
 ///
 /// This function parallelizes the RPC calls to getRequest and getCurrentTip
@@ -351,6 +399,7 @@ async fn fetch_request_details(
     provider: &Arc<SigningProvider>,
     config: &ProverConfig,
     request_id: U256,
+    input_url: String,
     program_cache: &Arc<ProgramCache>,
     job_queue: &Arc<RwLock<JobQueue>>,
 ) -> anyhow::Result<bool> {
@@ -378,23 +427,6 @@ async fn fetch_request_details(
     if !config.is_tip_acceptable(current_tip) {
         return Ok(false);
     }
-
-    // Query ExecutionRequested event for this request's inputUrl
-    // (inputUrl is no longer stored on-chain, only emitted in the event)
-    let filter = Filter::new()
-        .address(config.engine_address)
-        .event_signature(IExecutionEngine::ExecutionRequested::SIGNATURE_HASH)
-        .topic1(B256::from(request_id.to_be_bytes::<32>()))
-        .from_block(0);
-    let logs = provider.get_logs(&filter).await?;
-    let input_url = if let Some(log) = logs.first() {
-        log.log_decode::<IExecutionEngine::ExecutionRequested>()
-            .map(|decoded| decoded.inner.data.inputUrl.clone())
-            .unwrap_or_default()
-    } else {
-        warn!("No ExecutionRequested event found for request {}", request_id);
-        String::new()
-    };
 
     // Check if program is cached (bonus priority)
     let program_cached = program_cache.get(&request.imageId).is_some();

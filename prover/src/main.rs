@@ -847,7 +847,7 @@ fn show_info() {
     println!("  GPU:        {}", gpu_backend);
     println!();
     println!("Capabilities:");
-    println!("  RISC Zero:  zkVM 1.2.x");
+    println!("  RISC Zero:  zkVM 3.0");
 
     #[cfg(feature = "cuda")]
     println!("  CUDA:       enabled");
