@@ -122,7 +122,7 @@ impl OptimizedProcessor {
 
         // Register XGBoost decomposition strategy
         let xgboost_image_id = {
-            let bytes = hex::decode("1b1e0e6ea0bbefbbb2ccfe269a687b2e46efaa243f36664776b49dc15716e2ac")
+            let bytes = hex::decode("d6b60ae7d1f27aec34d247fad9c4700be237938cec515af03c0451f2ca8aefe4")
                 .map_err(|e| anyhow::anyhow!("Invalid xgboost image ID hex: {}", e))?;
             B256::from_slice(&bytes)
         };

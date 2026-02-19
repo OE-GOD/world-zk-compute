@@ -475,7 +475,7 @@ fn generate_input(program: &str, n: usize) -> Vec<u8> {
 
 fn image_id_for_program(program: &str) -> Option<&'static str> {
     match program {
-        "xgboost-inference" => Some("1b1e0e6ea0bbefbbb2ccfe269a687b2e46efaa243f36664776b49dc15716e2ac"),
+        "xgboost-inference" => Some("d6b60ae7d1f27aec34d247fad9c4700be237938cec515af03c0451f2ca8aefe4"),
         "anomaly-detector" => Some("24c3af8225689d633ce0b02a61cb6a58fe656db1f31185eedd69f656a982bc95"),
         "signature-verified" => Some("28d93899974adcfe07ccad0c251b65e4308f265b6e296b9b81f1267bbf3ddd34"),
         "rule-engine" => Some("f85c194e1a8e2c2e38746c6d81c7ac9ddf25848a8dfc049db7f4725b3ab56e33"),
