@@ -23,7 +23,7 @@ jobs:
   sepolia-e2e:
     name: Sepolia E2E (${{ inputs.example }})
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
       - name: Checkout

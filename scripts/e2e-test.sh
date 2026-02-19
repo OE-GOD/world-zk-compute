@@ -253,17 +253,24 @@ if [[ "$NETWORK" != "local" ]]; then
 
     # Fund requester (needs gas for requestExecution + tip)
     log "Funding requester wallet..."
-    cast send --rpc-url "$RPC_URL" --private-key "$DEPLOYER_KEY" \
-        "$REQUESTER_ADDR" --value 0.01ether >/dev/null 2>&1 && \
-        ok "Transferred 0.01 ETH to requester" || \
+    if cast send --rpc-url "$RPC_URL" --private-key "$DEPLOYER_KEY" \
+        "$REQUESTER_ADDR" --value 0.01ether >/dev/null 2>&1; then
+        ok "Transferred 0.01 ETH to requester"
+    else
         log "Warning: Could not fund requester (deployer may be low on ETH)"
+    fi
+
+    # Wait for first tx to confirm before sending second (avoid nonce conflict)
+    sleep 5
 
     # Fund prover (needs gas for submitResult)
     log "Funding prover wallet..."
-    cast send --rpc-url "$RPC_URL" --private-key "$DEPLOYER_KEY" \
-        "$PROVER_ADDR" --value 0.01ether >/dev/null 2>&1 && \
-        ok "Transferred 0.01 ETH to prover" || \
+    if cast send --rpc-url "$RPC_URL" --private-key "$DEPLOYER_KEY" \
+        "$PROVER_ADDR" --value 0.01ether >/dev/null 2>&1; then
+        ok "Transferred 0.01 ETH to prover"
+    else
         log "Warning: Could not fund prover (deployer may be low on ETH)"
+    fi
 fi
 
 # ── Run a single example ─────────────────────────────────────────────────────
