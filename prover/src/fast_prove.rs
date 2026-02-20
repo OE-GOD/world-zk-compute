@@ -459,15 +459,10 @@ impl FastProver {
 
         info!("Using continuation proving strategy (large program)");
 
-        // For Bonsai modes, offload to cloud — large programs benefit most
-        // from Bonsai's GPU cluster.
-        if matches!(
-            self.proving_mode,
-            ProvingMode::Bonsai
-                | ProvingMode::BonsaiWithFallback
-                | ProvingMode::BonsaiWithGpuFallback
-        ) {
-            info!("Offloading large program to Bonsai cloud proving");
+        // For remote proving modes (Bonsai/Boundless), offload to cloud —
+        // large programs benefit most from remote GPU clusters.
+        if self.proving_mode.uses_remote_proving() {
+            info!("Offloading large program to remote proving");
             let prover = UnifiedProver::new(self.proving_mode.clone())?;
             return prover.prove_with_snark(elf, input, self.use_snark).await;
         }

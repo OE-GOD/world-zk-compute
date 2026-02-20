@@ -16,10 +16,12 @@ use tracing::{debug, info, warn};
 use crate::bonsai::{BonsaiProver, ProvingMode};
 use crate::gpu_optimize::{GpuBackend, LocalGpuProver};
 
-/// Unified prover that supports local, GPU, and Bonsai proving
+/// Unified prover that supports local, GPU, Bonsai, and Boundless proving
 pub struct UnifiedProver {
     mode: ProvingMode,
     bonsai_prover: Option<BonsaiProver>,
+    #[cfg(feature = "boundless")]
+    boundless_prover: Option<crate::boundless::BoundlessProver>,
     gpu_prover: LocalGpuProver,
     gpu_backend: GpuBackend,
 }
@@ -51,6 +53,29 @@ impl UnifiedProver {
             _ => None,
         };
 
+        // Initialize Boundless if needed
+        #[cfg(feature = "boundless")]
+        let boundless_prover = match &mode {
+            ProvingMode::Boundless
+            | ProvingMode::BoundlessWithFallback
+            | ProvingMode::BoundlessWithGpuFallback => {
+                match crate::boundless::BoundlessProver::from_env() {
+                    Ok(prover) => {
+                        info!("Boundless prover initialized");
+                        Some(prover)
+                    }
+                    Err(e) => {
+                        if mode == ProvingMode::Boundless {
+                            return Err(e);
+                        }
+                        warn!("Boundless not configured, will use local proving: {}", e);
+                        None
+                    }
+                }
+            }
+            _ => None,
+        };
+
         // Log GPU status
         if mode.uses_gpu() {
             if gpu_backend.is_gpu() {
@@ -63,6 +88,8 @@ impl UnifiedProver {
         Ok(Self {
             mode,
             bonsai_prover,
+            #[cfg(feature = "boundless")]
+            boundless_prover,
             gpu_prover,
             gpu_backend,
         })
@@ -89,6 +116,37 @@ impl UnifiedProver {
         input: &[u8],
         use_snark: bool,
     ) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+        // Boundless dispatch (feature-gated)
+        #[cfg(feature = "boundless")]
+        if let Some(ref prover) = self.boundless_prover {
+            match &self.mode {
+                ProvingMode::Boundless => {
+                    info!("Using Boundless decentralized proving");
+                    return prover.prove(elf, input, use_snark).await;
+                }
+                ProvingMode::BoundlessWithFallback => {
+                    info!("Trying Boundless decentralized proving...");
+                    match prover.prove(elf, input, use_snark).await {
+                        Ok(result) => return Ok(result),
+                        Err(e) => {
+                            warn!("Boundless proving failed, falling back to local CPU: {}", e);
+                        }
+                    }
+                }
+                ProvingMode::BoundlessWithGpuFallback => {
+                    info!("Trying Boundless decentralized proving...");
+                    match prover.prove(elf, input, use_snark).await {
+                        Ok(result) => return Ok(result),
+                        Err(e) => {
+                            warn!("Boundless proving failed, falling back to GPU: {}", e);
+                            return self.prove_with_gpu_fallback(elf, input, use_snark).await;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
         match (&self.mode, &self.bonsai_prover) {
             // Bonsai mode with prover available
             (ProvingMode::Bonsai, Some(prover)) => {

@@ -17,6 +17,8 @@ use std::sync::Arc;
 use tracing::{debug, error, info};
 
 mod bonsai;
+#[cfg(feature = "boundless")]
+mod boundless;
 mod cache;
 mod concurrency;
 mod config;
@@ -36,6 +38,7 @@ mod monitor;
 mod multi_vm;
 mod nonce;
 mod prefetch;
+mod private_input;
 mod proof_cache;
 mod prove_metrics;
 mod prover;
@@ -80,11 +83,14 @@ CONFIGURATION:
   Generate a sample config file with: world-zk-prover config --generate
 
 PROVING MODES:
-  - local:          CPU proving (slow, no cost)
-  - gpu:            GPU proving (fast, requires CUDA/Metal)
-  - gpu-fallback:   Try GPU, fall back to CPU
-  - bonsai:         Cloud proving (fastest, requires API key)
-  - bonsai-fallback: Try Bonsai, fall back to local
+  - local:              CPU proving (slow, no cost)
+  - gpu:                GPU proving (fast, requires CUDA/Metal)
+  - gpu-fallback:       Try GPU, fall back to CPU
+  - bonsai:             Cloud proving (fastest, requires API key)
+  - bonsai-fallback:    Try Bonsai, fall back to local
+  - boundless:          Decentralized proving (requires BOUNDLESS_RPC_URL)
+  - boundless-fallback: Try Boundless, fall back to local
+  - boundless-gpu:      Try Boundless, fall back to GPU
 
 For more information: https://github.com/worldcoin/world-zk-compute
 "#)]
@@ -133,6 +139,9 @@ enum Commands {
         /// - bonsai: Cloud proving (fast, requires BONSAI_API_KEY)
         /// - bonsai-fallback: Try Bonsai first, fall back to CPU
         /// - bonsai-gpu: Try Bonsai first, fall back to GPU, then CPU
+        /// - boundless: Decentralized proving (requires BOUNDLESS_RPC_URL + storage)
+        /// - boundless-fallback: Try Boundless first, fall back to CPU
+        /// - boundless-gpu: Try Boundless first, fall back to GPU, then CPU
         #[arg(long, env = "PROVING_MODE", default_value = "gpu-fallback")]
         proving_mode: String,
 
@@ -506,6 +515,8 @@ async fn run_prover(
         poll_interval_secs: 5,
         proving_mode: mode.clone(),
         bonsai_config: bonsai::BonsaiConfig::from_env().ok(),
+        #[cfg(feature = "boundless")]
+        boundless_config: boundless::BoundlessConfig::from_env().ok(),
         min_profit_margin,
         skip_profitability_check,
         use_snark,
@@ -517,7 +528,7 @@ async fn run_prover(
     // Initialize OptimizedProcessor (wires everything together!)
     // ════════════════════════════════════════════════════════════════════
     info!("Initializing optimized processor...");
-    let processor = monitor::OptimizedProcessor::with_gpu_config(
+    let mut processor = monitor::OptimizedProcessor::with_gpu_config(
         max_concurrent,
         min_tip_wei,
         cache_size_mb,
@@ -526,6 +537,8 @@ async fn run_prover(
         max_gpu_concurrent,
         max_cpu_concurrent,
     )?;
+    // Set signer for private input authentication
+    processor.set_signer(Arc::new(signer.clone()));
     info!("✓ Optimized processor ready");
     info!(
         "  - Parallel processing: {} concurrent jobs",
@@ -992,6 +1005,15 @@ fn show_info() {
     } else {
         println!("  Bonsai:     not configured (set BONSAI_API_KEY)");
     }
+
+    #[cfg(feature = "boundless")]
+    if std::env::var("BOUNDLESS_RPC_URL").is_ok() {
+        println!("  Boundless:  configured");
+    } else {
+        println!("  Boundless:  not configured (set BOUNDLESS_RPC_URL)");
+    }
+    #[cfg(not(feature = "boundless"))]
+    println!("  Boundless:  disabled (build with --features boundless)");
     println!();
     println!("Environment:");
     if std::env::var("PRIVATE_KEY").is_ok() {

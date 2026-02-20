@@ -28,6 +28,11 @@ pub struct ProverConfig {
     #[allow(dead_code)]
     pub bonsai_config: Option<BonsaiConfig>,
 
+    /// Boundless configuration (if using Boundless)
+    #[cfg(feature = "boundless")]
+    #[allow(dead_code)]
+    pub boundless_config: Option<crate::boundless::BoundlessConfig>,
+
     /// Minimum profit margin (0.0 - 1.0, e.g., 0.2 = 20% profit required)
     pub min_profit_margin: f64,
 
@@ -70,6 +75,17 @@ impl ProverConfig {
                 .is_some_and(|c| c.is_configured())
     }
 
+    /// Check if Boundless is enabled and configured
+    #[cfg(feature = "boundless")]
+    #[allow(dead_code)]
+    pub fn is_boundless_enabled(&self) -> bool {
+        self.proving_mode.uses_boundless()
+            && self
+                .boundless_config
+                .as_ref()
+                .is_some_and(|c| c.is_configured())
+    }
+
     /// Check if GPU proving is enabled
     #[allow(dead_code)]
     pub fn is_gpu_enabled(&self) -> bool {
@@ -87,6 +103,8 @@ impl Default for ProverConfig {
             poll_interval_secs: 5,
             proving_mode: ProvingMode::GpuWithCpuFallback, // Try GPU first, fall back to CPU
             bonsai_config: None,
+            #[cfg(feature = "boundless")]
+            boundless_config: None,
             min_profit_margin: 0.2, // 20% minimum profit
             skip_profitability_check: false,
             use_snark: false,

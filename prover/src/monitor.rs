@@ -20,6 +20,7 @@ use crate::metrics::{metrics, Timer};
 use crate::multi_vm::MultiVmProver;
 use crate::nonce::NonceManager;
 use crate::prefetch::{InputPrefetcher, PrefetchConfig};
+use crate::private_input;
 use crate::proof_cache::{CachedProof, ProofCache, ProofCacheKey};
 use crate::prove_metrics::{pipeline_metrics, ProveStage, ProveTimeline};
 use crate::queue::{JobQueue, QueuedJob};
@@ -32,6 +33,7 @@ use alloy::providers::fillers::{
 };
 use alloy::providers::Provider;
 use alloy::rpc::types::Filter;
+use alloy::signers::local::PrivateKeySigner;
 use alloy::sol_types::SolEvent;
 use alloy::transports::http::{Client, Http};
 use futures::future::join_all;
@@ -83,6 +85,8 @@ pub struct OptimizedProcessor {
     max_concurrent: usize,
     /// Enable SNARK (Groth16) proof generation
     use_snark: bool,
+    /// Wallet signer for private input authentication
+    signer: Option<Arc<PrivateKeySigner>>,
 }
 
 impl OptimizedProcessor {
@@ -202,7 +206,13 @@ impl OptimizedProcessor {
             strategy_registry,
             max_concurrent,
             use_snark,
+            signer: None,
         })
+    }
+
+    /// Set the wallet signer for private input authentication.
+    pub fn set_signer(&mut self, signer: Arc<PrivateKeySigner>) {
+        self.signer = Some(signer);
     }
 
     /// Get the concurrency manager (for metrics/health reporting).
@@ -250,13 +260,14 @@ impl OptimizedProcessor {
                 let config = config.clone();
                 let program_cache = self.program_cache.clone();
                 let job_queue = self.job_queue.clone();
-                let input_url = input_urls.get(&request_id).cloned().unwrap_or_default();
+                let meta = input_urls.get(&request_id).cloned().unwrap_or_default();
                 async move {
                     fetch_request_details(
                         &provider,
                         &config,
                         request_id,
-                        input_url,
+                        meta.url,
+                        meta.input_type,
                         &program_cache,
                         &job_queue,
                     )
@@ -349,6 +360,7 @@ impl OptimizedProcessor {
             let proof_cache = self.proof_cache.clone();
             let strategy_registry = self.strategy_registry.clone();
             let use_snark = self.use_snark;
+            let signer = self.signer.clone();
 
             let handle = tokio::spawn(async move {
                 // Classify job and acquire from appropriate pool (GPU or CPU)
@@ -374,6 +386,7 @@ impl OptimizedProcessor {
                     &proof_cache,
                     &strategy_registry,
                     use_snark,
+                    &signer,
                 )
                 .await;
 
@@ -407,18 +420,27 @@ impl OptimizedProcessor {
     }
 }
 
-/// Batch-fetch inputUrls from ExecutionRequested events for multiple request IDs.
+/// Input metadata extracted from ExecutionRequested events
+#[derive(Clone, Debug, Default)]
+struct EventInputMeta {
+    /// Input URL from the event
+    url: String,
+    /// Input type (0 = Public, 1 = Private)
+    input_type: u8,
+}
+
+/// Batch-fetch inputUrls and inputTypes from ExecutionRequested events for multiple request IDs.
 ///
 /// Performs a single `get_logs` RPC call with all request IDs, returning a map
-/// of request_id → inputUrl. Much more efficient than one query per request.
+/// of request_id → EventInputMeta. Much more efficient than one query per request.
 async fn batch_fetch_input_urls(
     provider: &Arc<SigningProvider>,
     engine_address: Address,
     request_ids: &[U256],
-) -> std::collections::HashMap<U256, String> {
+) -> std::collections::HashMap<U256, EventInputMeta> {
     use std::collections::HashMap;
 
-    let mut result: HashMap<U256, String> = HashMap::new();
+    let mut result: HashMap<U256, EventInputMeta> = HashMap::new();
 
     // Build topic1 filter with all request IDs
     let topic_values: Vec<B256> = request_ids
@@ -436,8 +458,11 @@ async fn batch_fetch_input_urls(
             for log in logs {
                 if let Ok(decoded) = log.log_decode::<IExecutionEngine::ExecutionRequested>() {
                     let req_id = decoded.inner.data.requestId;
-                    let url = decoded.inner.data.inputUrl.clone();
-                    result.insert(req_id, url);
+                    let meta = EventInputMeta {
+                        url: decoded.inner.data.inputUrl.clone(),
+                        input_type: decoded.inner.data.inputType,
+                    };
+                    result.insert(req_id, meta);
                 }
             }
             debug!("Batch-fetched {} inputUrls from events", result.len());
@@ -459,6 +484,7 @@ async fn fetch_request_details(
     config: &ProverConfig,
     request_id: U256,
     input_url: String,
+    input_type: u8,
     program_cache: &Arc<ProgramCache>,
     job_queue: &Arc<RwLock<JobQueue>>,
 ) -> anyhow::Result<bool> {
@@ -498,6 +524,7 @@ async fn fetch_request_details(
         image_id: request.imageId,
         input_hash: request.inputDigest,
         input_url,
+        input_type,
         tip: current_tip,
         requester: request.requester,
         expires_at: expires_at_u64,
@@ -528,6 +555,7 @@ async fn process_single_job(
     proof_cache: &Arc<ProofCache>,
     strategy_registry: &Arc<StrategyRegistry>,
     use_snark: bool,
+    signer: &Option<Arc<PrivateKeySigner>>,
 ) -> anyhow::Result<(u64, u64)> {
     let request_id = U256::from(job.request_id);
     info!("Processing job {} (tip: {} wei)", job.request_id, job.tip);
@@ -558,14 +586,66 @@ async fn process_single_job(
     metrics().record_fetch_time(fetch_timer.elapsed());
 
     // Step 2: Fetch input (with prefetching support)
+    // For private inputs, we must claim first before the auth server releases data
+    let is_private = job.input_type == 1;
+
+    // If private input, claim first (auth server checks on-chain claim)
+    let early_claim_result = if is_private {
+        info!(
+            "[Job {}] Private input: claiming before fetch (auth server requires on-chain claim)",
+            job.request_id
+        );
+        let retry_config = RetryConfig::default();
+        let claim_result = send_claim_with_retry(
+            &engine,
+            request_id,
+            nonce_manager,
+            job.request_id,
+            &retry_config,
+        )
+        .await?;
+        info!(
+            "[Job {}] Claimed in tx: {:?}",
+            job.request_id, claim_result.tx_hash
+        );
+        Some(claim_result)
+    } else {
+        None
+    };
+
     info!("[Job {}] Fetching input...", job.request_id);
     let input_timer = Timer::start();
 
-    // Try to get prefetched input first (instant if available)
-    let input = if let Some(prefetched) = input_prefetcher
+    let input = if is_private {
+        // Private input: fetch from auth server with signed request
+        let signer_ref = signer
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Signer required for private input jobs"))?;
+
+        let input =
+            private_input::fetch_private_input(&job.input_url, job.request_id, signer_ref).await?;
+
+        // Verify input digest (same validation as public inputs)
+        let computed_digest = compute_digest(&input);
+        if computed_digest != job.input_hash {
+            anyhow::bail!(
+                "Private input digest mismatch: expected {}, got {}",
+                job.input_hash,
+                computed_digest
+            );
+        }
+        info!(
+            "[Job {}] Private input fetched and verified ({} bytes in {:?})",
+            job.request_id,
+            input.len(),
+            input_timer.elapsed()
+        );
+        input
+    } else if let Some(prefetched) = input_prefetcher
         .get_cached(&job.input_url, &job.input_hash)
         .await
     {
+        // Try to get prefetched input first (instant if available)
         info!(
             "[Job {}] Input PREFETCH HIT! ({} bytes, saved {:?})",
             job.request_id,
@@ -848,23 +928,30 @@ async fn process_single_job(
         );
     }
 
-    // Step 6: Claim the request (with retry logic)
-    info!("[Job {}] Claiming...", job.request_id);
+    // Step 6: Claim the request (skip if already claimed for private inputs)
     let retry_config = RetryConfig::default();
+    if early_claim_result.is_none() {
+        info!("[Job {}] Claiming...", job.request_id);
 
-    let claim_result = send_claim_with_retry(
-        &engine,
-        request_id,
-        nonce_manager,
-        job.request_id,
-        &retry_config,
-    )
-    .await?;
+        let claim_result = send_claim_with_retry(
+            &engine,
+            request_id,
+            nonce_manager,
+            job.request_id,
+            &retry_config,
+        )
+        .await?;
 
-    info!(
-        "[Job {}] Claimed in tx: {:?}",
-        job.request_id, claim_result.tx_hash
-    );
+        info!(
+            "[Job {}] Claimed in tx: {:?}",
+            job.request_id, claim_result.tx_hash
+        );
+    } else {
+        debug!(
+            "[Job {}] Already claimed (private input early claim)",
+            job.request_id
+        );
+    }
 
     // Step 7: Generate proof using fast prover
     timeline.enter_stage(ProveStage::Proving);

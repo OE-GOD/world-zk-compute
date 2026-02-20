@@ -243,15 +243,15 @@ impl SegmentProver {
 
         info!("Proving with plan: {}", plan.summary());
 
-        // Decide if we should offload to Bonsai
+        // Decide if we should offload to remote proving (Bonsai or Boundless)
         if plan.should_use_bonsai(self.config.bonsai_threshold_cycles)
-            && self.proving_mode.uses_bonsai()
+            && self.proving_mode.uses_remote_proving()
         {
             info!(
-                "Program has {} cycles, offloading to Bonsai (threshold: {})",
+                "Program has {} cycles, offloading to remote proving (threshold: {})",
                 plan.cycles, self.config.bonsai_threshold_cycles
             );
-            return self.prove_via_bonsai(elf, input).await;
+            return self.prove_via_remote(elf, input).await;
         }
 
         // Determine segment limit
@@ -439,11 +439,11 @@ impl SegmentProver {
         .await?
     }
 
-    /// Offload proving to Bonsai cloud.
-    async fn prove_via_bonsai(&self, elf: &[u8], input: &[u8]) -> Result<ProveResult> {
+    /// Offload proving to a remote service (Bonsai or Boundless).
+    async fn prove_via_remote(&self, elf: &[u8], input: &[u8]) -> Result<ProveResult> {
         let start = Instant::now();
 
-        let prover = UnifiedProver::new(ProvingMode::Bonsai)?;
+        let prover = UnifiedProver::new(self.proving_mode.clone())?;
         let (seal, journal) = prover.prove_with_snark(elf, input, self.use_snark).await?;
 
         Ok(ProveResult {
