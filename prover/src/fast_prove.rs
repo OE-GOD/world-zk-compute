@@ -9,7 +9,6 @@
 //! 5. **GPU Memory Pools** - Pre-allocate GPU memory
 //! 6. **Witness Precomputation** - Compute witnesses in parallel
 
-
 use alloy::primitives::B256;
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
@@ -23,8 +22,8 @@ use crate::gpu_manager::GpuDeviceManager;
 use crate::multi_vm::MultiVmProver;
 use crate::prover::UnifiedProver;
 use crate::segment_prover::{
-    optimal_po2, recommended_thread_count, estimate_segments_for_po2,
-    SegmentProver, SegmentProverConfig,
+    estimate_segments_for_po2, optimal_po2, recommended_thread_count, SegmentProver,
+    SegmentProverConfig,
 };
 use crate::zkvm_backend::{detect_vm_type, ZkVmType};
 
@@ -129,7 +128,11 @@ impl FastProver {
     }
 
     /// Create a new fast prover with proving mode and SNARK option
-    pub fn with_mode_and_snark(config: FastProveConfig, proving_mode: ProvingMode, use_snark: bool) -> Self {
+    pub fn with_mode_and_snark(
+        config: FastProveConfig,
+        proving_mode: ProvingMode,
+        use_snark: bool,
+    ) -> Self {
         let gpu_slots = if config.gpu_memory_pool { 4 } else { 1 };
         let multi_vm = Arc::new(MultiVmProver::new(proving_mode.clone()));
 
@@ -189,11 +192,7 @@ impl FastProver {
     }
 
     /// Run preflight execution to estimate resources
-    pub async fn preflight(
-        &self,
-        elf: &[u8],
-        input: &[u8],
-    ) -> Result<PreflightResult> {
+    pub async fn preflight(&self, elf: &[u8], input: &[u8]) -> Result<PreflightResult> {
         if !self.config.preflight_enabled {
             return Ok(PreflightResult {
                 cycles: 0,
@@ -223,7 +222,7 @@ impl FastProver {
         let strategy = self.select_strategy_for_vm(cycles, memory_bytes, vm_type);
 
         let output_hash = output.map(|o| {
-            use sha2::{Sha256, Digest};
+            use sha2::{Digest, Sha256};
             let hash = Sha256::digest(&o);
             B256::from_slice(&hash)
         });
@@ -296,11 +295,7 @@ impl FastProver {
     }
 
     /// Fast prove with automatic strategy selection
-    pub async fn prove_fast(
-        &self,
-        elf: &[u8],
-        input: &[u8],
-    ) -> Result<FastProofResult> {
+    pub async fn prove_fast(&self, elf: &[u8], input: &[u8]) -> Result<FastProofResult> {
         let start = Instant::now();
 
         // Step 1: Preflight
@@ -317,7 +312,7 @@ impl FastProver {
 
         // Step 2: Check trace cache
         let input_hash = {
-            use sha2::{Sha256, Digest};
+            use sha2::{Digest, Sha256};
             let mut hasher = Sha256::new();
             hasher.update(elf);
             hasher.update(input);
@@ -347,15 +342,11 @@ impl FastProver {
         let timeout_duration = self.config.proof_timeout;
         let (proof, journal) = tokio::time::timeout(timeout_duration, async {
             match preflight.strategy {
-                ProvingStrategy::Direct => {
-                    self.prove_direct(elf, input).await
-                }
+                ProvingStrategy::Direct => self.prove_direct(elf, input).await,
                 ProvingStrategy::Segmented { num_segments } => {
                     self.prove_segmented(elf, input, num_segments).await
                 }
-                ProvingStrategy::Continuation => {
-                    self.prove_continuation(elf, input).await
-                }
+                ProvingStrategy::Continuation => self.prove_continuation(elf, input).await,
                 ProvingStrategy::TooComplex => unreachable!(),
             }
         })
@@ -363,8 +354,12 @@ impl FastProver {
         .map_err(|_| anyhow!("Proof generation timed out after {:?}", timeout_duration))??;
 
         let total_time = start.elapsed();
-        info!("Proof generated in {:?} ({} bytes seal, {} bytes journal)",
-            total_time, proof.len(), journal.len());
+        info!(
+            "Proof generated in {:?} ({} bytes seal, {} bytes journal)",
+            total_time,
+            proof.len(),
+            journal.len()
+        );
 
         Ok(FastProofResult {
             proof,
@@ -438,11 +433,7 @@ impl FastProver {
             ..Default::default()
         };
 
-        let segment_prover = SegmentProver::new(
-            config,
-            self.proving_mode.clone(),
-            self.use_snark,
-        );
+        let segment_prover = SegmentProver::new(config, self.proving_mode.clone(), self.use_snark);
         let result = segment_prover.prove_optimized(elf, input).await?;
 
         info!(
@@ -484,18 +475,14 @@ impl FastProver {
         // Local proving: use aggressive segment tuning for max parallelism
         let config = SegmentProverConfig {
             segment_limit_po2: Some(18), // ~256K cycles/segment → many parallel segments
-            proving_threads: 0,           // auto-detect
+            proving_threads: 0,          // auto-detect
             cache_executions: false,
-            max_cycles: 1_000_000_000,    // 1B cycles (raised from 500M)
-            max_segments: 4000,           // allow more segments for large programs
+            max_cycles: 1_000_000_000, // 1B cycles (raised from 500M)
+            max_segments: 4000,        // allow more segments for large programs
             bonsai_threshold_cycles: u64::MAX, // don't redirect to bonsai (already checked)
         };
 
-        let segment_prover = SegmentProver::new(
-            config,
-            self.proving_mode.clone(),
-            self.use_snark,
-        );
+        let segment_prover = SegmentProver::new(config, self.proving_mode.clone(), self.use_snark);
         let result = segment_prover.prove_optimized(elf, input).await?;
 
         info!(
@@ -516,7 +503,7 @@ impl FastProver {
         // This is a placeholder for future optimization
 
         Ok(FastProofResult {
-            proof: vec![],  // Caller should fall back to full prove
+            proof: vec![], // Caller should fall back to full prove
             journal: vec![],
             cycles: trace.cycles,
             strategy_used: ProvingStrategy::Direct,
@@ -524,7 +511,6 @@ impl FastProver {
             output_hash: B256::ZERO,
         })
     }
-
 }
 
 /// Result of fast proving
@@ -553,9 +539,7 @@ struct SessionPool {
 
 impl SessionPool {
     fn new(max_size: usize) -> Self {
-        Self {
-            max_size,
-        }
+        Self { max_size }
     }
 }
 

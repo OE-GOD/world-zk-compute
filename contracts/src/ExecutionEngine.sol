@@ -9,44 +9,40 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 /// @title IExecutionCallback
 /// @notice Interface for contracts that receive verified computation results
 interface IExecutionCallback {
-    function onExecutionComplete(
-        uint256 requestId,
-        bytes32 imageId,
-        bytes calldata journal
-    ) external;
+    function onExecutionComplete(uint256 requestId, bytes32 imageId, bytes calldata journal) external;
 }
 
 /// @title ExecutionEngine
 /// @notice Core engine for verifiable computation on World Chain
 /// @dev Handles the full lifecycle: request → claim → prove → callback
 contract ExecutionEngine is ReentrancyGuard {
-
     // ========================================================================
     // TYPES
     // ========================================================================
 
     enum RequestStatus {
-        Pending,      // Waiting for prover to claim
-        Claimed,      // Prover claimed, proof expected
-        Completed,    // Proof verified, callback executed
-        Expired,      // Claim expired, can be reclaimed
-        Cancelled     // Requester cancelled
+        Pending, // Waiting for prover to claim
+        Claimed, // Prover claimed, proof expected
+        Completed, // Proof verified, callback executed
+        Expired, // Claim expired, can be reclaimed
+        Cancelled // Requester cancelled
+
     }
 
     struct ExecutionRequest {
-        uint256 id;                  // Slot 0
-        bytes32 imageId;             // Slot 1: program to execute
-        bytes32 inputDigest;         // Slot 2: hash of inputs (actual inputs stored off-chain)
-        address requester;           // Slot 3: requester(20) + createdAt(6) + expiresAt(6)
+        uint256 id; // Slot 0
+        bytes32 imageId; // Slot 1: program to execute
+        bytes32 inputDigest; // Slot 2: hash of inputs (actual inputs stored off-chain)
+        address requester; // Slot 3: requester(20) + createdAt(6) + expiresAt(6)
         uint48 createdAt;
         uint48 expiresAt;
-        address callbackContract;    // Slot 4: callback(20) + status(1)
+        address callbackContract; // Slot 4: callback(20) + status(1)
         RequestStatus status;
-        address claimedBy;           // Slot 5: claimedBy(20) + claimedAt(6) + claimDeadline(6)
+        address claimedBy; // Slot 5: claimedBy(20) + claimedAt(6) + claimDeadline(6)
         uint48 claimedAt;
         uint48 claimDeadline;
-        uint256 tip;                 // Slot 6: payment for prover
-        uint256 maxTip;              // Slot 7: starting tip (decreases over time)
+        uint256 tip; // Slot 6: payment for prover
+        uint256 maxTip; // Slot 7: starting tip (decreases over time)
     }
 
     // ========================================================================
@@ -104,18 +100,9 @@ contract ExecutionEngine is ReentrancyGuard {
         uint256 expiresAt
     );
 
-    event ExecutionClaimed(
-        uint256 indexed requestId,
-        address indexed prover,
-        uint256 claimDeadline
-    );
+    event ExecutionClaimed(uint256 indexed requestId, address indexed prover, uint256 claimDeadline);
 
-    event ExecutionCompleted(
-        uint256 indexed requestId,
-        address indexed prover,
-        bytes32 journalDigest,
-        uint256 payout
-    );
+    event ExecutionCompleted(uint256 indexed requestId, address indexed prover, bytes32 journalDigest, uint256 payout);
 
     event ExecutionExpired(uint256 indexed requestId);
     event ExecutionCancelled(uint256 indexed requestId);
@@ -148,11 +135,7 @@ contract ExecutionEngine is ReentrancyGuard {
     // CONSTRUCTOR
     // ========================================================================
 
-    constructor(
-        address _registry,
-        address _verifier,
-        address _feeRecipient
-    ) {
+    constructor(address _registry, address _verifier, address _feeRecipient) {
         owner = msg.sender;
         registry = ProgramRegistry(_registry);
         verifier = IRiscZeroVerifier(_verifier);
@@ -179,9 +162,7 @@ contract ExecutionEngine is ReentrancyGuard {
         if (msg.value < MIN_TIP) revert InsufficientTip();
         if (!registry.isProgramActive(imageId)) revert ProgramNotActive();
 
-        uint256 expiration = expirationSeconds > 0
-            ? expirationSeconds
-            : DEFAULT_EXPIRATION;
+        uint256 expiration = expirationSeconds > 0 ? expirationSeconds : DEFAULT_EXPIRATION;
 
         requestId = nextRequestId++;
 
@@ -202,13 +183,7 @@ contract ExecutionEngine is ReentrancyGuard {
         });
 
         emit ExecutionRequested(
-            requestId,
-            msg.sender,
-            imageId,
-            inputDigest,
-            inputUrl,
-            msg.value,
-            block.timestamp + expiration
+            requestId, msg.sender, imageId, inputDigest, inputUrl, msg.value, block.timestamp + expiration
         );
     }
 
@@ -222,7 +197,7 @@ contract ExecutionEngine is ReentrancyGuard {
         req.status = RequestStatus.Cancelled;
 
         // Refund tip
-        (bool success, ) = payable(msg.sender).call{value: req.tip}("");
+        (bool success,) = payable(msg.sender).call{value: req.tip}("");
         if (!success) revert TransferFailed();
 
         emit ExecutionCancelled(requestId);
@@ -263,11 +238,7 @@ contract ExecutionEngine is ReentrancyGuard {
     /// @param requestId The request ID
     /// @param seal The RISC Zero proof seal
     /// @param journal The public outputs (journal)
-    function submitProof(
-        uint256 requestId,
-        bytes calldata seal,
-        bytes calldata journal
-    ) external nonReentrant {
+    function submitProof(uint256 requestId, bytes calldata seal, bytes calldata journal) external nonReentrant {
         ExecutionRequest storage req = requests[requestId];
         if (req.id == 0) revert RequestNotFound();
         if (req.status != RequestStatus.Claimed) revert RequestNotClaimed();
@@ -301,12 +272,12 @@ contract ExecutionEngine is ReentrancyGuard {
         }
 
         // Pay prover (using call instead of transfer for contract wallet compatibility)
-        (bool proverPaid, ) = payable(msg.sender).call{value: proverPayout}("");
+        (bool proverPaid,) = payable(msg.sender).call{value: proverPayout}("");
         if (!proverPaid) revert TransferFailed();
 
         // Pay protocol fee
         if (fee > 0) {
-            (bool feePaid, ) = payable(feeRecipient).call{value: fee}("");
+            (bool feePaid,) = payable(feeRecipient).call{value: fee}("");
             if (!feePaid) revert TransferFailed();
         }
 
@@ -314,11 +285,8 @@ contract ExecutionEngine is ReentrancyGuard {
 
         // Execute callback if specified
         if (req.callbackContract != address(0)) {
-            try IExecutionCallback(req.callbackContract).onExecutionComplete(
-                requestId,
-                req.imageId,
-                journal
-            ) {} catch {
+            try IExecutionCallback(req.callbackContract).onExecutionComplete(requestId, req.imageId, journal) {}
+            catch {
                 // Callback failed but proof is still valid — emit event for observability
                 emit CallbackFailed(requestId, req.callbackContract);
             }
@@ -355,11 +323,7 @@ contract ExecutionEngine is ReentrancyGuard {
     }
 
     /// @notice Get pending requests (for prover to find work)
-    function getPendingRequests(uint256 offset, uint256 limit)
-        external
-        view
-        returns (uint256[] memory)
-    {
+    function getPendingRequests(uint256 offset, uint256 limit) external view returns (uint256[] memory) {
         uint256[] memory pending = new uint256[](limit);
         uint256 count = 0;
         uint256 checked = 0;
@@ -391,11 +355,7 @@ contract ExecutionEngine is ReentrancyGuard {
     }
 
     /// @notice Get prover statistics
-    function getProverStats(address prover)
-        external
-        view
-        returns (uint256 completed, uint256 earnings)
-    {
+    function getProverStats(address prover) external view returns (uint256 completed, uint256 earnings) {
         return (proverCompletedCount[prover], proverEarnings[prover]);
     }
 

@@ -17,7 +17,6 @@
 //! 3. dweb.link (fallback)
 //! 4. Custom gateway (if configured)
 
-
 use anyhow::{anyhow, Result};
 use reqwest::Client;
 use std::time::Duration;
@@ -124,7 +123,8 @@ impl IpfsClient {
 
     /// Perform the actual HTTP fetch
     async fn do_fetch(&self, url: &str) -> Result<Vec<u8>> {
-        let response = self.http
+        let response = self
+            .http
             .get(url)
             .header("Accept", "application/octet-stream")
             .send()
@@ -172,7 +172,6 @@ impl IpfsClient {
             || url.starts_with("Qm") // CIDv0
             || url.starts_with("bafy") // CIDv1
     }
-
 }
 
 #[cfg(test)]
@@ -181,26 +180,21 @@ mod tests {
 
     #[test]
     fn test_normalize_cid() {
-        assert_eq!(
-            IpfsClient::normalize_cid("ipfs://QmTest123"),
-            "QmTest123"
-        );
-        assert_eq!(
-            IpfsClient::normalize_cid("/ipfs/QmTest123"),
-            "QmTest123"
-        );
-        assert_eq!(
-            IpfsClient::normalize_cid("QmTest123"),
-            "QmTest123"
-        );
+        assert_eq!(IpfsClient::normalize_cid("ipfs://QmTest123"), "QmTest123");
+        assert_eq!(IpfsClient::normalize_cid("/ipfs/QmTest123"), "QmTest123");
+        assert_eq!(IpfsClient::normalize_cid("QmTest123"), "QmTest123");
     }
 
     #[test]
     fn test_is_ipfs_url() {
         assert!(IpfsClient::is_ipfs_url("ipfs://QmTest"));
         assert!(IpfsClient::is_ipfs_url("/ipfs/QmTest"));
-        assert!(IpfsClient::is_ipfs_url("QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"));
-        assert!(IpfsClient::is_ipfs_url("bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi"));
+        assert!(IpfsClient::is_ipfs_url(
+            "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG"
+        ));
+        assert!(IpfsClient::is_ipfs_url(
+            "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi"
+        ));
         assert!(!IpfsClient::is_ipfs_url("https://example.com/file"));
     }
 

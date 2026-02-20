@@ -43,7 +43,6 @@ pub struct Config {
     pub logging: LoggingSection,
 }
 
-
 /// Prover identity and connection settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -265,14 +264,20 @@ impl Config {
         }
 
         // Check RPC URL format
-        if !self.prover.rpc_url.starts_with("http://") && !self.prover.rpc_url.starts_with("https://") {
+        if !self.prover.rpc_url.starts_with("http://")
+            && !self.prover.rpc_url.starts_with("https://")
+        {
             anyhow::bail!("RPC URL must start with http:// or https://");
         }
 
         // Check proving mode
         let valid_modes = ["local", "bonsai", "hybrid"];
         if !valid_modes.contains(&self.proving.mode.as_str()) {
-            anyhow::bail!("Invalid proving mode: {}. Must be one of: {:?}", self.proving.mode, valid_modes);
+            anyhow::bail!(
+                "Invalid proving mode: {}. Must be one of: {:?}",
+                self.proving.mode,
+                valid_modes
+            );
         }
 
         // Check Bonsai key if using Bonsai
@@ -285,7 +290,11 @@ impl Config {
         // Check log level
         let valid_levels = ["trace", "debug", "info", "warn", "error"];
         if !valid_levels.contains(&self.logging.level.to_lowercase().as_str()) {
-            anyhow::bail!("Invalid log level: {}. Must be one of: {:?}", self.logging.level, valid_levels);
+            anyhow::bail!(
+                "Invalid log level: {}. Must be one of: {:?}",
+                self.logging.level,
+                valid_levels
+            );
         }
 
         Ok(())
@@ -307,7 +316,6 @@ impl Config {
 
         format!("{}{}", header, sample)
     }
-
 }
 
 #[cfg(test)]

@@ -96,10 +96,7 @@ impl EventSubscriber {
                 }
                 Err(e) => {
                     consecutive_errors += 1;
-                    error!(
-                        "WebSocket error (attempt {}): {:?}",
-                        consecutive_errors, e
-                    );
+                    error!("WebSocket error (attempt {}): {:?}", consecutive_errors, e);
 
                     // Exponential backoff
                     reconnect_delay = Duration::from_secs_f64(
@@ -133,7 +130,10 @@ impl EventSubscriber {
         let sub = provider.subscribe_logs(&filter).await?;
         let mut stream = sub.into_stream();
 
-        info!("Subscribed to ExecutionRequested events on {}", self.config.engine_address);
+        info!(
+            "Subscribed to ExecutionRequested events on {}",
+            self.config.engine_address
+        );
 
         // Process events
         while let Some(log) = stream.next().await {
@@ -194,7 +194,10 @@ impl EventSubscriber {
         let request_id: u64 = match inner.requestId.try_into() {
             Ok(id) => id,
             Err(e) => {
-                warn!("Request ID overflow ({}), skipping event: {:?}", inner.requestId, e);
+                warn!(
+                    "Request ID overflow ({}), skipping event: {:?}",
+                    inner.requestId, e
+                );
                 return Ok(None);
             }
         };
@@ -202,7 +205,10 @@ impl EventSubscriber {
         let expires_at: u64 = match inner.expiresAt.try_into() {
             Ok(v) => v,
             Err(e) => {
-                warn!("expires_at overflow ({}), using u64::MAX: {:?}", inner.expiresAt, e);
+                warn!(
+                    "expires_at overflow ({}), using u64::MAX: {:?}",
+                    inner.expiresAt, e
+                );
                 u64::MAX
             }
         };

@@ -15,20 +15,22 @@ use crate::contracts::{IExecutionEngine, IProgramRegistry};
 use crate::fast_prove::{FastProveConfig, FastProver, ProvingStrategy};
 use crate::gpu_manager::GpuDeviceManager;
 use crate::input_decomposer::{DecomposerConfig, InputDecomposer, StrategyRegistry};
-use crate::recursive_wrapper;
 use crate::ipfs::{IpfsClient, IpfsConfig};
 use crate::metrics::{metrics, Timer};
 use crate::multi_vm::MultiVmProver;
 use crate::nonce::NonceManager;
-use crate::prove_metrics::{pipeline_metrics, ProveStage, ProveTimeline};
 use crate::prefetch::{InputPrefetcher, PrefetchConfig};
-use crate::proof_cache::{ProofCache, ProofCacheKey, CachedProof};
+use crate::proof_cache::{CachedProof, ProofCache, ProofCacheKey};
+use crate::prove_metrics::{pipeline_metrics, ProveStage, ProveTimeline};
 use crate::queue::{JobQueue, QueuedJob};
+use crate::recursive_wrapper;
 use crate::xgboost_decomp::XGBoostDecompStrategy;
+use alloy::network::{Ethereum, EthereumWallet};
 use alloy::primitives::{Address, B256, U256};
-use alloy::providers::fillers::{BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, WalletFiller};
+use alloy::providers::fillers::{
+    BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, WalletFiller,
+};
 use alloy::providers::Provider;
-use alloy::network::{EthereumWallet, Ethereum};
 use alloy::rpc::types::Filter;
 use alloy::sol_types::SolEvent;
 use alloy::transports::http::{Client, Http};
@@ -43,20 +45,14 @@ use tracing::{debug, error, info, warn};
 pub type SigningProvider = FillProvider<
     JoinFill<
         JoinFill<
-            JoinFill<
-                JoinFill<
-                    alloy::providers::Identity,
-                    GasFiller
-                >,
-                BlobGasFiller
-            >,
-            ChainIdFiller
+            JoinFill<JoinFill<alloy::providers::Identity, GasFiller>, BlobGasFiller>,
+            ChainIdFiller,
         >,
-        WalletFiller<EthereumWallet>
+        WalletFiller<EthereumWallet>,
     >,
     alloy::providers::RootProvider<Http<Client>>,
     Http<Client>,
-    Ethereum
+    Ethereum,
 >;
 
 /// Nonce manager type alias with matching transport and network types
@@ -99,7 +95,15 @@ impl OptimizedProcessor {
         proving_mode: crate::bonsai::ProvingMode,
         use_snark: bool,
     ) -> anyhow::Result<Self> {
-        Self::with_gpu_config(max_concurrent, min_tip_wei, cache_size_mb, proving_mode, use_snark, 0, 0)
+        Self::with_gpu_config(
+            max_concurrent,
+            min_tip_wei,
+            cache_size_mb,
+            proving_mode,
+            use_snark,
+            0,
+            0,
+        )
     }
 
     /// Create a new optimized processor with explicit GPU/CPU concurrency config.
@@ -121,13 +125,19 @@ impl OptimizedProcessor {
         // Initialize multi-GPU device manager
         let gpu_manager = if max_gpu_concurrent > 0 {
             let backend = crate::gpu_optimize::GpuBackend::detect();
-            Arc::new(GpuDeviceManager::with_device_count(backend, max_gpu_concurrent))
+            Arc::new(GpuDeviceManager::with_device_count(
+                backend,
+                max_gpu_concurrent,
+            ))
         } else {
             Arc::new(GpuDeviceManager::detect())
         };
 
         // Initialize GPU-aware concurrency manager
-        let concurrency = Arc::new(ConcurrencyManager::new(gpu_manager.clone(), max_cpu_concurrent));
+        let concurrency = Arc::new(ConcurrencyManager::new(
+            gpu_manager.clone(),
+            max_cpu_concurrent,
+        ));
 
         // Initialize program cache
         let cache_dir = std::path::PathBuf::from("./cache/programs");
@@ -153,8 +163,9 @@ impl OptimizedProcessor {
 
         // Register XGBoost decomposition strategy
         let xgboost_image_id = {
-            let bytes = hex::decode("d6b60ae7d1f27aec34d247fad9c4700be237938cec515af03c0451f2ca8aefe4")
-                .map_err(|e| anyhow::anyhow!("Invalid xgboost image ID hex: {}", e))?;
+            let bytes =
+                hex::decode("d6b60ae7d1f27aec34d247fad9c4700be237938cec515af03c0451f2ca8aefe4")
+                    .map_err(|e| anyhow::anyhow!("Invalid xgboost image ID hex: {}", e))?;
             B256::from_slice(&bytes)
         };
         strategy_registry.register(
@@ -165,7 +176,7 @@ impl OptimizedProcessor {
 
         // Initialize input prefetcher for reduced latency
         let prefetch_config = PrefetchConfig {
-            max_concurrent: max_concurrent * 2, // Prefetch ahead
+            max_concurrent: max_concurrent * 2,               // Prefetch ahead
             max_cache_bytes: cache_size_mb * 1024 * 1024 / 2, // Half of program cache
             ..PrefetchConfig::default()
         };
@@ -228,7 +239,8 @@ impl OptimizedProcessor {
 
         // Batch-fetch inputUrls from events for all pending requests in a single RPC call
         // (inputUrl is no longer stored on-chain, only emitted in the ExecutionRequested event)
-        let input_urls = batch_fetch_input_urls(provider, config.engine_address, &request_ids).await;
+        let input_urls =
+            batch_fetch_input_urls(provider, config.engine_address, &request_ids).await;
 
         // Fetch details and add to queue IN PARALLEL
         let fetch_futures: Vec<_> = request_ids
@@ -240,7 +252,15 @@ impl OptimizedProcessor {
                 let job_queue = self.job_queue.clone();
                 let input_url = input_urls.get(&request_id).cloned().unwrap_or_default();
                 async move {
-                    fetch_request_details(&provider, &config, request_id, input_url, &program_cache, &job_queue).await
+                    fetch_request_details(
+                        &provider,
+                        &config,
+                        request_id,
+                        input_url,
+                        &program_cache,
+                        &job_queue,
+                    )
+                    .await
                 }
             })
             .collect();
@@ -272,17 +292,15 @@ impl OptimizedProcessor {
         debug!("{}", prefetch_stats);
 
         // Process queue in parallel
-        let processed = self.process_queue_parallel(provider, config, nonce_manager).await?;
+        let processed = self
+            .process_queue_parallel(provider, config, nonce_manager)
+            .await?;
 
         let elapsed = timer.elapsed();
-        info!(
-            "Processed {} requests in {:?}",
-            processed, elapsed
-        );
+        info!("Processed {} requests in {:?}", processed, elapsed);
 
         Ok(processed)
     }
-
 
     /// Process jobs from queue in parallel
     async fn process_queue_parallel(
@@ -312,8 +330,11 @@ impl OptimizedProcessor {
             return Ok(0);
         }
 
-        info!("Processing {} jobs in parallel (pending nonces: {})",
-            jobs.len(), nonce_manager.pending());
+        info!(
+            "Processing {} jobs in parallel (pending nonces: {})",
+            jobs.len(),
+            nonce_manager.pending()
+        );
 
         // Spawn parallel tasks
         for job in jobs {
@@ -353,7 +374,8 @@ impl OptimizedProcessor {
                     &proof_cache,
                     &strategy_registry,
                     use_snark,
-                ).await;
+                )
+                .await;
 
                 // Record metrics
                 metrics().end_proof();
@@ -447,10 +469,7 @@ async fn fetch_request_details(
     let tip_call = engine.getCurrentTip(request_id);
 
     // Fetch request details and current tip IN PARALLEL
-    let (request_result, tip_result) = tokio::join!(
-        request_call.call(),
-        tip_call.call()
-    );
+    let (request_result, tip_result) = tokio::join!(request_call.call(), tip_call.call());
 
     let request = request_result?._0;
     let current_tip = tip_result?._0;
@@ -469,9 +488,9 @@ async fn fetch_request_details(
     let program_cached = program_cache.get(&request.imageId).is_some();
 
     // Create queued job
-    let request_id_u64: u64 = request_id.try_into().map_err(|_| {
-        anyhow::anyhow!("Request ID {} overflows u64", request_id)
-    })?;
+    let request_id_u64: u64 = request_id
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("Request ID {} overflows u64", request_id))?;
     let expires_at_u64: u64 = request.expiresAt.to::<u64>();
 
     let job = QueuedJob {
@@ -543,13 +562,23 @@ async fn process_single_job(
     let input_timer = Timer::start();
 
     // Try to get prefetched input first (instant if available)
-    let input = if let Some(prefetched) = input_prefetcher.get_cached(&job.input_url, &job.input_hash).await {
-        info!("[Job {}] Input PREFETCH HIT! ({} bytes, saved {:?})",
-            job.request_id, prefetched.len(), input_timer.elapsed());
+    let input = if let Some(prefetched) = input_prefetcher
+        .get_cached(&job.input_url, &job.input_hash)
+        .await
+    {
+        info!(
+            "[Job {}] Input PREFETCH HIT! ({} bytes, saved {:?})",
+            job.request_id,
+            prefetched.len(),
+            input_timer.elapsed()
+        );
         prefetched
     } else {
         // Fallback to fetching (slower path)
-        debug!("[Job {}] Input prefetch miss, fetching now...", job.request_id);
+        debug!(
+            "[Job {}] Input prefetch miss, fetching now...",
+            job.request_id
+        );
         let input = fetch_input_smart(&job.input_url, ipfs_client).await?;
 
         // Verify input digest
@@ -561,8 +590,12 @@ async fn process_single_job(
                 computed_digest
             );
         }
-        info!("[Job {}] Input fetched and verified ({} bytes in {:?})",
-            job.request_id, input.len(), input_timer.elapsed());
+        info!(
+            "[Job {}] Input fetched and verified ({} bytes in {:?})",
+            job.request_id,
+            input.len(),
+            input_timer.elapsed()
+        );
         input
     };
 
@@ -573,7 +606,9 @@ async fn process_single_job(
     if let Some(cached_proof) = proof_cache.get(&cache_key).await {
         info!(
             "[Job {}] PROOF CACHE HIT! Using cached proof ({} bytes, {} cycles)",
-            job.request_id, cached_proof.proof.len(), cached_proof.cycles
+            job.request_id,
+            cached_proof.proof.len(),
+            cached_proof.cycles
         );
 
         // Fast path: claim and submit with cached proof
@@ -587,8 +622,12 @@ async fn process_single_job(
             nonce_manager,
             job.request_id,
             &retry_config,
-        ).await?;
-        info!("[Job {}] Claimed in tx: {:?}", job.request_id, claim_result.tx_hash);
+        )
+        .await?;
+        info!(
+            "[Job {}] Claimed in tx: {:?}",
+            job.request_id, claim_result.tx_hash
+        );
 
         // Submit cached proof
         timeline.enter_stage(ProveStage::Submission);
@@ -603,7 +642,8 @@ async fn process_single_job(
             nonce_manager,
             job.request_id,
             &retry_config,
-        ).await?;
+        )
+        .await?;
 
         metrics().record_submit_time(submit_timer.elapsed());
         info!(
@@ -624,7 +664,11 @@ async fn process_single_job(
     let preflight = fast_prover.preflight(&elf, &input).await?;
 
     if preflight.strategy == ProvingStrategy::TooComplex {
-        anyhow::bail!("Job {} too complex: {} cycles", job.request_id, preflight.cycles);
+        anyhow::bail!(
+            "Job {} too complex: {} cycles",
+            job.request_id,
+            preflight.cycles
+        );
     }
 
     timeline.enter_stage_with_meta(
@@ -694,11 +738,7 @@ async fn process_single_job(
                                 "[Job {}] Recursive wrapping failed but only 1 sub-job, using directly: {}",
                                 job.request_id, e
                             );
-                            let seal = decomp_result
-                                .seals
-                                .into_iter()
-                                .next()
-                                .unwrap_or_default();
+                            let seal = decomp_result.seals.into_iter().next().unwrap_or_default();
                             let journal = decomp_result
                                 .journals
                                 .into_iter()
@@ -785,7 +825,8 @@ async fn process_single_job(
             request_id,
             job.tip,
             config.min_profit_margin,
-        ).await?;
+        )
+        .await?;
 
         if !profitability.is_profitable {
             anyhow::bail!(
@@ -800,7 +841,10 @@ async fn process_single_job(
 
         info!(
             "[Job {}] Profitability OK: tip={} wei, cost={} wei, margin={:.1}%",
-            job.request_id, job.tip, profitability.estimated_cost, profitability.profit_margin * 100.0
+            job.request_id,
+            job.tip,
+            profitability.estimated_cost,
+            profitability.profit_margin * 100.0
         );
     }
 
@@ -814,9 +858,13 @@ async fn process_single_job(
         nonce_manager,
         job.request_id,
         &retry_config,
-    ).await?;
+    )
+    .await?;
 
-    info!("[Job {}] Claimed in tx: {:?}", job.request_id, claim_result.tx_hash);
+    info!(
+        "[Job {}] Claimed in tx: {:?}",
+        job.request_id, claim_result.tx_hash
+    );
 
     // Step 7: Generate proof using fast prover
     timeline.enter_stage(ProveStage::Proving);
@@ -826,7 +874,9 @@ async fn process_single_job(
 
     info!(
         "[Job {}] Proof generated in {:?} ({} bytes)",
-        job.request_id, prove_result.proof_time, prove_result.proof.len()
+        job.request_id,
+        prove_result.proof_time,
+        prove_result.proof.len()
     );
 
     // Step 8: Cache the proof for future use
@@ -851,7 +901,8 @@ async fn process_single_job(
         nonce_manager,
         job.request_id,
         &retry_config,
-    ).await?;
+    )
+    .await?;
 
     metrics().record_submit_time(submit_timer.elapsed());
 
@@ -887,9 +938,7 @@ async fn try_recursive_wrap(
     // Clone receipts for the wrapper (it takes ownership)
     let receipts = decomp_result.receipts.to_vec();
 
-    wrapper
-        .wrap(inner_image_id, receipts, strategy)
-        .await
+    wrapper.wrap(inner_image_id, receipts, strategy).await
 }
 
 /// Fetch program ELF from registry
@@ -924,10 +973,7 @@ async fn fetch_program_from_registry(
             Ok(result) => result._0,
             Err(e) => {
                 warn!("Failed to fetch program from registry: {:?}", e);
-                anyhow::bail!(
-                    "Program {} not found in registry: {:?}",
-                    image_id, e
-                );
+                anyhow::bail!("Program {} not found in registry: {:?}", image_id, e);
             }
         };
 
@@ -951,11 +997,15 @@ async fn fetch_program_from_registry(
         if computed_image_id != *image_id {
             anyhow::bail!(
                 "Downloaded ELF image ID mismatch: expected {}, got {}",
-                image_id, computed_image_id
+                image_id,
+                computed_image_id
             );
         }
 
-        info!("Successfully downloaded and verified ELF ({} bytes)", elf.len());
+        info!(
+            "Successfully downloaded and verified ELF ({} bytes)",
+            elf.len()
+        );
 
         // Save to local cache for future use
         if let Err(e) = save_elf_to_cache(&programs_dir, image_id, &elf) {
@@ -1172,13 +1222,12 @@ async fn send_claim_with_retry(
     loop {
         attempts += 1;
         let nonce = nonce_manager.next_nonce();
-        debug!("[Job {}] Claim attempt {} with nonce {}", job_id, attempts, nonce);
+        debug!(
+            "[Job {}] Claim attempt {} with nonce {}",
+            job_id, attempts, nonce
+        );
 
-        let result = engine
-            .claimExecution(request_id)
-            .nonce(nonce)
-            .send()
-            .await;
+        let result = engine.claimExecution(request_id).nonce(nonce).send().await;
 
         match result {
             Ok(pending_tx) => {
@@ -1235,7 +1284,7 @@ async fn send_claim_with_retry(
         // Exponential backoff
         tokio::time::sleep(delay).await;
         delay = Duration::from_secs_f64(
-            (delay.as_secs_f64() * config.backoff_multiplier).min(config.max_delay.as_secs_f64())
+            (delay.as_secs_f64() * config.backoff_multiplier).min(config.max_delay.as_secs_f64()),
         );
     }
 }
@@ -1256,7 +1305,10 @@ async fn send_submit_with_retry(
     loop {
         attempts += 1;
         let nonce = nonce_manager.next_nonce();
-        debug!("[Job {}] Submit attempt {} with nonce {}", job_id, attempts, nonce);
+        debug!(
+            "[Job {}] Submit attempt {} with nonce {}",
+            job_id, attempts, nonce
+        );
 
         let result = engine
             .submitProof(request_id, proof.clone().into(), journal.clone().into())
@@ -1319,7 +1371,7 @@ async fn send_submit_with_retry(
         // Exponential backoff
         tokio::time::sleep(delay).await;
         delay = Duration::from_secs_f64(
-            (delay.as_secs_f64() * config.backoff_multiplier).min(config.max_delay.as_secs_f64())
+            (delay.as_secs_f64() * config.backoff_multiplier).min(config.max_delay.as_secs_f64()),
         );
     }
 }
@@ -1388,7 +1440,10 @@ async fn check_profitability(
         Err(e) => {
             // submitProof estimation often fails because we haven't claimed yet
             // Use a conservative default based on typical proof submission costs
-            debug!("Failed to estimate submit gas (expected before claim): {}", e);
+            debug!(
+                "Failed to estimate submit gas (expected before claim): {}",
+                e
+            );
             300_000u64 // Conservative default for submit with ~500 byte proof
         }
     };
@@ -1423,4 +1478,3 @@ async fn check_profitability(
         submit_gas,
     })
 }
-

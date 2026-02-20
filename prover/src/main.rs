@@ -7,14 +7,14 @@
 //! 4. Submits proofs and collects rewards
 
 use alloy::{
+    network::EthereumWallet,
     primitives::{Address, B256, U256},
     providers::ProviderBuilder,
     signers::local::PrivateKeySigner,
-    network::EthereumWallet,
 };
 use clap::{Parser, Subcommand};
 use std::sync::Arc;
-use tracing::{debug, info, error};
+use tracing::{debug, error, info};
 
 mod bonsai;
 mod cache;
@@ -29,6 +29,8 @@ mod gpu_optimize;
 mod health;
 mod input_decomposer;
 mod ipfs;
+#[cfg(feature = "jolt")]
+mod jolt_backend;
 mod metrics;
 mod monitor;
 mod multi_vm;
@@ -42,13 +44,11 @@ mod recursive_wrapper;
 mod risc0_backend;
 mod segment_prover;
 mod shutdown;
+#[cfg(feature = "sp1")]
+mod sp1_prover;
 mod validation;
 mod xgboost_decomp;
 mod zkvm_backend;
-#[cfg(feature = "sp1")]
-mod sp1_prover;
-#[cfg(feature = "jolt")]
-mod jolt_backend;
 
 use bonsai::ProvingMode;
 use config::ProverConfig;
@@ -56,7 +56,9 @@ use config::ProverConfig;
 #[derive(Parser)]
 #[command(name = "world-zk-prover")]
 #[command(version = env!("CARGO_PKG_VERSION"))]
-#[command(about = "Prover node for World ZK Compute - Earn rewards by generating zero-knowledge proofs")]
+#[command(
+    about = "Prover node for World ZK Compute - Earn rewards by generating zero-knowledge proofs"
+)]
 #[command(long_about = r#"
 World ZK Compute Prover Node
 
@@ -238,9 +240,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize logging
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-        )
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
     let cli = Cli::parse();
@@ -283,7 +283,8 @@ async fn main() -> anyhow::Result<()> {
                 queue_size,
                 min_profit_margin,
                 skip_profitability_check,
-            ).await?;
+            )
+            .await?;
         }
 
         Commands::Status {
@@ -371,7 +372,11 @@ async fn run_prover(
     let effective_ws_url = match ws_url.as_deref() {
         Some("none") | Some("disabled") => None,
         Some(url) => Some(url.to_string()),
-        None => Some(rpc_url.replace("https://", "wss://").replace("http://", "ws://")),
+        None => Some(
+            rpc_url
+                .replace("https://", "wss://")
+                .replace("http://", "ws://"),
+        ),
     };
 
     info!("╔══════════════════════════════════════════════════════════════╗");
@@ -380,21 +385,62 @@ async fn run_prover(
     info!("");
     info!("Configuration:");
     info!("  RPC URL:        {}", rpc_url);
-    info!("  WS URL:         {}", effective_ws_url.as_deref().unwrap_or("disabled (polling only)"));
+    info!(
+        "  WS URL:         {}",
+        effective_ws_url
+            .as_deref()
+            .unwrap_or("disabled (polling only)")
+    );
     info!("  Engine:         {}", engine_address);
-    info!("  Registry:       {}", registry_address.as_deref().unwrap_or("not configured (local only)"));
+    info!(
+        "  Registry:       {}",
+        registry_address
+            .as_deref()
+            .unwrap_or("not configured (local only)")
+    );
     info!("  Min tip:        {} ETH", min_tip);
     info!("  Proving mode:   {:?}", mode);
     info!("  GPU backend:    {}", gpu_status);
     info!("  Max concurrent: {}", max_concurrent);
-    info!("  SNARK:          {}", if use_snark { "enabled" } else { "disabled" });
-    info!("  GPU concurrent: {}", if max_gpu_concurrent > 0 { max_gpu_concurrent.to_string() } else { format!("auto ({})", gpu_device_count) });
-    info!("  CPU concurrent: {}", if max_cpu_concurrent > 0 { max_cpu_concurrent.to_string() } else { "auto".to_string() });
+    info!(
+        "  SNARK:          {}",
+        if use_snark { "enabled" } else { "disabled" }
+    );
+    info!(
+        "  GPU concurrent: {}",
+        if max_gpu_concurrent > 0 {
+            max_gpu_concurrent.to_string()
+        } else {
+            format!("auto ({})", gpu_device_count)
+        }
+    );
+    info!(
+        "  CPU concurrent: {}",
+        if max_cpu_concurrent > 0 {
+            max_cpu_concurrent.to_string()
+        } else {
+            "auto".to_string()
+        }
+    );
     info!("  Cache size:     {} MB", cache_size_mb);
     info!("  Queue size:     {}", queue_size);
-    info!("  Health port:    {}", if health_port > 0 { health_port.to_string() } else { "disabled".to_string() });
-    info!("  Profit margin:  {:.0}%{}", min_profit_margin * 100.0,
-        if skip_profitability_check { " (DISABLED)" } else { "" });
+    info!(
+        "  Health port:    {}",
+        if health_port > 0 {
+            health_port.to_string()
+        } else {
+            "disabled".to_string()
+        }
+    );
+    info!(
+        "  Profit margin:  {:.0}%{}",
+        min_profit_margin * 100.0,
+        if skip_profitability_check {
+            " (DISABLED)"
+        } else {
+            ""
+        }
+    );
     info!("");
 
     // Convert min tip to wei
@@ -409,8 +455,7 @@ async fn run_prover(
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
             .map(|s| {
-                let bytes = hex::decode(s.trim_start_matches("0x"))
-                    .expect("Invalid image ID hex");
+                let bytes = hex::decode(s.trim_start_matches("0x")).expect("Invalid image ID hex");
                 B256::from_slice(&bytes)
             })
             .collect()
@@ -442,16 +487,15 @@ async fn run_prover(
     let engine: Address = engine_address.parse()?;
 
     // Initialize nonce manager for parallel transaction safety
-    let nonce_manager = Arc::new(
-        nonce::NonceManager::new(provider.clone(), signer.address()).await?
+    let nonce_manager =
+        Arc::new(nonce::NonceManager::new(provider.clone(), signer.address()).await?);
+    info!(
+        "✓ Nonce manager initialized (current nonce: {})",
+        nonce_manager.current()
     );
-    info!("✓ Nonce manager initialized (current nonce: {})", nonce_manager.current());
 
     // Parse registry address if provided
-    let registry: Option<Address> = registry_address
-        .as_ref()
-        .map(|s| s.parse())
-        .transpose()?;
+    let registry: Option<Address> = registry_address.as_ref().map(|s| s.parse()).transpose()?;
 
     // Create prover config
     let config = ProverConfig {
@@ -483,7 +527,10 @@ async fn run_prover(
         max_cpu_concurrent,
     )?;
     info!("✓ Optimized processor ready");
-    info!("  - Parallel processing: {} concurrent jobs", max_concurrent);
+    info!(
+        "  - Parallel processing: {} concurrent jobs",
+        max_concurrent
+    );
     info!("  - Job queue: priority-based ordering");
     info!("  - Program cache: {} MB (memory + disk)", cache_size_mb);
     info!("  - IPFS: multi-gateway (4 fallbacks)");
@@ -513,11 +560,8 @@ async fn run_prover(
         };
 
         // Start event subscriber in background
-        let subscriber = events::EventSubscriber::new(
-            event_config,
-            event_tx,
-            allowed_images.clone(),
-        );
+        let subscriber =
+            events::EventSubscriber::new(event_config, event_tx, allowed_images.clone());
 
         let subscriber_handle = tokio::spawn(async move {
             subscriber.run().await;
@@ -545,10 +589,7 @@ async fn run_prover(
 
     // Start health server if enabled
     let health_state = if health_port > 0 {
-        let state = health::SharedState::new(
-            wallet_address.to_string(),
-            engine_address.clone(),
-        );
+        let state = health::SharedState::new(wallet_address.to_string(), engine_address.clone());
         state.set_running(true).await;
 
         // Update GPU health info from concurrency manager
@@ -587,9 +628,8 @@ async fn run_prover(
 
     // Start background cache cleanup (every 5 minutes)
     let proof_cache_for_cleanup = Arc::new(proof_cache::ProofCache::with_defaults());
-    let _cache_cleanup_handle = proof_cache_for_cleanup.start_cleanup_task(
-        std::time::Duration::from_secs(300),
-    );
+    let _cache_cleanup_handle =
+        proof_cache_for_cleanup.start_cleanup_task(std::time::Duration::from_secs(300));
     info!("✓ Proof cache cleanup: every 5 minutes");
 
     // ════════════════════════════════════════════════════════════════════
@@ -611,16 +651,19 @@ async fn run_prover(
             break;
         }
 
-        match processor.check_and_process(&provider, &config, &nonce_manager).await {
+        match processor
+            .check_and_process(&provider, &config, &nonce_manager)
+            .await
+        {
             Ok(processed) => {
                 if processed > 0 {
                     info!("✓ Processed {} requests", processed);
 
                     // Update health state
                     if let Some(ref state) = health_state {
-                        state.update_active_proofs(
-                            metrics::metrics().snapshot().active_proofs
-                        ).await;
+                        state
+                            .update_active_proofs(metrics::metrics().snapshot().active_proofs)
+                            .await;
                     }
                 }
             }
@@ -639,7 +682,8 @@ async fn run_prover(
         if metrics_counter.is_multiple_of(metrics_interval) {
             let snapshot = metrics::metrics().snapshot();
             if snapshot.proofs_generated > 0 || snapshot.proofs_failed > 0 {
-                info!("Metrics: {} proofs ({:.1}% success), {:.1}/hr, avg {:?}",
+                info!(
+                    "Metrics: {} proofs ({:.1}% success), {:.1}/hr, avg {:?}",
                     snapshot.proofs_generated + snapshot.proofs_failed,
                     snapshot.success_rate(),
                     snapshot.proofs_per_hour(),
@@ -672,11 +716,10 @@ async fn run_prover(
     // Graceful shutdown: wait for in-flight work to complete
     info!("Waiting for in-flight tasks to complete (30s grace period)...");
     let shutdown_config = shutdown::ShutdownConfig::default();
-    shutdown::graceful_shutdown(
-        &shutdown_controller,
-        &shutdown_config,
-        || Box::pin(async { Ok(()) }),
-    ).await?;
+    shutdown::graceful_shutdown(&shutdown_controller, &shutdown_config, || {
+        Box::pin(async { Ok(()) })
+    })
+    .await?;
 
     info!("Prover node shut down cleanly.");
     Ok(())
@@ -733,13 +776,25 @@ async fn check_status(
     if req.status == 0 {
         println!("  Current Tip: {} ETH (with decay)", current_tip_eth);
     }
-    println!("  Created:     {}", format_timestamp(req.createdAt.to::<u64>()));
-    println!("  Expires:     {}", format_timestamp(req.expiresAt.to::<u64>()));
+    println!(
+        "  Created:     {}",
+        format_timestamp(req.createdAt.to::<u64>())
+    );
+    println!(
+        "  Expires:     {}",
+        format_timestamp(req.expiresAt.to::<u64>())
+    );
 
     if req.status == 1 {
         println!("  Claimed By:  {}", req.claimedBy);
-        println!("  Claimed At:  {}", format_timestamp(req.claimedAt.to::<u64>()));
-        println!("  Deadline:    {}", format_timestamp(req.claimDeadline.to::<u64>()));
+        println!(
+            "  Claimed At:  {}",
+            format_timestamp(req.claimedAt.to::<u64>())
+        );
+        println!(
+            "  Deadline:    {}",
+            format_timestamp(req.claimDeadline.to::<u64>())
+        );
     }
 
     if req.callbackContract != Address::ZERO {
@@ -749,11 +804,7 @@ async fn check_status(
     Ok(())
 }
 
-async fn list_pending(
-    rpc_url: String,
-    engine_address: String,
-    limit: u64,
-) -> anyhow::Result<()> {
+async fn list_pending(rpc_url: String, engine_address: String, limit: u64) -> anyhow::Result<()> {
     let provider = ProviderBuilder::new().on_http(rpc_url.parse()?);
     let engine_addr: Address = engine_address.parse()?;
     let engine = contracts::IExecutionEngine::new(engine_addr, &provider);
@@ -799,7 +850,11 @@ async fn list_pending(
                 let req = r._0;
                 let current_tip = tip_res.map(|t| t._0).unwrap_or(U256::ZERO);
                 let rid_u64: u64 = rid.try_into().unwrap_or(0);
-                let image_short = format!("{}..{}", &format!("{}", req.imageId)[..8], &format!("{}", req.imageId)[62..]);
+                let image_short = format!(
+                    "{}..{}",
+                    &format!("{}", req.imageId)[..8],
+                    &format!("{}", req.imageId)[62..]
+                );
 
                 println!(
                     "{:<6} {:<12} {:<44} {:<14} {}",
@@ -853,23 +908,21 @@ fn handle_config(generate: bool, output: String, validate: Option<String>) -> an
 
     if let Some(path) = validate {
         match config_file::Config::from_file(&path) {
-            Ok(config) => {
-                match config.validate() {
-                    Ok(()) => {
-                        println!("✓ Configuration is valid: {}", path);
-                        println!("\nSettings:");
-                        println!("  RPC URL:     {}", config.prover.rpc_url);
-                        println!("  Chain ID:    {}", config.prover.chain_id);
-                        println!("  Proving:     {}", config.proving.mode);
-                        println!("  Concurrent:  {}", config.proving.max_concurrent);
-                        println!("  API enabled: {}", config.api.enabled);
-                    }
-                    Err(e) => {
-                        println!("✗ Configuration validation failed: {}", e);
-                        std::process::exit(1);
-                    }
+            Ok(config) => match config.validate() {
+                Ok(()) => {
+                    println!("✓ Configuration is valid: {}", path);
+                    println!("\nSettings:");
+                    println!("  RPC URL:     {}", config.prover.rpc_url);
+                    println!("  Chain ID:    {}", config.prover.chain_id);
+                    println!("  Proving:     {}", config.proving.mode);
+                    println!("  Concurrent:  {}", config.proving.max_concurrent);
+                    println!("  API enabled: {}", config.api.enabled);
                 }
-            }
+                Err(e) => {
+                    println!("✗ Configuration validation failed: {}", e);
+                    std::process::exit(1);
+                }
+            },
             Err(e) => {
                 println!("✗ Failed to parse configuration: {}", e);
                 std::process::exit(1);
@@ -897,9 +950,18 @@ fn show_info() {
     println!();
     println!("Hardware:");
     println!("  CPU cores:  {}", num_cpus());
-    println!("  GPU:        {} ({} device(s))", gpu_backend, gpu_mgr.device_count());
+    println!(
+        "  GPU:        {} ({} device(s))",
+        gpu_backend,
+        gpu_mgr.device_count()
+    );
     for stat in gpu_mgr.stats() {
-        println!("    Device {}: {} ({:.0} MB)", stat.id, stat.name, stat.memory_bytes as f64 / 1024.0 / 1024.0);
+        println!(
+            "    Device {}: {} ({:.0} MB)",
+            stat.id,
+            stat.name,
+            stat.memory_bytes as f64 / 1024.0 / 1024.0
+        );
     }
     println!();
     println!("Capabilities:");

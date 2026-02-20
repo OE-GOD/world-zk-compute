@@ -6,7 +6,6 @@
 //! SP1 guest programs use `sp1_zkvm::io::read::<T>()` which reads bincode
 //! from stdin. The prover passes raw bytes via `SP1Stdin::write_slice()`.
 
-
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use sp1_sdk::{ProverClient, SP1Stdin};
@@ -63,10 +62,7 @@ impl ZkVmBackend for Sp1Backend {
             let execution_time = start.elapsed();
             let cycles = report.total_instruction_count();
 
-            info!(
-                "SP1 execution: {} cycles, {:?}",
-                cycles, execution_time
-            );
+            info!("SP1 execution: {} cycles, {:?}", cycles, execution_time);
 
             Ok(ExecutionResult {
                 journal: output.as_bytes().to_vec(),

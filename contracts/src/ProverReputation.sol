@@ -16,17 +16,14 @@ contract ProverReputation {
         uint64 completedJobs;
         uint64 failedJobs;
         uint64 abandonedJobs;
-
         // Earnings
         uint256 totalEarnings;
-
         // Performance (packed)
         uint64 avgProofTimeMs;
         uint64 lastJobAt;
         uint64 lastUpdateAt;
-
         // Score and tier (packed)
-        uint32 score;         // 0-10000 basis points
+        uint32 score; // 0-10000 basis points
         uint8 tier;
         bool isRegistered;
         bool isSlashed;
@@ -35,19 +32,20 @@ contract ProverReputation {
 
     /// @notice Reputation tier levels
     enum Tier {
-        Unranked,     // New prover, no history
-        Bronze,       // Score < 5000
-        Silver,       // Score 5000-7499
-        Gold,         // Score 7500-8999
-        Platinum,     // Score 9000-9499
-        Diamond       // Score 9500+
+        Unranked, // New prover, no history
+        Bronze, // Score < 5000
+        Silver, // Score 5000-7499
+        Gold, // Score 7500-8999
+        Platinum, // Score 9000-9499
+        Diamond // Score 9500+
+
     }
 
     /// @notice Slashing event details
     struct SlashEvent {
         uint256 timestamp;
         string reason;
-        uint256 penaltyBps;  // Basis points reduction
+        uint256 penaltyBps; // Basis points reduction
         address reportedBy;
     }
 
@@ -56,13 +54,13 @@ contract ProverReputation {
     // ========================================================================
 
     uint256 public constant MAX_SCORE = 10000;
-    uint256 public constant INITIAL_SCORE = 5000;  // Start at 50%
+    uint256 public constant INITIAL_SCORE = 5000; // Start at 50%
 
     // Score adjustments (basis points)
-    uint256 public constant SUCCESS_BONUS = 50;      // +0.5% per success
-    uint256 public constant FAILURE_PENALTY = 200;   // -2% per failure
-    uint256 public constant ABANDON_PENALTY = 500;   // -5% per abandon
-    uint256 public constant FAST_PROOF_BONUS = 25;   // +0.25% for fast proofs
+    uint256 public constant SUCCESS_BONUS = 50; // +0.5% per success
+    uint256 public constant FAILURE_PENALTY = 200; // -2% per failure
+    uint256 public constant ABANDON_PENALTY = 500; // -5% per abandon
+    uint256 public constant FAST_PROOF_BONUS = 25; // +0.25% for fast proofs
 
     // Tier thresholds
     uint256 public constant BRONZE_THRESHOLD = 0;
@@ -73,7 +71,7 @@ contract ProverReputation {
 
     // Time-based decay
     uint256 public constant DECAY_PERIOD = 30 days;
-    uint256 public constant DECAY_RATE = 100;  // -1% per period of inactivity
+    uint256 public constant DECAY_RATE = 100; // -1% per period of inactivity
 
     // ========================================================================
     // STATE
@@ -188,11 +186,11 @@ contract ProverReputation {
     /// @param prover Prover address
     /// @param proofTimeMs Time taken to generate proof
     /// @param earnings Amount earned
-    function recordSuccess(
-        address prover,
-        uint256 proofTimeMs,
-        uint256 earnings
-    ) external onlyAuthorized notBanned(prover) {
+    function recordSuccess(address prover, uint256 proofTimeMs, uint256 earnings)
+        external
+        onlyAuthorized
+        notBanned(prover)
+    {
         Reputation storage rep = reputations[prover];
         if (!rep.isRegistered) revert ProverNotRegistered();
 
@@ -232,10 +230,7 @@ contract ProverReputation {
     /// @notice Record failed job
     /// @param prover Prover address
     /// @param reason Failure reason
-    function recordFailure(
-        address prover,
-        string calldata reason
-    ) external onlyAuthorized notBanned(prover) {
+    function recordFailure(address prover, string calldata reason) external onlyAuthorized notBanned(prover) {
         Reputation storage rep = reputations[prover];
         if (!rep.isRegistered) revert ProverNotRegistered();
 
@@ -257,10 +252,7 @@ contract ProverReputation {
     /// @notice Record abandoned job (claimed but never submitted)
     /// @param prover Prover address
     /// @param requestId Request that was abandoned
-    function recordAbandon(
-        address prover,
-        uint256 requestId
-    ) external onlyAuthorized notBanned(prover) {
+    function recordAbandon(address prover, uint256 requestId) external onlyAuthorized notBanned(prover) {
         Reputation storage rep = reputations[prover];
         if (!rep.isRegistered) revert ProverNotRegistered();
 
@@ -282,21 +274,14 @@ contract ProverReputation {
     /// @param prover Prover address
     /// @param reason Slash reason
     /// @param penaltyBps Penalty in basis points
-    function slash(
-        address prover,
-        string calldata reason,
-        uint256 penaltyBps
-    ) external onlyOwner {
+    function slash(address prover, string calldata reason, uint256 penaltyBps) external onlyOwner {
         Reputation storage rep = reputations[prover];
         if (!rep.isRegistered) revert ProverNotRegistered();
 
         // Record slash
-        slashHistory[prover].push(SlashEvent({
-            timestamp: block.timestamp,
-            reason: reason,
-            penaltyBps: penaltyBps,
-            reportedBy: msg.sender
-        }));
+        slashHistory[prover].push(
+            SlashEvent({timestamp: block.timestamp, reason: reason, penaltyBps: penaltyBps, reportedBy: msg.sender})
+        );
 
         rep.isSlashed = true;
         rep.lastUpdateAt = uint64(block.timestamp);
@@ -369,9 +354,7 @@ contract ProverReputation {
     /// @notice Check if prover is in good standing
     function isGoodStanding(address prover) external view returns (bool) {
         Reputation storage rep = reputations[prover];
-        return rep.isRegistered &&
-               !rep.isBanned &&
-               rep.score >= SILVER_THRESHOLD;
+        return rep.isRegistered && !rep.isBanned && rep.score >= SILVER_THRESHOLD;
     }
 
     /// @notice Get slash history

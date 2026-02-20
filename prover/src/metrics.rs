@@ -2,7 +2,6 @@
 //!
 //! Track prover performance for optimization and debugging.
 
-
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
@@ -61,7 +60,8 @@ impl Metrics {
     pub fn record_proof_success(&self, duration: Duration, cycles: u64, bytes: u64) {
         self.proofs_generated.fetch_add(1, Ordering::Relaxed);
         self.total_cycles.fetch_add(cycles, Ordering::Relaxed);
-        self.total_bytes_processed.fetch_add(bytes, Ordering::Relaxed);
+        self.total_bytes_processed
+            .fetch_add(bytes, Ordering::Relaxed);
 
         if let Ok(mut times) = self.proof_times.write() {
             times.push(duration.as_micros() as u64);
@@ -127,15 +127,21 @@ impl Metrics {
 
     /// Get current snapshot
     pub fn snapshot(&self) -> MetricsSnapshot {
-        let proof_times = self.proof_times.read()
+        let proof_times = self
+            .proof_times
+            .read()
             .map(|t| t.clone())
             .unwrap_or_default();
 
-        let fetch_times = self.fetch_times.read()
+        let fetch_times = self
+            .fetch_times
+            .read()
             .map(|t| t.clone())
             .unwrap_or_default();
 
-        let submit_times = self.submit_times.read()
+        let submit_times = self
+            .submit_times
+            .read()
             .map(|t| t.clone())
             .unwrap_or_default();
 
@@ -232,20 +238,35 @@ impl std::fmt::Display for MetricsSnapshot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "=== Prover Metrics ===")?;
         writeln!(f, "Uptime: {:?}", self.uptime)?;
-        writeln!(f, "Proofs: {} generated, {} failed ({:.1}% success)",
-                 self.proofs_generated, self.proofs_failed, self.success_rate())?;
+        writeln!(
+            f,
+            "Proofs: {} generated, {} failed ({:.1}% success)",
+            self.proofs_generated,
+            self.proofs_failed,
+            self.success_rate()
+        )?;
         writeln!(f, "Throughput: {:.1} proofs/hour", self.proofs_per_hour())?;
         writeln!(f, "Active: {} proofs in progress", self.active_proofs)?;
         writeln!(f, "Avg proof time: {:?}", self.avg_proof_time)?;
         writeln!(f, "P99 proof time: {:?}", self.p99_proof_time)?;
-        writeln!(f, "Total cycles: {} ({} avg/proof)",
-                 self.total_cycles, self.avg_cycles_per_proof())?;
-        writeln!(f, "Data processed: {:.2} MB",
-                 self.total_bytes_processed as f64 / 1024.0 / 1024.0)?;
+        writeln!(
+            f,
+            "Total cycles: {} ({} avg/proof)",
+            self.total_cycles,
+            self.avg_cycles_per_proof()
+        )?;
+        writeln!(
+            f,
+            "Data processed: {:.2} MB",
+            self.total_bytes_processed as f64 / 1024.0 / 1024.0
+        )?;
         if self.gpu_device_count > 0 {
             writeln!(f, "GPU devices: {}", self.gpu_device_count)?;
-            writeln!(f, "GPU jobs: {} completed, {} in progress",
-                     self.gpu_jobs_completed, self.gpu_jobs_in_progress)?;
+            writeln!(
+                f,
+                "GPU jobs: {} completed, {} in progress",
+                self.gpu_jobs_completed, self.gpu_jobs_in_progress
+            )?;
         }
         Ok(())
     }
@@ -258,7 +279,9 @@ pub struct Timer {
 
 impl Timer {
     pub fn start() -> Self {
-        Self { start: Instant::now() }
+        Self {
+            start: Instant::now(),
+        }
     }
 
     pub fn elapsed(&self) -> Duration {
@@ -274,11 +297,7 @@ mod tests {
     fn test_metrics_recording() {
         let metrics = Metrics::new();
 
-        metrics.record_proof_success(
-            Duration::from_secs(10),
-            1_000_000,
-            1024,
-        );
+        metrics.record_proof_success(Duration::from_secs(10), 1_000_000, 1024);
 
         let snapshot = metrics.snapshot();
         assert_eq!(snapshot.proofs_generated, 1);

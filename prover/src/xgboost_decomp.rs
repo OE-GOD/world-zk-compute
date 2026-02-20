@@ -11,7 +11,6 @@
 //! The guest program deserializes via `env::read()` (risc0 serde), so we use
 //! `risc0_zkvm::serde` here to match.
 
-
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use tracing::info;
@@ -81,8 +80,7 @@ pub struct Prediction {
 
 /// Serialize a value using risc0 serde format, returning bytes.
 fn risc0_serialize<T: Serialize>(value: &T) -> Result<Vec<u8>> {
-    let words = risc0_zkvm::serde::to_vec(value)
-        .map_err(|e| anyhow!("risc0 serialize: {}", e))?;
+    let words = risc0_zkvm::serde::to_vec(value).map_err(|e| anyhow!("risc0 serialize: {}", e))?;
     Ok(words.iter().flat_map(|w| w.to_le_bytes()).collect())
 }
 
@@ -90,10 +88,12 @@ fn risc0_serialize<T: Serialize>(value: &T) -> Result<Vec<u8>> {
 fn risc0_deserialize<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
     // risc0 serde requires u32-aligned input; reject unaligned data early
     if !bytes.len().is_multiple_of(4) {
-        return Err(anyhow!("risc0 deserialize: input length {} not u32-aligned", bytes.len()));
+        return Err(anyhow!(
+            "risc0 deserialize: input length {} not u32-aligned",
+            bytes.len()
+        ));
     }
-    risc0_zkvm::serde::from_slice::<T, u8>(bytes)
-        .map_err(|e| anyhow!("risc0 deserialize: {}", e))
+    risc0_zkvm::serde::from_slice::<T, u8>(bytes).map_err(|e| anyhow!("risc0 deserialize: {}", e))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

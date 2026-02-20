@@ -7,14 +7,9 @@ import {IRiscZeroVerifier, Receipt} from "risc0-ethereum/IRiscZeroVerifier.sol";
 /// @notice Mock verifier for testing (accepts all proofs)
 /// @dev In production, use RISC Zero's official verifier contracts
 contract MockRiscZeroVerifier is IRiscZeroVerifier {
-
     /// @notice Verify a RISC Zero proof
     /// @dev This mock always succeeds - use real verifier in production
-    function verify(
-        bytes calldata seal,
-        bytes32 imageId,
-        bytes32 journalDigest
-    ) external pure override {
+    function verify(bytes calldata seal, bytes32 imageId, bytes32 journalDigest) external pure override {
         // In production, this would verify the STARK/Groth16 proof
         // For testing, we just check that seal is not empty
         require(seal.length > 0, "Empty seal");

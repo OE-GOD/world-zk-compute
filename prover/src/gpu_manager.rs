@@ -10,8 +10,8 @@
 use crate::gpu_optimize::GpuBackend;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use tokio::sync::{Semaphore, OwnedSemaphorePermit};
-use tracing::{info, warn, debug};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tracing::{debug, info, warn};
 
 /// A single GPU device with its own concurrency semaphore.
 pub struct GpuDevice {

@@ -10,12 +10,12 @@
 
 #![allow(unused)]
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId, Throughput};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::time::Duration;
 
 /// Benchmark input hashing (SHA-256)
 fn bench_input_hashing(c: &mut Criterion) {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
 
     let mut group = c.benchmark_group("input_hashing");
 
@@ -98,8 +98,10 @@ fn bench_json_serialization(c: &mut Criterion) {
     let result = JobResult {
         request_id: 12345,
         image_id: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef".to_string(),
-        input_hash: "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890".to_string(),
-        output_hash: "0x9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba".to_string(),
+        input_hash: "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+            .to_string(),
+        output_hash: "0x9876543210fedcba9876543210fedcba9876543210fedcba9876543210fedcba"
+            .to_string(),
         cycles: 1_000_000,
         proof_size: 256 * 1024,
     };
@@ -120,7 +122,7 @@ fn bench_json_serialization(c: &mut Criterion) {
 
 /// Benchmark cache key generation
 fn bench_cache_key(c: &mut Criterion) {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
 
     let image_id = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
     let input = vec![0u8; 10240];
@@ -179,7 +181,7 @@ fn bench_memory_allocation(c: &mut Criterion) {
 
 /// Benchmark base64 encoding/decoding (for data URLs)
 fn bench_base64(c: &mut Criterion) {
-    use base64::{Engine, engine::general_purpose::STANDARD};
+    use base64::{engine::general_purpose::STANDARD, Engine};
 
     let mut group = c.benchmark_group("base64");
 

@@ -3,7 +3,6 @@
 //! Auto-detects whether an ELF binary targets risc0 or SP1, then
 //! dispatches execution and proving to the correct backend.
 
-
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use tracing::info;
@@ -32,10 +31,7 @@ impl MultiVmProver {
         let mut backends: HashMap<ZkVmType, Box<dyn ZkVmBackend>> = HashMap::new();
 
         // Always register risc0
-        backends.insert(
-            ZkVmType::Risc0,
-            Box::new(Risc0Backend::new(proving_mode)),
-        );
+        backends.insert(ZkVmType::Risc0, Box::new(Risc0Backend::new(proving_mode)));
         info!("Multi-VM: risc0 backend registered");
 
         // Conditionally register SP1
@@ -47,7 +43,10 @@ impl MultiVmProver {
                     info!("Multi-VM: SP1 backend registered");
                 }
                 Err(e) => {
-                    warn!("Multi-VM: SP1 backend init failed (SP1 programs won't be provable): {}", e);
+                    warn!(
+                        "Multi-VM: SP1 backend init failed (SP1 programs won't be provable): {}",
+                        e
+                    );
                 }
             }
         }
@@ -116,11 +115,13 @@ impl MultiVmProver {
     /// Detect VM type and generate an on-chain verifiable SNARK proof.
     pub async fn prove_with_snark(&self, elf: &[u8], input: &[u8]) -> Result<ProofResult> {
         let vm_type = detect_vm_type(elf);
-        info!("Multi-VM: detected {} program, proving with SNARK...", vm_type);
+        info!(
+            "Multi-VM: detected {} program, proving with SNARK...",
+            vm_type
+        );
         let backend = self.get_backend(vm_type)?;
         backend.prove_with_snark(elf, input).await
     }
-
 }
 
 #[cfg(test)]

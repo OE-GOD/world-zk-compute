@@ -182,9 +182,7 @@ impl LocalGpuProver {
         }
 
         // Build executor environment
-        let env = ExecutorEnv::builder()
-            .write_slice(input)
-            .build()?;
+        let env = ExecutorEnv::builder().write_slice(input).build()?;
 
         // Get the prover - RISC Zero automatically uses GPU when available
         // The `default_prover()` respects the cuda/metal feature flags

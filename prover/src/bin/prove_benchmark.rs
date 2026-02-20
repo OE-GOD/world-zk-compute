@@ -13,7 +13,7 @@
 //! Output: Detailed timing breakdown for each approach.
 
 use anyhow::{anyhow, Result};
-use k256::ecdsa::{SigningKey, signature::Signer};
+use k256::ecdsa::{signature::Signer, SigningKey};
 use risc0_zkvm::{default_executor, default_prover, ExecutorEnv};
 use sha2::{Digest, Sha256};
 use std::time::{Duration, Instant};
@@ -146,21 +146,98 @@ fn generate_xgboost_input(num_samples: usize) -> Vec<u8> {
     // Trees
     let trees: Vec<Vec<TreeNode>> = vec![
         vec![
-            TreeNode { is_leaf: 0, feature_idx: 0, threshold: 5.0, left_child: 1, right_child: 2, value: 0.0 },
-            TreeNode { is_leaf: 1, feature_idx: 0, threshold: 0.0, left_child: 0, right_child: 0, value: -0.3 },
-            TreeNode { is_leaf: 1, feature_idx: 0, threshold: 0.0, left_child: 0, right_child: 0, value: 0.4 },
+            TreeNode {
+                is_leaf: 0,
+                feature_idx: 0,
+                threshold: 5.0,
+                left_child: 1,
+                right_child: 2,
+                value: 0.0,
+            },
+            TreeNode {
+                is_leaf: 1,
+                feature_idx: 0,
+                threshold: 0.0,
+                left_child: 0,
+                right_child: 0,
+                value: -0.3,
+            },
+            TreeNode {
+                is_leaf: 1,
+                feature_idx: 0,
+                threshold: 0.0,
+                left_child: 0,
+                right_child: 0,
+                value: 0.4,
+            },
         ],
         vec![
-            TreeNode { is_leaf: 0, feature_idx: 1, threshold: 3.0, left_child: 1, right_child: 2, value: 0.0 },
-            TreeNode { is_leaf: 1, feature_idx: 0, threshold: 0.0, left_child: 0, right_child: 0, value: -0.2 },
-            TreeNode { is_leaf: 0, feature_idx: 0, threshold: 7.0, left_child: 3, right_child: 4, value: 0.0 },
-            TreeNode { is_leaf: 1, feature_idx: 0, threshold: 0.0, left_child: 0, right_child: 0, value: 0.1 },
-            TreeNode { is_leaf: 1, feature_idx: 0, threshold: 0.0, left_child: 0, right_child: 0, value: 0.5 },
+            TreeNode {
+                is_leaf: 0,
+                feature_idx: 1,
+                threshold: 3.0,
+                left_child: 1,
+                right_child: 2,
+                value: 0.0,
+            },
+            TreeNode {
+                is_leaf: 1,
+                feature_idx: 0,
+                threshold: 0.0,
+                left_child: 0,
+                right_child: 0,
+                value: -0.2,
+            },
+            TreeNode {
+                is_leaf: 0,
+                feature_idx: 0,
+                threshold: 7.0,
+                left_child: 3,
+                right_child: 4,
+                value: 0.0,
+            },
+            TreeNode {
+                is_leaf: 1,
+                feature_idx: 0,
+                threshold: 0.0,
+                left_child: 0,
+                right_child: 0,
+                value: 0.1,
+            },
+            TreeNode {
+                is_leaf: 1,
+                feature_idx: 0,
+                threshold: 0.0,
+                left_child: 0,
+                right_child: 0,
+                value: 0.5,
+            },
         ],
         vec![
-            TreeNode { is_leaf: 0, feature_idx: 0, threshold: 6.0, left_child: 1, right_child: 2, value: 0.0 },
-            TreeNode { is_leaf: 1, feature_idx: 0, threshold: 0.0, left_child: 0, right_child: 0, value: -0.1 },
-            TreeNode { is_leaf: 1, feature_idx: 0, threshold: 0.0, left_child: 0, right_child: 0, value: 0.3 },
+            TreeNode {
+                is_leaf: 0,
+                feature_idx: 0,
+                threshold: 6.0,
+                left_child: 1,
+                right_child: 2,
+                value: 0.0,
+            },
+            TreeNode {
+                is_leaf: 1,
+                feature_idx: 0,
+                threshold: 0.0,
+                left_child: 0,
+                right_child: 0,
+                value: -0.1,
+            },
+            TreeNode {
+                is_leaf: 1,
+                feature_idx: 0,
+                threshold: 0.0,
+                left_child: 0,
+                right_child: 0,
+                value: 0.3,
+            },
         ],
     ];
 
@@ -215,9 +292,17 @@ fn generate_anomaly_detector_input(n: usize) -> Vec<u8> {
 
         // features: Vec<f64> (3 features, alternating normal/anomalous)
         let features: Vec<f64> = if i % 3 != 0 {
-            vec![100.0 + (i as f64) * 0.5, 105.0 - (i as f64) * 0.3, 98.0 + (i as f64) * 0.2]
+            vec![
+                100.0 + (i as f64) * 0.5,
+                105.0 - (i as f64) * 0.3,
+                98.0 + (i as f64) * 0.2,
+            ]
         } else {
-            vec![300.0 + (i as f64), 50.0 - (i as f64) * 0.5, 400.0 + (i as f64) * 2.0]
+            vec![
+                300.0 + (i as f64),
+                50.0 - (i as f64) * 0.5,
+                400.0 + (i as f64) * 2.0,
+            ]
         };
         write_vec_f64(&mut buf, &features);
 
@@ -230,7 +315,7 @@ fn generate_anomaly_detector_input(n: usize) -> Vec<u8> {
 
     // params: DetectionParams
     write_u64(&mut buf, 10); // window_size: usize (serialized as u64)
-    write_u64(&mut buf, 3);  // min_cluster_size: usize
+    write_u64(&mut buf, 3); // min_cluster_size: usize
     write_f64(&mut buf, 2.0); // distance_threshold: f64
 
     buf
@@ -248,9 +333,21 @@ fn generate_sybil_detector_input(n: usize) -> Vec<u8> {
     let mut buf = Vec::new();
     let base_time: u64 = 1700000000;
 
-    let orb_a: [u8; 16] = { let mut o = [0u8; 16]; o[0] = 0xAA; o };
-    let orb_b: [u8; 16] = { let mut o = [0u8; 16]; o[0] = 0xBB; o };
-    let orb_c: [u8; 16] = { let mut o = [0u8; 16]; o[0] = 0xCC; o };
+    let orb_a: [u8; 16] = {
+        let mut o = [0u8; 16];
+        o[0] = 0xAA;
+        o
+    };
+    let orb_b: [u8; 16] = {
+        let mut o = [0u8; 16];
+        o[0] = 0xBB;
+        o
+    };
+    let orb_c: [u8; 16] = {
+        let mut o = [0u8; 16];
+        o[0] = 0xCC;
+        o
+    };
 
     let normal_count = (n * 7) / 10; // 70% normal, 30% suspicious
 
@@ -289,12 +386,12 @@ fn generate_sybil_detector_input(n: usize) -> Vec<u8> {
     }
 
     // config: SybilConfig
-    write_u64(&mut buf, 300);  // time_window_secs
-    write_u32(&mut buf, 100);  // geo_proximity_threshold
-    write_u32(&mut buf, 2);    // min_cluster_size
+    write_u64(&mut buf, 300); // time_window_secs
+    write_u32(&mut buf, 100); // geo_proximity_threshold
+    write_u32(&mut buf, 2); // min_cluster_size
     write_u32(&mut buf, 1000); // velocity_threshold_kmh
-    write_u32(&mut buf, 15);   // min_session_duration_secs
-    write_u32(&mut buf, 5);    // max_registrations_per_orb_per_hour
+    write_u32(&mut buf, 15); // min_session_duration_secs
+    write_u32(&mut buf, 5); // max_registrations_per_orb_per_hour
 
     buf
 }
@@ -337,30 +434,49 @@ fn generate_rule_engine_input(n: usize) -> Vec<u8> {
 
     // Rule 0: AND(int_field[0] > 100, str_field[0] glob "attack*")
     write_u32(&mut buf, 2); // 2 conditions
-    write_u32(&mut buf, 0); write_u32(&mut buf, 0); write_u32(&mut buf, 2); // int_cmp, field 0, gt
-    write_i64(&mut buf, 100); write_vec_u8(&mut buf, b"");
-    write_u32(&mut buf, 5); write_u32(&mut buf, 0); write_u32(&mut buf, 0); // str_glob, field 0, unused
-    write_i64(&mut buf, 0); write_vec_u8(&mut buf, b"attack*");
+    write_u32(&mut buf, 0);
+    write_u32(&mut buf, 0);
+    write_u32(&mut buf, 2); // int_cmp, field 0, gt
+    write_i64(&mut buf, 100);
+    write_vec_u8(&mut buf, b"");
+    write_u32(&mut buf, 5);
+    write_u32(&mut buf, 0);
+    write_u32(&mut buf, 0); // str_glob, field 0, unused
+    write_i64(&mut buf, 0);
+    write_vec_u8(&mut buf, b"attack*");
     write_u32(&mut buf, 0); // combine: AND
 
     // Rule 1: OR(int_field[1] == 42, int_field[2] < 0)
     write_u32(&mut buf, 2); // 2 conditions
-    write_u32(&mut buf, 0); write_u32(&mut buf, 1); write_u32(&mut buf, 0); // int_cmp, field 1, eq
-    write_i64(&mut buf, 42); write_vec_u8(&mut buf, b"");
-    write_u32(&mut buf, 0); write_u32(&mut buf, 2); write_u32(&mut buf, 4); // int_cmp, field 2, lt
-    write_i64(&mut buf, 0); write_vec_u8(&mut buf, b"");
+    write_u32(&mut buf, 0);
+    write_u32(&mut buf, 1);
+    write_u32(&mut buf, 0); // int_cmp, field 1, eq
+    write_i64(&mut buf, 42);
+    write_vec_u8(&mut buf, b"");
+    write_u32(&mut buf, 0);
+    write_u32(&mut buf, 2);
+    write_u32(&mut buf, 4); // int_cmp, field 2, lt
+    write_i64(&mut buf, 0);
+    write_vec_u8(&mut buf, b"");
     write_u32(&mut buf, 1); // combine: OR
 
     // Rule 2: AND(str_field[1] contains "suspicious")
     write_u32(&mut buf, 1); // 1 condition
-    write_u32(&mut buf, 2); write_u32(&mut buf, 1); write_u32(&mut buf, 0); // str_contains, field 1, unused
-    write_i64(&mut buf, 0); write_vec_u8(&mut buf, b"suspicious");
+    write_u32(&mut buf, 2);
+    write_u32(&mut buf, 1);
+    write_u32(&mut buf, 0); // str_contains, field 1, unused
+    write_i64(&mut buf, 0);
+    write_vec_u8(&mut buf, b"suspicious");
     write_u32(&mut buf, 0); // combine: AND
 
     // aggregations: Vec<AggDef> (2 fixed)
     write_u32(&mut buf, 2);
-    write_u32(&mut buf, 1); write_u32(&mut buf, 0); write_u32(&mut buf, 0); // sum, field 0, rule 0
-    write_u32(&mut buf, 3); write_u32(&mut buf, 1); write_u32(&mut buf, 0xFFFFFFFF); // max, field 1, all
+    write_u32(&mut buf, 1);
+    write_u32(&mut buf, 0);
+    write_u32(&mut buf, 0); // sum, field 0, rule 0
+    write_u32(&mut buf, 3);
+    write_u32(&mut buf, 1);
+    write_u32(&mut buf, 0xFFFFFFFF); // max, field 1, all
 
     buf
 }
@@ -404,7 +520,11 @@ fn generate_signature_verified_input(n: usize) -> Vec<u8> {
         id[1] = (((i + 1) >> 8) & 0xFF) as u8;
 
         let features = if i % 3 != 0 {
-            vec![100 + (i as i64), 105 - (i as i64 % 50), 98 + (i as i64 % 30)]
+            vec![
+                100 + (i as i64),
+                105 - (i as i64 % 50),
+                98 + (i as i64 % 30),
+            ]
         } else {
             vec![300 + (i as i64), 50 - (i as i64 % 30), 400 + (i as i64)]
         };
@@ -475,11 +595,19 @@ fn generate_input(program: &str, n: usize) -> Vec<u8> {
 
 fn image_id_for_program(program: &str) -> Option<&'static str> {
     match program {
-        "xgboost-inference" => Some("d6b60ae7d1f27aec34d247fad9c4700be237938cec515af03c0451f2ca8aefe4"),
-        "anomaly-detector" => Some("24c3af8225689d633ce0b02a61cb6a58fe656db1f31185eedd69f656a982bc95"),
-        "signature-verified" => Some("28d93899974adcfe07ccad0c251b65e4308f265b6e296b9b81f1267bbf3ddd34"),
+        "xgboost-inference" => {
+            Some("d6b60ae7d1f27aec34d247fad9c4700be237938cec515af03c0451f2ca8aefe4")
+        }
+        "anomaly-detector" => {
+            Some("24c3af8225689d633ce0b02a61cb6a58fe656db1f31185eedd69f656a982bc95")
+        }
+        "signature-verified" => {
+            Some("28d93899974adcfe07ccad0c251b65e4308f265b6e296b9b81f1267bbf3ddd34")
+        }
         "rule-engine" => Some("f85c194e1a8e2c2e38746c6d81c7ac9ddf25848a8dfc049db7f4725b3ab56e33"),
-        "sybil-detector" => Some("ee666bd16e310391f57cc2c65f301b06fcc018573913edf699ac3ad65db146e4"),
+        "sybil-detector" => {
+            Some("ee666bd16e310391f57cc2c65f301b06fcc018573913edf699ac3ad65db146e4")
+        }
         _ => None,
     }
 }
@@ -538,7 +666,9 @@ fn run_baseline(elf: &[u8], input: &[u8]) -> Result<TimingResult> {
         .build()
         .map_err(|e| anyhow!("env: {}", e))?;
     let executor = default_executor();
-    let session = executor.execute(env, elf).map_err(|e| anyhow!("exec: {}", e))?;
+    let session = executor
+        .execute(env, elf)
+        .map_err(|e| anyhow!("exec: {}", e))?;
     let execute_time = exec_start.elapsed();
     let cycles = session.cycles();
     let segments = session.segments.len();
@@ -550,7 +680,9 @@ fn run_baseline(elf: &[u8], input: &[u8]) -> Result<TimingResult> {
         .build()
         .map_err(|e| anyhow!("env: {}", e))?;
     let prover = default_prover();
-    let prove_info = prover.prove(env, elf).map_err(|e| anyhow!("prove: {}", e))?;
+    let prove_info = prover
+        .prove(env, elf)
+        .map_err(|e| anyhow!("prove: {}", e))?;
     let prove_time = prove_start.elapsed();
 
     let seal = extract_seal(&prove_info.receipt)?;
@@ -584,7 +716,9 @@ fn run_optimized(elf: &[u8], input: &[u8]) -> Result<TimingResult> {
         .build()
         .map_err(|e| anyhow!("env: {}", e))?;
     let executor = default_executor();
-    let session = executor.execute(env, elf).map_err(|e| anyhow!("exec: {}", e))?;
+    let session = executor
+        .execute(env, elf)
+        .map_err(|e| anyhow!("exec: {}", e))?;
     let execute_time = exec_start.elapsed();
     let cycles = session.cycles();
     let default_segments = session.segments.len();
@@ -606,14 +740,20 @@ fn run_optimized(elf: &[u8], input: &[u8]) -> Result<TimingResult> {
             let po2 = optimal_po2(cycles);
             let est = estimate_segments_for_po2(cycles, po2);
             let threads = recommended_thread_count(est);
-            println!("    Strategy: Segmented, po2={}, est_segments={}, threads={}", po2, est, threads);
+            println!(
+                "    Strategy: Segmented, po2={}, est_segments={}, threads={}",
+                po2, est, threads
+            );
             (Some(po2), Some(threads))
         }
         "Continuation" => {
             let po2 = 18u32; // max parallelism
             let est = estimate_segments_for_po2(cycles, po2);
             let threads = recommended_thread_count(est);
-            println!("    Strategy: Continuation, po2={}, est_segments={}, threads={}", po2, est, threads);
+            println!(
+                "    Strategy: Continuation, po2={}, est_segments={}, threads={}",
+                po2, est, threads
+            );
             (Some(po2), Some(threads))
         }
         _ => {
@@ -636,7 +776,9 @@ fn run_optimized(elf: &[u8], input: &[u8]) -> Result<TimingResult> {
     let env = env_builder.build().map_err(|e| anyhow!("env: {}", e))?;
 
     let prover = default_prover();
-    let prove_info = prover.prove(env, elf).map_err(|e| anyhow!("prove: {}", e))?;
+    let prove_info = prover
+        .prove(env, elf)
+        .map_err(|e| anyhow!("prove: {}", e))?;
     let prove_time = prove_start.elapsed();
 
     let seal = extract_seal(&prove_info.receipt)?;
@@ -650,10 +792,7 @@ fn run_optimized(elf: &[u8], input: &[u8]) -> Result<TimingResult> {
     }
 
     Ok(TimingResult {
-        label: format!(
-            "Optimized ({}, preflight={:?})",
-            strategy, execute_time
-        ),
+        label: format!("Optimized ({}, preflight={:?})", strategy, execute_time),
         execute_time,
         prove_time,
         total_time: total_start.elapsed(),
@@ -735,8 +874,10 @@ fn format_duration_short(d: Duration) -> String {
 fn run_scaling_analysis(program: &str, elf: &[u8], sizes: &[usize]) -> Result<()> {
     println!();
     println!("── {} ──", program);
-    println!("{:>8} {:>12} {:>8} {:>10} {:>8} {:>8} {:>8}",
-        "N", "Cycles", "Segments", "ExecTime", "Opt_po2", "EstSegs", "Strategy");
+    println!(
+        "{:>8} {:>12} {:>8} {:>10} {:>8} {:>8} {:>8}",
+        "N", "Cycles", "Segments", "ExecTime", "Opt_po2", "EstSegs", "Strategy"
+    );
     println!("{}", "─".repeat(72));
 
     for &n in sizes {
@@ -763,8 +904,10 @@ fn run_scaling_analysis(program: &str, elf: &[u8], sizes: &[usize]) -> Result<()
                 } else {
                     "TooComplex"
                 };
-                println!("{:>8} {:>12} {:>8} {:>10.1?} {:>8} {:>8} {:>10}",
-                    n, cycles, segs, elapsed, po2, est_segs, strategy);
+                println!(
+                    "{:>8} {:>12} {:>8} {:>10.1?} {:>8} {:>8} {:>10}",
+                    n, cycles, segs, elapsed, po2, est_segs, strategy
+                );
             }
             Err(e) => {
                 println!("{:>8}  ERROR: {}", n, e);
@@ -785,12 +928,19 @@ fn run_progressive(program: &str, elf: &[u8], sizes: &[usize]) -> Result<()> {
     println!("╚══════════════════════════════════════════════════════════════════════════════╝");
     println!();
     println!("Program: {}", program);
-    println!("CPUs: {}", std::thread::available_parallelism().map(|p| p.get()).unwrap_or(0));
+    println!(
+        "CPUs: {}",
+        std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(0)
+    );
     println!();
 
     // Header
-    println!("{:>7} {:>10} {:>5} {:>10} {:>8} {:>9} {:>10} {:>8} {:>8}",
-        "N", "Cycles", "Segs", "Strategy", "po2", "Prove", "Total", "cy/sec", "seg/s");
+    println!(
+        "{:>7} {:>10} {:>5} {:>10} {:>8} {:>9} {:>10} {:>8} {:>8}",
+        "N", "Cycles", "Segs", "Strategy", "po2", "Prove", "Total", "cy/sec", "seg/s"
+    );
     println!("{}", "─".repeat(88));
 
     let mut prev_prove_time: Option<Duration> = None;
@@ -805,7 +955,9 @@ fn run_progressive(program: &str, elf: &[u8], sizes: &[usize]) -> Result<()> {
             .build()
             .map_err(|e| anyhow!("env: {}", e))?;
         let executor = default_executor();
-        let session = executor.execute(env, elf).map_err(|e| anyhow!("exec: {}", e))?;
+        let session = executor
+            .execute(env, elf)
+            .map_err(|e| anyhow!("exec: {}", e))?;
         let cycles = session.cycles();
         let default_segments = session.segments.len();
 
@@ -817,7 +969,10 @@ fn run_progressive(program: &str, elf: &[u8], sizes: &[usize]) -> Result<()> {
             "Continuation"
         } else {
             // Skip too-complex programs
-            println!("{:>7} {:>10} {:>5} {:>10}", n, cycles, default_segments, "SKIP");
+            println!(
+                "{:>7} {:>10} {:>5} {:>10}",
+                n, cycles, default_segments, "SKIP"
+            );
             continue;
         };
 
@@ -850,7 +1005,9 @@ fn run_progressive(program: &str, elf: &[u8], sizes: &[usize]) -> Result<()> {
         let env = env_builder.build().map_err(|e| anyhow!("env: {}", e))?;
 
         let prover = default_prover();
-        let prove_info = prover.prove(env, elf).map_err(|e| anyhow!("prove: {}", e))?;
+        let prove_info = prover
+            .prove(env, elf)
+            .map_err(|e| anyhow!("prove: {}", e))?;
         let prove_time = prove_start.elapsed();
         let total_time = prove_start.elapsed();
 
@@ -863,13 +1020,22 @@ fn run_progressive(program: &str, elf: &[u8], sizes: &[usize]) -> Result<()> {
         // Compute metrics
         let throughput = cycles as f64 / prove_time.as_secs_f64();
         let seg_per_sec = actual_segments as f64 / prove_time.as_secs_f64();
-        let po2_str = po2_override.map(|p| p.to_string()).unwrap_or_else(|| "def".to_string());
+        let po2_str = po2_override
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| "def".to_string());
 
-        println!("{:>7} {:>10} {:>5} {:>10} {:>8} {:>9} {:>10} {:>8.0} {:>8.2}",
-            n, cycles, actual_segments, strategy, po2_str,
+        println!(
+            "{:>7} {:>10} {:>5} {:>10} {:>8} {:>9} {:>10} {:>8.0} {:>8.2}",
+            n,
+            cycles,
+            actual_segments,
+            strategy,
+            po2_str,
             format_duration_short(prove_time),
             format_duration_short(total_time),
-            throughput, seg_per_sec);
+            throughput,
+            seg_per_sec
+        );
 
         // Show scaling ratio vs previous
         if let (Some(prev_t), Some(prev_c)) = (prev_prove_time, prev_cycles) {
@@ -880,8 +1046,10 @@ fn run_progressive(program: &str, elf: &[u8], sizes: &[usize]) -> Result<()> {
                 println!("         └── {:.1}x more cycles but only {:.1}x slower (scaling efficiency: {:.2}x)",
                     cycle_ratio, time_ratio, efficiency);
             } else if efficiency < 0.95 {
-                println!("         └── {:.1}x more cycles, {:.1}x slower (overhead at this scale)",
-                    cycle_ratio, time_ratio);
+                println!(
+                    "         └── {:.1}x more cycles, {:.1}x slower (overhead at this scale)",
+                    cycle_ratio, time_ratio
+                );
             }
         }
 
@@ -941,9 +1109,8 @@ fn main() -> Result<()> {
             "--sizes" => {
                 // Custom sizes for progressive mode: --sizes 100,500,1000,2000
                 if let Some(s) = args.get(i + 1) {
-                    progressive_sizes = s.split(',')
-                        .filter_map(|x| x.trim().parse().ok())
-                        .collect();
+                    progressive_sizes =
+                        s.split(',').filter_map(|x| x.trim().parse().ok()).collect();
                 }
                 i += 2;
             }
@@ -987,7 +1154,12 @@ fn main() -> Result<()> {
         println!("║              Scaling Analysis (execute-only)                 ║");
         println!("╚══════════════════════════════════════════════════════════════╝");
         println!();
-        println!("CPUs: {}", std::thread::available_parallelism().map(|p| p.get()).unwrap_or(0));
+        println!(
+            "CPUs: {}",
+            std::thread::available_parallelism()
+                .map(|p| p.get())
+                .unwrap_or(0)
+        );
 
         let programs: Vec<&str> = if all_programs {
             ALL_PROGRAMS.to_vec()
@@ -1036,7 +1208,10 @@ fn main() -> Result<()> {
     let image_id = match image_id_for_program(&config.program) {
         Some(id) => id,
         None => {
-            eprintln!("Unknown program: {}. Supported: {:?}", config.program, ALL_PROGRAMS);
+            eprintln!(
+                "Unknown program: {}. Supported: {:?}",
+                config.program, ALL_PROGRAMS
+            );
             std::process::exit(1);
         }
     };
@@ -1074,7 +1249,12 @@ fn main() -> Result<()> {
     println!("Input size:  {} bytes", input.len());
     println!("Input hash:  0x{}...", &input_hash[..16]);
     println!("Runs:        {} per method", config.runs);
-    println!("CPUs:        {}", std::thread::available_parallelism().map(|p| p.get()).unwrap_or(0));
+    println!(
+        "CPUs:        {}",
+        std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(0)
+    );
     if config.optimized_only {
         println!("Mode:        optimized-only");
     } else if config.baseline_only {
@@ -1091,7 +1271,9 @@ fn main() -> Result<()> {
             .build()
             .map_err(|e| anyhow!("env: {}", e))?;
         let executor = default_executor();
-        let session = executor.execute(env, &elf).map_err(|e| anyhow!("exec: {}", e))?;
+        let session = executor
+            .execute(env, &elf)
+            .map_err(|e| anyhow!("exec: {}", e))?;
         let elapsed = start.elapsed();
         let cycles = session.cycles();
         let strategy = if cycles < 20_000_000 {
@@ -1116,7 +1298,11 @@ fn main() -> Result<()> {
     let mut optimized_results = Vec::new();
 
     for run in 0..config.runs {
-        println!("── Run {}/{} ─────────────────────────────────────────────", run + 1, config.runs);
+        println!(
+            "── Run {}/{} ─────────────────────────────────────────────",
+            run + 1,
+            config.runs
+        );
 
         if !config.optimized_only {
             println!("  [Baseline]");
@@ -1158,38 +1344,70 @@ fn main() -> Result<()> {
         println!();
 
         if !baseline_results.is_empty() {
-            let avg_prove: Duration = baseline_results.iter().map(|r| r.prove_time).sum::<Duration>()
+            let avg_prove: Duration = baseline_results
+                .iter()
+                .map(|r| r.prove_time)
+                .sum::<Duration>()
                 / baseline_results.len() as u32;
-            let avg_total: Duration = baseline_results.iter().map(|r| r.total_time).sum::<Duration>()
+            let avg_total: Duration = baseline_results
+                .iter()
+                .map(|r| r.total_time)
+                .sum::<Duration>()
                 / baseline_results.len() as u32;
             let throughput = baseline_results[0].cycles as f64 / avg_prove.as_secs_f64();
-            println!("  Baseline avg prove:    {:>8.2?}  ({:.0} cycles/sec)", avg_prove, throughput);
+            println!(
+                "  Baseline avg prove:    {:>8.2?}  ({:.0} cycles/sec)",
+                avg_prove, throughput
+            );
             println!("  Baseline avg total:    {:>8.2?}", avg_total);
         }
 
         if !optimized_results.is_empty() {
-            let avg_prove: Duration = optimized_results.iter().map(|r| r.prove_time).sum::<Duration>()
+            let avg_prove: Duration = optimized_results
+                .iter()
+                .map(|r| r.prove_time)
+                .sum::<Duration>()
                 / optimized_results.len() as u32;
-            let avg_total: Duration = optimized_results.iter().map(|r| r.total_time).sum::<Duration>()
+            let avg_total: Duration = optimized_results
+                .iter()
+                .map(|r| r.total_time)
+                .sum::<Duration>()
                 / optimized_results.len() as u32;
             let throughput = optimized_results[0].cycles as f64 / avg_prove.as_secs_f64();
-            println!("  Optimized avg prove:   {:>8.2?}  ({:.0} cycles/sec)", avg_prove, throughput);
+            println!(
+                "  Optimized avg prove:   {:>8.2?}  ({:.0} cycles/sec)",
+                avg_prove, throughput
+            );
             println!("  Optimized avg total:   {:>8.2?}", avg_total);
         }
 
         if have_both {
-            let avg_baseline_prove: Duration = baseline_results.iter().map(|r| r.prove_time).sum::<Duration>()
+            let avg_baseline_prove: Duration = baseline_results
+                .iter()
+                .map(|r| r.prove_time)
+                .sum::<Duration>()
                 / baseline_results.len() as u32;
-            let avg_optimized_prove: Duration = optimized_results.iter().map(|r| r.prove_time).sum::<Duration>()
+            let avg_optimized_prove: Duration = optimized_results
+                .iter()
+                .map(|r| r.prove_time)
+                .sum::<Duration>()
                 / optimized_results.len() as u32;
 
-            let avg_baseline_total: Duration = baseline_results.iter().map(|r| r.total_time).sum::<Duration>()
+            let avg_baseline_total: Duration = baseline_results
+                .iter()
+                .map(|r| r.total_time)
+                .sum::<Duration>()
                 / baseline_results.len() as u32;
-            let avg_optimized_total: Duration = optimized_results.iter().map(|r| r.total_time).sum::<Duration>()
+            let avg_optimized_total: Duration = optimized_results
+                .iter()
+                .map(|r| r.total_time)
+                .sum::<Duration>()
                 / optimized_results.len() as u32;
 
-            let prove_speedup = avg_baseline_prove.as_secs_f64() / avg_optimized_prove.as_secs_f64();
-            let total_speedup = avg_baseline_total.as_secs_f64() / avg_optimized_total.as_secs_f64();
+            let prove_speedup =
+                avg_baseline_prove.as_secs_f64() / avg_optimized_prove.as_secs_f64();
+            let total_speedup =
+                avg_baseline_total.as_secs_f64() / avg_optimized_total.as_secs_f64();
 
             let prove_delta = if avg_optimized_prove < avg_baseline_prove {
                 avg_baseline_prove - avg_optimized_prove
@@ -1204,7 +1422,10 @@ fn main() -> Result<()> {
             println!();
 
             if prove_speedup >= 1.0 {
-                println!("  Result: Optimized is {:.1}% faster at proving", (prove_speedup - 1.0) * 100.0);
+                println!(
+                    "  Result: Optimized is {:.1}% faster at proving",
+                    (prove_speedup - 1.0) * 100.0
+                );
             } else {
                 println!("  Result: Baseline is {:.1}% faster (optimization overhead dominates for small programs)",
                     (1.0 / prove_speedup - 1.0) * 100.0);

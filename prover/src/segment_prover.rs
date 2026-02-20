@@ -44,7 +44,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, info};
 
 use crate::bonsai::ProvingMode;
-use crate::prover::{UnifiedProver, extract_seal};
+use crate::prover::{extract_seal, UnifiedProver};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Configuration
@@ -73,8 +73,8 @@ impl Default for SegmentProverConfig {
             segment_limit_po2: None, // auto-tune
             proving_threads: 0,      // auto-detect
             cache_executions: true,
-            max_cycles: 1_000_000_000,     // 1B cycles (raised from 500M)
-            max_segments: 4000,            // raised from 2000
+            max_cycles: 1_000_000_000, // 1B cycles (raised from 500M)
+            max_segments: 4000,        // raised from 2000
             bonsai_threshold_cycles: 100_000_000, // 100M → prefer Bonsai
         }
     }
@@ -157,11 +157,7 @@ impl SegmentProver {
     /// Returns an `ExecutionPlan` with cycle counts, segment info, and
     /// recommendations for optimal proving configuration. The plan is
     /// cached so a subsequent `prove_optimized()` call avoids re-executing.
-    pub async fn analyze(
-        &self,
-        elf: &[u8],
-        input: &[u8],
-    ) -> Result<ExecutionPlan> {
+    pub async fn analyze(&self, elf: &[u8], input: &[u8]) -> Result<ExecutionPlan> {
         // Check cache first
         let cache_key = Self::cache_key(elf, input);
         if self.config.cache_executions {
@@ -226,7 +222,10 @@ impl SegmentProver {
 
         // Cache the plan
         if self.config.cache_executions {
-            self.plan_cache.write().await.insert(cache_key, plan.clone());
+            self.plan_cache
+                .write()
+                .await
+                .insert(cache_key, plan.clone());
         }
 
         Ok(plan)
@@ -236,11 +235,7 @@ impl SegmentProver {
     ///
     /// Optionally analyzes first (if no cached plan), then configures the
     /// prover with optimal segment size and thread count.
-    pub async fn prove_optimized(
-        &self,
-        elf: &[u8],
-        input: &[u8],
-    ) -> Result<ProveResult> {
+    pub async fn prove_optimized(&self, elf: &[u8], input: &[u8]) -> Result<ProveResult> {
         let start = Instant::now();
 
         // Get or compute execution plan
@@ -284,9 +279,7 @@ impl SegmentProver {
             plan.recommended_threads
         };
 
-        let (seal, journal) = self
-            .prove_with_config(elf, input, po2, threads)
-            .await?;
+        let (seal, journal) = self.prove_with_config(elf, input, po2, threads).await?;
 
         let total_time = start.elapsed();
 
@@ -427,11 +420,13 @@ impl SegmentProver {
                 }
                 info!("Generating Groth16 SNARK proof (segments will be composed → compressed)...");
                 let opts = ProverOpts::groth16();
-                let prove_info = prover.prove_with_opts(env, &elf_owned, &opts)
+                let prove_info = prover
+                    .prove_with_opts(env, &elf_owned, &opts)
                     .map_err(|e| anyhow!("Groth16 proving failed: {}", e))?;
                 prove_info.receipt
             } else {
-                let prove_info = prover.prove(env, &elf_owned)
+                let prove_info = prover
+                    .prove(env, &elf_owned)
                     .map_err(|e| anyhow!("Proving failed: {}", e))?;
                 prove_info.receipt
             };
@@ -445,17 +440,11 @@ impl SegmentProver {
     }
 
     /// Offload proving to Bonsai cloud.
-    async fn prove_via_bonsai(
-        &self,
-        elf: &[u8],
-        input: &[u8],
-    ) -> Result<ProveResult> {
+    async fn prove_via_bonsai(&self, elf: &[u8], input: &[u8]) -> Result<ProveResult> {
         let start = Instant::now();
 
         let prover = UnifiedProver::new(ProvingMode::Bonsai)?;
-        let (seal, journal) = prover
-            .prove_with_snark(elf, input, self.use_snark)
-            .await?;
+        let (seal, journal) = prover.prove_with_snark(elf, input, self.use_snark).await?;
 
         Ok(ProveResult {
             seal,
@@ -479,7 +468,6 @@ impl SegmentProver {
         key.copy_from_slice(&result);
         key
     }
-
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

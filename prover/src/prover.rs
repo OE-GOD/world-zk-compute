@@ -9,9 +9,9 @@
 //! - **BonsaiWithGpuFallback**: Try Bonsai first, fall back to GPU, then CPU
 
 use alloy::primitives::B256;
-use risc0_zkvm::{default_prover, ExecutorEnv, ProverOpts, Receipt, InnerReceipt};
+use risc0_zkvm::{default_prover, ExecutorEnv, InnerReceipt, ProverOpts, Receipt};
 use std::path::PathBuf;
-use tracing::{info, debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::bonsai::{BonsaiProver, ProvingMode};
 use crate::gpu_optimize::{GpuBackend, LocalGpuProver};
@@ -33,21 +33,21 @@ impl UnifiedProver {
 
         // Initialize Bonsai if needed
         let bonsai_prover = match &mode {
-            ProvingMode::Bonsai | ProvingMode::BonsaiWithFallback | ProvingMode::BonsaiWithGpuFallback => {
-                match BonsaiProver::from_env() {
-                    Ok(prover) => {
-                        info!("Bonsai prover initialized");
-                        Some(prover)
-                    }
-                    Err(e) => {
-                        if mode == ProvingMode::Bonsai {
-                            return Err(e);
-                        }
-                        warn!("Bonsai not configured, will use local proving: {}", e);
-                        None
-                    }
+            ProvingMode::Bonsai
+            | ProvingMode::BonsaiWithFallback
+            | ProvingMode::BonsaiWithGpuFallback => match BonsaiProver::from_env() {
+                Ok(prover) => {
+                    info!("Bonsai prover initialized");
+                    Some(prover)
                 }
-            }
+                Err(e) => {
+                    if mode == ProvingMode::Bonsai {
+                        return Err(e);
+                    }
+                    warn!("Bonsai not configured, will use local proving: {}", e);
+                    None
+                }
+            },
             _ => None,
         };
 
@@ -60,15 +60,16 @@ impl UnifiedProver {
             }
         }
 
-        Ok(Self { mode, bonsai_prover, gpu_prover, gpu_backend })
+        Ok(Self {
+            mode,
+            bonsai_prover,
+            gpu_prover,
+            gpu_backend,
+        })
     }
 
     /// Execute and prove with the configured mode
-    pub async fn prove(
-        &self,
-        elf: &[u8],
-        input: &[u8],
-    ) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+    pub async fn prove(&self, elf: &[u8], input: &[u8]) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
         self.prove_inner(elf, input, false).await
     }
 
@@ -140,12 +141,20 @@ impl UnifiedProver {
     }
 
     /// Prove with GPU, falling back to CPU on failure
-    async fn prove_with_gpu_fallback(&self, elf: &[u8], input: &[u8], use_snark: bool) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+    async fn prove_with_gpu_fallback(
+        &self,
+        elf: &[u8],
+        input: &[u8],
+        use_snark: bool,
+    ) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
         if self.gpu_backend.is_gpu() {
             match self.gpu_prover.prove_async(elf, input).await {
                 Ok(result) => return Ok(result),
                 Err(e) => {
-                    warn!("{} proving failed, falling back to CPU: {}", self.gpu_backend, e);
+                    warn!(
+                        "{} proving failed, falling back to CPU: {}",
+                        self.gpu_backend, e
+                    );
                 }
             }
         }
@@ -159,7 +168,11 @@ impl UnifiedProver {
     ///
     /// When `use_snark` is true, generates a Groth16 proof suitable for
     /// on-chain verification. Requires Docker on x86_64 Linux (or Docker Desktop on macOS).
-    async fn prove_local_cpu(elf: &[u8], input: &[u8], use_snark: bool) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+    async fn prove_local_cpu(
+        elf: &[u8],
+        input: &[u8],
+        use_snark: bool,
+    ) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
         let elf = elf.to_vec();
         let input = input.to_vec();
 
@@ -168,9 +181,7 @@ impl UnifiedProver {
             let start = std::time::Instant::now();
 
             // Build executor environment
-            let env = ExecutorEnv::builder()
-                .write_slice(&input)
-                .build()?;
+            let env = ExecutorEnv::builder().write_slice(&input).build()?;
 
             let prover = default_prover();
 
@@ -309,7 +320,7 @@ fn parse_data_url(url: &str) -> anyhow::Result<Vec<u8>> {
 
 /// Compute SHA256 digest of data
 pub fn compute_digest(data: &[u8]) -> B256 {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(data);
     let result = hasher.finalize();
@@ -354,8 +365,14 @@ pub fn extract_seal(receipt: &Receipt) -> anyhow::Result<Vec<u8>> {
             let mut encoded = Vec::with_capacity(4 + groth16_receipt.seal.len());
             encoded.extend_from_slice(selector);
             encoded.extend_from_slice(&groth16_receipt.seal);
-            info!("Groth16 seal encoded: {} bytes (selector: {:02x}{:02x}{:02x}{:02x})",
-                encoded.len(), selector[0], selector[1], selector[2], selector[3]);
+            info!(
+                "Groth16 seal encoded: {} bytes (selector: {:02x}{:02x}{:02x}{:02x})",
+                encoded.len(),
+                selector[0],
+                selector[1],
+                selector[2],
+                selector[3]
+            );
             Ok(encoded)
         }
         _ => {

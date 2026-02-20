@@ -145,7 +145,12 @@ impl BonsaiProver {
     /// 4. Polls for completion using async sleep
     /// 5. If `use_snark`, converts STARK → Groth16 SNARK via Bonsai
     /// 6. Downloads and returns the proof
-    pub async fn prove(&self, elf: &[u8], input: &[u8], use_snark: bool) -> Result<(Vec<u8>, Vec<u8>)> {
+    pub async fn prove(
+        &self,
+        elf: &[u8],
+        input: &[u8],
+        use_snark: bool,
+    ) -> Result<(Vec<u8>, Vec<u8>)> {
         info!("Starting Bonsai proving session (snark: {})...", use_snark);
         let start = std::time::Instant::now();
 
@@ -187,7 +192,10 @@ impl BonsaiProver {
         let receipt = if use_snark {
             info!("Converting STARK → Groth16 SNARK via Bonsai...");
             let snark_receipt = self.convert_to_snark(&session.uuid).await?;
-            info!("SNARK conversion completed in {:.2?} (total)", start.elapsed());
+            info!(
+                "SNARK conversion completed in {:.2?} (total)",
+                start.elapsed()
+            );
             snark_receipt
         } else {
             receipt
@@ -245,7 +253,8 @@ impl BonsaiProver {
                 }
                 "SUCCEEDED" => {
                     info!("SNARK conversion succeeded!");
-                    let output_url = status.output
+                    let output_url = status
+                        .output
                         .context("No output URL in successful SNARK session")?;
 
                     let client = self.client.clone();
@@ -259,7 +268,9 @@ impl BonsaiProver {
                     return Ok(receipt);
                 }
                 "FAILED" => {
-                    let error = status.error_msg.unwrap_or_else(|| "Unknown error".to_string());
+                    let error = status
+                        .error_msg
+                        .unwrap_or_else(|| "Unknown error".to_string());
                     anyhow::bail!("SNARK conversion failed: {}", error);
                 }
                 "TIMED_OUT" => {
@@ -351,7 +362,6 @@ impl BonsaiProver {
             tokio::time::sleep(poll_interval).await;
         }
     }
-
 }
 
 /// Proving mode selection
@@ -411,7 +421,10 @@ mod tests {
         assert_eq!(ProvingMode::from_str("local"), ProvingMode::Local);
         assert_eq!(ProvingMode::from_str("gpu"), ProvingMode::LocalGpu);
         assert_eq!(ProvingMode::from_str("local-gpu"), ProvingMode::LocalGpu);
-        assert_eq!(ProvingMode::from_str("gpu-fallback"), ProvingMode::GpuWithCpuFallback);
+        assert_eq!(
+            ProvingMode::from_str("gpu-fallback"),
+            ProvingMode::GpuWithCpuFallback
+        );
         assert_eq!(ProvingMode::from_str("bonsai"), ProvingMode::Bonsai);
         assert_eq!(
             ProvingMode::from_str("bonsai-fallback"),

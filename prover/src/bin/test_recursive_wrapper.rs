@@ -14,7 +14,9 @@
 //!   cargo run --release --bin test_recursive_wrapper -- --wrapper-only
 
 use anyhow::{anyhow, Result};
-use risc0_zkvm::{default_prover, get_prover_server, ExecutorEnv, InnerReceipt, ProverOpts, Receipt};
+use risc0_zkvm::{
+    default_prover, get_prover_server, ExecutorEnv, InnerReceipt, ProverOpts, Receipt,
+};
 use std::time::{Duration, Instant};
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -118,30 +120,49 @@ fn generate_rule_engine_input(n: usize) -> Vec<u8> {
 
     // Rule 0: AND(int_field[0] > 100, str_field[0] glob "attack*")
     write_u32(&mut buf, 2);
-    write_u32(&mut buf, 0); write_u32(&mut buf, 0); write_u32(&mut buf, 2);
-    write_i64(&mut buf, 100); write_vec_u8(&mut buf, b"");
-    write_u32(&mut buf, 5); write_u32(&mut buf, 0); write_u32(&mut buf, 0);
-    write_i64(&mut buf, 0); write_vec_u8(&mut buf, b"attack*");
+    write_u32(&mut buf, 0);
+    write_u32(&mut buf, 0);
+    write_u32(&mut buf, 2);
+    write_i64(&mut buf, 100);
+    write_vec_u8(&mut buf, b"");
+    write_u32(&mut buf, 5);
+    write_u32(&mut buf, 0);
+    write_u32(&mut buf, 0);
+    write_i64(&mut buf, 0);
+    write_vec_u8(&mut buf, b"attack*");
     write_u32(&mut buf, 0);
 
     // Rule 1: OR(int_field[1] == 42, int_field[2] < 0)
     write_u32(&mut buf, 2);
-    write_u32(&mut buf, 0); write_u32(&mut buf, 1); write_u32(&mut buf, 0);
-    write_i64(&mut buf, 42); write_vec_u8(&mut buf, b"");
-    write_u32(&mut buf, 0); write_u32(&mut buf, 2); write_u32(&mut buf, 4);
-    write_i64(&mut buf, 0); write_vec_u8(&mut buf, b"");
+    write_u32(&mut buf, 0);
+    write_u32(&mut buf, 1);
+    write_u32(&mut buf, 0);
+    write_i64(&mut buf, 42);
+    write_vec_u8(&mut buf, b"");
+    write_u32(&mut buf, 0);
+    write_u32(&mut buf, 2);
+    write_u32(&mut buf, 4);
+    write_i64(&mut buf, 0);
+    write_vec_u8(&mut buf, b"");
     write_u32(&mut buf, 1);
 
     // Rule 2: AND(str_field[1] contains "suspicious")
     write_u32(&mut buf, 1);
-    write_u32(&mut buf, 2); write_u32(&mut buf, 1); write_u32(&mut buf, 0);
-    write_i64(&mut buf, 0); write_vec_u8(&mut buf, b"suspicious");
+    write_u32(&mut buf, 2);
+    write_u32(&mut buf, 1);
+    write_u32(&mut buf, 0);
+    write_i64(&mut buf, 0);
+    write_vec_u8(&mut buf, b"suspicious");
     write_u32(&mut buf, 0);
 
     // aggregations: 2 fixed
     write_u32(&mut buf, 2);
-    write_u32(&mut buf, 1); write_u32(&mut buf, 0); write_u32(&mut buf, 0);
-    write_u32(&mut buf, 3); write_u32(&mut buf, 1); write_u32(&mut buf, 0xFFFFFFFF);
+    write_u32(&mut buf, 1);
+    write_u32(&mut buf, 0);
+    write_u32(&mut buf, 0);
+    write_u32(&mut buf, 3);
+    write_u32(&mut buf, 1);
+    write_u32(&mut buf, 0xFFFFFFFF);
 
     buf
 }
@@ -204,8 +225,8 @@ fn format_duration(d: Duration) -> String {
 
 /// Compute risc0 image ID from ELF bytes → 32-byte digest
 fn compute_image_id_bytes(elf: &[u8]) -> Result<[u8; 32]> {
-    let digest = risc0_zkvm::compute_image_id(elf)
-        .map_err(|e| anyhow!("compute_image_id: {}", e))?;
+    let digest =
+        risc0_zkvm::compute_image_id(elf).map_err(|e| anyhow!("compute_image_id: {}", e))?;
     let mut id = [0u8; 32];
     id.copy_from_slice(digest.as_bytes());
     Ok(id)
@@ -228,7 +249,11 @@ impl std::fmt::Display for ProveTimings {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "  {}", self.label)?;
         if self.sub_prove_times.len() == 1 {
-            writeln!(f, "    Prove:       {}", format_duration(self.sub_prove_times[0]))?;
+            writeln!(
+                f,
+                "    Prove:       {}",
+                format_duration(self.sub_prove_times[0])
+            )?;
         } else {
             for (i, t) in self.sub_prove_times.iter().enumerate() {
                 writeln!(f, "    Sub-proof {}: {}", i, format_duration(*t))?;
@@ -256,7 +281,9 @@ fn run_monolithic(elf: &[u8], input: &[u8]) -> Result<ProveTimings> {
         .build()
         .map_err(|e| anyhow!("env: {}", e))?;
     let prover = default_prover();
-    let prove_info = prover.prove(env, elf).map_err(|e| anyhow!("prove: {}", e))?;
+    let prove_info = prover
+        .prove(env, elf)
+        .map_err(|e| anyhow!("prove: {}", e))?;
     let prove_time = prove_start.elapsed();
 
     let seal = extract_seal(&prove_info.receipt)?;
@@ -291,7 +318,9 @@ fn run_decomposed(
             .build()
             .map_err(|e| anyhow!("env: {}", e))?;
         let prover = default_prover();
-        let prove_info = prover.prove(env, elf).map_err(|e| anyhow!("prove: {}", e))?;
+        let prove_info = prover
+            .prove(env, elf)
+            .map_err(|e| anyhow!("prove: {}", e))?;
 
         let elapsed = start.elapsed();
         println!("    Sub-proof {} done: {}", i, format_duration(elapsed));
@@ -333,7 +362,11 @@ fn run_decomposed_succinct(
     let opts = ProverOpts::succinct();
 
     for (i, sub_input) in sub_inputs.iter().enumerate() {
-        println!("    Proving sub-input {}/{} (succinct)...", i + 1, sub_inputs.len());
+        println!(
+            "    Proving sub-input {}/{} (succinct)...",
+            i + 1,
+            sub_inputs.len()
+        );
         let start = Instant::now();
 
         let env = ExecutorEnv::builder()
@@ -354,7 +387,9 @@ fn run_decomposed_succinct(
         };
         println!(
             "    Sub-proof {} done ({}): {}",
-            i, receipt_kind, format_duration(elapsed)
+            i,
+            receipt_kind,
+            format_duration(elapsed)
         );
         sub_prove_times.push(elapsed);
         journals.push(prove_info.receipt.journal.bytes.clone());
@@ -400,11 +435,15 @@ fn run_wrapped(
         merged_journal: merged_journal.clone(),
     };
 
-    println!("    Proving wrapper ({} assumptions)...", sub_receipts.len());
+    println!(
+        "    Proving wrapper ({} assumptions)...",
+        sub_receipts.len()
+    );
     let wrapper_start = Instant::now();
 
     let mut env_builder = ExecutorEnv::builder();
-    env_builder.write(&wrapper_input)
+    env_builder
+        .write(&wrapper_input)
         .map_err(|e| anyhow!("write wrapper input: {}", e))?;
 
     for (i, receipt) in sub_receipts.into_iter().enumerate() {
@@ -414,20 +453,34 @@ fn run_wrapped(
 
     let env = env_builder.build().map_err(|e| anyhow!("env: {}", e))?;
     let prover = default_prover();
-    let prove_info = prover.prove(env, wrapper_elf).map_err(|e| anyhow!("wrapper prove: {}", e))?;
+    let prove_info = prover
+        .prove(env, wrapper_elf)
+        .map_err(|e| anyhow!("wrapper prove: {}", e))?;
     let wrapper_time = wrapper_start.elapsed();
     println!("    Wrapper proof done: {}", format_duration(wrapper_time));
 
     // Verify the wrapper output (risc0 serde format, not bincode)
     let wrapper_journal = &prove_info.receipt.journal.bytes;
-    let output: WrapperOutput = prove_info.receipt.journal.decode()
+    let output: WrapperOutput = prove_info
+        .receipt
+        .journal
+        .decode()
         .map_err(|e| anyhow!("decode wrapper output: {}", e))?;
 
     println!("    Wrapper output:");
-    println!("      inner_image_id: 0x{}...", hex::encode(&output.inner_image_id[..8]));
+    println!(
+        "      inner_image_id: 0x{}...",
+        hex::encode(&output.inner_image_id[..8])
+    );
     println!("      sub_proof_count: {}", output.sub_proof_count);
-    println!("      journals_hash: 0x{}...", hex::encode(&output.journals_hash[..8]));
-    println!("      merged_journal: {} bytes", output.merged_journal.len());
+    println!(
+        "      journals_hash: 0x{}...",
+        hex::encode(&output.journals_hash[..8])
+    );
+    println!(
+        "      merged_journal: {} bytes",
+        output.merged_journal.len()
+    );
 
     let wrapper_seal = extract_seal(&prove_info.receipt)?;
 
@@ -435,7 +488,10 @@ fn run_wrapped(
     let sum_sub: Duration = sub_prove_times.iter().sum();
 
     Ok(ProveTimings {
-        label: format!("Decomposed + Wrapper ({} sub-proofs + recursive verify)", sub_prove_times.len()),
+        label: format!(
+            "Decomposed + Wrapper ({} sub-proofs + recursive verify)",
+            sub_prove_times.len()
+        ),
         total: total_start.elapsed() + sum_sub, // include sub-proof times
         sub_prove_times: sub_prove_times.to_vec(),
         wrapper_time: Some(wrapper_time),
@@ -622,7 +678,9 @@ fn main() -> Result<()> {
                 println!("  --snark             Use Groth16 SNARK proofs");
                 return Ok(());
             }
-            _ => { i += 1; }
+            _ => {
+                i += 1;
+            }
         }
     }
 
@@ -639,7 +697,10 @@ fn main() -> Result<()> {
             .map_err(|e| anyhow!("Failed to read wrapper ELF at {}: {}", wrapper_elf_path, e))?;
         let inner_image_id = compute_image_id_bytes(&rule_elf)?;
         let wrapper_image_id = compute_image_id_bytes(&wrapper_elf)?;
-        println!("  Wrapper:        0x{}...", hex::encode(&wrapper_image_id[..8]));
+        println!(
+            "  Wrapper:        0x{}...",
+            hex::encode(&wrapper_image_id[..8])
+        );
         (Some(wrapper_elf), inner_image_id)
     } else {
         let inner_image_id = compute_image_id_bytes(&rule_elf)?;
@@ -656,12 +717,21 @@ fn main() -> Result<()> {
     println!("  SNARK:          {}", config.use_snark);
     println!("  Union-only:     {}", config.union_only);
     println!("  Rule-engine:    0x{}...", &rule_engine_image_id[..16]);
-    println!("  CPUs:           {}", std::thread::available_parallelism().map(|p| p.get()).unwrap_or(0));
+    println!(
+        "  CPUs:           {}",
+        std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(0)
+    );
     println!();
 
     // ── Generate inputs ──────────────────────────────────────────────────
     let full_input = generate_rule_engine_input(config.records);
-    println!("Full input: {} bytes ({} records)", full_input.len(), config.records);
+    println!(
+        "Full input: {} bytes ({} records)",
+        full_input.len(),
+        config.records
+    );
 
     // Split into K sub-inputs (each has config.records/chunks records + same rules/aggs)
     let records_per_chunk = config.records / config.chunks;
@@ -675,7 +745,12 @@ fn main() -> Result<()> {
         };
         let chunk_records = end_record - start_record;
         let sub_input = generate_rule_engine_input(chunk_records);
-        println!("  Chunk {}: {} records, {} bytes", chunk_idx, chunk_records, sub_input.len());
+        println!(
+            "  Chunk {}: {} records, {} bytes",
+            chunk_idx,
+            chunk_records,
+            sub_input.len()
+        );
         sub_inputs.push(sub_input);
     }
     println!();
@@ -689,11 +764,14 @@ fn main() -> Result<()> {
             .build()
             .map_err(|e| anyhow!("env: {}", e))?;
         let executor = risc0_zkvm::default_executor();
-        let session = executor.execute(env, &rule_elf)
+        let session = executor
+            .execute(env, &rule_elf)
             .map_err(|e| anyhow!("exec: {}", e))?;
         println!(
             "  Full input: {} cycles, {} segments, {:?}",
-            session.cycles(), session.segments.len(), start.elapsed()
+            session.cycles(),
+            session.segments.len(),
+            start.elapsed()
         );
     }
     for (i, sub_input) in sub_inputs.iter().enumerate() {
@@ -703,11 +781,15 @@ fn main() -> Result<()> {
             .build()
             .map_err(|e| anyhow!("env: {}", e))?;
         let executor = risc0_zkvm::default_executor();
-        let session = executor.execute(env, &rule_elf)
+        let session = executor
+            .execute(env, &rule_elf)
             .map_err(|e| anyhow!("exec: {}", e))?;
         println!(
             "  Chunk {}: {} cycles, {} segments, {:?}",
-            i, session.cycles(), session.segments.len(), start.elapsed()
+            i,
+            session.cycles(),
+            session.segments.len(),
+            start.elapsed()
         );
     }
     println!();
@@ -778,30 +860,36 @@ fn main() -> Result<()> {
 
     // ── Test 6: Host-side Union (Composite → Succinct → union) ─────────
     println!("── Test 6: Host-side Union ──────────────────────────────────────");
-    let union_result = run_union(
-        &receipts,
-        &journals,
-        &composite_sub_times,
-    )?;
+    let union_result = run_union(&receipts, &journals, &composite_sub_times)?;
     print!("{}", union_result);
     println!();
 
     // ── Summary ──────────────────────────────────────────────────────────
     println!("══════════════════════════════════════════════════════════════════════");
-    println!("  SUMMARY ({} records, {} chunks)", config.records, config.chunks);
+    println!(
+        "  SUMMARY ({} records, {} chunks)",
+        config.records, config.chunks
+    );
     println!("══════════════════════════════════════════════════════════════════════");
     println!();
 
     let composite_sub_sum: Duration = composite_sub_times.iter().sum();
 
     if let Some(ref mono) = monolithic_result {
-        println!("  Monolithic:                  {}", format_duration(mono.total));
+        println!(
+            "  Monolithic:                  {}",
+            format_duration(mono.total)
+        );
     }
 
-    println!("  Composite sub-proofs (seq):  {}", format_duration(composite_sub_sum));
+    println!(
+        "  Composite sub-proofs (seq):  {}",
+        format_duration(composite_sub_sum)
+    );
 
     if let Some(cwt) = composite_wrapped_time {
-        println!("  Composite + Wrapper:         {} (subs) + {} (wrap) = {}",
+        println!(
+            "  Composite + Wrapper:         {} (subs) + {} (wrap) = {}",
             format_duration(composite_sub_sum),
             format_duration(cwt),
             format_duration(composite_sub_sum + cwt),
@@ -810,8 +898,12 @@ fn main() -> Result<()> {
 
     if let (Some(ref sst), Some(swt)) = (&succinct_sub_times_opt, succinct_wrapped_time) {
         let succinct_sub_sum: Duration = sst.iter().sum();
-        println!("  Succinct sub-proofs (seq):   {}", format_duration(succinct_sub_sum));
-        println!("  Succinct + Wrapper:          {} (subs) + {} (wrap) = {}",
+        println!(
+            "  Succinct sub-proofs (seq):   {}",
+            format_duration(succinct_sub_sum)
+        );
+        println!(
+            "  Succinct + Wrapper:          {} (subs) + {} (wrap) = {}",
             format_duration(succinct_sub_sum),
             format_duration(swt),
             format_duration(succinct_sub_sum + swt),
@@ -820,7 +912,8 @@ fn main() -> Result<()> {
 
     // Union path
     let union_overhead = union_result.wrapper_time.unwrap_or(Duration::ZERO);
-    println!("  Composite + Union:           {} (subs) + {} (compress+union) = {}",
+    println!(
+        "  Composite + Union:           {} (subs) + {} (compress+union) = {}",
         format_duration(composite_sub_sum),
         format_duration(union_overhead),
         format_duration(composite_sub_sum + union_overhead),
@@ -835,41 +928,57 @@ fn main() -> Result<()> {
     if let Some(swt) = succinct_wrapped_time {
         println!("    Wrapper (Succinct):    {}", format_duration(swt));
     }
-    println!("    Host-side Union:       {}", format_duration(union_overhead));
+    println!(
+        "    Host-side Union:       {}",
+        format_duration(union_overhead)
+    );
 
     // Parallel estimates (production: sub-proofs run concurrently)
     if let Some(ref mono) = monolithic_result {
         println!();
         println!("  ── Parallel estimates (sub-proofs concurrent) ──");
-        let max_composite_sub = composite_sub_times.iter().max().copied().unwrap_or(Duration::ZERO);
+        let max_composite_sub = composite_sub_times
+            .iter()
+            .max()
+            .copied()
+            .unwrap_or(Duration::ZERO);
 
         println!("    Monolithic:          {}", format_duration(mono.total));
 
         if let Some(cwt) = composite_wrapped_time {
             let parallel_composite = max_composite_sub + cwt;
-            println!("    Composite + Wrap:    {} (max sub {} + wrap {})",
+            println!(
+                "    Composite + Wrap:    {} (max sub {} + wrap {})",
                 format_duration(parallel_composite),
                 format_duration(max_composite_sub),
-                format_duration(cwt));
+                format_duration(cwt)
+            );
         }
 
         if let (Some(ref sst), Some(swt)) = (&succinct_sub_times_opt, succinct_wrapped_time) {
             let max_succinct_sub = sst.iter().max().copied().unwrap_or(Duration::ZERO);
             let parallel_succinct = max_succinct_sub + swt;
-            println!("    Succinct + Wrap:     {} (max sub {} + wrap {})",
+            println!(
+                "    Succinct + Wrap:     {} (max sub {} + wrap {})",
                 format_duration(parallel_succinct),
                 format_duration(max_succinct_sub),
-                format_duration(swt));
+                format_duration(swt)
+            );
         }
 
         let parallel_union = max_composite_sub + union_overhead;
-        println!("    Composite + Union:   {} (max sub {} + union {})",
+        println!(
+            "    Composite + Union:   {} (max sub {} + union {})",
             format_duration(parallel_union),
             format_duration(max_composite_sub),
-            format_duration(union_overhead));
+            format_duration(union_overhead)
+        );
 
         let speedup_union = mono.total.as_secs_f64() / parallel_union.as_secs_f64();
-        println!("    Union speedup:       {:.2}x vs monolithic", speedup_union);
+        println!(
+            "    Union speedup:       {:.2}x vs monolithic",
+            speedup_union
+        );
     }
 
     println!();
@@ -879,7 +988,9 @@ fn main() -> Result<()> {
     if composite_wrapped_time.is_some() {
         println!("    Decomposed+Wrap:   Full trust (wrapper verifies all sub-proofs inside zkVM)");
     }
-    println!("    Host-side Union:   Proves all sub-computations valid, but journal merge unproven");
+    println!(
+        "    Host-side Union:   Proves all sub-computations valid, but journal merge unproven"
+    );
 
     Ok(())
 }

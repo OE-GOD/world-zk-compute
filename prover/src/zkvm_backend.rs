@@ -3,7 +3,6 @@
 //! Provides a common trait for different zkVM proving backends (risc0, SP1, Jolt).
 //! Includes auto-detection of VM type from ELF binaries.
 
-
 use anyhow::Result;
 use async_trait::async_trait;
 use std::time::Duration;

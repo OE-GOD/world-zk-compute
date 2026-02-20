@@ -93,11 +93,7 @@ abstract contract Pausable {
     /// @param _owner Contract owner
     /// @param _guardians Initial guardian addresses
     /// @param _unpauseThreshold Number of guardians required to unpause
-    function __Pausable_init(
-        address _owner,
-        address[] memory _guardians,
-        uint256 _unpauseThreshold
-    ) internal {
+    function __Pausable_init(address _owner, address[] memory _guardians, uint256 _unpauseThreshold) internal {
         if (_owner == address(0)) revert ZeroAddress();
         if (_unpauseThreshold == 0 || _unpauseThreshold > _guardians.length) {
             revert InvalidThreshold();
@@ -252,42 +248,35 @@ abstract contract Pausable {
     function getPauseStatus()
         external
         view
-        returns (
-            bool isPaused,
-            string memory reason,
-            uint256 pauseTime,
-            uint256 votesToUnpause,
-            uint256 threshold
-        )
+        returns (bool isPaused, string memory reason, uint256 pauseTime, uint256 votesToUnpause, uint256 threshold)
     {
         return (paused, pauseReason, pausedAt, unpauseVoteCount, unpauseThreshold);
     }
 }
 
-
 /// @title PausableExecutionEngine
 /// @notice ExecutionEngine with emergency pause capability
 /// @dev Wrapper that adds pause functionality to critical operations
 contract PausableExecutionEngine is Pausable {
-    // Import the base ExecutionEngine interface
-    // In production, you would inherit from ExecutionEngine directly
+// Import the base ExecutionEngine interface
+// In production, you would inherit from ExecutionEngine directly
 
-    // For this example, we demonstrate the pattern:
+// For this example, we demonstrate the pattern:
 
-    /// @notice Request execution (pausable)
-    /// @dev Add `whenNotPaused` to prevent new requests during emergency
-    // function requestExecution(...) external payable whenNotPaused { ... }
+/// @notice Request execution (pausable)
+/// @dev Add `whenNotPaused` to prevent new requests during emergency
+// function requestExecution(...) external payable whenNotPaused { ... }
 
-    /// @notice Claim execution (pausable)
-    /// @dev Add `whenNotPaused` to prevent claims during emergency
-    // function claimExecution(...) external whenNotPaused { ... }
+/// @notice Claim execution (pausable)
+/// @dev Add `whenNotPaused` to prevent claims during emergency
+// function claimExecution(...) external whenNotPaused { ... }
 
-    /// @notice Submit proof (NOT pausable)
-    /// @dev Proof submission should work even when paused to allow
-    ///      provers to complete in-flight work and get paid
-    // function submitProof(...) external { ... } // No modifier!
+/// @notice Submit proof (NOT pausable)
+/// @dev Proof submission should work even when paused to allow
+///      provers to complete in-flight work and get paid
+// function submitProof(...) external { ... } // No modifier!
 
-    /// @notice Cancel execution (NOT pausable)
-    /// @dev Cancellation should work even when paused to allow refunds
-    // function cancelExecution(...) external { ... } // No modifier!
+/// @notice Cancel execution (NOT pausable)
+/// @dev Cancellation should work even when paused to allow refunds
+// function cancelExecution(...) external { ... } // No modifier!
 }

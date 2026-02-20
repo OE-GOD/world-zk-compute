@@ -16,16 +16,16 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
     // ============================================================
 
     struct Prover {
-        address owner;              // Prover operator address
-        uint256 stake;              // Staked amount
-        uint256 reputation;         // Reputation score (0-10000 = 0-100.00%)
-        uint256 proofsSubmitted;    // Total proofs submitted
-        uint256 proofsFailed;       // Failed/slashed proofs
-        uint256 totalEarnings;      // Total earnings
-        uint256 registeredAt;       // Registration timestamp
-        uint256 lastActiveAt;       // Last activity timestamp
-        bool active;                // Is currently active
-        string endpoint;            // P2P endpoint (optional)
+        address owner; // Prover operator address
+        uint256 stake; // Staked amount
+        uint256 reputation; // Reputation score (0-10000 = 0-100.00%)
+        uint256 proofsSubmitted; // Total proofs submitted
+        uint256 proofsFailed; // Failed/slashed proofs
+        uint256 totalEarnings; // Total earnings
+        uint256 registeredAt; // Registration timestamp
+        uint256 lastActiveAt; // Last activity timestamp
+        bool active; // Is currently active
+        string endpoint; // P2P endpoint (optional)
     }
 
     struct SlashEvent {
@@ -96,11 +96,7 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
     // CONSTRUCTOR
     // ============================================================
 
-    constructor(
-        address _stakingToken,
-        uint256 _minStake,
-        uint256 _slashBasisPoints
-    ) Ownable(msg.sender) {
+    constructor(address _stakingToken, uint256 _minStake, uint256 _slashBasisPoints) Ownable(msg.sender) {
         stakingToken = IERC20(_stakingToken);
         minStake = _minStake;
         slashBasisPoints = _slashBasisPoints;
@@ -234,12 +230,7 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
         }
 
         // Record slash event
-        slashHistory.push(SlashEvent({
-            prover: prover,
-            amount: slashAmount,
-            reason: reason,
-            timestamp: block.timestamp
-        }));
+        slashHistory.push(SlashEvent({prover: prover, amount: slashAmount, reason: reason, timestamp: block.timestamp}));
 
         // Slashed funds go to treasury (owner)
         stakingToken.safeTransfer(owner(), slashAmount);

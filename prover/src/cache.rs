@@ -2,7 +2,6 @@
 //!
 //! Caches downloaded program ELFs to avoid re-downloading and re-uploading.
 
-
 use alloy::primitives::B256;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -97,7 +96,8 @@ impl ProgramCache {
 
     /// Get disk cache path for an image ID
     fn disk_path(&self, image_id: &B256) -> PathBuf {
-        self.cache_dir.join(format!("{}.elf", hex::encode(image_id)))
+        self.cache_dir
+            .join(format!("{}.elf", hex::encode(image_id)))
     }
 
     /// Clear the cache

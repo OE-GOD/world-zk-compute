@@ -182,7 +182,6 @@ impl ProveTimeline {
             stages: self.stages,
         }
     }
-
 }
 
 /// Completed timeline with all stage timings.
@@ -211,8 +210,7 @@ impl FinishedTimeline {
 
     /// Overhead: total time minus proving time.
     pub fn overhead(&self) -> Duration {
-        self.total_time
-            .saturating_sub(self.prove_duration())
+        self.total_time.saturating_sub(self.prove_duration())
     }
 
     /// Overhead as percentage of total time.
@@ -434,7 +432,6 @@ impl PipelineSnapshot {
     pub fn bottleneck(&self) -> Option<&StageStats> {
         self.stage_stats.iter().max_by_key(|s| s.avg)
     }
-
 }
 
 impl std::fmt::Display for PipelineSnapshot {
@@ -544,9 +541,15 @@ mod tests {
         let finished = timeline.finish(true);
 
         // Proving should be longer than Fetch
-        assert!(finished.stage_duration(ProveStage::Proving) > finished.stage_duration(ProveStage::Fetch));
+        assert!(
+            finished.stage_duration(ProveStage::Proving)
+                > finished.stage_duration(ProveStage::Fetch)
+        );
         // Non-existent stage returns zero
-        assert_eq!(finished.stage_duration(ProveStage::Compression), Duration::ZERO);
+        assert_eq!(
+            finished.stage_duration(ProveStage::Compression),
+            Duration::ZERO
+        );
     }
 
     #[test]

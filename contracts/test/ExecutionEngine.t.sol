@@ -38,19 +38,10 @@ contract ExecutionEngineTest is Test {
         // Deploy contracts
         verifier = new MockRiscZeroVerifier();
         registry = new ProgramRegistry();
-        engine = new ExecutionEngine(
-            address(registry),
-            address(verifier),
-            feeRecipient
-        );
+        engine = new ExecutionEngine(address(registry), address(verifier), feeRecipient);
 
         // Register a test program
-        registry.registerProgram(
-            imageId,
-            "Test Program",
-            "https://example.com/test.elf",
-            bytes32(0)
-        );
+        registry.registerProgram(imageId, "Test Program", "https://example.com/test.elf", bytes32(0));
 
         vm.stopPrank();
 
@@ -65,13 +56,7 @@ contract ExecutionEngineTest is Test {
 
     function testRequestExecution() public {
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(
-            imageId,
-            inputDigest,
-            inputUrl,
-            address(0),
-            3600
-        );
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         assertEq(requestId, 1);
 
@@ -86,13 +71,7 @@ contract ExecutionEngineTest is Test {
     function testRequestExecutionInsufficientTip() public {
         vm.prank(requester);
         vm.expectRevert(ExecutionEngine.InsufficientTip.selector);
-        engine.requestExecution{value: 0.00001 ether}(
-            imageId,
-            inputDigest,
-            inputUrl,
-            address(0),
-            3600
-        );
+        engine.requestExecution{value: 0.00001 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
     }
 
     function testRequestExecutionInactiveProgram() public {
@@ -100,24 +79,12 @@ contract ExecutionEngineTest is Test {
 
         vm.prank(requester);
         vm.expectRevert(ExecutionEngine.ProgramNotActive.selector);
-        engine.requestExecution{value: 0.1 ether}(
-            fakeImageId,
-            inputDigest,
-            inputUrl,
-            address(0),
-            3600
-        );
+        engine.requestExecution{value: 0.1 ether}(fakeImageId, inputDigest, inputUrl, address(0), 3600);
     }
 
     function testCancelExecution() public {
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(
-            imageId,
-            inputDigest,
-            inputUrl,
-            address(0),
-            3600
-        );
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         uint256 balanceBefore = requester.balance;
 
@@ -137,13 +104,7 @@ contract ExecutionEngineTest is Test {
 
     function testClaimExecution() public {
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(
-            imageId,
-            inputDigest,
-            inputUrl,
-            address(0),
-            3600
-        );
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         vm.prank(prover);
         engine.claimExecution(requestId);
@@ -155,13 +116,7 @@ contract ExecutionEngineTest is Test {
 
     function testClaimExecutionExpiredRequest() public {
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(
-            imageId,
-            inputDigest,
-            inputUrl,
-            address(0),
-            3600
-        );
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         // Fast forward past expiration
         vm.warp(block.timestamp + 3601);
@@ -173,13 +128,7 @@ contract ExecutionEngineTest is Test {
 
     function testReclaimAfterDeadline() public {
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(
-            imageId,
-            inputDigest,
-            inputUrl,
-            address(0),
-            3600
-        );
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         // First prover claims
         vm.prank(prover);
@@ -203,13 +152,7 @@ contract ExecutionEngineTest is Test {
 
     function testSubmitProof() public {
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(
-            imageId,
-            inputDigest,
-            inputUrl,
-            address(0),
-            3600
-        );
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         vm.prank(prover);
         engine.claimExecution(requestId);
@@ -236,13 +179,7 @@ contract ExecutionEngineTest is Test {
 
     function testSubmitProofNotClaimant() public {
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(
-            imageId,
-            inputDigest,
-            inputUrl,
-            address(0),
-            3600
-        );
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         vm.prank(prover);
         engine.claimExecution(requestId);
@@ -255,13 +192,7 @@ contract ExecutionEngineTest is Test {
 
     function testSubmitProofAfterDeadline() public {
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(
-            imageId,
-            inputDigest,
-            inputUrl,
-            address(0),
-            3600
-        );
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         vm.prank(prover);
         engine.claimExecution(requestId);
@@ -280,13 +211,7 @@ contract ExecutionEngineTest is Test {
 
     function testTipDecay() public {
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(
-            imageId,
-            inputDigest,
-            inputUrl,
-            address(0),
-            3600
-        );
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         // At t=0, tip should be max
         uint256 tip0 = engine.getCurrentTip(requestId);
@@ -309,13 +234,7 @@ contract ExecutionEngineTest is Test {
 
     function testProverStats() public {
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(
-            imageId,
-            inputDigest,
-            inputUrl,
-            address(0),
-            3600
-        );
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         vm.prank(prover);
         engine.claimExecution(requestId);
@@ -391,13 +310,7 @@ contract ExecutionEngineTest is Test {
         vm.warp(2000);
 
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(
-            imageId,
-            inputDigest,
-            inputUrl,
-            address(0),
-            3600
-        );
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         vm.warp(2100);
         vm.prank(prover);
@@ -423,13 +336,8 @@ contract ExecutionEngineTest is Test {
 
         vm.warp(3000);
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(
-            imageId,
-            inputDigest,
-            inputUrl,
-            address(callback),
-            3600
-        );
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(callback), 3600);
 
         vm.warp(3100);
         vm.prank(prover);
@@ -459,13 +367,7 @@ contract ExecutionEngineTest is Test {
         vm.warp(uint256(nearMax));
 
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(
-            imageId,
-            inputDigest,
-            inputUrl,
-            address(0),
-            3600
-        );
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         ExecutionEngine.ExecutionRequest memory req = engine.getRequest(requestId);
         assertEq(req.createdAt, nearMax);
@@ -484,13 +386,8 @@ contract ExecutionEngineTest is Test {
         MockCallback callback = new MockCallback();
 
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(
-            imageId,
-            inputDigest,
-            inputUrl,
-            address(callback),
-            3600
-        );
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(callback), 3600);
 
         // Pending: callback intact
         ExecutionEngine.ExecutionRequest memory req = engine.getRequest(requestId);
@@ -518,13 +415,8 @@ contract ExecutionEngineTest is Test {
         vm.recordLogs();
 
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(
-            imageId,
-            inputDigest,
-            testInputUrl,
-            address(0),
-            3600
-        );
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, testInputUrl, address(0), 3600);
 
         Vm.Log[] memory logs = vm.getRecordedLogs();
 
@@ -533,7 +425,10 @@ contract ExecutionEngineTest is Test {
         bool found = false;
         for (uint256 i = 0; i < logs.length; i++) {
             // Topic 0 is the event signature
-            if (logs[i].topics[0] == keccak256("ExecutionRequested(uint256,address,bytes32,bytes32,string,uint256,uint256)")) {
+            if (
+                logs[i].topics[0]
+                    == keccak256("ExecutionRequested(uint256,address,bytes32,bytes32,string,uint256,uint256)")
+            ) {
                 // Decode non-indexed params: inputDigest, inputUrl, tip, expiresAt
                 (bytes32 evInputDigest, string memory evInputUrl, uint256 evTip,) =
                     abi.decode(logs[i].data, (bytes32, string, uint256, uint256));
@@ -557,15 +452,11 @@ contract ExecutionEngineTest is Test {
 
         vm.warp(5000);
         vm.prank(requester);
-        uint256 id1 = engine.requestExecution{value: 0.2 ether}(
-            imageId, inputDigest, inputUrl, callback1, 3600
-        );
+        uint256 id1 = engine.requestExecution{value: 0.2 ether}(imageId, inputDigest, inputUrl, callback1, 3600);
 
         vm.warp(6000);
         vm.prank(requester);
-        uint256 id2 = engine.requestExecution{value: 0.3 ether}(
-            imageId, inputDigest, inputUrl, callback2, 7200
-        );
+        uint256 id2 = engine.requestExecution{value: 0.3 ether}(imageId, inputDigest, inputUrl, callback2, 7200);
 
         // Verify isolation after creation
         ExecutionEngine.ExecutionRequest memory req1 = engine.getRequest(id1);

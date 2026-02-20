@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, watch};
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
 /// Shutdown signal that can be cloned and shared
 #[derive(Clone)]
@@ -32,7 +32,6 @@ impl ShutdownSignal {
         // Wait for the value to change to true
         let _ = self.receiver.wait_for(|&v| v).await;
     }
-
 }
 
 /// Shutdown controller that manages the shutdown process
@@ -97,7 +96,6 @@ impl ShutdownController {
             }
         }
     }
-
 }
 
 impl Default for ShutdownController {
@@ -117,8 +115,8 @@ pub async fn install_signal_handlers(controller: Arc<ShutdownController>) {
 
         // Handle SIGINT (Ctrl+C)
         tokio::spawn(async move {
-            let mut sigint = signal(SignalKind::interrupt())
-                .expect("Failed to install SIGINT handler");
+            let mut sigint =
+                signal(SignalKind::interrupt()).expect("Failed to install SIGINT handler");
             sigint.recv().await;
             info!("Received SIGINT, initiating graceful shutdown...");
             controller_int.shutdown();
@@ -126,8 +124,8 @@ pub async fn install_signal_handlers(controller: Arc<ShutdownController>) {
 
         // Handle SIGTERM
         tokio::spawn(async move {
-            let mut sigterm = signal(SignalKind::terminate())
-                .expect("Failed to install SIGTERM handler");
+            let mut sigterm =
+                signal(SignalKind::terminate()).expect("Failed to install SIGTERM handler");
             sigterm.recv().await;
             info!("Received SIGTERM, initiating graceful shutdown...");
             controller_term.shutdown();
@@ -175,9 +173,14 @@ impl Default for ShutdownConfig {
 pub async fn graceful_shutdown(
     controller: &ShutdownController,
     config: &ShutdownConfig,
-    on_save_state: impl FnOnce() -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send>>,
+    on_save_state: impl FnOnce() -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send>,
+    >,
 ) -> anyhow::Result<()> {
-    info!("Starting graceful shutdown (grace period: {:?})", config.grace_period);
+    info!(
+        "Starting graceful shutdown (grace period: {:?})",
+        config.grace_period
+    );
 
     // Save state if configured
     if config.save_state {
@@ -253,7 +256,9 @@ mod tests {
 
         controller.shutdown();
         // Don't call complete(), so it should timeout
-        let completed = controller.wait_for_completion(Duration::from_millis(50)).await;
+        let completed = controller
+            .wait_for_completion(Duration::from_millis(50))
+            .await;
 
         assert!(!completed);
     }

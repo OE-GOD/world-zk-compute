@@ -15,12 +15,11 @@
 //! server.start().await;
 //! ```
 
-
 use crate::metrics::{metrics, MetricsSnapshot};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{info, error};
+use tracing::{error, info};
 
 /// Prover status information
 #[derive(Clone, Debug, serde::Serialize)]
@@ -106,7 +105,11 @@ impl SharedState {
     pub async fn set_running(&self, running: bool) {
         let mut state = self.inner.write().await;
         state.running = running;
-        state.state = if running { ProverState::Running } else { ProverState::Paused };
+        state.state = if running {
+            ProverState::Running
+        } else {
+            ProverState::Paused
+        };
     }
 
     pub async fn set_error(&self, error: String) {
@@ -150,7 +153,10 @@ impl HealthServer {
         })
     }
 
-    async fn run_server(addr: SocketAddr, state: SharedState) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn run_server(
+        addr: SocketAddr,
+        state: SharedState,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let listener = tokio::net::TcpListener::bind(addr).await?;
         info!("Health server listening on {}", addr);
 
@@ -177,10 +183,7 @@ impl HealthServer {
         reader.read_line(&mut request_line).await?;
 
         // Parse the request path
-        let path = request_line
-            .split_whitespace()
-            .nth(1)
-            .unwrap_or("/");
+        let path = request_line.split_whitespace().nth(1).unwrap_or("/");
 
         let response = match path {
             "/health" => Self::health_response(&state).await,
@@ -238,19 +241,34 @@ impl HealthServer {
         // Counter metrics
         output.push_str("# HELP prover_proofs_total Total number of proofs generated\n");
         output.push_str("# TYPE prover_proofs_total counter\n");
-        output.push_str(&format!("prover_proofs_total{{status=\"success\"}} {}\n", snapshot.proofs_generated));
-        output.push_str(&format!("prover_proofs_total{{status=\"failed\"}} {}\n", snapshot.proofs_failed));
+        output.push_str(&format!(
+            "prover_proofs_total{{status=\"success\"}} {}\n",
+            snapshot.proofs_generated
+        ));
+        output.push_str(&format!(
+            "prover_proofs_total{{status=\"failed\"}} {}\n",
+            snapshot.proofs_failed
+        ));
 
         // Gauge metrics
         output.push_str("# HELP prover_active_proofs Number of proofs currently in progress\n");
         output.push_str("# TYPE prover_active_proofs gauge\n");
-        output.push_str(&format!("prover_active_proofs {}\n", snapshot.active_proofs));
+        output.push_str(&format!(
+            "prover_active_proofs {}\n",
+            snapshot.active_proofs
+        ));
 
         // Summary metrics
         output.push_str("# HELP prover_proof_duration_seconds Time to generate a proof\n");
         output.push_str("# TYPE prover_proof_duration_seconds summary\n");
-        output.push_str(&format!("prover_proof_duration_seconds{{quantile=\"0.5\"}} {:.3}\n", snapshot.avg_proof_time.as_secs_f64()));
-        output.push_str(&format!("prover_proof_duration_seconds{{quantile=\"0.99\"}} {:.3}\n", snapshot.p99_proof_time.as_secs_f64()));
+        output.push_str(&format!(
+            "prover_proof_duration_seconds{{quantile=\"0.5\"}} {:.3}\n",
+            snapshot.avg_proof_time.as_secs_f64()
+        ));
+        output.push_str(&format!(
+            "prover_proof_duration_seconds{{quantile=\"0.99\"}} {:.3}\n",
+            snapshot.p99_proof_time.as_secs_f64()
+        ));
 
         // Additional metrics
         output.push_str("# HELP prover_cycles_total Total zkVM cycles executed\n");
@@ -259,32 +277,53 @@ impl HealthServer {
 
         output.push_str("# HELP prover_bytes_processed_total Total bytes of input processed\n");
         output.push_str("# TYPE prover_bytes_processed_total counter\n");
-        output.push_str(&format!("prover_bytes_processed_total {}\n", snapshot.total_bytes_processed));
+        output.push_str(&format!(
+            "prover_bytes_processed_total {}\n",
+            snapshot.total_bytes_processed
+        ));
 
         output.push_str("# HELP prover_uptime_seconds Prover uptime in seconds\n");
         output.push_str("# TYPE prover_uptime_seconds gauge\n");
-        output.push_str(&format!("prover_uptime_seconds {:.0}\n", snapshot.uptime.as_secs_f64()));
+        output.push_str(&format!(
+            "prover_uptime_seconds {:.0}\n",
+            snapshot.uptime.as_secs_f64()
+        ));
 
         output.push_str("# HELP prover_success_rate Proof success rate percentage\n");
         output.push_str("# TYPE prover_success_rate gauge\n");
-        output.push_str(&format!("prover_success_rate {:.2}\n", snapshot.success_rate()));
+        output.push_str(&format!(
+            "prover_success_rate {:.2}\n",
+            snapshot.success_rate()
+        ));
 
         output.push_str("# HELP prover_throughput_per_hour Proofs completed per hour\n");
         output.push_str("# TYPE prover_throughput_per_hour gauge\n");
-        output.push_str(&format!("prover_throughput_per_hour {:.2}\n", snapshot.proofs_per_hour()));
+        output.push_str(&format!(
+            "prover_throughput_per_hour {:.2}\n",
+            snapshot.proofs_per_hour()
+        ));
 
         // GPU metrics
         output.push_str("# HELP prover_gpu_device_count Number of GPU devices available\n");
         output.push_str("# TYPE prover_gpu_device_count gauge\n");
-        output.push_str(&format!("prover_gpu_device_count {}\n", snapshot.gpu_device_count));
+        output.push_str(&format!(
+            "prover_gpu_device_count {}\n",
+            snapshot.gpu_device_count
+        ));
 
         output.push_str("# HELP prover_gpu_jobs_total Total GPU proving jobs completed\n");
         output.push_str("# TYPE prover_gpu_jobs_total counter\n");
-        output.push_str(&format!("prover_gpu_jobs_total {}\n", snapshot.gpu_jobs_completed));
+        output.push_str(&format!(
+            "prover_gpu_jobs_total {}\n",
+            snapshot.gpu_jobs_completed
+        ));
 
         output.push_str("# HELP prover_gpu_jobs_in_progress GPU proving jobs currently running\n");
         output.push_str("# TYPE prover_gpu_jobs_in_progress gauge\n");
-        output.push_str(&format!("prover_gpu_jobs_in_progress {}\n", snapshot.gpu_jobs_in_progress));
+        output.push_str(&format!(
+            "prover_gpu_jobs_in_progress {}\n",
+            snapshot.gpu_jobs_in_progress
+        ));
 
         output
     }
@@ -308,7 +347,8 @@ impl HealthServer {
                 "gpu_jobs_completed": snapshot.gpu_jobs_completed,
                 "gpu_jobs_in_progress": snapshot.gpu_jobs_in_progress,
             }
-        }).to_string();
+        })
+        .to_string();
 
         format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",

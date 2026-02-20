@@ -16,7 +16,6 @@
 //!                        → extract_seal() → one on-chain proof
 //! ```
 
-
 use anyhow::{anyhow, Result};
 use risc0_zkvm::{default_prover, ExecutorEnv, ProverOpts, Receipt};
 use serde::{Deserialize, Serialize};
@@ -122,7 +121,10 @@ impl RecursiveWrapper {
             config.wrapper_elf_path
         );
 
-        Ok(Self { config, wrapper_elf })
+        Ok(Self {
+            config,
+            wrapper_elf,
+        })
     }
 
     /// Wrap K sub-proof receipts into a single recursive proof.
@@ -188,7 +190,8 @@ impl RecursiveWrapper {
             let mut env_builder = ExecutorEnv::builder();
 
             // Write the wrapper input
-            env_builder.write(&wrapper_input)
+            env_builder
+                .write(&wrapper_input)
                 .map_err(|e| anyhow!("Failed to write wrapper input: {}", e))?;
 
             // Add each sub-receipt as an assumption so env::verify() can find them
@@ -205,9 +208,7 @@ impl RecursiveWrapper {
 
             let receipt = if use_snark {
                 if cfg!(not(target_arch = "x86_64")) {
-                    anyhow::bail!(
-                        "Groth16 SNARK proving requires x86_64 architecture"
-                    );
+                    anyhow::bail!("Groth16 SNARK proving requires x86_64 architecture");
                 }
                 info!("Generating Groth16 wrapper proof...");
                 let opts = ProverOpts::groth16();

@@ -202,7 +202,6 @@ impl Validator {
 
         Ok(url.to_string())
     }
-
 }
 
 impl Default for Validator {
@@ -220,14 +219,22 @@ mod tests {
         let v = Validator::new();
 
         // Valid addresses
-        assert!(v.validate_address("0x1234567890abcdef1234567890abcdef12345678").is_ok());
-        assert!(v.validate_address("0xABCDEF1234567890ABCDEF1234567890ABCDEF12").is_ok());
+        assert!(v
+            .validate_address("0x1234567890abcdef1234567890abcdef12345678")
+            .is_ok());
+        assert!(v
+            .validate_address("0xABCDEF1234567890ABCDEF1234567890ABCDEF12")
+            .is_ok());
 
         // Invalid addresses
         assert!(v.validate_address("").is_err());
-        assert!(v.validate_address("1234567890abcdef1234567890abcdef12345678").is_err());
+        assert!(v
+            .validate_address("1234567890abcdef1234567890abcdef12345678")
+            .is_err());
         assert!(v.validate_address("0x123").is_err());
-        assert!(v.validate_address("0xGGGG567890abcdef1234567890abcdef12345678").is_err());
+        assert!(v
+            .validate_address("0xGGGG567890abcdef1234567890abcdef12345678")
+            .is_err());
     }
 
     #[test]
@@ -242,7 +249,9 @@ mod tests {
         // Invalid
         assert!(v.validate_image_id("").is_err());
         assert!(v.validate_image_id("1234").is_err());
-        assert!(v.validate_image_id("zzzz567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef").is_err());
+        assert!(v
+            .validate_image_id("zzzz567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef")
+            .is_err());
     }
 
     #[test]
@@ -252,12 +261,13 @@ mod tests {
         // Valid URLs
         assert!(v.validate_url("https://example.com/data").is_ok());
         assert!(v.validate_url("ipfs://QmTest").is_ok());
-        assert!(v.validate_url("data:application/octet-stream;base64,dGVzdA==").is_ok());
+        assert!(v
+            .validate_url("data:application/octet-stream;base64,dGVzdA==")
+            .is_ok());
 
         // Invalid URLs
         assert!(v.validate_url("").is_err());
         assert!(v.validate_url("http://example.com").is_err()); // http not allowed
         assert!(v.validate_url("ftp://example.com").is_err());
     }
-
 }

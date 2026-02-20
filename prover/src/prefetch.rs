@@ -53,7 +53,7 @@ impl Default for PrefetchConfig {
     fn default() -> Self {
         Self {
             max_concurrent: 8,
-            max_cache_bytes: 256 * 1024 * 1024, // 256 MB
+            max_cache_bytes: 256 * 1024 * 1024,  // 256 MB
             cache_ttl: Duration::from_secs(300), // 5 minutes
             max_input_size: 10 * 1024 * 1024,    // 10 MB
         }

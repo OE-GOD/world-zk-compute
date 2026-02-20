@@ -8,13 +8,11 @@ import {IRiscZeroVerifier} from "risc0-ethereum/IRiscZeroVerifier.sol";
 library StorageSlot {
     /// @dev Storage slot for the implementation address
     /// bytes32(uint256(keccak256('eip1967.proxy.implementation')) - 1)
-    bytes32 internal constant IMPLEMENTATION_SLOT =
-        0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+    bytes32 internal constant IMPLEMENTATION_SLOT = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
 
     /// @dev Storage slot for the admin address
     /// bytes32(uint256(keccak256('eip1967.proxy.admin')) - 1)
-    bytes32 internal constant ADMIN_SLOT =
-        0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103;
+    bytes32 internal constant ADMIN_SLOT = 0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103;
 
     struct AddressSlot {
         address value;
@@ -61,12 +59,8 @@ contract UUPSProxy {
             returndatacopy(0, 0, returndatasize())
 
             switch result
-            case 0 {
-                revert(0, returndatasize())
-            }
-            default {
-                return(0, returndatasize())
-            }
+            case 0 { revert(0, returndatasize()) }
+            default { return(0, returndatasize()) }
         }
     }
 
@@ -223,7 +217,6 @@ abstract contract UUPSUpgradeable {
     }
 }
 
-
 /// @title UpgradeableExecutionEngine
 /// @notice Upgradeable version of ExecutionEngine
 /// @dev Demonstrates how to make ExecutionEngine upgradeable
@@ -252,17 +245,17 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
 
     // Request storage (packed for gas efficiency)
     struct ExecutionRequest {
-        uint256 id;                  // Slot 0
-        bytes32 imageId;             // Slot 1
-        bytes32 inputDigest;         // Slot 2
-        address requester;           // Slot 3: requester(20) + createdAt(6) + expiresAt(6)
+        uint256 id; // Slot 0
+        bytes32 imageId; // Slot 1
+        bytes32 inputDigest; // Slot 2
+        address requester; // Slot 3: requester(20) + createdAt(6) + expiresAt(6)
         uint48 createdAt;
         uint48 expiresAt;
-        address callbackContract;    // Slot 4: callback(20) + status(1)
-        uint8 status;                // 0=Pending, 1=Claimed, 2=Completed, 3=Expired, 4=Cancelled
-        address claimedBy;           // Slot 5: claimedBy(20) + claimDeadline(6)
+        address callbackContract; // Slot 4: callback(20) + status(1)
+        uint8 status; // 0=Pending, 1=Claimed, 2=Completed, 3=Expired, 4=Cancelled
+        address claimedBy; // Slot 5: claimedBy(20) + claimDeadline(6)
         uint48 claimDeadline;
-        uint256 tip;                 // Slot 6
+        uint256 tip; // Slot 6
     }
 
     mapping(uint256 => ExecutionRequest) public requests;
@@ -277,11 +270,7 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
     // ========================================================================
 
     event ExecutionRequested(
-        uint256 indexed requestId,
-        address indexed requester,
-        bytes32 indexed imageId,
-        string inputUrl,
-        uint256 tip
+        uint256 indexed requestId, address indexed requester, bytes32 indexed imageId, string inputUrl, uint256 tip
     );
     event ExecutionClaimed(uint256 indexed requestId, address indexed prover);
     event ExecutionCompleted(uint256 indexed requestId, address indexed prover, uint256 payout);
@@ -296,12 +285,10 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
     /// @param _verifier RISC Zero verifier address
     /// @param _feeRecipient Fee recipient address
     /// @param _admin Admin address for upgrades
-    function initialize(
-        address _registry,
-        address _verifier,
-        address _feeRecipient,
-        address _admin
-    ) external initializer {
+    function initialize(address _registry, address _verifier, address _feeRecipient, address _admin)
+        external
+        initializer
+    {
         require(_registry != address(0), "Invalid registry");
         require(_verifier != address(0), "Invalid verifier");
         require(_feeRecipient != address(0), "Invalid fee recipient");
@@ -385,11 +372,7 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
     }
 
     /// @notice Submit proof
-    function submitProof(
-        uint256 requestId,
-        bytes calldata seal,
-        bytes calldata journal
-    ) external {
+    function submitProof(uint256 requestId, bytes calldata seal, bytes calldata journal) external {
         ExecutionRequest storage req = requests[requestId];
         require(req.id != 0, "Not found");
         require(req.status == 1, "Not claimed");

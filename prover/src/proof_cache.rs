@@ -44,13 +44,22 @@ pub struct ProofCacheKey {
 
 impl ProofCacheKey {
     pub fn new(image_id: B256, input_hash: B256, use_snark: bool) -> Self {
-        Self { image_id, input_hash, use_snark }
+        Self {
+            image_id,
+            input_hash,
+            use_snark,
+        }
     }
 
     /// Convert to hex string for file naming
     pub fn as_hex(&self) -> String {
         let suffix = if self.use_snark { "_snark" } else { "_stark" };
-        format!("{}_{}{}", hex::encode(self.image_id), hex::encode(self.input_hash), suffix)
+        format!(
+            "{}_{}{}",
+            hex::encode(self.image_id),
+            hex::encode(self.input_hash),
+            suffix
+        )
     }
 }
 
@@ -139,9 +148,9 @@ impl ProofCache {
     /// Create with default settings
     pub fn with_defaults() -> Self {
         Self::new(
-            1000,                           // 1000 proofs in memory
+            1000,                                  // 1000 proofs in memory
             Some(PathBuf::from("./cache/proofs")), // Disk persistence
-            Duration::from_secs(24 * 3600), // 24 hour TTL
+            Duration::from_secs(24 * 3600),        // 24 hour TTL
         )
     }
 
@@ -271,7 +280,11 @@ impl ProofCache {
     }
 
     /// Load proof from disk
-    async fn load_from_disk(&self, disk_path: &std::path::Path, key: &ProofCacheKey) -> Option<CachedProof> {
+    async fn load_from_disk(
+        &self,
+        disk_path: &std::path::Path,
+        key: &ProofCacheKey,
+    ) -> Option<CachedProof> {
         let file_path = disk_path.join(format!("{}.bin", key.as_hex()));
 
         match tokio::fs::read(&file_path).await {
@@ -287,7 +300,12 @@ impl ProofCache {
     }
 
     /// Save proof to disk
-    async fn save_to_disk(&self, disk_path: &std::path::Path, key: &ProofCacheKey, proof: &CachedProof) {
+    async fn save_to_disk(
+        &self,
+        disk_path: &std::path::Path,
+        key: &ProofCacheKey,
+        proof: &CachedProof,
+    ) {
         let file_path = disk_path.join(format!("{}.bin", key.as_hex()));
 
         match bincode::serialize(proof) {
@@ -307,10 +325,7 @@ impl ProofCache {
     /// Returns a JoinHandle that can be used to cancel the task.
     /// The task runs every `interval` and evicts expired entries from both
     /// memory and disk caches.
-    pub fn start_cleanup_task(
-        self: &Arc<Self>,
-        interval: Duration,
-    ) -> tokio::task::JoinHandle<()> {
+    pub fn start_cleanup_task(self: &Arc<Self>, interval: Duration) -> tokio::task::JoinHandle<()> {
         let cache = Arc::clone(self);
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(interval);
@@ -406,12 +421,7 @@ mod tests {
         let cache = ProofCache::new(10, None, Duration::from_secs(3600));
 
         let key = ProofCacheKey::new(B256::ZERO, B256::repeat_byte(1), false);
-        let proof = CachedProof::new(
-            vec![1, 2, 3],
-            vec![4, 5, 6],
-            1000,
-            Duration::from_secs(10),
-        );
+        let proof = CachedProof::new(vec![1, 2, 3], vec![4, 5, 6], 1000, Duration::from_secs(10));
 
         cache.put(&key, proof.clone()).await;
 

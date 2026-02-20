@@ -5,7 +5,7 @@
 
 use crate::gpu_manager::GpuDeviceManager;
 use std::sync::Arc;
-use tokio::sync::{Semaphore, OwnedSemaphorePermit};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::{debug, info};
 
 /// Resource type for a proving job.
@@ -204,7 +204,10 @@ mod tests {
         let mgr = ConcurrencyManager::new(gpu_mgr, 2);
 
         // Small program → CPU
-        assert_eq!(mgr.classify_job(1_000_000, 32 * 1024 * 1024), JobResource::Cpu);
+        assert_eq!(
+            mgr.classify_job(1_000_000, 32 * 1024 * 1024),
+            JobResource::Cpu
+        );
     }
 
     #[test]
@@ -213,7 +216,10 @@ mod tests {
         let mgr = ConcurrencyManager::new(gpu_mgr, 2);
 
         // Large program → GPU
-        assert_eq!(mgr.classify_job(50_000_000, 128 * 1024 * 1024), JobResource::Gpu);
+        assert_eq!(
+            mgr.classify_job(50_000_000, 128 * 1024 * 1024),
+            JobResource::Gpu
+        );
     }
 
     #[test]
@@ -222,7 +228,10 @@ mod tests {
         let mgr = ConcurrencyManager::new(gpu_mgr, 2);
 
         // No GPU → always CPU
-        assert_eq!(mgr.classify_job(50_000_000, 128 * 1024 * 1024), JobResource::Cpu);
+        assert_eq!(
+            mgr.classify_job(50_000_000, 128 * 1024 * 1024),
+            JobResource::Cpu
+        );
     }
 
     #[tokio::test]

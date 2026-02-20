@@ -30,11 +30,7 @@ contract DeployTestnetScript is Script {
         console.log("ProgramRegistry deployed at:", address(registry));
 
         // 2. Deploy Execution Engine pointing to the real verifier
-        ExecutionEngine engine = new ExecutionEngine(
-            address(registry),
-            verifierAddress,
-            feeRecipient
-        );
+        ExecutionEngine engine = new ExecutionEngine(address(registry), verifierAddress, feeRecipient);
         console.log("ExecutionEngine deployed at:", address(engine));
 
         vm.stopBroadcast();

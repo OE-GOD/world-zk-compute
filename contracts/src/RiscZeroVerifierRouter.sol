@@ -7,7 +7,6 @@ import {IRiscZeroVerifier, Receipt, VerificationFailed} from "risc0-ethereum/IRi
 /// @notice Routes verification to the appropriate RISC Zero verifier based on proof type
 /// @dev Supports multiple verifier versions and proof systems (Groth16, STARK, etc.)
 contract RiscZeroVerifierRouter is IRiscZeroVerifier {
-
     // ========================================================================
     // TYPES
     // ========================================================================
@@ -68,11 +67,7 @@ contract RiscZeroVerifierRouter is IRiscZeroVerifier {
     /// @param seal The proof seal (first 4 bytes determine the verifier)
     /// @param imageId The program image ID
     /// @param journalDigest SHA256 hash of the journal
-    function verify(
-        bytes calldata seal,
-        bytes32 imageId,
-        bytes32 journalDigest
-    ) external view override {
+    function verify(bytes calldata seal, bytes32 imageId, bytes32 journalDigest) external view override {
         if (seal.length < 4) revert InvalidSeal();
 
         // Extract selector from seal
@@ -132,16 +127,8 @@ contract RiscZeroVerifierRouter is IRiscZeroVerifier {
     }
 
     /// @notice Add a new verifier for a specific selector
-    function addVerifier(
-        bytes4 selector,
-        address verifier,
-        string calldata name
-    ) external onlyAdmin {
-        verifiers[selector] = VerifierInfo({
-            verifier: verifier,
-            name: name,
-            active: true
-        });
+    function addVerifier(bytes4 selector, address verifier, string calldata name) external onlyAdmin {
+        verifiers[selector] = VerifierInfo({verifier: verifier, name: name, active: true});
         selectors.push(selector);
 
         emit VerifierAdded(selector, verifier, name);

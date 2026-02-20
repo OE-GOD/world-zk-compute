@@ -96,7 +96,12 @@ impl MockExecutionEngine {
     }
 
     /// Submit proof and complete job
-    pub async fn submit_proof(&self, request_id: u64, _proof: Vec<u8>, _journal: Vec<u8>) -> Result<u64, String> {
+    pub async fn submit_proof(
+        &self,
+        request_id: u64,
+        _proof: Vec<u8>,
+        _journal: Vec<u8>,
+    ) -> Result<u64, String> {
         let mut jobs = self.jobs.write().await;
 
         if let Some(job) = jobs.iter_mut().find(|j| j.request_id == request_id) {
@@ -193,7 +198,10 @@ impl JobProcessor {
         self.engine.claim_job(request_id).await?;
 
         // 2. Get job details
-        let job = self.engine.get_job(request_id).await
+        let job = self
+            .engine
+            .get_job(request_id)
+            .await
             .ok_or("Job not found after claim")?;
 
         // 3. Generate proof (mocked)
@@ -261,7 +269,9 @@ mod tests {
 
         // Submit 5 jobs
         for i in 0..5 {
-            engine.submit_job([i as u8; 32], [0u8; 32], 100 * (i + 1) as u64).await;
+            engine
+                .submit_job([i as u8; 32], [0u8; 32], 100 * (i + 1) as u64)
+                .await;
         }
 
         // Verify all pending
@@ -329,28 +339,31 @@ mod tests {
         }
 
         // Process jobs in parallel (simulate multiple provers)
-        let handles: Vec<_> = (1..=10).map(|id| {
-            let engine = engine.clone();
-            tokio::spawn(async move {
-                let prover = MockProver::new();
+        let handles: Vec<_> = (1..=10)
+            .map(|id| {
+                let engine = engine.clone();
+                tokio::spawn(async move {
+                    let prover = MockProver::new();
 
-                // Claim
-                if engine.claim_job(id).await.is_ok() {
-                    // Prove
-                    let (proof, journal) = prover.prove(&[], &[]).await.unwrap();
-                    // Submit
-                    engine.submit_proof(id, proof, journal).await
-                } else {
-                    Err("Failed to claim".to_string())
-                }
+                    // Claim
+                    if engine.claim_job(id).await.is_ok() {
+                        // Prove
+                        let (proof, journal) = prover.prove(&[], &[]).await.unwrap();
+                        // Submit
+                        engine.submit_proof(id, proof, journal).await
+                    } else {
+                        Err("Failed to claim".to_string())
+                    }
+                })
             })
-        }).collect();
+            .collect();
 
         // Wait for all
         let results: Vec<_> = futures::future::join_all(handles).await;
 
         // All should succeed (no race condition on claim)
-        let successes = results.iter()
+        let successes = results
+            .iter()
             .filter(|r| r.as_ref().map(|r| r.is_ok()).unwrap_or(false))
             .count();
         assert_eq!(successes, 10);
@@ -382,7 +395,10 @@ mod tests {
         // Second job - cache hit!
         engine.claim_job(id2).await.unwrap();
         let cached = cache.get(&(image_id, input_hash)).unwrap();
-        engine.submit_proof(id2, cached.0.clone(), cached.1.clone()).await.unwrap();
+        engine
+            .submit_proof(id2, cached.0.clone(), cached.1.clone())
+            .await
+            .unwrap();
 
         // Both completed
         assert_eq!(engine.get_prover_balance().await, 200);

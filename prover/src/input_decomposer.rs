@@ -31,7 +31,6 @@
 //! it works with a `DecompositionStrategy` that defines how to split and
 //! merge for a specific program type.
 
-
 use anyhow::{anyhow, Result};
 use risc0_zkvm::Receipt;
 use std::time::{Duration, Instant};
@@ -60,7 +59,7 @@ pub struct DecomposerConfig {
 impl Default for DecomposerConfig {
     fn default() -> Self {
         Self {
-            min_input_size: 4096,           // 4 KB
+            min_input_size: 4096, // 4 KB
             max_sub_jobs: 16,
             target_cycles_per_job: 20_000_000, // 20M cycles
             max_concurrent_proofs: 4,
@@ -156,7 +155,10 @@ pub trait DecompositionStrategy: Send + Sync {
 /// The monitor checks this registry after preflight to decide whether
 /// to use decomposed proving for a given program.
 pub struct StrategyRegistry {
-    strategies: std::collections::HashMap<alloy::primitives::B256, std::sync::Arc<dyn DecompositionStrategy>>,
+    strategies: std::collections::HashMap<
+        alloy::primitives::B256,
+        std::sync::Arc<dyn DecompositionStrategy>,
+    >,
 }
 
 impl StrategyRegistry {
@@ -182,10 +184,12 @@ impl StrategyRegistry {
     }
 
     /// Look up the strategy for a given image ID.
-    pub fn get(&self, image_id: &alloy::primitives::B256) -> Option<&std::sync::Arc<dyn DecompositionStrategy>> {
+    pub fn get(
+        &self,
+        image_id: &alloy::primitives::B256,
+    ) -> Option<&std::sync::Arc<dyn DecompositionStrategy>> {
         self.strategies.get(image_id)
     }
-
 }
 
 impl Default for StrategyRegistry {
@@ -207,11 +211,7 @@ pub struct InputDecomposer {
 
 impl InputDecomposer {
     /// Create a new input decomposer.
-    pub fn new(
-        config: DecomposerConfig,
-        proving_mode: ProvingMode,
-        use_snark: bool,
-    ) -> Self {
+    pub fn new(config: DecomposerConfig, proving_mode: ProvingMode, use_snark: bool) -> Self {
         Self {
             config,
             proving_mode,
@@ -220,11 +220,7 @@ impl InputDecomposer {
     }
 
     /// Determine the optimal number of sub-jobs for this input.
-    pub fn plan_split(
-        &self,
-        strategy: &dyn DecompositionStrategy,
-        input: &[u8],
-    ) -> Result<usize> {
+    pub fn plan_split(&self, strategy: &dyn DecompositionStrategy, input: &[u8]) -> Result<usize> {
         let item_count = strategy.item_count(input)?;
 
         // Start with item-count-based split
@@ -275,7 +271,9 @@ impl InputDecomposer {
 
         let n = self.plan_split(strategy, input)?;
         if n <= 1 {
-            return Err(anyhow!("Decomposition produced only 1 sub-job, not worthwhile"));
+            return Err(anyhow!(
+                "Decomposition produced only 1 sub-job, not worthwhile"
+            ));
         }
 
         let sub_inputs = strategy.split(input, n)?;
@@ -309,9 +307,7 @@ impl InputDecomposer {
 
                 let config = SegmentProverConfig::default();
                 let prover = SegmentProver::new(config, proving_mode, use_snark);
-                let (result, receipt) = prover
-                    .prove_with_receipt(&elf_owned, &sub_input)
-                    .await?;
+                let (result, receipt) = prover.prove_with_receipt(&elf_owned, &sub_input).await?;
 
                 let prove_time = start.elapsed();
                 info!(

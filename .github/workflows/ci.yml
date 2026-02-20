@@ -7,6 +7,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.92.0"
 
 jobs:
   solidity:
@@ -27,6 +28,11 @@ jobs:
           forge install foundry-rs/forge-std --no-git
           forge install risc0/risc0-ethereum --no-git
 
+      - name: Check Solidity formatting
+        run: |
+          cd contracts
+          forge fmt --check
+
       - name: Run Solidity tests
         run: |
           cd contracts
@@ -42,9 +48,10 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
         with:
-          components: clippy
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy, rustfmt
 
       - name: Cache Rust build
         uses: actions/cache@v4
@@ -66,8 +73,11 @@ jobs:
           ~/.risc0/bin/rzup install r0vm 3.0.5
           echo "$HOME/.risc0/bin" >> $GITHUB_PATH
 
-      - name: Run Rust tests
-        run: cargo test --manifest-path prover/Cargo.toml
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path prover/Cargo.toml --check
 
       - name: Run Clippy
-        run: cargo clippy --manifest-path prover/Cargo.toml -- -W warnings
+        run: cargo clippy --manifest-path prover/Cargo.toml -- -D warnings
+
+      - name: Run Rust tests
+        run: cargo test --manifest-path prover/Cargo.toml

@@ -22,9 +22,9 @@
 //! nonce_manager.sync_from_chain().await?;
 //! ```
 
+use alloy::network::Network;
 use alloy::primitives::Address;
 use alloy::providers::Provider;
-use alloy::network::Network;
 use alloy::transports::Transport;
 use anyhow::Result;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -84,7 +84,11 @@ where
     pub fn next_nonce(&self) -> u64 {
         let nonce = self.current_nonce.fetch_add(1, Ordering::SeqCst);
         self.pending_count.fetch_add(1, Ordering::Relaxed);
-        debug!("Allocated nonce {} (pending: {})", nonce, self.pending_count.load(Ordering::Relaxed));
+        debug!(
+            "Allocated nonce {} (pending: {})",
+            nonce,
+            self.pending_count.load(Ordering::Relaxed)
+        );
         nonce
     }
 

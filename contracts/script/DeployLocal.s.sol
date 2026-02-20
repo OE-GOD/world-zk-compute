@@ -26,11 +26,7 @@ contract DeployLocalScript is Script {
         console.log("ProgramRegistry deployed at:", address(registry));
 
         // 3. Deploy Execution Engine
-        ExecutionEngine engine = new ExecutionEngine(
-            address(registry),
-            address(verifier),
-            feeRecipient
-        );
+        ExecutionEngine engine = new ExecutionEngine(address(registry), address(verifier), feeRecipient);
         console.log("ExecutionEngine deployed at:", address(engine));
 
         vm.stopBroadcast();

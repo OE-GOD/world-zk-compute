@@ -17,10 +17,9 @@
 //! 3. **Program familiarity** - Cached programs preferred
 //! 4. **Estimated complexity** - Simpler jobs first for throughput
 
-
 use alloy::primitives::{Address, B256, U256};
-use std::collections::{BinaryHeap, HashSet};
 use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashSet};
 use std::time::Instant;
 use tracing::{debug, info};
 
@@ -80,7 +79,8 @@ impl QueuedJob {
         let cache_bonus = if self.program_cached { 50 } else { 0 };
 
         // Complexity penalty (prefer simpler jobs for throughput)
-        let complexity_penalty = self.estimated_cycles
+        let complexity_penalty = self
+            .estimated_cycles
             .map(|c| c / 10_000_000) // penalty per 10M cycles
             .unwrap_or(0);
 
@@ -208,7 +208,11 @@ impl JobQueue {
         self.heap.push(ScoredJob { job, score });
         self.seen.insert(request_id);
 
-        info!("Added job {} to queue (score: {})", request_id, score.total());
+        info!(
+            "Added job {} to queue (score: {})",
+            request_id,
+            score.total()
+        );
         true
     }
 
@@ -236,7 +240,6 @@ impl JobQueue {
     pub fn iter_jobs(&self) -> impl Iterator<Item = &QueuedJob> {
         self.heap.iter().map(|scored| &scored.job)
     }
-
 }
 
 #[cfg(test)]
@@ -270,7 +273,7 @@ mod tests {
 
         // Add jobs with different tips
         queue.push(make_job(1, 0.01, 3600)); // Low tip
-        queue.push(make_job(2, 0.1, 3600));  // High tip
+        queue.push(make_job(2, 0.1, 3600)); // High tip
         queue.push(make_job(3, 0.05, 3600)); // Medium tip
 
         // Should get highest tip first
@@ -285,7 +288,7 @@ mod tests {
 
         // Job with lower tip but expiring soon
         queue.push(make_job(1, 0.01, 60)); // Expires in 1 minute
-        // Job with higher tip but plenty of time
+                                           // Job with higher tip but plenty of time
         queue.push(make_job(2, 0.02, 3600)); // Expires in 1 hour
 
         // Urgent job should come first despite lower tip
@@ -311,7 +314,7 @@ mod tests {
         let mut queue = JobQueue::new(100, min_tip);
 
         assert!(!queue.push(make_job(1, 0.001, 3600))); // Below threshold
-        assert!(queue.push(make_job(2, 0.02, 3600)));   // Above threshold
+        assert!(queue.push(make_job(2, 0.02, 3600))); // Above threshold
 
         // Only one job should be in the queue
         assert!(queue.pop().is_some());
