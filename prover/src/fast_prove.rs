@@ -270,8 +270,8 @@ impl FastProver {
         memory_bytes: usize,
         vm_type: ZkVmType,
     ) -> ProvingStrategy {
-        // SP1 manages its own segmentation — always use Direct
-        if vm_type == ZkVmType::Sp1 {
+        // SP1 and Jolt manage their own segmentation — always use Direct
+        if vm_type == ZkVmType::Sp1 || vm_type == ZkVmType::Jolt {
             return ProvingStrategy::Direct;
         }
 
@@ -383,9 +383,9 @@ impl FastProver {
     async fn prove_direct(&self, elf: &[u8], input: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
         debug!("Using direct proving strategy with {:?}", self.proving_mode);
 
-        // For SP1 programs or when multi-VM handles it
+        // For SP1/Jolt programs, dispatch through multi-VM router
         let vm_type = detect_vm_type(elf);
-        if vm_type == ZkVmType::Sp1 {
+        if vm_type == ZkVmType::Sp1 || vm_type == ZkVmType::Jolt {
             let result = if self.use_snark {
                 self.multi_vm.prove_with_snark(elf, input).await?
             } else {
@@ -412,8 +412,9 @@ impl FastProver {
         input: &[u8],
         num_segments: usize,
     ) -> Result<(Vec<u8>, Vec<u8>)> {
-        // SP1 manages its own segments — fall back to direct
-        if detect_vm_type(elf) == ZkVmType::Sp1 {
+        // SP1/Jolt manage their own segments — fall back to direct
+        let vm_type = detect_vm_type(elf);
+        if vm_type == ZkVmType::Sp1 || vm_type == ZkVmType::Jolt {
             return self.prove_direct(elf, input).await;
         }
 
@@ -459,8 +460,9 @@ impl FastProver {
     /// large programs benefit most from GPU acceleration.
     /// SP1 programs fall back to direct proving.
     async fn prove_continuation(&self, elf: &[u8], input: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
-        // SP1 manages its own segments — fall back to direct
-        if detect_vm_type(elf) == ZkVmType::Sp1 {
+        // SP1/Jolt manage their own segments — fall back to direct
+        let vm_type = detect_vm_type(elf);
+        if vm_type == ZkVmType::Sp1 || vm_type == ZkVmType::Jolt {
             return self.prove_direct(elf, input).await;
         }
 
@@ -612,6 +614,12 @@ mod tests {
         // SP1 programs always get Direct
         assert_eq!(
             prover.select_strategy_for_vm(200_000_000, 256 * 1024 * 1024, ZkVmType::Sp1),
+            ProvingStrategy::Direct
+        );
+
+        // Jolt programs always get Direct (Jolt manages internally)
+        assert_eq!(
+            prover.select_strategy_for_vm(200_000_000, 256 * 1024 * 1024, ZkVmType::Jolt),
             ProvingStrategy::Direct
         );
     }

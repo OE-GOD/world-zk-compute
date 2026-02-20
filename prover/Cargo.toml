@@ -87,3 +87,5 @@ cuda = ["risc0-zkvm/cuda"]
 metal = ["risc0-zkvm/metal"]
 # SP1 proving backend
 sp1 = ["sp1-sdk"]
+# Jolt proving backend (experimental)
+jolt = []

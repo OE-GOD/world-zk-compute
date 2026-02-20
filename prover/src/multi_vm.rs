@@ -7,6 +7,8 @@
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use tracing::info;
+#[cfg(feature = "jolt")]
+use tracing::warn;
 
 use crate::bonsai::ProvingMode;
 use crate::risc0_backend::Risc0Backend;
@@ -55,6 +57,25 @@ impl MultiVmProver {
             info!("Multi-VM: SP1 backend not available (compile with --features sp1)");
         }
 
+        // Conditionally register Jolt
+        #[cfg(feature = "jolt")]
+        {
+            match crate::jolt_backend::JoltBackend::new() {
+                Ok(jolt) => {
+                    backends.insert(ZkVmType::Jolt, Box::new(jolt));
+                    info!("Multi-VM: Jolt backend registered (experimental)");
+                }
+                Err(e) => {
+                    warn!("Multi-VM: Jolt backend init failed: {}", e);
+                }
+            }
+        }
+
+        #[cfg(not(feature = "jolt"))]
+        {
+            info!("Multi-VM: Jolt backend not available (compile with --features jolt)");
+        }
+
         Self { backends }
     }
 
@@ -67,10 +88,10 @@ impl MultiVmProver {
                 anyhow!(
                     "No backend registered for {}. {}",
                     vm_type,
-                    if vm_type == ZkVmType::Sp1 {
-                        "Compile with --features sp1 to enable SP1 support."
-                    } else {
-                        "This should not happen."
+                    match vm_type {
+                        ZkVmType::Sp1 => "Compile with --features sp1 to enable SP1 support.",
+                        ZkVmType::Jolt => "Compile with --features jolt to enable Jolt support.",
+                        _ => "This should not happen.",
                     }
                 )
             })

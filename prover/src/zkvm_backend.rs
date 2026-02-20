@@ -1,6 +1,6 @@
 //! zkVM Backend Abstraction
 //!
-//! Provides a common trait for different zkVM proving backends (risc0, SP1).
+//! Provides a common trait for different zkVM proving backends (risc0, SP1, Jolt).
 //! Includes auto-detection of VM type from ELF binaries.
 
 
@@ -43,6 +43,7 @@ pub struct ProofResult {
 pub enum ZkVmType {
     Risc0,
     Sp1,
+    Jolt,
 }
 
 impl std::fmt::Display for ZkVmType {
@@ -50,6 +51,7 @@ impl std::fmt::Display for ZkVmType {
         match self {
             ZkVmType::Risc0 => write!(f, "risc0"),
             ZkVmType::Sp1 => write!(f, "SP1"),
+            ZkVmType::Jolt => write!(f, "Jolt (experimental)"),
         }
     }
 }
@@ -78,6 +80,15 @@ pub trait ZkVmBackend: Send + Sync {
 /// - SP1 ELFs contain the string "SP1" or specific SP1 markers near the start
 /// - Everything else is assumed to be risc0 (the default)
 pub fn detect_vm_type(elf: &[u8]) -> ZkVmType {
+    // Check for Jolt markers first (Jolt guest programs contain these symbols)
+    if contains_bytes(elf, b"jolt_provable")
+        || contains_bytes(elf, b".jolt")
+        || contains_bytes(elf, b"jolt_sdk")
+        || contains_bytes(elf, b"jolt_guest")
+    {
+        return ZkVmType::Jolt;
+    }
+
     // SP1 ELFs are standard RISC-V ELFs compiled with sp1-build.
     // They contain ".sp1" section names or SP1-specific symbols.
     // We search for known SP1 markers in the binary.
@@ -148,8 +159,37 @@ mod tests {
     }
 
     #[test]
+    fn test_detect_vm_type_jolt_provable() {
+        let mut data = vec![0x7f, 0x45, 0x4c, 0x46]; // ELF magic
+        data.extend_from_slice(b"some stuff jolt_provable more stuff");
+        assert_eq!(detect_vm_type(&data), ZkVmType::Jolt);
+    }
+
+    #[test]
+    fn test_detect_vm_type_jolt_section() {
+        let mut data = vec![0u8; 50];
+        data.extend_from_slice(b".jolt");
+        assert_eq!(detect_vm_type(&data), ZkVmType::Jolt);
+    }
+
+    #[test]
+    fn test_detect_vm_type_jolt_sdk() {
+        let mut data = vec![0u8; 100];
+        data.extend_from_slice(b"jolt_sdk");
+        assert_eq!(detect_vm_type(&data), ZkVmType::Jolt);
+    }
+
+    #[test]
+    fn test_detect_vm_type_jolt_guest() {
+        let mut data = vec![0u8; 100];
+        data.extend_from_slice(b"jolt_guest");
+        assert_eq!(detect_vm_type(&data), ZkVmType::Jolt);
+    }
+
+    #[test]
     fn test_zkvm_type_display() {
         assert_eq!(format!("{}", ZkVmType::Risc0), "risc0");
         assert_eq!(format!("{}", ZkVmType::Sp1), "SP1");
+        assert_eq!(format!("{}", ZkVmType::Jolt), "Jolt (experimental)");
     }
 }

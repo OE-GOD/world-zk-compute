@@ -47,6 +47,8 @@ mod xgboost_decomp;
 mod zkvm_backend;
 #[cfg(feature = "sp1")]
 mod sp1_prover;
+#[cfg(feature = "jolt")]
+mod jolt_backend;
 
 use bonsai::ProvingMode;
 use config::ProverConfig;
@@ -912,6 +914,16 @@ fn show_info() {
     println!("  Metal:      enabled");
     #[cfg(not(feature = "metal"))]
     println!("  Metal:      disabled (build with --features metal)");
+
+    #[cfg(feature = "sp1")]
+    println!("  SP1:        enabled");
+    #[cfg(not(feature = "sp1"))]
+    println!("  SP1:        disabled (build with --features sp1)");
+
+    #[cfg(feature = "jolt")]
+    println!("  Jolt:       enabled (experimental)");
+    #[cfg(not(feature = "jolt"))]
+    println!("  Jolt:       disabled (build with --features jolt)");
 
     if std::env::var("BONSAI_API_KEY").is_ok() {
         println!("  Bonsai:     API key configured");
