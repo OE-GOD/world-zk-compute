@@ -426,6 +426,7 @@ impl ProvingMode {
     }
 
     /// Check if this mode uses Boundless
+    #[allow(dead_code)]
     pub fn uses_boundless(&self) -> bool {
         matches!(
             self,
@@ -434,6 +435,7 @@ impl ProvingMode {
     }
 
     /// Check if this mode uses any remote proving service (Bonsai or Boundless)
+    #[allow(dead_code)]
     pub fn uses_remote_proving(&self) -> bool {
         self.uses_bonsai() || self.uses_boundless()
     }
