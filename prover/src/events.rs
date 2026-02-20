@@ -52,6 +52,7 @@ pub struct NewJobEvent {
     pub requester: Address,
     pub image_id: B256,
     pub input_digest: B256,
+    pub input_type: u8,
     pub tip: U256,
     pub expires_at: u64,
 }
@@ -218,6 +219,7 @@ impl EventSubscriber {
             requester: inner.requester,
             image_id: inner.imageId,
             input_digest: inner.inputDigest,
+            input_type: inner.inputType,
             tip: inner.tip,
             expires_at,
         }))

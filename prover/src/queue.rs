@@ -35,6 +35,8 @@ pub struct QueuedJob {
     pub input_hash: B256,
     /// Input URL
     pub input_url: String,
+    /// Input type (0 = Public, 1 = Private)
+    pub input_type: u8,
     /// Tip amount (wei)
     pub tip: U256,
     /// Requester address
@@ -257,6 +259,7 @@ mod tests {
             image_id: B256::ZERO,
             input_hash: B256::ZERO,
             input_url: "https://example.com".to_string(),
+            input_type: 0,
             tip: U256::from((tip_eth * 1e18) as u128),
             requester: Address::ZERO,
             expires_at: now + expires_in,

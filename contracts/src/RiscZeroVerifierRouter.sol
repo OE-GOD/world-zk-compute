@@ -87,8 +87,9 @@ contract RiscZeroVerifierRouter is IRiscZeroVerifier {
 
         // Call the verifier
         try IRiscZeroVerifier(verifier).verify(seal, imageId, journalDigest) {
-            // Verification succeeded
-        } catch {
+        // Verification succeeded
+        }
+        catch {
             revert VerificationFailed();
         }
     }
@@ -111,8 +112,9 @@ contract RiscZeroVerifierRouter is IRiscZeroVerifier {
         if (!info.active && verifier != defaultVerifier) revert VerifierNotActive();
 
         try IRiscZeroVerifier(verifier).verifyIntegrity(receipt) {
-            // Verification succeeded
-        } catch {
+        // Verification succeeded
+        }
+        catch {
             revert VerificationFailed();
         }
     }

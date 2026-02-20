@@ -98,7 +98,16 @@ impl InputPrefetcher {
     ///
     /// This spawns a background task to fetch the input. The result
     /// will be available via `get_cached()` when ready.
+    /// Private inputs (input_type == 1) are skipped since they require
+    /// on-chain claim before the auth server releases data.
     pub fn prefetch(&self, job: &QueuedJob) {
+        if job.input_type == 1 {
+            debug!(
+                "[Prefetch {}] Skipping private input (requires claim first)",
+                job.request_id
+            );
+            return;
+        }
         let url = job.input_url.clone();
         let expected_hash = job.input_hash;
         let request_id = job.request_id;

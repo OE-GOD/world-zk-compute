@@ -38,7 +38,6 @@ contract ProverReputation {
         Gold, // Score 7500-8999
         Platinum, // Score 9000-9499
         Diamond // Score 9500+
-
     }
 
     /// @notice Slashing event details

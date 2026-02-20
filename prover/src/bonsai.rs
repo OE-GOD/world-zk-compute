@@ -380,6 +380,12 @@ pub enum ProvingMode {
     BonsaiWithFallback,
     /// Try Bonsai first, fall back to GPU, then CPU
     BonsaiWithGpuFallback,
+    /// Boundless decentralized proving marketplace
+    Boundless,
+    /// Try Boundless first, fall back to local CPU
+    BoundlessWithFallback,
+    /// Try Boundless first, fall back to GPU, then CPU
+    BoundlessWithGpuFallback,
 }
 
 impl ProvingMode {
@@ -391,6 +397,11 @@ impl ProvingMode {
             "bonsai" => Self::Bonsai,
             "bonsai-fallback" | "bonsai_fallback" => Self::BonsaiWithFallback,
             "bonsai-gpu" | "bonsai_gpu" | "bonsai-gpu-fallback" => Self::BonsaiWithGpuFallback,
+            "boundless" => Self::Boundless,
+            "boundless-fallback" | "boundless_fallback" => Self::BoundlessWithFallback,
+            "boundless-gpu" | "boundless_gpu" | "boundless-gpu-fallback" => {
+                Self::BoundlessWithGpuFallback
+            }
             _ => Self::Local,
         }
     }
@@ -399,7 +410,10 @@ impl ProvingMode {
     pub fn uses_gpu(&self) -> bool {
         matches!(
             self,
-            Self::LocalGpu | Self::GpuWithCpuFallback | Self::BonsaiWithGpuFallback
+            Self::LocalGpu
+                | Self::GpuWithCpuFallback
+                | Self::BonsaiWithGpuFallback
+                | Self::BoundlessWithGpuFallback
         )
     }
 
@@ -409,6 +423,19 @@ impl ProvingMode {
             self,
             Self::Bonsai | Self::BonsaiWithFallback | Self::BonsaiWithGpuFallback
         )
+    }
+
+    /// Check if this mode uses Boundless
+    pub fn uses_boundless(&self) -> bool {
+        matches!(
+            self,
+            Self::Boundless | Self::BoundlessWithFallback | Self::BoundlessWithGpuFallback
+        )
+    }
+
+    /// Check if this mode uses any remote proving service (Bonsai or Boundless)
+    pub fn uses_remote_proving(&self) -> bool {
+        self.uses_bonsai() || self.uses_boundless()
     }
 }
 
@@ -434,6 +461,15 @@ mod tests {
             ProvingMode::from_str("bonsai-gpu"),
             ProvingMode::BonsaiWithGpuFallback
         );
+        assert_eq!(ProvingMode::from_str("boundless"), ProvingMode::Boundless);
+        assert_eq!(
+            ProvingMode::from_str("boundless-fallback"),
+            ProvingMode::BoundlessWithFallback
+        );
+        assert_eq!(
+            ProvingMode::from_str("boundless-gpu"),
+            ProvingMode::BoundlessWithGpuFallback
+        );
     }
 
     #[test]
@@ -441,14 +477,30 @@ mod tests {
         assert!(ProvingMode::LocalGpu.uses_gpu());
         assert!(ProvingMode::GpuWithCpuFallback.uses_gpu());
         assert!(ProvingMode::BonsaiWithGpuFallback.uses_gpu());
+        assert!(ProvingMode::BoundlessWithGpuFallback.uses_gpu());
         assert!(!ProvingMode::Local.uses_gpu());
         assert!(!ProvingMode::Bonsai.uses_gpu());
+        assert!(!ProvingMode::Boundless.uses_gpu());
 
         assert!(ProvingMode::Bonsai.uses_bonsai());
         assert!(ProvingMode::BonsaiWithFallback.uses_bonsai());
         assert!(ProvingMode::BonsaiWithGpuFallback.uses_bonsai());
         assert!(!ProvingMode::Local.uses_bonsai());
         assert!(!ProvingMode::LocalGpu.uses_bonsai());
+        assert!(!ProvingMode::Boundless.uses_bonsai());
+
+        assert!(ProvingMode::Boundless.uses_boundless());
+        assert!(ProvingMode::BoundlessWithFallback.uses_boundless());
+        assert!(ProvingMode::BoundlessWithGpuFallback.uses_boundless());
+        assert!(!ProvingMode::Local.uses_boundless());
+        assert!(!ProvingMode::Bonsai.uses_boundless());
+
+        // Remote proving covers both Bonsai and Boundless
+        assert!(ProvingMode::Bonsai.uses_remote_proving());
+        assert!(ProvingMode::Boundless.uses_remote_proving());
+        assert!(ProvingMode::BoundlessWithFallback.uses_remote_proving());
+        assert!(!ProvingMode::Local.uses_remote_proving());
+        assert!(!ProvingMode::LocalGpu.uses_remote_proving());
     }
 
     #[test]

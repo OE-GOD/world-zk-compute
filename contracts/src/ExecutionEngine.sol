@@ -26,7 +26,6 @@ contract ExecutionEngine is ReentrancyGuard {
         Completed, // Proof verified, callback executed
         Expired, // Claim expired, can be reclaimed
         Cancelled // Requester cancelled
-
     }
 
     struct ExecutionRequest {
@@ -96,6 +95,7 @@ contract ExecutionEngine is ReentrancyGuard {
         bytes32 indexed imageId,
         bytes32 inputDigest,
         string inputUrl,
+        uint8 inputType,
         uint256 tip,
         uint256 expiresAt
     );
@@ -152,6 +152,44 @@ contract ExecutionEngine is ReentrancyGuard {
     /// @param inputUrl URL where prover can fetch inputs
     /// @param callbackContract Contract to receive results (0x0 for no callback)
     /// @param expirationSeconds How long before request expires
+    /// @param inputType 0 = Public, 1 = Private (event-only, not stored)
+    function requestExecution(
+        bytes32 imageId,
+        bytes32 inputDigest,
+        string calldata inputUrl,
+        address callbackContract,
+        uint256 expirationSeconds,
+        uint8 inputType
+    ) external payable returns (uint256 requestId) {
+        if (msg.value < MIN_TIP) revert InsufficientTip();
+        if (!registry.isProgramActive(imageId)) revert ProgramNotActive();
+
+        uint256 expiration = expirationSeconds > 0 ? expirationSeconds : DEFAULT_EXPIRATION;
+
+        requestId = nextRequestId++;
+
+        requests[requestId] = ExecutionRequest({
+            id: requestId,
+            imageId: imageId,
+            inputDigest: inputDigest,
+            requester: msg.sender,
+            createdAt: uint48(block.timestamp),
+            expiresAt: uint48(block.timestamp + expiration),
+            callbackContract: callbackContract,
+            status: RequestStatus.Pending,
+            claimedBy: address(0),
+            claimedAt: 0,
+            claimDeadline: 0,
+            tip: msg.value,
+            maxTip: msg.value
+        });
+
+        emit ExecutionRequested(
+            requestId, msg.sender, imageId, inputDigest, inputUrl, inputType, msg.value, block.timestamp + expiration
+        );
+    }
+
+    /// @notice Request execution with public input (backward-compatible overload)
     function requestExecution(
         bytes32 imageId,
         bytes32 inputDigest,
@@ -183,7 +221,7 @@ contract ExecutionEngine is ReentrancyGuard {
         });
 
         emit ExecutionRequested(
-            requestId, msg.sender, imageId, inputDigest, inputUrl, msg.value, block.timestamp + expiration
+            requestId, msg.sender, imageId, inputDigest, inputUrl, 0, msg.value, block.timestamp + expiration
         );
     }
 

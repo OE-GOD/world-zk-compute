@@ -258,25 +258,21 @@ abstract contract Pausable {
 /// @notice ExecutionEngine with emergency pause capability
 /// @dev Wrapper that adds pause functionality to critical operations
 contract PausableExecutionEngine is Pausable {
-// Import the base ExecutionEngine interface
-// In production, you would inherit from ExecutionEngine directly
+    // Import the base ExecutionEngine interface
+    // In production, you would inherit from ExecutionEngine directly
+    // For this example, we demonstrate the pattern:
+    /// @notice Request execution (pausable)
+    /// @dev Add `whenNotPaused` to prevent new requests during emergency
+    // function requestExecution(...) external payable whenNotPaused { ... }
+    /// @notice Claim execution (pausable)
+    /// @dev Add `whenNotPaused` to prevent claims during emergency
+    // function claimExecution(...) external whenNotPaused { ... }
+    /// @notice Submit proof (NOT pausable)
+    /// @dev Proof submission should work even when paused to allow
+    ///      provers to complete in-flight work and get paid
+    // function submitProof(...) external { ... } // No modifier!
+    /// @notice Cancel execution (NOT pausable)
+    /// @dev Cancellation should work even when paused to allow refunds
+    // function cancelExecution(...) external { ... } // No modifier!
 
-// For this example, we demonstrate the pattern:
-
-/// @notice Request execution (pausable)
-/// @dev Add `whenNotPaused` to prevent new requests during emergency
-// function requestExecution(...) external payable whenNotPaused { ... }
-
-/// @notice Claim execution (pausable)
-/// @dev Add `whenNotPaused` to prevent claims during emergency
-// function claimExecution(...) external whenNotPaused { ... }
-
-/// @notice Submit proof (NOT pausable)
-/// @dev Proof submission should work even when paused to allow
-///      provers to complete in-flight work and get paid
-// function submitProof(...) external { ... } // No modifier!
-
-/// @notice Cancel execution (NOT pausable)
-/// @dev Cancellation should work even when paused to allow refunds
-// function cancelExecution(...) external { ... } // No modifier!
-}
+    }

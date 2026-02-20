@@ -421,19 +421,20 @@ contract ExecutionEngineTest is Test {
         Vm.Log[] memory logs = vm.getRecordedLogs();
 
         // Find the ExecutionRequested event
-        // event ExecutionRequested(uint256 indexed requestId, address indexed requester, bytes32 indexed imageId, bytes32 inputDigest, string inputUrl, uint256 tip, uint256 expiresAt)
+        // event ExecutionRequested(uint256 indexed requestId, address indexed requester, bytes32 indexed imageId, bytes32 inputDigest, string inputUrl, uint8 inputType, uint256 tip, uint256 expiresAt)
         bool found = false;
         for (uint256 i = 0; i < logs.length; i++) {
             // Topic 0 is the event signature
             if (
                 logs[i].topics[0]
-                    == keccak256("ExecutionRequested(uint256,address,bytes32,bytes32,string,uint256,uint256)")
+                    == keccak256("ExecutionRequested(uint256,address,bytes32,bytes32,string,uint8,uint256,uint256)")
             ) {
-                // Decode non-indexed params: inputDigest, inputUrl, tip, expiresAt
-                (bytes32 evInputDigest, string memory evInputUrl, uint256 evTip,) =
-                    abi.decode(logs[i].data, (bytes32, string, uint256, uint256));
+                // Decode non-indexed params: inputDigest, inputUrl, inputType, tip, expiresAt
+                (bytes32 evInputDigest, string memory evInputUrl, uint8 evInputType, uint256 evTip,) =
+                    abi.decode(logs[i].data, (bytes32, string, uint8, uint256, uint256));
                 assertEq(evInputUrl, testInputUrl);
                 assertEq(evInputDigest, inputDigest);
+                assertEq(evInputType, 0); // Default public
                 assertEq(evTip, 0.1 ether);
                 found = true;
                 break;
@@ -444,6 +445,59 @@ contract ExecutionEngineTest is Test {
         // Struct has no inputUrl field — getRequest compiles and returns without it
         ExecutionEngine.ExecutionRequest memory req = engine.getRequest(requestId);
         assertEq(req.id, requestId);
+    }
+
+    function testPrivateInputRequestEmitsInputType1() public {
+        vm.recordLogs();
+
+        vm.prank(requester);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(
+            imageId, inputDigest, "https://auth.example.com/inputs", address(0), 3600, 1
+        );
+
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+
+        bool found = false;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (
+                logs[i].topics[0]
+                    == keccak256("ExecutionRequested(uint256,address,bytes32,bytes32,string,uint8,uint256,uint256)")
+            ) {
+                (,, uint8 evInputType,,) = abi.decode(logs[i].data, (bytes32, string, uint8, uint256, uint256));
+                assertEq(evInputType, 1); // Private
+                found = true;
+                break;
+            }
+        }
+        assertTrue(found, "ExecutionRequested event not found");
+
+        // Verify request was created correctly
+        ExecutionEngine.ExecutionRequest memory req = engine.getRequest(requestId);
+        assertEq(req.id, requestId);
+        assertEq(req.tip, 0.1 ether);
+    }
+
+    function testBackwardCompatibleOverloadEmitsInputType0() public {
+        vm.recordLogs();
+
+        vm.prank(requester);
+        engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+
+        bool found = false;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (
+                logs[i].topics[0]
+                    == keccak256("ExecutionRequested(uint256,address,bytes32,bytes32,string,uint8,uint256,uint256)")
+            ) {
+                (,, uint8 evInputType,,) = abi.decode(logs[i].data, (bytes32, string, uint8, uint256, uint256));
+                assertEq(evInputType, 0); // Public (default)
+                found = true;
+                break;
+            }
+        }
+        assertTrue(found, "ExecutionRequested event not found");
     }
 
     function testMultipleRequestsIsolation() public {

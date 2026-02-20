@@ -30,6 +30,7 @@ sol! {
             bytes32 indexed imageId,
             bytes32 inputDigest,
             string inputUrl,
+            uint8 inputType,
             uint256 tip,
             uint256 expiresAt
         );

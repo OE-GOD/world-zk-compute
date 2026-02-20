@@ -270,7 +270,12 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
     // ========================================================================
 
     event ExecutionRequested(
-        uint256 indexed requestId, address indexed requester, bytes32 indexed imageId, string inputUrl, uint256 tip
+        uint256 indexed requestId,
+        address indexed requester,
+        bytes32 indexed imageId,
+        string inputUrl,
+        uint8 inputType,
+        uint256 tip
     );
     event ExecutionClaimed(uint256 indexed requestId, address indexed prover);
     event ExecutionCompleted(uint256 indexed requestId, address indexed prover, uint256 payout);
@@ -328,7 +333,37 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
     // CORE FUNCTIONS (same as non-upgradeable version)
     // ========================================================================
 
-    /// @notice Request execution
+    /// @notice Request execution with inputType
+    function requestExecution(
+        bytes32 imageId,
+        bytes32 inputDigest,
+        string calldata inputUrl,
+        address callbackContract,
+        uint256 expirationSeconds,
+        uint8 inputType
+    ) external payable returns (uint256 requestId) {
+        require(msg.value >= 0.0001 ether, "Insufficient tip");
+
+        requestId = nextRequestId++;
+
+        requests[requestId] = ExecutionRequest({
+            id: requestId,
+            imageId: imageId,
+            inputDigest: inputDigest,
+            requester: msg.sender,
+            createdAt: uint48(block.timestamp),
+            expiresAt: uint48(block.timestamp + (expirationSeconds > 0 ? expirationSeconds : 1 hours)),
+            callbackContract: callbackContract,
+            status: 0, // Pending
+            claimedBy: address(0),
+            claimDeadline: 0,
+            tip: msg.value
+        });
+
+        emit ExecutionRequested(requestId, msg.sender, imageId, inputUrl, inputType, msg.value);
+    }
+
+    /// @notice Request execution (backward-compatible, defaults to public input)
     function requestExecution(
         bytes32 imageId,
         bytes32 inputDigest,
@@ -354,7 +389,7 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
             tip: msg.value
         });
 
-        emit ExecutionRequested(requestId, msg.sender, imageId, inputUrl, msg.value);
+        emit ExecutionRequested(requestId, msg.sender, imageId, inputUrl, 0, msg.value);
     }
 
     /// @notice Claim execution

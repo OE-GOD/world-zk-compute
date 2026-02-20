@@ -30,6 +30,7 @@ alloy = { version = "0.8", features = ["full"] }
 #   cargo build --release --features metal   # Apple GPU
 risc0-zkvm = { version = "3.0", features = ["prove"] }
 bonsai-sdk = { version = "1.2" }
+boundless-market = { version = "1.2", optional = true }
 
 # SP1 (optional, enable with --features sp1)
 sp1-sdk = { version = "4.0.0", optional = true }
@@ -89,3 +90,5 @@ metal = ["risc0-zkvm/metal"]
 sp1 = ["sp1-sdk"]
 # Jolt proving backend (experimental)
 jolt = []
+# Boundless decentralized proving marketplace
+boundless = ["boundless-market"]
