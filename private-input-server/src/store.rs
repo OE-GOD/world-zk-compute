@@ -10,6 +10,7 @@ use tracing::{debug, info, warn};
 
 /// Stored input entry
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct StoredInput {
     /// Raw input bytes
     pub data: Vec<u8>,
@@ -95,6 +96,7 @@ impl InputStore {
     }
 
     /// Remove input for a request ID
+    #[allow(dead_code)]
     pub fn remove(&self, request_id: u64) -> bool {
         let removed = self.memory.write().unwrap().remove(&request_id).is_some();
 

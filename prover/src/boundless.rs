@@ -28,6 +28,7 @@ use tracing::info;
 
 /// Storage provider type for uploading program/input data
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub enum StorageProvider {
     /// Pinata IPFS gateway
     Pinata { jwt: String },
@@ -39,6 +40,7 @@ pub enum StorageProvider {
 
 /// Boundless proving configuration
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub struct BoundlessConfig {
     /// Base chain RPC URL
     pub rpc_url: String,
