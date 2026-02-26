@@ -563,6 +563,7 @@ See [`examples/`](./examples/) for complete detection algorithm examples:
 - **Sybil Detector** - World ID registration pattern analysis to detect coordinated fake identities (temporal clustering, geographic impossibility, session anomaly, Orb rate abuse, quality score anomaly)
 - **Rule Engine** - Configurable rule evaluation covering pattern matching (glob), aggregation (count/sum/min/max), comparison, and logical rules (AND/OR)
 - **XGBoost Inference** - Decision tree ensemble model inference with threshold-based flagging
+- **XGBoost EZKL** - XGBoost inference via [EZKL](https://github.com/zkonduit/ezkl) (Halo2 circuits) for ~3x faster proving and ~19x less memory vs risc0
 
 ### Quick Start
 
