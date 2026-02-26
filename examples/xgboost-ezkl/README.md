@@ -56,6 +56,12 @@ python benchmark.py
 
 Runs proving multiple times and reports statistics.
 
+## Why Hummingbird-ML?
+
+EZKL only supports standard ONNX tensor operators (Add, MatMul, Relu, etc.). Direct XGBoost-to-ONNX converters (like `onnxmltools`) produce models using the `ai.onnx.ml` operator set (`TreeEnsembleClassifier`), which EZKL cannot parse.
+
+[Hummingbird-ML](https://github.com/microsoft/hummingbird) (from Microsoft) solves this by converting tree ensemble logic into equivalent tensor computations — tree splits become comparison matrices, leaf values become lookup tensors. The resulting PyTorch model is then exported to ONNX with only standard operators, making it fully compatible with EZKL.
+
 ## How It Works
 
 EZKL converts the ONNX model into a Halo2 arithmetic circuit:
