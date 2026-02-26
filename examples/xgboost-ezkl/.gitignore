@@ -1,0 +1,21 @@
+# Generated model artifacts
+model.onnx
+model.compiled
+test_input.json
+cal_data.json
+
+# EZKL proving artifacts
+settings.json
+kzg.srs
+pk.key
+vk.key
+witness.json
+proof.json
+
+# Generated verifier
+Verifier.sol
+Verifier.abi
+
+# Benchmark output
+timing_summary.json
+benchmark_results.json
