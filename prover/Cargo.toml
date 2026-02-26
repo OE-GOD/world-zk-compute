@@ -93,5 +93,7 @@ metal = ["risc0-zkvm/metal"]
 sp1 = ["sp1-sdk"]
 # Jolt proving backend (experimental)
 jolt = []
+# Remainder (GKR+Hyrax) proving backend
+remainder = []
 # Boundless decentralized proving marketplace
 boundless = ["boundless-market"]

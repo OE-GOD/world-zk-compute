@@ -44,6 +44,8 @@ mod prove_metrics;
 mod prover;
 mod queue;
 mod recursive_wrapper;
+#[cfg(feature = "remainder")]
+mod remainder_backend;
 mod risc0_backend;
 mod segment_prover;
 mod shutdown;

@@ -17,6 +17,8 @@ contract ProgramRegistry {
         bytes32 inputSchema; // Hash of expected input schema (optional)
         uint256 registeredAt; // Block timestamp of registration
         bool active; // Whether program is active
+        address verifierContract; // IProofVerifier address (0x0 = use default risc0)
+        string proofSystem; // "risc0" | "remainder" | "ezkl" (empty = risc0)
     }
 
     // ========================================================================
@@ -56,7 +58,7 @@ contract ProgramRegistry {
     // REGISTRATION
     // ========================================================================
 
-    /// @notice Register a new zkVM program
+    /// @notice Register a new zkVM program (backward-compatible, defaults to risc0)
     /// @param imageId The RISC Zero image ID (hash of the ELF binary)
     /// @param name Human-readable name for the program
     /// @param programUrl URL where the ELF binary can be downloaded
@@ -64,6 +66,35 @@ contract ProgramRegistry {
     function registerProgram(bytes32 imageId, string calldata name, string calldata programUrl, bytes32 inputSchema)
         external
     {
+        _registerProgram(imageId, name, programUrl, inputSchema, address(0), "risc0");
+    }
+
+    /// @notice Register a program with a specific proof system verifier
+    /// @param imageId The program ID (image ID for risc0, circuit hash for Remainder)
+    /// @param name Human-readable name for the program
+    /// @param programUrl URL where the program binary can be downloaded
+    /// @param inputSchema Optional hash of the expected input schema
+    /// @param verifierContract Address of the IProofVerifier for this program (0x0 = default)
+    /// @param _proofSystem Proof system identifier ("risc0", "remainder", "ezkl")
+    function registerProgramWithVerifier(
+        bytes32 imageId,
+        string calldata name,
+        string calldata programUrl,
+        bytes32 inputSchema,
+        address verifierContract,
+        string calldata _proofSystem
+    ) external {
+        _registerProgram(imageId, name, programUrl, inputSchema, verifierContract, _proofSystem);
+    }
+
+    function _registerProgram(
+        bytes32 imageId,
+        string calldata name,
+        string calldata programUrl,
+        bytes32 inputSchema,
+        address verifierContract,
+        string memory _proofSystem
+    ) internal {
         if (imageId == bytes32(0)) revert InvalidImageId();
         if (programs[imageId].registeredAt != 0) revert ProgramAlreadyRegistered();
 
@@ -74,7 +105,9 @@ contract ProgramRegistry {
             programUrl: programUrl,
             inputSchema: inputSchema,
             registeredAt: block.timestamp,
-            active: true
+            active: true,
+            verifierContract: verifierContract,
+            proofSystem: _proofSystem
         });
 
         programIds.push(imageId);
@@ -114,6 +147,17 @@ contract ProgramRegistry {
         program.active = true;
 
         emit ProgramReactivated(imageId);
+    }
+
+    /// @notice Update the verifier contract for a program (only owner)
+    /// @param imageId The program ID
+    /// @param verifierContract New IProofVerifier address (0x0 = use default)
+    function updateVerifier(bytes32 imageId, address verifierContract) external {
+        Program storage program = programs[imageId];
+        if (program.registeredAt == 0) revert ProgramNotFound();
+        if (program.owner != msg.sender) revert NotProgramOwner();
+
+        program.verifierContract = verifierContract;
     }
 
     // ========================================================================

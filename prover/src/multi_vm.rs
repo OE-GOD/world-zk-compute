@@ -6,7 +6,7 @@
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use tracing::info;
-#[cfg(feature = "jolt")]
+#[cfg(any(feature = "jolt", feature = "remainder"))]
 use tracing::warn;
 
 use crate::bonsai::ProvingMode;
@@ -75,6 +75,25 @@ impl MultiVmProver {
             info!("Multi-VM: Jolt backend not available (compile with --features jolt)");
         }
 
+        // Conditionally register Remainder
+        #[cfg(feature = "remainder")]
+        {
+            match crate::remainder_backend::RemainderBackend::new() {
+                Ok(remainder) => {
+                    backends.insert(ZkVmType::Remainder, Box::new(remainder));
+                    info!("Multi-VM: Remainder (GKR+Hyrax) backend registered");
+                }
+                Err(e) => {
+                    warn!("Multi-VM: Remainder backend init failed: {}", e);
+                }
+            }
+        }
+
+        #[cfg(not(feature = "remainder"))]
+        {
+            info!("Multi-VM: Remainder backend not available (compile with --features remainder)");
+        }
+
         Self { backends }
     }
 
@@ -90,6 +109,9 @@ impl MultiVmProver {
                     match vm_type {
                         ZkVmType::Sp1 => "Compile with --features sp1 to enable SP1 support.",
                         ZkVmType::Jolt => "Compile with --features jolt to enable Jolt support.",
+                        ZkVmType::Remainder => {
+                            "Compile with --features remainder to enable Remainder support."
+                        }
                         _ => "This should not happen.",
                     }
                 )

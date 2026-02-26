@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import "./ProgramRegistry.sol";
 import "./ProverReputation.sol";
+import {IProofVerifier} from "./IProofVerifier.sol";
 import {IRiscZeroVerifier} from "risc0-ethereum/IRiscZeroVerifier.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
@@ -274,8 +275,8 @@ contract ExecutionEngine is ReentrancyGuard {
 
     /// @notice Submit proof for a claimed execution
     /// @param requestId The request ID
-    /// @param seal The RISC Zero proof seal
-    /// @param journal The public outputs (journal)
+    /// @param seal The proof seal (risc0 seal or Remainder proof)
+    /// @param journal The public outputs (journal / public inputs)
     function submitProof(uint256 requestId, bytes calldata seal, bytes calldata journal) external nonReentrant {
         ExecutionRequest storage req = requests[requestId];
         if (req.id == 0) revert RequestNotFound();
@@ -285,11 +286,8 @@ contract ExecutionEngine is ReentrancyGuard {
         if (seal.length == 0) revert EmptySeal();
         if (journal.length == 0) revert EmptyJournal();
 
-        // Verify the proof
-        bytes32 journalDigest = sha256(journal);
-
-        // This will revert if proof is invalid
-        verifier.verify(seal, req.imageId, journalDigest);
+        // Route verification to the appropriate verifier
+        _verifyProof(req.imageId, seal, journal);
 
         // Mark as completed
         req.status = RequestStatus.Completed;
@@ -319,7 +317,7 @@ contract ExecutionEngine is ReentrancyGuard {
             if (!feePaid) revert TransferFailed();
         }
 
-        emit ExecutionCompleted(requestId, msg.sender, journalDigest, proverPayout);
+        emit ExecutionCompleted(requestId, msg.sender, sha256(journal), proverPayout);
 
         // Execute callback if specified
         if (req.callbackContract != address(0)) {
@@ -395,6 +393,28 @@ contract ExecutionEngine is ReentrancyGuard {
     /// @notice Get prover statistics
     function getProverStats(address prover) external view returns (uint256 completed, uint256 earnings) {
         return (proverCompletedCount[prover], proverEarnings[prover]);
+    }
+
+    // ========================================================================
+    // PROOF VERIFICATION ROUTING
+    // ========================================================================
+
+    /// @notice Route proof verification to the appropriate verifier
+    /// @dev Checks if the program has a custom verifier registered.
+    ///      Falls back to the default risc0 verifier for backward compatibility.
+    function _verifyProof(bytes32 imageId, bytes calldata seal, bytes calldata journal) internal view {
+        // Check if program has a custom verifier
+        ProgramRegistry.Program memory program = registry.getProgram(imageId);
+
+        if (program.verifierContract != address(0)) {
+            // Use program-specific verifier (Remainder, eZKL, etc.)
+            // This reverts on invalid proof
+            IProofVerifier(program.verifierContract).verify(seal, imageId, journal);
+        } else {
+            // Default: use the RISC Zero verifier (backward compatible)
+            bytes32 journalDigest = sha256(journal);
+            verifier.verify(seal, imageId, journalDigest);
+        }
     }
 
     // ========================================================================

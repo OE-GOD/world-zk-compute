@@ -43,6 +43,7 @@ pub enum ZkVmType {
     Risc0,
     Sp1,
     Jolt,
+    Remainder,
 }
 
 impl std::fmt::Display for ZkVmType {
@@ -51,6 +52,7 @@ impl std::fmt::Display for ZkVmType {
             ZkVmType::Risc0 => write!(f, "risc0"),
             ZkVmType::Sp1 => write!(f, "SP1"),
             ZkVmType::Jolt => write!(f, "Jolt (experimental)"),
+            ZkVmType::Remainder => write!(f, "Remainder (GKR+Hyrax)"),
         }
     }
 }
@@ -79,6 +81,11 @@ pub trait ZkVmBackend: Send + Sync {
 /// - SP1 ELFs contain the string "SP1" or specific SP1 markers near the start
 /// - Everything else is assumed to be risc0 (the default)
 pub fn detect_vm_type(elf: &[u8]) -> ZkVmType {
+    // Check for Remainder circuit descriptions (not ELFs)
+    if elf.len() >= 20 && &elf[..20] == b"REMAINDER_XGBOOST_V1" {
+        return ZkVmType::Remainder;
+    }
+
     // Check for Jolt markers first (Jolt guest programs contain these symbols)
     if contains_bytes(elf, b"jolt_provable")
         || contains_bytes(elf, b".jolt")
@@ -186,9 +193,18 @@ mod tests {
     }
 
     #[test]
+    fn test_detect_vm_type_remainder() {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"REMAINDER_XGBOOST_V1");
+        data.extend_from_slice(&[0u8; 100]);
+        assert_eq!(detect_vm_type(&data), ZkVmType::Remainder);
+    }
+
+    #[test]
     fn test_zkvm_type_display() {
         assert_eq!(format!("{}", ZkVmType::Risc0), "risc0");
         assert_eq!(format!("{}", ZkVmType::Sp1), "SP1");
         assert_eq!(format!("{}", ZkVmType::Jolt), "Jolt (experimental)");
+        assert_eq!(format!("{}", ZkVmType::Remainder), "Remainder (GKR+Hyrax)");
     }
 }
