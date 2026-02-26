@@ -13,7 +13,8 @@
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use std::time::{Duration, Instant};
+use sha2::Digest;
+use std::time::Instant;
 
 use crate::zkvm_backend::{ExecutionResult, ProofResult, ZkVmBackend};
 
