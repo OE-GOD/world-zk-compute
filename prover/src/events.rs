@@ -117,7 +117,7 @@ impl EventSubscriber {
     async fn subscribe_loop(&self) -> anyhow::Result<()> {
         // Connect via WebSocket
         let ws = alloy::providers::WsConnect::new(&self.config.ws_url);
-        let provider = ProviderBuilder::new().on_ws(ws).await?;
+        let provider = ProviderBuilder::new().connect_ws(ws).await?;
 
         info!("WebSocket connected, subscribing to ExecutionRequested events...");
 

@@ -4,14 +4,6 @@
 //! GPU operators compete to fulfill proof requests, returning standard risc0 Groth16
 //! proofs compatible with on-chain verifiers.
 //!
-//! ## Status
-//!
-//! The `boundless-market` SDK crate (v1.1) requires `alloy` v1.0, but this project
-//! currently uses `alloy` v0.8. Due to the `c-kzg` native library link conflict,
-//! both versions cannot coexist. Once `alloy` is upgraded to v1.0 across this
-//! project, enable the `boundless-market` dependency in `Cargo.toml` and replace
-//! the placeholder `prove()` implementation with the real SDK calls (see comments).
-//!
 //! ## Configuration
 //!
 //! Required environment variables:
@@ -23,8 +15,13 @@
 //! - `BOUNDLESS_TIMEOUT_SECS` — Max wait for fulfillment (default: 3600)
 //! - `BOUNDLESS_POLL_INTERVAL_SECS` — Polling interval (default: 5)
 
+use std::time::Duration;
+
 use anyhow::{Context, Result};
+use boundless_market::storage::StorageUploaderType;
+use boundless_market::{Client, StorageUploaderConfig};
 use tracing::info;
+use url::Url;
 
 /// Storage provider type for uploading program/input data
 #[derive(Clone, Debug)]
@@ -115,33 +112,6 @@ impl BoundlessConfig {
 ///
 /// Submits proof requests to the Boundless decentralized marketplace and
 /// waits for GPU operators to fulfill them.
-///
-/// ## Integration Path
-///
-/// This module is structured to mirror `bonsai.rs`. Once `alloy` is upgraded
-/// to v1.0, the `boundless-market` crate can be added as a dependency and
-/// `prove()` can be implemented using:
-///
-/// ```ignore
-/// let client = boundless_market::Client::builder()
-///     .with_rpc_url(rpc_url)
-///     .with_deployment(None)
-///     .with_uploader_config(&storage_config).await?
-///     .with_private_key(signer)
-///     .build().await?;
-///
-/// let request = client.new_request()
-///     .with_program(elf)
-///     .with_stdin(input);
-///
-/// let (request_id, expires_at) = client.submit_onchain(request).await?;
-/// let fulfillment = client.wait_for_request_fulfillment(
-///     request_id, poll_interval, expires_at
-/// ).await?;
-///
-/// let seal = fulfillment.seal.to_vec();
-/// let journal = fulfillment.data()?.journal()?.to_vec();
-/// ```
 pub struct BoundlessProver {
     config: BoundlessConfig,
 }
@@ -171,26 +141,63 @@ impl BoundlessProver {
     /// but Boundless always returns Groth16 proofs.
     pub async fn prove(
         &self,
-        _elf: &[u8],
-        _input: &[u8],
+        elf: &[u8],
+        input: &[u8],
         _use_snark: bool,
     ) -> Result<(Vec<u8>, Vec<u8>)> {
-        // TODO: Implement using boundless-market SDK once alloy is upgraded to v1.0.
-        //
-        // The boundless-market crate (v1.1) requires alloy v1.0, but this project
-        // currently uses alloy v0.8. The c-kzg native library link conflict prevents
-        // both versions from coexisting.
-        //
-        // To enable:
-        // 1. Upgrade alloy to v1.0 in Cargo.toml
-        // 2. Uncomment `boundless-market` dependency in Cargo.toml
-        // 3. Update `boundless = ["boundless-market"]` in [features]
-        // 4. Replace this method body with the SDK calls shown in the struct docs
-        anyhow::bail!(
-            "Boundless proving is not yet available: the boundless-market SDK requires \
-             alloy v1.0, but this project uses alloy v0.8. Upgrade alloy to enable \
-             Boundless integration. See prover/src/boundless.rs for details."
-        )
+        // Build storage uploader config from our StorageProvider enum
+        let storage_config = match &self.config.storage_provider {
+            StorageProvider::Pinata { jwt } => StorageUploaderConfig::builder()
+                .storage_uploader(StorageUploaderType::Pinata)
+                .pinata_jwt(jwt.clone())
+                .build()?,
+            StorageProvider::S3 { bucket } => StorageUploaderConfig::builder()
+                .storage_uploader(StorageUploaderType::S3)
+                .s3_bucket(bucket.clone())
+                .build()?,
+            StorageProvider::Gcs { bucket } => StorageUploaderConfig::builder()
+                .storage_uploader(StorageUploaderType::Gcs)
+                .gcs_bucket(bucket.clone())
+                .build()?,
+        };
+
+        // Build the Boundless client
+        let client = Client::builder()
+            .with_rpc_url(Url::parse(&self.config.rpc_url)?)
+            .with_private_key_str(&self.config.private_key)?
+            .with_uploader_config(&storage_config)
+            .await?
+            .build()
+            .await?;
+
+        // Submit proof request
+        info!("Submitting proof request to Boundless marketplace");
+        let params = client
+            .new_request()
+            .with_program(elf.to_vec())
+            .with_stdin(input.to_vec());
+        let (request_id, expires_at) = client.submit(params).await?;
+        info!(%request_id, expires_at, "Proof request submitted, waiting for fulfillment");
+
+        // Wait for a prover to fulfill the request
+        let fulfillment = client
+            .wait_for_request_fulfillment(
+                request_id,
+                Duration::from_secs(self.config.poll_interval_secs),
+                expires_at,
+            )
+            .await?;
+
+        // Extract seal and journal from fulfillment
+        let seal = fulfillment.seal.to_vec();
+        let journal = fulfillment
+            .data()?
+            .journal()
+            .context("no journal in fulfillment")?
+            .to_vec();
+
+        info!(seal_len = seal.len(), journal_len = journal.len(), "Boundless proof received");
+        Ok((seal, journal))
     }
 
     /// Get a reference to the config

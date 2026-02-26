@@ -22,10 +22,8 @@
 //! nonce_manager.sync_from_chain().await?;
 //! ```
 
-use alloy::network::Network;
 use alloy::primitives::Address;
 use alloy::providers::Provider;
-use alloy::transports::Transport;
 use anyhow::Result;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -37,7 +35,7 @@ use tracing::{debug, info, warn};
 /// Maintains a local nonce counter that is atomically incremented
 /// for each transaction, avoiding conflicts when multiple transactions
 /// are sent concurrently.
-pub struct NonceManager<P, T, N> {
+pub struct NonceManager<P> {
     /// The provider for chain queries
     provider: Arc<P>,
     /// The address we're managing nonces for
@@ -48,15 +46,11 @@ pub struct NonceManager<P, T, N> {
     sync_lock: RwLock<()>,
     /// Number of pending transactions (for monitoring)
     pending_count: AtomicU64,
-    /// Phantom data for transport and network types
-    _phantom: std::marker::PhantomData<(T, N)>,
 }
 
-impl<P, T, N> NonceManager<P, T, N>
+impl<P> NonceManager<P>
 where
-    P: Provider<T, N> + Clone + 'static,
-    T: Transport + Clone,
-    N: Network,
+    P: Provider + Clone + 'static,
 {
     /// Create a new nonce manager, syncing initial nonce from chain
     pub async fn new(provider: Arc<P>, address: Address) -> Result<Self> {
@@ -73,7 +67,6 @@ where
             current_nonce: AtomicU64::new(nonce),
             sync_lock: RwLock::new(()),
             pending_count: AtomicU64::new(0),
-            _phantom: std::marker::PhantomData,
         })
     }
 

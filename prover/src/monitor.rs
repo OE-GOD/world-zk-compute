@@ -35,7 +35,6 @@ use alloy::providers::Provider;
 use alloy::rpc::types::Filter;
 use alloy::signers::local::PrivateKeySigner;
 use alloy::sol_types::SolEvent;
-use alloy::transports::http::{Client, Http};
 use futures::future::join_all;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -52,13 +51,12 @@ pub type SigningProvider = FillProvider<
         >,
         WalletFiller<EthereumWallet>,
     >,
-    alloy::providers::RootProvider<Http<Client>>,
-    Http<Client>,
+    alloy::providers::RootProvider,
     Ethereum,
 >;
 
 /// Nonce manager type alias with matching transport and network types
-pub type SigningNonceManager = NonceManager<SigningProvider, Http<Client>, Ethereum>;
+pub type SigningNonceManager = NonceManager<SigningProvider>;
 
 /// Optimized request processor with all features wired together
 pub struct OptimizedProcessor {
@@ -238,7 +236,7 @@ impl OptimizedProcessor {
             .call()
             .await?;
 
-        let request_ids = pending._0;
+        let request_ids = pending;
 
         if request_ids.is_empty() {
             info!("No pending requests (engine: {:?})", config.engine_address);
@@ -497,8 +495,8 @@ async fn fetch_request_details(
     // Fetch request details and current tip IN PARALLEL
     let (request_result, tip_result) = tokio::join!(request_call.call(), tip_call.call());
 
-    let request = request_result?._0;
-    let current_tip = tip_result?._0;
+    let request = request_result?;
+    let current_tip = tip_result?;
 
     // Check if image ID is allowed
     if !config.is_image_allowed(&request.imageId) {
@@ -1057,7 +1055,7 @@ async fn fetch_program_from_registry(
 
         // Query the registry for program details
         let program = match registry.getProgram(*image_id).call().await {
-            Ok(result) => result._0,
+            Ok(result) => result,
             Err(e) => {
                 warn!("Failed to fetch program from registry: {:?}", e);
                 anyhow::bail!("Program {} not found in registry: {:?}", image_id, e);
@@ -1297,7 +1295,7 @@ pub struct TransactionResult {
 
 /// Send a claim transaction with retry logic
 async fn send_claim_with_retry(
-    engine: &IExecutionEngine::IExecutionEngineInstance<Http<Client>, Arc<SigningProvider>>,
+    engine: &IExecutionEngine::IExecutionEngineInstance<Arc<SigningProvider>>,
     request_id: U256,
     nonce_manager: &Arc<SigningNonceManager>,
     job_id: u64,
@@ -1378,7 +1376,7 @@ async fn send_claim_with_retry(
 
 /// Send a submit proof transaction with retry logic
 async fn send_submit_with_retry(
-    engine: &IExecutionEngine::IExecutionEngineInstance<Http<Client>, Arc<SigningProvider>>,
+    engine: &IExecutionEngine::IExecutionEngineInstance<Arc<SigningProvider>>,
     request_id: U256,
     proof: Vec<u8>,
     journal: Vec<u8>,
@@ -1494,7 +1492,7 @@ struct ProfitabilityResult {
 /// Returns profitable if: (tip - total_cost) / tip >= min_profit_margin
 async fn check_profitability(
     provider: &Arc<SigningProvider>,
-    engine: &IExecutionEngine::IExecutionEngineInstance<Http<Client>, Arc<SigningProvider>>,
+    engine: &IExecutionEngine::IExecutionEngineInstance<Arc<SigningProvider>>,
     request_id: U256,
     tip: U256,
     min_profit_margin: f64,

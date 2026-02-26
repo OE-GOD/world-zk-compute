@@ -484,11 +484,12 @@ async fn run_prover(
     let wallet = EthereumWallet::from(signer.clone());
     // Note: We remove NonceFiller and manage nonces ourselves for parallel safety
     let provider = ProviderBuilder::new()
+        .disable_recommended_fillers()
         .filler(alloy::providers::fillers::GasFiller)
-        .filler(alloy::providers::fillers::BlobGasFiller)
+        .filler(alloy::providers::fillers::BlobGasFiller::default())
         .filler(alloy::providers::fillers::ChainIdFiller::default())
         .wallet(wallet)
-        .on_http(rpc_url.parse()?);
+        .connect_http(rpc_url.parse()?);
 
     let provider = Arc::new(provider);
 
@@ -743,7 +744,7 @@ async fn check_status(
     engine_address: String,
     request_id: u64,
 ) -> anyhow::Result<()> {
-    let provider = ProviderBuilder::new().on_http(rpc_url.parse()?);
+    let provider = ProviderBuilder::new().connect_http(rpc_url.parse()?);
     let engine_addr: Address = engine_address.parse()?;
     let engine = contracts::IExecutionEngine::new(engine_addr, &provider);
 
@@ -755,15 +756,14 @@ async fn check_status(
     let (request_result, tip_result) = tokio::join!(request_call.call(), tip_call.call());
 
     let req = request_result
-        .map_err(|e| anyhow::anyhow!("Failed to fetch request {}: {}", request_id, e))?
-        ._0;
+        .map_err(|e| anyhow::anyhow!("Failed to fetch request {}: {}", request_id, e))?;
 
     if req.id == U256::ZERO {
         println!("Request {} not found", request_id);
         return Ok(());
     }
 
-    let current_tip = tip_result.map(|t| t._0).unwrap_or(U256::ZERO);
+    let current_tip = tip_result.unwrap_or(U256::ZERO);
 
     let status_str = match req.status {
         0 => "Pending",
@@ -818,7 +818,7 @@ async fn check_status(
 }
 
 async fn list_pending(rpc_url: String, engine_address: String, limit: u64) -> anyhow::Result<()> {
-    let provider = ProviderBuilder::new().on_http(rpc_url.parse()?);
+    let provider = ProviderBuilder::new().connect_http(rpc_url.parse()?);
     let engine_addr: Address = engine_address.parse()?;
     let engine = contracts::IExecutionEngine::new(engine_addr, &provider);
 
@@ -828,7 +828,7 @@ async fn list_pending(rpc_url: String, engine_address: String, limit: u64) -> an
         .await
         .map_err(|e| anyhow::anyhow!("Failed to fetch pending requests: {}", e))?;
 
-    let request_ids = pending._0;
+    let request_ids = pending;
 
     if request_ids.is_empty() {
         println!("No pending requests.");
@@ -860,8 +860,8 @@ async fn list_pending(rpc_url: String, engine_address: String, limit: u64) -> an
     for (rid, req_res, tip_res) in results {
         match req_res {
             Ok(r) => {
-                let req = r._0;
-                let current_tip = tip_res.map(|t| t._0).unwrap_or(U256::ZERO);
+                let req = r;
+                let current_tip = tip_res.unwrap_or(U256::ZERO);
                 let rid_u64: u64 = rid.try_into().unwrap_or(0);
                 let image_short = format!(
                     "{}..{}",
