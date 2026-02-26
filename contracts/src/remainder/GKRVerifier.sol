@@ -32,29 +32,29 @@ library GKRVerifier {
 
     /// @notice Description of a GKR circuit (structure, not witness)
     struct CircuitDescription {
-        uint256 numLayers;           // Number of circuit layers
-        uint256[] layerSizes;        // Size of each layer (number of gates)
-        uint8[] layerTypes;          // Layer type (0=add, 1=mul, 2=const, 3=input)
-        bool[] isCommitted;          // Whether each layer has Hyrax commitment
+        uint256 numLayers; // Number of circuit layers
+        uint256[] layerSizes; // Size of each layer (number of gates)
+        uint8[] layerTypes; // Layer type (0=add, 1=mul, 2=const, 3=input)
+        bool[] isCommitted; // Whether each layer has Hyrax commitment
     }
 
     /// @notice Claims about a layer's multilinear extension evaluation
     struct LayerClaim {
-        uint256[] point;             // Evaluation point (vector of challenges)
-        uint256 value;               // Claimed evaluation value
+        uint256[] point; // Evaluation point (vector of challenges)
+        uint256 value; // Claimed evaluation value
     }
 
     /// @notice Per-layer GKR proof data
     struct LayerProof {
-        SumcheckVerifier.SumcheckProof sumcheckProof;  // Sumcheck for this layer
-        uint256[] claimsOnPrevLayer;                    // Resulting claims on previous layer
+        SumcheckVerifier.SumcheckProof sumcheckProof; // Sumcheck for this layer
+        uint256[] claimsOnPrevLayer; // Resulting claims on previous layer
     }
 
     /// @notice Complete GKR proof
     struct GKRProof {
-        LayerProof[] layerProofs;                       // One per non-input layer
-        HyraxVerifier.EvalProof[] inputProofs;          // Hyrax proofs for input layers
-        uint256[] outputValues;                         // Claimed output layer values
+        LayerProof[] layerProofs; // One per non-input layer
+        HyraxVerifier.EvalProof[] inputProofs; // Hyrax proofs for input layers
+        uint256[] outputValues; // Claimed output layer values
     }
 
     // ========================================================================
@@ -66,15 +66,12 @@ library GKRVerifier {
     /// @param circuit The circuit description
     /// @param publicInputs Public input values (for non-committed input layers)
     /// @return valid Whether the proof is valid
-    function verify(
-        GKRProof memory proof,
-        CircuitDescription memory circuit,
-        uint256[] memory publicInputs
-    ) internal view returns (bool) {
-        require(
-            proof.layerProofs.length == circuit.numLayers - 1,
-            "GKRVerifier: wrong number of layer proofs"
-        );
+    function verify(GKRProof memory proof, CircuitDescription memory circuit, uint256[] memory publicInputs)
+        internal
+        view
+        returns (bool)
+    {
+        require(proof.layerProofs.length == circuit.numLayers - 1, "GKRVerifier: wrong number of layer proofs");
 
         // Initialize Fiat-Shamir transcript
         PoseidonSponge.Sponge memory sponge = PoseidonSponge.init();
@@ -98,11 +95,7 @@ library GKRVerifier {
         uint256 currentClaim = 0;
         uint256 rlcPower = 1;
         for (uint256 i = 0; i < proof.outputValues.length; i++) {
-            currentClaim = addmod(
-                currentClaim,
-                mulmod(proof.outputValues[i], rlcPower, FR_MODULUS),
-                FR_MODULUS
-            );
+            currentClaim = addmod(currentClaim, mulmod(proof.outputValues[i], rlcPower, FR_MODULUS), FR_MODULUS);
             rlcPower = mulmod(rlcPower, rlcChallenge, FR_MODULUS);
         }
 
@@ -125,10 +118,7 @@ library GKRVerifier {
             }
 
             // Extract claims on the previous layer
-            require(
-                layerProof.claimsOnPrevLayer.length > 0,
-                "GKRVerifier: no claims on previous layer"
-            );
+            require(layerProof.claimsOnPrevLayer.length > 0, "GKRVerifier: no claims on previous layer");
 
             // The sumcheck reduces to claims on the previous layer's MLE
             // For add gates: claim = f(r) = g(r_left) + g(r_right)
@@ -145,11 +135,8 @@ library GKRVerifier {
                 currentClaim = 0;
                 uint256 power = 1;
                 for (uint256 j = 0; j < layerProof.claimsOnPrevLayer.length; j++) {
-                    currentClaim = addmod(
-                        currentClaim,
-                        mulmod(layerProof.claimsOnPrevLayer[j], power, FR_MODULUS),
-                        FR_MODULUS
-                    );
+                    currentClaim =
+                        addmod(currentClaim, mulmod(layerProof.claimsOnPrevLayer[j], power, FR_MODULUS), FR_MODULUS);
                     power = mulmod(power, layerRlc, FR_MODULUS);
                 }
             }
@@ -169,10 +156,7 @@ library GKRVerifier {
 
             if (circuit.isCommitted[i]) {
                 // Verify Hyrax evaluation proof
-                require(
-                    hyraxProofIdx < proof.inputProofs.length,
-                    "GKRVerifier: missing Hyrax proof"
-                );
+                require(hyraxProofIdx < proof.inputProofs.length, "GKRVerifier: missing Hyrax proof");
 
                 // Split challenges into L and R tensors for Hyrax
                 uint256 halfLen = currentPoint.length / 2;
@@ -186,12 +170,8 @@ library GKRVerifier {
                     rCoeffs[j - halfLen] = currentPoint[j];
                 }
 
-                bool hyraxValid = HyraxVerifier.verifyEvaluation(
-                    proof.inputProofs[hyraxProofIdx],
-                    lCoeffs,
-                    rCoeffs,
-                    currentClaim
-                );
+                bool hyraxValid =
+                    HyraxVerifier.verifyEvaluation(proof.inputProofs[hyraxProofIdx], lCoeffs, rCoeffs, currentClaim);
 
                 if (!hyraxValid) return false;
                 hyraxProofIdx++;
@@ -208,10 +188,7 @@ library GKRVerifier {
 
     /// @notice Evaluate the multilinear extension of data at a given point
     /// @dev MLE(x) = sum_{w in {0,1}^n} data[w] * prod_{i} (x_i * w_i + (1-x_i) * (1-w_i))
-    function evaluateMLEFromData(
-        uint256[] memory data,
-        uint256[] memory point
-    ) internal pure returns (uint256) {
+    function evaluateMLEFromData(uint256[] memory data, uint256[] memory point) internal pure returns (uint256) {
         uint256 n = point.length;
         require(data.length <= (1 << n), "GKRVerifier: data too large for point");
 

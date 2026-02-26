@@ -13,11 +13,7 @@ interface IProofVerifier {
     /// @param proofData The proof bytes (format depends on proof system)
     /// @param programId Program identifier (imageId for risc0, circuitHash for Remainder)
     /// @param publicData Public outputs / journal
-    function verify(
-        bytes calldata proofData,
-        bytes32 programId,
-        bytes calldata publicData
-    ) external view;
+    function verify(bytes calldata proofData, bytes32 programId, bytes calldata publicData) external view;
 
     /// @notice Return the name of the proof system
     function proofSystem() external view returns (string memory);

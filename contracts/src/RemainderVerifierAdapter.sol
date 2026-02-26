@@ -24,11 +24,7 @@ contract RemainderVerifierAdapter is IProofVerifier {
     /// @param proofData ABI-encoded GKR+Hyrax proof
     /// @param programId The circuit hash
     /// @param publicData Public input values
-    function verify(
-        bytes calldata proofData,
-        bytes32 programId,
-        bytes calldata publicData
-    ) external view override {
+    function verify(bytes calldata proofData, bytes32 programId, bytes calldata publicData) external view override {
         // This reverts on invalid proof
         remainderVerifier.verifyOrRevert(proofData, programId, publicData);
     }

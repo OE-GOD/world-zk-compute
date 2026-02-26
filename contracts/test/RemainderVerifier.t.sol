@@ -139,8 +139,8 @@ contract SumcheckVerifierTest is Test {
         // Sum = f(0) + f(1) = 3 + 7 = 10
         SumcheckVerifier.RoundPoly[] memory rounds = new SumcheckVerifier.RoundPoly[](1);
         uint256[] memory evals = new uint256[](2);
-        evals[0] = 3;  // g(0) = 3
-        evals[1] = 7;  // g(1) = 7
+        evals[0] = 3; // g(0) = 3
+        evals[1] = 7; // g(1) = 7
         rounds[0] = SumcheckVerifier.RoundPoly({evals: evals});
 
         // The challenge will be squeezed from the sponge after absorbing evals
@@ -153,13 +153,10 @@ contract SumcheckVerifierTest is Test {
         uint256 challenge = PoseidonSponge.squeeze(precomputeSponge) % SumcheckVerifier.FR_MODULUS;
         uint256 finalEval = SumcheckVerifier.evaluatePolynomial(evals, challenge);
 
-        SumcheckVerifier.SumcheckProof memory proof = SumcheckVerifier.SumcheckProof({
-            rounds: rounds,
-            finalEval: finalEval
-        });
+        SumcheckVerifier.SumcheckProof memory proof =
+            SumcheckVerifier.SumcheckProof({rounds: rounds, finalEval: finalEval});
 
-        SumcheckVerifier.SumcheckResult memory result =
-            SumcheckVerifier.verify(proof, 10, sponge);
+        SumcheckVerifier.SumcheckResult memory result = SumcheckVerifier.verify(proof, 10, sponge);
 
         assertTrue(result.valid, "Valid sumcheck proof should verify");
         assertEq(result.challenges.length, 1);
@@ -242,31 +239,24 @@ contract RemainderVerifierTest is Test {
         // Register a test circuit
         uint256 numLayers = 4;
         uint256[] memory layerSizes = new uint256[](4);
-        layerSizes[0] = 8;  // input
-        layerSizes[1] = 4;  // comparison
-        layerSizes[2] = 4;  // routing
-        layerSizes[3] = 1;  // output
+        layerSizes[0] = 8; // input
+        layerSizes[1] = 4; // comparison
+        layerSizes[2] = 4; // routing
+        layerSizes[3] = 1; // output
 
         uint8[] memory layerTypes = new uint8[](4);
-        layerTypes[0] = 3;  // input
-        layerTypes[1] = 1;  // mul
-        layerTypes[2] = 0;  // add
-        layerTypes[3] = 0;  // add
+        layerTypes[0] = 3; // input
+        layerTypes[1] = 1; // mul
+        layerTypes[2] = 0; // add
+        layerTypes[3] = 0; // add
 
         bool[] memory isCommitted = new bool[](4);
-        isCommitted[0] = true;   // features are private
+        isCommitted[0] = true; // features are private
         isCommitted[1] = false;
         isCommitted[2] = false;
         isCommitted[3] = false;
 
-        verifier.registerCircuit(
-            circuitHash,
-            numLayers,
-            layerSizes,
-            layerTypes,
-            isCommitted,
-            "test-xgboost"
-        );
+        verifier.registerCircuit(circuitHash, numLayers, layerSizes, layerTypes, isCommitted, "test-xgboost");
         vm.stopPrank();
     }
 
@@ -319,14 +309,7 @@ contract RemainderVerifierTest is Test {
         uint256[] memory sizes = new uint256[](1);
         uint8[] memory types = new uint8[](1);
         bool[] memory committed = new bool[](1);
-        verifier.registerCircuit(
-            keccak256("another"),
-            1,
-            sizes,
-            types,
-            committed,
-            "test"
-        );
+        verifier.registerCircuit(keccak256("another"), 1, sizes, types, committed, "test");
     }
 
     function test_admin_transfer() public {
@@ -370,19 +353,10 @@ contract IntegrationTest is Test {
         remainderAdapter = new RemainderVerifierAdapter(address(remainderVerifier));
 
         // Deploy execution engine
-        engine = new ExecutionEngine(
-            address(registry),
-            address(mockVerifier),
-            feeRecipient
-        );
+        engine = new ExecutionEngine(address(registry), address(mockVerifier), feeRecipient);
 
         // Register risc0 program (backward-compatible, no verifier)
-        registry.registerProgram(
-            risc0ImageId,
-            "test-risc0",
-            "https://example.com/elf",
-            bytes32(0)
-        );
+        registry.registerProgram(risc0ImageId, "test-risc0", "https://example.com/elf", bytes32(0));
 
         // Register remainder program with custom verifier
         registry.registerProgramWithVerifier(
@@ -405,14 +379,7 @@ contract IntegrationTest is Test {
         committed[0] = true;
         committed[1] = false;
 
-        remainderVerifier.registerCircuit(
-            remainderCircuitHash,
-            2,
-            sizes,
-            types,
-            committed,
-            "test-xgboost"
-        );
+        remainderVerifier.registerCircuit(remainderCircuitHash, 2, sizes, types, committed, "test-xgboost");
 
         vm.stopPrank();
     }
@@ -430,10 +397,7 @@ contract IntegrationTest is Test {
     }
 
     function test_adapter_proof_system_names() public view {
-        assertEq(
-            keccak256(bytes(remainderAdapter.proofSystem())),
-            keccak256(bytes("remainder"))
-        );
+        assertEq(keccak256(bytes(remainderAdapter.proofSystem())), keccak256(bytes("remainder")));
     }
 
     function test_update_verifier() public {

@@ -41,7 +41,7 @@ library PoseidonSponge {
     struct Sponge {
         uint256[3] state;
         uint256 absorb_pos; // Current position in rate buffer (0 or 1)
-        bool squeezed;      // Whether we've squeezed since last absorb
+        bool squeezed; // Whether we've squeezed since last absorb
     }
 
     // ========================================================================

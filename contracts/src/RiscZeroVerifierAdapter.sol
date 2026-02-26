@@ -24,11 +24,7 @@ contract RiscZeroVerifierAdapter is IProofVerifier {
     /// @param proofData The proof seal (starts with 4-byte selector)
     /// @param programId The image ID of the guest program
     /// @param publicData The journal (public outputs)
-    function verify(
-        bytes calldata proofData,
-        bytes32 programId,
-        bytes calldata publicData
-    ) external view override {
+    function verify(bytes calldata proofData, bytes32 programId, bytes calldata publicData) external view override {
         bytes32 journalDigest = sha256(publicData);
         // This reverts on invalid proof
         riscZeroVerifier.verify(proofData, programId, journalDigest);

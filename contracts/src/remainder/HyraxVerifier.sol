@@ -41,10 +41,10 @@ library HyraxVerifier {
 
     /// @notice Hyrax evaluation proof
     struct EvalProof {
-        G1Point[] commitmentRows;    // Commitment per matrix row
-        uint256[] dotProductProof;   // Dot product argument scalars
-        G1Point comD;                // Commitment to evaluation witness d
-        G1Point comZ;                // Commitment to inner product result
+        G1Point[] commitmentRows; // Commitment per matrix row
+        uint256[] dotProductProof; // Dot product argument scalars
+        G1Point comD; // Commitment to evaluation witness d
+        G1Point comZ; // Commitment to inner product result
     }
 
     // ========================================================================
@@ -79,10 +79,7 @@ library HyraxVerifier {
 
         // Step 3: Verify commitment to claimed evaluation
         // com(claimedEval) using R coefficients as basis
-        G1Point memory expectedCom = scalarMul(
-            G1Point(G1_X, G1_Y),
-            claimedEval
-        );
+        G1Point memory expectedCom = scalarMul(G1Point(G1_X, G1_Y), claimedEval);
 
         // For the proof to be valid:
         // 1. MSM is correctly computed (T' is consistent with commitments)
@@ -143,10 +140,11 @@ library HyraxVerifier {
     /// @notice Multi-scalar multiplication: sum(s_i * P_i)
     /// @dev Naive implementation: iterates over each (scalar, point) pair.
     ///      For production, consider Pippenger's algorithm or batched precompile calls.
-    function multiScalarMul(
-        G1Point[] memory points,
-        uint256[] memory scalars
-    ) internal view returns (G1Point memory result) {
+    function multiScalarMul(G1Point[] memory points, uint256[] memory scalars)
+        internal
+        view
+        returns (G1Point memory result)
+    {
         require(points.length == scalars.length, "HyraxVerifier: MSM length mismatch");
         require(points.length > 0, "HyraxVerifier: empty MSM");
 

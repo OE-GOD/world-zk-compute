@@ -33,15 +33,15 @@ library SumcheckVerifier {
 
     /// @notice Complete sumcheck proof for one GKR layer
     struct SumcheckProof {
-        RoundPoly[] rounds;     // One polynomial per variable
-        uint256 finalEval;      // Final evaluation claim
+        RoundPoly[] rounds; // One polynomial per variable
+        uint256 finalEval; // Final evaluation claim
     }
 
     /// @notice Result of sumcheck verification
     struct SumcheckResult {
         bool valid;
-        uint256[] challenges;   // Fiat-Shamir challenges (one per round)
-        uint256 finalClaim;     // The remaining claim after all rounds
+        uint256[] challenges; // Fiat-Shamir challenges (one per round)
+        uint256 finalClaim; // The remaining claim after all rounds
     }
 
     // ========================================================================
@@ -53,11 +53,11 @@ library SumcheckVerifier {
     /// @param claimedSum The initial claimed sum (from GKR)
     /// @param sponge The Fiat-Shamir transcript sponge
     /// @return result The verification result with challenges
-    function verify(
-        SumcheckProof memory proof,
-        uint256 claimedSum,
-        PoseidonSponge.Sponge memory sponge
-    ) internal pure returns (SumcheckResult memory result) {
+    function verify(SumcheckProof memory proof, uint256 claimedSum, PoseidonSponge.Sponge memory sponge)
+        internal
+        pure
+        returns (SumcheckResult memory result)
+    {
         uint256 numRounds = proof.rounds.length;
         result.challenges = new uint256[](numRounds);
         result.valid = true;
@@ -101,10 +101,7 @@ library SumcheckVerifier {
     /// @param evals Polynomial evaluations at points 0, 1, ..., d
     /// @param x The point to evaluate at
     /// @return The polynomial value at x
-    function evaluatePolynomial(
-        uint256[] memory evals,
-        uint256 x
-    ) internal pure returns (uint256) {
+    function evaluatePolynomial(uint256[] memory evals, uint256 x) internal pure returns (uint256) {
         uint256 d = evals.length;
 
         if (d == 1) return evals[0];

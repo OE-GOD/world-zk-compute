@@ -27,10 +27,10 @@ contract RemainderVerifier {
 
     /// @notice Registered circuit configuration
     struct CircuitConfig {
-        bytes32 circuitHash;         // SHA-256 of circuit description
+        bytes32 circuitHash; // SHA-256 of circuit description
         GKRVerifier.CircuitDescription description;
         bool active;
-        string name;                 // Human-readable name (e.g., "XGBoost-5feat-10trees")
+        string name; // Human-readable name (e.g., "XGBoost-5feat-10trees")
     }
 
     // ========================================================================
@@ -92,11 +92,10 @@ contract RemainderVerifier {
     /// @param circuitHash SHA-256 hash of the circuit description
     /// @param publicInputs Public input values
     /// @return valid Whether the proof is valid
-    function verifyProof(
-        bytes calldata proof,
-        bytes32 circuitHash,
-        bytes calldata publicInputs
-    ) external returns (bool valid) {
+    function verifyProof(bytes calldata proof, bytes32 circuitHash, bytes calldata publicInputs)
+        external
+        returns (bool valid)
+    {
         // Check circuit is registered and active
         CircuitConfig storage config = circuits[circuitHash];
         if (config.circuitHash == bytes32(0)) revert CircuitNotRegistered();
@@ -108,8 +107,7 @@ contract RemainderVerifier {
         if (selector != bytes4("REM1")) revert InvalidProofSelector();
 
         // Decode the proof
-        (GKRVerifier.GKRProof memory gkrProof, uint256[] memory pubInputs) =
-            decodeProof(proof[4:], publicInputs);
+        (GKRVerifier.GKRProof memory gkrProof, uint256[] memory pubInputs) = decodeProof(proof[4:], publicInputs);
 
         // Verify GKR proof
         valid = GKRVerifier.verify(gkrProof, config.description, pubInputs);
@@ -121,11 +119,7 @@ contract RemainderVerifier {
     /// @param proof ABI-encoded proof data
     /// @param circuitHash Circuit identifier
     /// @param publicInputs Public input values
-    function verifyOrRevert(
-        bytes calldata proof,
-        bytes32 circuitHash,
-        bytes calldata publicInputs
-    ) external view {
+    function verifyOrRevert(bytes calldata proof, bytes32 circuitHash, bytes calldata publicInputs) external view {
         // Check circuit is registered and active
         CircuitConfig storage config = circuits[circuitHash];
         if (config.circuitHash == bytes32(0)) revert CircuitNotRegistered();
@@ -137,8 +131,7 @@ contract RemainderVerifier {
         if (selector != bytes4("REM1")) revert InvalidProofSelector();
 
         // Decode and verify
-        (GKRVerifier.GKRProof memory gkrProof, uint256[] memory pubInputs) =
-            decodeProof(proof[4:], publicInputs);
+        (GKRVerifier.GKRProof memory gkrProof, uint256[] memory pubInputs) = decodeProof(proof[4:], publicInputs);
 
         bool valid = GKRVerifier.verify(gkrProof, config.description, pubInputs);
         if (!valid) revert ProofVerificationFailed();
@@ -153,13 +146,11 @@ contract RemainderVerifier {
     /// @param publicInputBytes Raw public input bytes
     /// @return gkrProof Decoded GKR proof
     /// @return pubInputs Decoded public inputs as field elements
-    function decodeProof(
-        bytes calldata proofData,
-        bytes calldata publicInputBytes
-    ) internal pure returns (
-        GKRVerifier.GKRProof memory gkrProof,
-        uint256[] memory pubInputs
-    ) {
+    function decodeProof(bytes calldata proofData, bytes calldata publicInputBytes)
+        internal
+        pure
+        returns (GKRVerifier.GKRProof memory gkrProof, uint256[] memory pubInputs)
+    {
         uint256 offset = 0;
 
         // Read circuit hash (32 bytes)
@@ -197,10 +188,8 @@ contract RemainderVerifier {
             uint256 finalEval = uint256(bytes32(proofData[offset:offset + 32]));
             offset += 32;
 
-            gkrProof.layerProofs[i].sumcheckProof = SumcheckVerifier.SumcheckProof({
-                rounds: rounds,
-                finalEval: finalEval
-            });
+            gkrProof.layerProofs[i].sumcheckProof =
+                SumcheckVerifier.SumcheckProof({rounds: rounds, finalEval: finalEval});
 
             // Read claims on previous layer
             uint256 numClaims = uint256(bytes32(proofData[offset:offset + 32]));
@@ -208,8 +197,7 @@ contract RemainderVerifier {
 
             gkrProof.layerProofs[i].claimsOnPrevLayer = new uint256[](numClaims);
             for (uint256 c = 0; c < numClaims; c++) {
-                gkrProof.layerProofs[i].claimsOnPrevLayer[c] =
-                    uint256(bytes32(proofData[offset:offset + 32]));
+                gkrProof.layerProofs[i].claimsOnPrevLayer[c] = uint256(bytes32(proofData[offset:offset + 32]));
                 offset += 32;
             }
         }
@@ -226,11 +214,9 @@ contract RemainderVerifier {
 
             gkrProof.inputProofs[i].commitmentRows = new HyraxVerifier.G1Point[](numRows);
             for (uint256 r = 0; r < numRows; r++) {
-                gkrProof.inputProofs[i].commitmentRows[r].x =
-                    uint256(bytes32(proofData[offset:offset + 32]));
+                gkrProof.inputProofs[i].commitmentRows[r].x = uint256(bytes32(proofData[offset:offset + 32]));
                 offset += 32;
-                gkrProof.inputProofs[i].commitmentRows[r].y =
-                    uint256(bytes32(proofData[offset:offset + 32]));
+                gkrProof.inputProofs[i].commitmentRows[r].y = uint256(bytes32(proofData[offset:offset + 32]));
                 offset += 32;
             }
 
@@ -280,18 +266,10 @@ contract RemainderVerifier {
         require(isCommitted.length == numLayers, "IsCommitted length mismatch");
 
         GKRVerifier.CircuitDescription memory desc = GKRVerifier.CircuitDescription({
-            numLayers: numLayers,
-            layerSizes: layerSizes,
-            layerTypes: layerTypes,
-            isCommitted: isCommitted
+            numLayers: numLayers, layerSizes: layerSizes, layerTypes: layerTypes, isCommitted: isCommitted
         });
 
-        circuits[circuitHash] = CircuitConfig({
-            circuitHash: circuitHash,
-            description: desc,
-            active: true,
-            name: name
-        });
+        circuits[circuitHash] = CircuitConfig({circuitHash: circuitHash, description: desc, active: true, name: name});
 
         circuitHashes.push(circuitHash);
 
