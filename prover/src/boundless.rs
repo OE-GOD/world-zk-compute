@@ -196,7 +196,11 @@ impl BoundlessProver {
             .context("no journal in fulfillment")?
             .to_vec();
 
-        info!(seal_len = seal.len(), journal_len = journal.len(), "Boundless proof received");
+        info!(
+            seal_len = seal.len(),
+            journal_len = journal.len(),
+            "Boundless proof received"
+        );
         Ok((seal, journal))
     }
 

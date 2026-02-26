@@ -59,8 +59,8 @@ impl ZkVmBackend for RemainderBackend {
 
         // Parse the input witness
         // Input format: JSON with "features" array and "expected_class"
-        let input_str = std::str::from_utf8(input)
-            .map_err(|_| anyhow!("Input must be valid UTF-8 JSON"))?;
+        let input_str =
+            std::str::from_utf8(input).map_err(|_| anyhow!("Input must be valid UTF-8 JSON"))?;
         let input_json: serde_json::Value = serde_json::from_str(input_str)?;
 
         let features = input_json["features"]
@@ -78,9 +78,7 @@ impl ZkVmBackend for RemainderBackend {
         // For execution, we produce the public outputs (prediction)
         // without generating a proof. The actual GKR circuit evaluation
         // would happen here when Remainder_CE is integrated.
-        let predicted_class = input_json["expected_class"]
-            .as_u64()
-            .unwrap_or(0) as u32;
+        let predicted_class = input_json["expected_class"].as_u64().unwrap_or(0) as u32;
 
         let journal = predicted_class.to_be_bytes().to_vec();
 
@@ -210,9 +208,7 @@ mod tests {
     #[tokio::test]
     async fn test_prove() {
         let backend = RemainderBackend::new().unwrap();
-        let result = backend
-            .prove(&sample_circuit_desc(), &sample_input())
-            .await;
+        let result = backend.prove(&sample_circuit_desc(), &sample_input()).await;
         assert!(result.is_ok());
         let proof = result.unwrap();
         // Seal should start with "REM1" selector
@@ -234,9 +230,7 @@ mod tests {
             "expected_class": 0
         }))
         .unwrap();
-        let result = backend
-            .execute(&sample_circuit_desc(), &bad_input)
-            .await;
+        let result = backend.execute(&sample_circuit_desc(), &bad_input).await;
         assert!(result.is_err());
     }
 }
