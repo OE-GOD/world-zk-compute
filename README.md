@@ -1,6 +1,6 @@
 # World ZK Compute
 
-A decentralized verifiable computation marketplace for Ethereum and World Chain. Built on RISC Zero zkVM.
+A decentralized verifiable computation marketplace for Ethereum and World Chain. Multi-backend proof verification: RISC Zero zkVM, Remainder GKR+Hyrax (on-chain ZKML), and eZKL.
 
 **Inspired by [Bonsol](https://bonsol.sh)** - bringing Solana's verifiable compute architecture to the EVM ecosystem.
 
@@ -59,16 +59,26 @@ Prover submits proof → Contract verifies → Prover gets paid
 │  • Claim windows (prevents front-running)                   │
 │  • Callbacks (composable with other contracts)              │
 │  • Prover stats (reputation tracking)                       │
+│  • Multi-backend proof routing (IProofVerifier)             │
 └─────────────────────────────────────────────────────────────┘
          │                              │
          ▼                              ▼
-┌─────────────────┐          ┌─────────────────────┐
-│ PROGRAM REGISTRY│          │ RISC ZERO VERIFIER  │
-│                 │          │                     │
-│ • Register      │          │ • Groth16 proofs    │
-│ • Deactivate    │          │ • STARK proofs      │
-│ • Update URL    │          │ • Multi-verifier    │
-└─────────────────┘          └─────────────────────┘
+┌─────────────────┐          ┌──────────────────────────────┐
+│ PROGRAM REGISTRY│          │     PROOF VERIFICATION       │
+│                 │          │   (IProofVerifier routing)    │
+│ • Register      │          │                              │
+│ • Deactivate    │          │  ┌────────────────────────┐  │
+│ • Update URL    │          │  │ RiscZeroVerifierAdapter │  │
+│ • Set verifier  │          │  │ • Groth16 / STARK      │  │
+│ • Proof system  │          │  └────────────────────────┘  │
+│   per program   │          │  ┌────────────────────────┐  │
+└─────────────────┘          │  │ RemainderVerifier       │  │
+                             │  │ • GKR+Hyrax (ZKML)     │  │
+                             │  │ • PoseidonSponge       │  │
+                             │  │ • SumcheckVerifier     │  │
+                             │  │ • HyraxVerifier        │  │
+                             │  └────────────────────────┘  │
+                             └──────────────────────────────┘
 ```
 
 ## Quick Start
@@ -160,6 +170,48 @@ Routes proofs to appropriate verifiers based on proof type.
 - Multi-verifier support (Groth16, STARK, etc.)
 - Selector-based routing
 - Upgradeable verifier backends
+
+### Remainder On-Chain Verifier (GKR+Hyrax)
+
+The first EVM verifier for [Remainder_CE](https://github.com/worldcoin/Remainder_CE) — World's GKR+Hyrax proof system optimized for ML inference (used for iris code verification).
+
+**Contracts** (`contracts/src/remainder/`):
+
+| Contract | Purpose | Gas |
+|----------|---------|-----|
+| `PoseidonSponge.sol` | Fiat-Shamir transcript (t=3, rate=2, 8+57 rounds) | ~300K |
+| `SumcheckVerifier.sol` | Per-round sumcheck with Lagrange interpolation | ~23K/round |
+| `HyraxVerifier.sol` | Polynomial commitment via BN254 `ecAdd`/`ecMul` precompiles | ~6K/sqrt(N) |
+| `GKRVerifier.sol` | Layer-by-layer circuit reduction (sumcheck + Hyrax + MLE) | varies |
+| `RemainderVerifier.sol` | Top-level: proof decoding, circuit registry, orchestration | ~2-4M total |
+
+**Verification flow:**
+```
+Remainder Proof (ABI-encoded) → RemainderVerifier.verifyProof()
+    → Decode proof into GKR layers + Hyrax PCS
+    → Replay Fiat-Shamir transcript (PoseidonSponge)
+    → For each layer: SumcheckVerifier.verify()
+    → At input layer: HyraxVerifier.verifyEvaluation()
+    → Return true/false
+```
+
+**Circuit registry:** Each model (e.g., XGBoost-5feat-10trees) is registered by its circuit hash, allowing multiple ZKML models to share the same verifier infrastructure.
+
+### IProofVerifier Interface
+
+Generic interface enabling multi-backend proof verification:
+
+```solidity
+interface IProofVerifier {
+    function verify(bytes calldata proofData, bytes32 programId, bytes calldata publicData) external view;
+}
+```
+
+**Adapters:**
+- `RiscZeroVerifierAdapter.sol` — wraps `IRiscZeroVerifier` (existing risc0 proofs)
+- `RemainderVerifierAdapter.sol` — wraps `RemainderVerifier` (GKR+Hyrax ZKML proofs)
+
+Programs in `ProgramRegistry` can specify a custom `verifierContract` and `proofSystem`. The `ExecutionEngine` routes `submitProof()` to the correct verifier automatically, falling back to risc0 for backward compatibility.
 
 ## Prover Node
 
@@ -285,6 +337,24 @@ Process multiple proofs concurrently:
 # Process up to 8 proofs in parallel
 ./world-zk-prover run --max-concurrent 8 ...
 ```
+
+### Remainder (GKR+Hyrax) Backend
+
+Prove ZKML circuits using Remainder's GKR+Hyrax proof system:
+
+```bash
+# Build with Remainder support
+cargo build --release --features remainder
+
+# The prover auto-detects Remainder circuits by their header
+# and routes to the correct backend
+```
+
+| Proof System | Proof Type | On-chain Gas | Use Case |
+|-------------|-----------|-------------|----------|
+| RISC Zero | STARK/Groth16 | ~200K (Groth16) | General-purpose zkVM |
+| Remainder | GKR+Hyrax | ~2-4M | ML inference (ZKML) |
+| eZKL | Halo2/KZG | ~300K | ML inference (ONNX) |
 
 ### STARK-to-SNARK Conversion
 
@@ -456,7 +526,7 @@ forge test --match-test testSubmitProof
 forge test --gas-report
 ```
 
-**Test Coverage:** 27 tests passing
+**Test Coverage:** 64 tests passing (including 30 Remainder verifier tests)
 
 ### E2E Tests
 
@@ -526,6 +596,8 @@ This project is an **EVM port of Bonsol's architecture**:
 | Program Registry | ✅ | ✅ |
 | Callbacks | ✅ | ✅ |
 | Multi-Verifier | ✅ | ✅ |
+| Multi-Backend (risc0, Remainder, eZKL) | ❌ | ✅ |
+| On-chain ZKML (GKR+Hyrax) | ❌ | ✅ |
 | Private Input Server | ✅ | ✅ |
 
 ## Platform: Detection-Agnostic Infrastructure
@@ -564,6 +636,7 @@ See [`examples/`](./examples/) for complete detection algorithm examples:
 - **Rule Engine** - Configurable rule evaluation covering pattern matching (glob), aggregation (count/sum/min/max), comparison, and logical rules (AND/OR)
 - **XGBoost Inference** - Decision tree ensemble model inference with threshold-based flagging
 - **XGBoost EZKL** - XGBoost inference via [EZKL](https://github.com/zkonduit/ezkl) (Halo2 circuits) for ~3x faster proving and ~19x less memory vs risc0
+- **XGBoost Remainder** - XGBoost inference via [Remainder_CE](https://github.com/worldcoin/Remainder_CE) (GKR+Hyrax) with direct on-chain verification (~2-4M gas, no SNARK wrapping needed)
 
 ### Quick Start
 
@@ -743,7 +816,12 @@ All optimization modules are wired together in `OptimizedProcessor`:
 - [x] Smart job queue with priority scoring
 - [x] **Fully integrated OptimizedProcessor** (all modules wired together)
 - [x] **Private Input Server** (like Bonsol - on-chain claim verification)
+- [x] **Remainder on-chain verifier** (GKR+Hyrax for ZKML — PoseidonSponge, SumcheckVerifier, HyraxVerifier, GKRVerifier)
+- [x] **Multi-backend proof routing** (IProofVerifier interface, per-program verifier selection)
+- [x] **XGBoost Remainder example** (decision tree inference with on-chain GKR verification)
 - [ ] Production RISC Zero verifier integration
+- [ ] Remainder_CE full integration (replace proof stubs with real GKR prover)
+- [ ] SNARK compression for Remainder proofs (~200K gas via Groth16 wrapping)
 - [ ] World Chain mainnet deployment
 - [ ] Prover network incentives
 
@@ -756,4 +834,5 @@ Apache-2.0
 - [Bonsol](https://bonsol.sh) - Inspiration
 - [RISC Zero](https://risczero.com) - zkVM
 - [World Chain](https://world.org) - Target L2
+- [Remainder_CE](https://github.com/worldcoin/Remainder_CE) - GKR+Hyrax proof system for ZKML
 - [Foundry](https://book.getfoundry.sh) - Development framework
