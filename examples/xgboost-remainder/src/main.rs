@@ -2,19 +2,18 @@
 //!
 //! This example demonstrates:
 //! 1. Building a GKR circuit for XGBoost decision tree inference
-//! 2. Generating a Hyrax polynomial commitment proof
-//! 3. Serializing the proof to ABI format for on-chain verification
-//!
-//! The circuit encodes decision tree traversal as a sequence of
-//! threshold comparisons, where the output layer evaluates to zero
-//! for a valid inference path.
+//! 2. Generating a Hyrax polynomial commitment proof (zero-knowledge)
+//! 3. Verifying the proof in Rust
+//! 4. Serializing the proof to ABI format for on-chain verification
 
 use anyhow::Result;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
+use tracing::Level;
 
+mod abi_encode;
 mod circuit;
 mod model;
 mod proof_abi;
@@ -52,7 +51,7 @@ pub struct XgboostInput {
 /// Proof output containing all data needed for on-chain verification
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProofOutput {
-    /// ABI-encoded proof bytes (hex)
+    /// Serialized proof bytes (hex)
     pub proof_hex: String,
     /// Circuit description hash
     pub circuit_hash: String,
@@ -60,11 +59,18 @@ pub struct ProofOutput {
     pub public_inputs_hex: String,
     /// Predicted class
     pub predicted_class: u32,
+    /// Proof size in bytes
+    pub proof_size_bytes: usize,
     /// Proving time in milliseconds
     pub prove_time_ms: u64,
 }
 
 fn main() -> Result<()> {
+    // Initialize tracing
+    tracing_subscriber::fmt()
+        .with_max_level(Level::INFO)
+        .init();
+
     let cli = Cli::parse();
 
     // Load model
@@ -91,24 +97,26 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Build circuit and generate proof
+    // Build circuit and generate Hyrax proof
+    println!("Building GKR circuit and generating Hyrax proof...");
     let start = std::time::Instant::now();
     let (proof_bytes, circuit_hash, public_inputs) =
         circuit::build_and_prove(&model, &input.features, predicted_class)?;
     let prove_time = start.elapsed();
 
-    println!("Proof generated in {:.2}s", prove_time.as_secs_f64());
+    println!(
+        "Proof generated and verified in {:.2}s",
+        prove_time.as_secs_f64()
+    );
     println!("Proof size: {} bytes", proof_bytes.len());
 
-    // ABI-encode the proof
-    let abi_proof = proof_abi::encode_proof(&proof_bytes)?;
-    let abi_public_inputs = proof_abi::encode_public_inputs(&public_inputs)?;
-
+    // proof_bytes is already ABI-encoded by abi_encode::encode_hyrax_proof
     let output = ProofOutput {
-        proof_hex: hex::encode(&abi_proof),
+        proof_hex: hex::encode(&proof_bytes),
         circuit_hash: hex::encode(&circuit_hash),
-        public_inputs_hex: hex::encode(&abi_public_inputs),
+        public_inputs_hex: hex::encode(&public_inputs),
         predicted_class,
+        proof_size_bytes: proof_bytes.len(),
         prove_time_ms: prove_time.as_millis() as u64,
     };
 

@@ -9,6 +9,7 @@ remappings = [
     "risc0-ethereum/=lib/risc0-ethereum/contracts/src/",
     "@openzeppelin/contracts/=lib/risc0-ethereum/lib/openzeppelin-contracts/contracts/"
 ]
+fs_permissions = [{ access = "read", path = "test/fixtures" }]
 
 [rpc_endpoints]
 sepolia = "https://rpc.sepolia.org"

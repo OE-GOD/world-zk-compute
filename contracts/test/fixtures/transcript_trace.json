@@ -1,0 +1,100 @@
+Appending element ("Circuit description hash"): 0x000000000000000000000000000000005a9fc1776ad5b87f01d493983001d78f
+Appending element ("Circuit description hash"): 0x000000000000000000000000000000005daa4b26c457652c4f9715758acff1bc
+Appending element ("Public input layer values"): 0x0000000000000000000000000000000000000000000000000000000000000006
+Appending element ("Public input layer values"): 0x0000000000000000000000000000000000000000000000000000000000000014
+Appending element ("Public input layer values"): 0x00000000000000000000000000000000a998b9d31f69d8ae8e48768cf8b8a5ff
+Appending element ("Public input layer values"): 0x00000000000000000000000000000000c06bcddbc1b4d72d89678361cd10177b
+Appending 4 elements ("Hyrax input layer commitment"): [0x1be725444751be14b75a8d3f9635338b1c9a4bc6ec128dc038c1b3e3657b6751, .., ]
+Appending 2 elements ("Hyrax input layer commitment"): [0x00000000000000000000000000000000d744e81c0ba8f5f2737a3a4ef940ace9, .., ]
+Squeezing challenge ("Challenge for claim on output"): 0x0d913ea20ccbceea7bb452e44f2b1e1bfd9efe3dca6898d297d23a2b22ea57ad
+Appending 2 elements ("Commitment to claim on output layer"): [0x203b6537e1105eb16de4825a8fa2464882d7051e3ba10f4b55e367da1f3aad35, .., ]
+Squeezing 1 challenges ("RLC Claim Agg Coefficients"): [0x01a7a1e511616d42d06e81db1300d3facb1645192f86315dc34ac955a9438aaa, .., ]
+Appending 2 elements ("Commitment to sumcheck message"): [0x0ddd3bcc80919083701795ec944c69ce33c63b97f5ca265864cebdc7937f82fd, .., ]
+Squeezing challenge ("sumcheck round challenge"): 0x2e3b355cd6c4246d90887e338f8eaf62c996639f4813db5d64542ddfccabbcbc
+Appending 2 elements ("Commitments to all the layer's leaf values and intermediates"): [0x2175bec853fe5b4ed43557c2408e80dee0cd0ef71cf7198c7a821e31170e2695, .., ]
+Appending 2 elements ("Commitments to all the layer's leaf values and intermediates"): [0x17f498169dd366103951056a6a12c5f612654fc8f7a77a2dc9b889983246e1e8, .., ]
+Squeezing 2 challenges ("Proof of sumcheck RLC coefficients for batching rows"): [0x1c957beca0ce1dac94b001792eb4e8e79534382cd08555b917db00c8adba7a03, .., ]
+Squeezing 1 challenges ("Proof of sumcheck RLC coefficients for batching columns"): [0x10fdb9db55dc7ce33b31aea613c7cecebf0c3e26c9a8f8efb321a076ee3e8e9a, .., ]
+Appending 2 elements ("Commitment to random vector"): [0x122b465aedafe637797f9e53c5f65978e9b05315245d9f022994737e2c3efb02, .., ]
+Appending 2 elements ("Commitment to inner product of random vector and public vector"): [0x1d1fbeea7ca58aac949c3200101ed8999f201ee8a1fc73037c5a7c383eb00a24, .., ]
+Squeezing challenge ("challenge c"): 0x1237382a83e11d762538f0410101fbe2466ae8f186c06b34746645fb9abec725
+Appending element ("Blinded private vector"): 0x21d35199451111406400de51f5d5aef513e7f3fa070da003f9cef30b3d95ae73
+Appending element ("Blinded private vector"): 0x0f1ae9c46b3fb615691590984aa741a80e19a0ce7d0dc312a2fec1511061aaac
+Appending element ("Blinded private vector"): 0x09718281276ed440e0b97c151ab35b3356ba5f5f2b374d3d676231e24756e5e9
+Appending element ("Blinding factor for blinded vector commitment"): 0x0aaaab2e7c6cd5e1b95270b128f2b0510cd8853d41804854dad3ea49a79cd114
+Appending element ("Blinding factor for blinded inner product"): 0x0d08532c382bf1de97fd5db5604453e5729014180f8058c432792c04ac628101
+Squeezing 1 challenges ("RLC Claim Agg Coefficients"): [0x1b987de417972cfc2ef228afeb19a81117a21f6236358fdd2baa5bc3cc2a78b0, .., ]
+Appending 2 elements ("Commitment to sumcheck message"): [0x11c75ce6c7c7f3e9f6e2e7d3b2f1b0c53c78567a2a62932689bcd1e22d17054d, .., ]
+Squeezing challenge ("sumcheck round challenge"): 0x000dc09cb76d23f7a63b0114596cd12e518d283c7091c3d589c2b0ae8966e2fc
+Appending 2 elements ("Commitments to all the layer's leaf values and intermediates"): [0x0fe0372bcb0a34f4bd68561435e63e73537e215b3a09ebf79ccc3df96124b7a4, .., ]
+Appending 2 elements ("Commitments to all the layer's leaf values and intermediates"): [0x1c8eaf9b4255f62e3441b6d5054d5be6f9eb9d87fea129e0c2880460d8017826, .., ]
+Appending 2 elements ("Commitments to all the layer's leaf values and intermediates"): [0x054e9de5435d78970331b5e043c2446d3aa5fa8813d724374a3a83077c373add, .., ]
+Squeezing 2 challenges ("Proof of sumcheck RLC coefficients for batching rows"): [0x1f68f29d699c3f21ffa4be277ed05159899c9c70c82772e66f8d54e6c64ac26c, .., ]
+Squeezing 1 challenges ("Proof of sumcheck RLC coefficients for batching columns"): [0x0d9d2b3be3822e8a61723ad86aee701e86d6477bb2213095e3c7aba0d9d3673c, .., ]
+Appending 2 elements ("Commitment to random vector"): [0x15f1e775d9ae5fe76e80a73faa389cf37ff9dd8cd09860a54f11331f3c4c78de, .., ]
+Appending 2 elements ("Commitment to inner product of random vector and public vector"): [0x151b5f3410218636f76f918b7e05f3f38d547779139b02adc01127e970ddfab0, .., ]
+Squeezing challenge ("challenge c"): 0x07fecc9599dacb55a60729854057f5ddaa3b23920f6b0a8ab22ca0ccb0e371cb
+Appending element ("Blinded private vector"): 0x250861387fbbfc531f7f79e5dcd12e3495b9111d4b0fc5efd6d7998d6bba37c6
+Appending element ("Blinded private vector"): 0x2c6e99a073a11dab2698713e16f92641b8a5336ba31ba5dd8467c7dbb882c5cb
+Appending element ("Blinded private vector"): 0x118c6c2adce3f889a3e9a96a9613b199ed3e0a6a9d698d34ce1255f1a5c4e579
+Appending element ("Blinded private vector"): 0x29ee06e6934dad53d16ac45543d67e5345df219e8c715179665ea5021ed95c98
+Appending element ("Blinding factor for blinded vector commitment"): 0x0c5ddde753facaee5f1bdcbd6ea12a499a3a057beb0255d0962ee23f058c5bd0
+Appending element ("Blinding factor for blinded inner product"): 0x1ca8c035d21eea31e94d8bde90c3050614ba97a42cbc52a7cefa59c59c8205d4
+Appending 2 elements ("Commitment to random values 1"): [0x2619e4ef8755751c8d550a34fc572650fd5125fc39689b1f613a849f68c57ad2, .., ]
+Appending 2 elements ("Commitment to random values 2"): [0x0a8c083d810d11e6354fb8e716a8a792529b50fb123f8a92a06189ed094a0dac, .., ]
+Appending 2 elements ("Commitment to random values 3"): [0x0496411f0bb5c37c9bb01f199f9bd91a3f93387d55cebd307e22da6c50a0de4c, .., ]
+Squeezing challenge ("PoP c"): 0x045f44d4b52c46c741ee2f83303e52cfd78fca7dd9d3e95f8279a52a3c0081f8
+Appending element ("Blinded response 1"): 0x1e0655feb6e25c19b8359a0a958f802804c8cc174143e29e45b0bd2fd051dbe2
+Appending element ("Blinded response 2"): 0x0136e71de49b46d73f4804815d07a7ee12a17d56063237a6b5ed69d888297048
+Appending element ("Blinded response 3"): 0x251494f76a6553ce2329513760b7ea69f9afb1f2babdaddcb508bcade1a2077b
+Appending element ("Blinded response 4"): 0x0bde7c2548cbc7859c4a423b0fffeff426ef751e9a70051fde592cb26340fb3d
+Appending element ("Blinded response 5"): 0x0c2b70a0dc27236e9f6d2e6933f6888fdb0d18ae4073a8e7e540d37f091b29f2
+Squeezing 2 challenges ("Random coefficients for batch opening of Hyrax commitments"): [0x17b17e304a42fc782cc9155680da6397a7b76c13d2ebe2021879a8760c2ebe18, .., ]
+Appending 2 elements ("Commitment to the inner product of MLE and evaluation challenge"): [0x2c30674781a9254bb788b83e666f71b7687470552e27d541234ee0efbcceaabc, .., ]
+Appending 2 elements ("Commitment to random vector"): [0x265dcf36fc04c138f26eac477d82a5f18b2fdb9e0473bd200b72a2497bf7de46, .., ]
+Appending 2 elements ("Commitment to inner product of random vector and public vector"): [0x2610d32402c1a2113ef8dbf42b270b79388f7c1e822b2e28ba67a2cb9958919e, .., ]
+Squeezing challenge ("challenge c"): 0x10905e73687ae1ad2b3009c9fb28f9f7305c2f0e1273229bfbd75a8b58847f0b
+Appending element ("Blinded private vector"): 0x1900c118ff0c18a02d5542de664db14f0cb3c1c299a3098a04393fe62d3ceee4
+Appending element ("Blinded private vector"): 0x2441b11d16c6ac3a765a3910196a748577bb96d5a4586c6151e62f8c7e393319
+Appending element ("Blinding factor for blinded vector commitment"): 0x01c0063d3a7d087a151cb2425f36af5fa65311cff4f34fc3eb792513427954c1
+Appending element ("Blinding factor for blinded inner product"): 0x1316171efe21d1dbfcf8175d27e992a3ba80f66fbb7bf583183119a0f1015edf
+Squeezing 1 challenges ("Random coefficients for batch opening of Hyrax commitments"): [0x010a25d8c382448f05b17dd4e2786766d4f5fd1d399457687105645e8d9a3a76, .., ]
+Appending 2 elements ("Commitment to the inner product of MLE and evaluation challenge"): [0x296b9f67484066249f9b203ae492d04b5650085626a10c67cfe2113243315654, .., ]
+Appending 2 elements ("Commitment to random vector"): [0x2a038bbe23bfc581f91f7fcbdb5f0d3aefde7a4d861a2dccd0b486a1455e75fc, .., ]
+Appending 2 elements ("Commitment to inner product of random vector and public vector"): [0x2a95913698605c745476476caa58fc7dc8fde0bcf7ab1ae6c08dddb50fd48d7d, .., ]
+Squeezing challenge ("challenge c"): 0x087a1636d3adf561a459c85ad7ec8fb28cf9cce1112c7919fd8ef085d4f02078
+Appending element ("Blinded private vector"): 0x1873da2c7d471f458788c93b0785b1328189f2f789aadb1bc3aecf1343b88598
+Appending element ("Blinded private vector"): 0x254ad3ef2238c103d8ef40bf3a708d0b352fdbb38b03e3b53b17d8a3b2b6f481
+Appending element ("Blinding factor for blinded vector commitment"): 0x104b6a80074f5c54bf02aaf55609edce52888704a0b06e34cf439a3992d4ae66
+Appending element ("Blinding factor for blinded inner product"): 0x2dfb72748dea4a29239b06a67cdc330f0c7040c1ef9db3e96ac82e6c222f8895
+{
+  "challenges": {
+    "after_circuit_hash_and_public_inputs": "0x25386983a875cb8fab4670ee4a8edec51c642529a20fbaea97edb9d06004b066",
+    "first_challenge_for_output_claim": "0x0d913ea20ccbceea7bb452e44f2b1e1bfd9efe3dca6898d297d23a2b22ea57ad",
+    "first_challenge_matches_debug": false
+  },
+  "poseidon_test_vectors": {
+    "absorb_0_squeeze": "0x1d2908476fdc03547a286a6130b318306a3e007b85d0914bd00ac6be079220c1",
+    "absorb_1_squeeze": "0x11b59b2a25b09e83a0565c77d56d22b06e1f08976f455c78d28fee1a8ebdd9dd"
+  },
+  "transcript_trace": {
+    "circuit_hash_fq_1": "0x000000000000000000000000000000005a9fc1776ad5b87f01d493983001d78f",
+    "circuit_hash_fq_2": "0x000000000000000000000000000000005daa4b26c457652c4f9715758acff1bc",
+    "input_commitment_hash_chain_1": "0x00000000000000000000000000000000d744e81c0ba8f5f2737a3a4ef940ace9",
+    "input_commitment_hash_chain_2": "0x00000000000000000000000000000000c07203138670b777fcb4190942c7ac6e",
+    "input_commitment_points": [
+      {
+        "x": "0x1be725444751be14b75a8d3f9635338b1c9a4bc6ec128dc038c1b3e3657b6751",
+        "y": "0x29acc709c5e329e3a561a90c16d62ef1053900e2c06b8931293469b540d1309e"
+      },
+      {
+        "x": "0x23385f96de594180eb38ae9f9d0d2aa9af09c467c78f4c17e700f6f5b3ae96fe",
+        "y": "0x2ef6deb672454c927e50322143c9bdebc720f4df6001f4da6863eca6986bbb90"
+      }
+    ],
+    "public_input_fq_1": "0x0000000000000000000000000000000000000000000000000000000000000006",
+    "public_input_fq_2": "0x0000000000000000000000000000000000000000000000000000000000000014",
+    "public_input_hash_chain_1": "0x00000000000000000000000000000000a998b9d31f69d8ae8e48768cf8b8a5ff",
+    "public_input_hash_chain_2": "0x00000000000000000000000000000000c06bcddbc1b4d72d89678361cd10177b"
+  }
+}

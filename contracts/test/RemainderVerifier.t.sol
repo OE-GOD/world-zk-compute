@@ -7,6 +7,7 @@ import "../src/remainder/PoseidonSponge.sol";
 import "../src/remainder/SumcheckVerifier.sol";
 import "../src/remainder/HyraxVerifier.sol";
 import "../src/remainder/GKRVerifier.sol";
+import "../src/remainder/HyraxProofDecoder.sol";
 import "../src/IProofVerifier.sol";
 import "../src/RemainderVerifierAdapter.sol";
 import "../src/RiscZeroVerifierAdapter.sol";
@@ -18,11 +19,11 @@ contract PoseidonSpongeTest is Test {
     /// @notice Test that the sponge initializes correctly
     function test_sponge_init() public pure {
         PoseidonSponge.Sponge memory sponge = PoseidonSponge.init();
-        assertEq(sponge.state[0], 0);
+        // Capacity = 2^64 (domain separator)
+        assertEq(sponge.state[0], 1 << 64);
         assertEq(sponge.state[1], 0);
         assertEq(sponge.state[2], 0);
-        assertEq(sponge.absorb_pos, 0);
-        assertFalse(sponge.squeezed);
+        assertEq(sponge.absorbing, 0);
     }
 
     /// @notice Test absorb and squeeze produces deterministic output
@@ -38,7 +39,7 @@ contract PoseidonSpongeTest is Test {
 
         assertEq(out1, out2, "Same input should produce same output");
         assertTrue(out1 != 0, "Output should be non-zero");
-        assertTrue(out1 < PoseidonSponge.FQ_MODULUS, "Output should be < Fq");
+        assertTrue(out1 < 21888242871839275222246405745257275088696311157297823662689037894645226208583, "Output should be < Fq");
     }
 
     /// @notice Test that different inputs produce different outputs
@@ -55,12 +56,13 @@ contract PoseidonSpongeTest is Test {
         assertTrue(out1 != out2, "Different inputs should produce different outputs");
     }
 
-    /// @notice Test absorbing a point
+    /// @notice Test absorbing a point (as two field elements)
     function test_absorb_point() public pure {
         PoseidonSponge.Sponge memory sponge = PoseidonSponge.init();
 
-        // Absorb the BN254 generator point
-        PoseidonSponge.absorbPoint(sponge, 1, 2);
+        // Absorb the BN254 generator point as (x, y)
+        PoseidonSponge.absorb(sponge, 1);
+        PoseidonSponge.absorb(sponge, 2);
 
         uint256 output = PoseidonSponge.squeeze(sponge);
         assertTrue(output != 0, "Output should be non-zero after absorbing point");
@@ -77,17 +79,25 @@ contract PoseidonSpongeTest is Test {
         assertTrue(out1 != out2, "Consecutive squeezes should differ");
     }
 
-    /// @notice Test S-box (x^5)
-    function test_sbox() public pure {
-        // x = 2, x^5 = 32 (in field arithmetic)
-        uint256 result = PoseidonSponge.sbox(2);
-        assertEq(result, 32);
+    /// @notice Validate against Rust-generated test vectors (PoseidonSponge<Fq>)
+    function test_poseidon_self_test() public pure {
+        assertTrue(PoseidonSponge.selfTest(), "Poseidon self-test should pass");
+    }
 
-        // x = 0
-        assertEq(PoseidonSponge.sbox(0), 0);
+    /// @notice Test absorb(1) matches Rust test vector
+    function test_absorb_1_matches_rust() public pure {
+        PoseidonSponge.Sponge memory sponge = PoseidonSponge.init();
+        PoseidonSponge.absorb(sponge, 1);
+        uint256 out = PoseidonSponge.squeeze(sponge);
+        assertEq(out, 0x11b59b2a25b09e83a0565c77d56d22b06e1f08976f455c78d28fee1a8ebdd9dd);
+    }
 
-        // x = 1
-        assertEq(PoseidonSponge.sbox(1), 1);
+    /// @notice Test absorb(0) matches Rust test vector
+    function test_absorb_0_matches_rust() public pure {
+        PoseidonSponge.Sponge memory sponge = PoseidonSponge.init();
+        PoseidonSponge.absorb(sponge, 0);
+        uint256 out = PoseidonSponge.squeeze(sponge);
+        assertEq(out, 0x1d2908476fdc03547a286a6130b318306a3e007b85d0914bd00ac6be079220c1);
     }
 }
 
@@ -406,5 +416,454 @@ contract IntegrationTest is Test {
 
         ProgramRegistry.Program memory prog = registry.getProgram(risc0ImageId);
         assertEq(prog.verifierContract, address(remainderAdapter));
+    }
+}
+
+/// @notice Tests for HyraxProofDecoder — validates the Rust→Solidity ABI bridge
+contract HyraxProofDecoderTest is Test {
+    /// @notice Helper to load proof from fixture file
+    function _loadProof() internal view returns (bytes memory) {
+        string memory json = vm.readFile("test/fixtures/hyrax_proof.json");
+        bytes memory proofHex = vm.parseJsonBytes(json, ".proof_hex");
+        return proofHex;
+    }
+
+    /// @notice Test that the proof selector is "REM1"
+    function test_proof_selector() public view {
+        bytes memory proof = _loadProof();
+        assertGt(proof.length, 4, "Proof should be > 4 bytes");
+        assertEq(proof[0], bytes1("R"), "Selector byte 0");
+        assertEq(proof[1], bytes1("E"), "Selector byte 1");
+        assertEq(proof[2], bytes1("M"), "Selector byte 2");
+        assertEq(proof[3], bytes1("1"), "Selector byte 3");
+    }
+
+    /// @notice Test that the circuit hash is at the expected position
+    function test_circuit_hash() public view {
+        bytes memory proof = _loadProof();
+        bytes32 expected = 0xfa7aaf631d1d3dafad2c8b03f5db3fef2f3b235e1d27b39c110e78fe0ebddb07;
+
+        // Circuit hash starts at offset 4 (after selector)
+        bytes32 circuitHash;
+        assembly {
+            circuitHash := mload(add(proof, 36)) // 32 (length prefix) + 4 (selector)
+        }
+        assertEq(circuitHash, expected, "Circuit hash mismatch");
+    }
+
+    /// @notice Test proof summary decoding from real Rust-generated data
+    function test_decode_summary() public view {
+        bytes memory proof = _loadProof();
+        // Pass data after the 4-byte selector via external call for calldata
+        bytes memory proofData = _stripSelector(proof);
+        HyraxProofDecoder.ProofSummary memory summary = this._decodeSummaryCalldata(proofData);
+
+        // Validate circuit hash
+        assertEq(
+            summary.circuitHash,
+            bytes32(0xfa7aaf631d1d3dafad2c8b03f5db3fef2f3b235e1d27b39c110e78fe0ebddb07),
+            "Circuit hash"
+        );
+
+        // Validate structure counts (from gen_test_proof output)
+        assertEq(summary.numPublicInputs, 1, "Should have 1 public input");
+        assertEq(summary.numOutputProofs, 1, "Should have 1 output proof");
+        assertEq(summary.numLayerProofs, 2, "Should have 2 layer proofs");
+        assertEq(summary.numFsClaims, 0, "Should have 0 FS claims");
+        assertEq(summary.numPubClaims, 1, "Should have 1 public value claim");
+        assertEq(summary.numInputProofs, 1, "Should have 1 input proof");
+
+        // Validate total bytes matches (3332 - 4 selector = 3328)
+        assertEq(summary.totalBytes, proof.length - 4, "Total decoded bytes should match proof size");
+    }
+
+    /// @notice Test public input values from the decoded proof
+    function test_decode_public_inputs() public view {
+        bytes memory proof = _loadProof();
+        bytes memory proofData = _stripSelector(proof);
+        uint256[] memory values = this._decodePublicInputsCalldata(proofData);
+
+        // The test circuit had [6, 20] as expected output (3*2=6, 5*4=20)
+        assertEq(values.length, 2, "Public input should have 2 values");
+        assertEq(values[0], 6, "Public input[0] = 6");
+        assertEq(values[1], 20, "Public input[1] = 20");
+    }
+
+    /// @notice Test that ALL decoded EC points are on the BN254 curve
+    function test_all_points_on_curve() public {
+        bytes memory proof = _loadProof();
+        bytes memory proofData = _stripSelector(proof);
+        (uint256 numPoints, bool allOnCurve) = this._validateAllPointsCalldata(proofData);
+
+        assertTrue(allOnCurve, "All EC points should be on BN254 curve");
+        assertGt(numPoints, 0, "Should have found EC points");
+        emit log_named_uint("Total EC points validated", numPoints);
+    }
+
+    /// @notice Test proof decode gas cost
+    function test_decode_gas() public {
+        bytes memory proof = _loadProof();
+        bytes memory proofData = _stripSelector(proof);
+
+        uint256 gasBefore = gasleft();
+        HyraxProofDecoder.ProofSummary memory summary = this._decodeSummaryCalldata(proofData);
+        uint256 gasUsed = gasBefore - gasleft();
+
+        emit log_named_uint("Proof summary decode gas", gasUsed);
+        emit log_named_uint("Proof size bytes", proof.length);
+        emit log_named_uint("Layer proofs", summary.numLayerProofs);
+        emit log_named_uint("Input proofs", summary.numInputProofs);
+
+        gasBefore = gasleft();
+        this._validateAllPointsCalldata(proofData);
+        gasUsed = gasBefore - gasleft();
+        emit log_named_uint("Point validation gas", gasUsed);
+    }
+
+    // ===== Helpers =====
+
+    function _stripSelector(bytes memory proof) internal pure returns (bytes memory proofData) {
+        proofData = new bytes(proof.length - 4);
+        for (uint256 i = 0; i < proofData.length; i++) {
+            proofData[i] = proof[i + 4];
+        }
+    }
+
+    /// @notice External wrappers for calldata-based decoding
+    function _decodeSummaryCalldata(bytes calldata data)
+        external
+        pure
+        returns (HyraxProofDecoder.ProofSummary memory)
+    {
+        return HyraxProofDecoder.decodeSummary(data);
+    }
+
+    function _decodePublicInputsCalldata(bytes calldata data) external pure returns (uint256[] memory) {
+        return HyraxProofDecoder.decodePublicInputs(data);
+    }
+
+    function _validateAllPointsCalldata(bytes calldata data) external pure returns (uint256, bool) {
+        return HyraxProofDecoder.validateAllPoints(data);
+    }
+}
+
+/// @title FiatShamirBridgeTest
+/// @notice Tests that Solidity PoseidonSponge exactly matches Rust's PoseidonSponge
+///         by replaying the Fiat-Shamir transcript from a real Remainder GKR proof.
+///         Test vectors generated by gen_transcript_trace.rs.
+contract FiatShamirBridgeTest is Test {
+    /// @notice Replay the initial 6 absorbs (circuit hash + public inputs) and
+    ///         verify the intermediate challenge matches the Rust trace.
+    function test_circuit_hash_and_public_inputs_squeeze() public pure {
+        PoseidonSponge.Sponge memory sponge = PoseidonSponge.init();
+
+        // Absorb circuit description hash (2 Fq elements)
+        PoseidonSponge.absorb(sponge, 0x000000000000000000000000000000005a9fc1776ad5b87f01d493983001d78f);
+        PoseidonSponge.absorb(sponge, 0x000000000000000000000000000000005daa4b26c457652c4f9715758acff1bc);
+
+        // Absorb public input values (2 Fq elements)
+        PoseidonSponge.absorb(sponge, 0x0000000000000000000000000000000000000000000000000000000000000006);
+        PoseidonSponge.absorb(sponge, 0x0000000000000000000000000000000000000000000000000000000000000014);
+
+        // Absorb public input SHA-256 hash chain (2 Fq elements)
+        PoseidonSponge.absorb(sponge, 0x00000000000000000000000000000000a998b9d31f69d8ae8e48768cf8b8a5ff);
+        PoseidonSponge.absorb(sponge, 0x00000000000000000000000000000000c06bcddbc1b4d72d89678361cd10177b);
+
+        // Squeeze intermediate challenge
+        uint256 challenge = PoseidonSponge.squeeze(sponge);
+
+        // From transcript_trace.json: after_circuit_hash_and_public_inputs
+        assertEq(
+            challenge,
+            0x25386983a875cb8fab4670ee4a8edec51c642529a20fbaea97edb9d06004b066,
+            "intermediate squeeze after 6 absorbs mismatch"
+        );
+    }
+
+    /// @notice Full initial transcript replay: 12 absorbs → first Fiat-Shamir challenge.
+    ///         This replays: circuit_hash(2) + public_inputs(4) + EC_points(4) + EC_hash_chain(2)
+    ///         and verifies the resulting challenge matches "Challenge for claim on output".
+    function test_full_initial_transcript_replay() public pure {
+        PoseidonSponge.Sponge memory sponge = PoseidonSponge.init();
+
+        // 1. Circuit description hash (2 elements)
+        PoseidonSponge.absorb(sponge, 0x000000000000000000000000000000005a9fc1776ad5b87f01d493983001d78f);
+        PoseidonSponge.absorb(sponge, 0x000000000000000000000000000000005daa4b26c457652c4f9715758acff1bc);
+
+        // 2. Public input values (2 elements)
+        PoseidonSponge.absorb(sponge, 0x0000000000000000000000000000000000000000000000000000000000000006);
+        PoseidonSponge.absorb(sponge, 0x0000000000000000000000000000000000000000000000000000000000000014);
+
+        // 3. Public input SHA-256 hash chain (2 elements)
+        PoseidonSponge.absorb(sponge, 0x00000000000000000000000000000000a998b9d31f69d8ae8e48768cf8b8a5ff);
+        PoseidonSponge.absorb(sponge, 0x00000000000000000000000000000000c06bcddbc1b4d72d89678361cd10177b);
+
+        // 4. Hyrax input commitment EC points (4 elements: 2 points × 2 coords)
+        PoseidonSponge.absorb(sponge, 0x1be725444751be14b75a8d3f9635338b1c9a4bc6ec128dc038c1b3e3657b6751);
+        PoseidonSponge.absorb(sponge, 0x29acc709c5e329e3a561a90c16d62ef1053900e2c06b8931293469b540d1309e);
+        PoseidonSponge.absorb(sponge, 0x23385f96de594180eb38ae9f9d0d2aa9af09c467c78f4c17e700f6f5b3ae96fe);
+        PoseidonSponge.absorb(sponge, 0x2ef6deb672454c927e50322143c9bdebc720f4df6001f4da6863eca6986bbb90);
+
+        // 5. EC commitment SHA-256 hash chain (2 elements)
+        PoseidonSponge.absorb(sponge, 0x00000000000000000000000000000000d744e81c0ba8f5f2737a3a4ef940ace9);
+        PoseidonSponge.absorb(sponge, 0x00000000000000000000000000000000c07203138670b777fcb4190942c7ac6e);
+
+        // Squeeze first challenge
+        uint256 challenge = PoseidonSponge.squeeze(sponge);
+
+        // From transcript_trace.json: first_challenge_for_output_claim
+        assertEq(
+            challenge,
+            0x0d913ea20ccbceea7bb452e44f2b1e1bfd9efe3dca6898d297d23a2b22ea57ad,
+            "first FS challenge mismatch"
+        );
+    }
+
+    /// @notice Gas benchmark for full 12-absorb transcript replay
+    function test_transcript_replay_gas() public {
+        PoseidonSponge.Sponge memory sponge = PoseidonSponge.init();
+
+        uint256 gasBefore = gasleft();
+
+        PoseidonSponge.absorb(sponge, 0x000000000000000000000000000000005a9fc1776ad5b87f01d493983001d78f);
+        PoseidonSponge.absorb(sponge, 0x000000000000000000000000000000005daa4b26c457652c4f9715758acff1bc);
+        PoseidonSponge.absorb(sponge, 0x0000000000000000000000000000000000000000000000000000000000000006);
+        PoseidonSponge.absorb(sponge, 0x0000000000000000000000000000000000000000000000000000000000000014);
+        PoseidonSponge.absorb(sponge, 0x00000000000000000000000000000000a998b9d31f69d8ae8e48768cf8b8a5ff);
+        PoseidonSponge.absorb(sponge, 0x00000000000000000000000000000000c06bcddbc1b4d72d89678361cd10177b);
+        PoseidonSponge.absorb(sponge, 0x1be725444751be14b75a8d3f9635338b1c9a4bc6ec128dc038c1b3e3657b6751);
+        PoseidonSponge.absorb(sponge, 0x29acc709c5e329e3a561a90c16d62ef1053900e2c06b8931293469b540d1309e);
+        PoseidonSponge.absorb(sponge, 0x23385f96de594180eb38ae9f9d0d2aa9af09c467c78f4c17e700f6f5b3ae96fe);
+        PoseidonSponge.absorb(sponge, 0x2ef6deb672454c927e50322143c9bdebc720f4df6001f4da6863eca6986bbb90);
+        PoseidonSponge.absorb(sponge, 0x00000000000000000000000000000000d744e81c0ba8f5f2737a3a4ef940ace9);
+        PoseidonSponge.absorb(sponge, 0x00000000000000000000000000000000c07203138670b777fcb4190942c7ac6e);
+        uint256 challenge = PoseidonSponge.squeeze(sponge);
+
+        uint256 gasUsed = gasBefore - gasleft();
+        emit log_named_uint("Gas for 12-absorb transcript replay + squeeze", gasUsed);
+
+        // Verify correctness
+        assertEq(challenge, 0x0d913ea20ccbceea7bb452e44f2b1e1bfd9efe3dca6898d297d23a2b22ea57ad);
+
+        // Expect < 700K gas (reasonable for L2; ~56K per absorb+permute cycle)
+        assertLt(gasUsed, 700_000, "transcript replay gas too high");
+    }
+}
+
+/// @title E2ETranscriptReplayTest
+/// @notice End-to-end test: loads a real ABI-encoded proof from Rust, decodes it,
+///         extracts values, replays the Fiat-Shamir transcript, and validates
+///         the resulting challenge matches the Rust verifier's challenge.
+///         All data comes from a SINGLE proof run (gen_transcript_trace.rs).
+contract E2ETranscriptReplayTest is Test {
+    /// @notice Load the E2E fixture (proof + transcript trace from same run)
+    function _loadFixture()
+        internal
+        view
+        returns (
+            bytes memory proofData,
+            uint256 circuitHashFq1,
+            uint256 circuitHashFq2,
+            uint256 pubHashChain1,
+            uint256 pubHashChain2,
+            uint256 ecHashChain1,
+            uint256 ecHashChain2,
+            uint256 expectedChallenge
+        )
+    {
+        string memory json = vm.readFile("test/fixtures/e2e_fixture.json");
+
+        // Proof bytes (strip "REM1" selector)
+        bytes memory rawProof = vm.parseJsonBytes(json, ".proof_hex");
+        proofData = new bytes(rawProof.length - 4);
+        for (uint256 i = 0; i < proofData.length; i++) {
+            proofData[i] = rawProof[i + 4];
+        }
+
+        // Transcript trace values
+        circuitHashFq1 = vm.parseJsonUint(json, ".transcript_trace.circuit_hash_fq_1");
+        circuitHashFq2 = vm.parseJsonUint(json, ".transcript_trace.circuit_hash_fq_2");
+        pubHashChain1 = vm.parseJsonUint(json, ".transcript_trace.public_input_hash_chain_1");
+        pubHashChain2 = vm.parseJsonUint(json, ".transcript_trace.public_input_hash_chain_2");
+        ecHashChain1 = vm.parseJsonUint(json, ".transcript_trace.input_commitment_hash_chain_1");
+        ecHashChain2 = vm.parseJsonUint(json, ".transcript_trace.input_commitment_hash_chain_2");
+        expectedChallenge = vm.parseJsonUint(json, ".challenges.first_challenge_for_output_claim");
+    }
+
+    /// @notice Full E2E: decode proof → extract values → replay transcript → validate challenge
+    function test_e2e_decode_and_replay() public {
+        (
+            bytes memory proofData,
+            uint256 circuitHashFq1,
+            uint256 circuitHashFq2,
+            uint256 pubHashChain1,
+            uint256 pubHashChain2,
+            uint256 ecHashChain1,
+            uint256 ecHashChain2,
+            uint256 expectedChallenge
+        ) = _loadFixture();
+
+        // Step 1: Decode proof summary — validates ABI encoding is parseable
+        HyraxProofDecoder.ProofSummary memory summary = this._decodeSummaryE2E(proofData);
+        assertEq(summary.numPublicInputs, 1, "Should have 1 public input");
+        assertEq(summary.numInputProofs, 1, "Should have 1 input proof");
+        emit log_named_uint("Proof size (bytes, excl selector)", proofData.length);
+
+        // Step 2: Decode public inputs from the proof
+        uint256[] memory pubInputs = this._decodePublicInputsE2E(proofData);
+        assertEq(pubInputs.length, 2, "Should have 2 public input values");
+        assertEq(pubInputs[0], 6, "Public input[0] should be 6");
+        assertEq(pubInputs[1], 20, "Public input[1] should be 20");
+        emit log_string("Decoded public inputs: [6, 20]");
+
+        // Step 3: Decode input commitment EC points from the proof
+        HyraxProofDecoder.DecodedPoint[] memory commitPoints = this._decodeInputCommitsE2E(proofData);
+        assertEq(commitPoints.length, 2, "Should have 2 commitment points");
+
+        // Validate points are on BN254 curve
+        for (uint256 i = 0; i < commitPoints.length; i++) {
+            assertTrue(
+                HyraxVerifier.isOnCurve(HyraxVerifier.G1Point(commitPoints[i].x, commitPoints[i].y)),
+                "Commitment point must be on curve"
+            );
+        }
+        emit log_named_uint("Commitment point[0].x", commitPoints[0].x);
+        emit log_named_uint("Commitment point[0].y", commitPoints[0].y);
+
+        // Step 4: Replay Fiat-Shamir transcript using decoded values
+        PoseidonSponge.Sponge memory sponge = PoseidonSponge.init();
+
+        // 4a. Absorb circuit description hash (from fixture — deterministic per circuit)
+        PoseidonSponge.absorb(sponge, circuitHashFq1);
+        PoseidonSponge.absorb(sponge, circuitHashFq2);
+
+        // 4b. Absorb public input values (DECODED from proof)
+        PoseidonSponge.absorb(sponge, pubInputs[0]);
+        PoseidonSponge.absorb(sponge, pubInputs[1]);
+
+        // 4c. Absorb public input hash chain (from fixture — SHA-256 of public inputs)
+        PoseidonSponge.absorb(sponge, pubHashChain1);
+        PoseidonSponge.absorb(sponge, pubHashChain2);
+
+        // 4d. Absorb EC commitment points (DECODED from proof)
+        for (uint256 i = 0; i < commitPoints.length; i++) {
+            PoseidonSponge.absorb(sponge, commitPoints[i].x);
+            PoseidonSponge.absorb(sponge, commitPoints[i].y);
+        }
+
+        // 4e. Absorb EC commitment hash chain (from fixture — SHA-256 of EC coordinates)
+        PoseidonSponge.absorb(sponge, ecHashChain1);
+        PoseidonSponge.absorb(sponge, ecHashChain2);
+
+        // Step 5: Squeeze first challenge and compare
+        uint256 challenge = PoseidonSponge.squeeze(sponge);
+
+        emit log_named_uint("Computed challenge", challenge);
+        emit log_named_uint("Expected challenge", expectedChallenge);
+
+        assertEq(
+            challenge,
+            expectedChallenge,
+            "E2E: First Fiat-Shamir challenge mismatch"
+        );
+    }
+
+    /// @notice Validates that decoded EC commitment points match fixture values
+    function test_e2e_commitment_points_match_fixture() public {
+        string memory json = vm.readFile("test/fixtures/e2e_fixture.json");
+        bytes memory rawProof = vm.parseJsonBytes(json, ".proof_hex");
+        bytes memory proofData = new bytes(rawProof.length - 4);
+        for (uint256 i = 0; i < proofData.length; i++) {
+            proofData[i] = rawProof[i + 4];
+        }
+
+        // Load expected points from fixture
+        uint256 expectedX0 = vm.parseJsonUint(json, ".transcript_trace.input_commitment_points[0].x");
+        uint256 expectedY0 = vm.parseJsonUint(json, ".transcript_trace.input_commitment_points[0].y");
+        uint256 expectedX1 = vm.parseJsonUint(json, ".transcript_trace.input_commitment_points[1].x");
+        uint256 expectedY1 = vm.parseJsonUint(json, ".transcript_trace.input_commitment_points[1].y");
+
+        // Decode from proof
+        HyraxProofDecoder.DecodedPoint[] memory points = this._decodeInputCommitsE2E(proofData);
+
+        // Compare
+        assertEq(points[0].x, expectedX0, "Point[0].x mismatch");
+        assertEq(points[0].y, expectedY0, "Point[0].y mismatch");
+        assertEq(points[1].x, expectedX1, "Point[1].x mismatch");
+        assertEq(points[1].y, expectedY1, "Point[1].y mismatch");
+    }
+
+    /// @notice Gas benchmark for the full E2E flow
+    function test_e2e_gas() public {
+        (
+            bytes memory proofData,
+            uint256 circuitHashFq1,
+            uint256 circuitHashFq2,
+            uint256 pubHashChain1,
+            uint256 pubHashChain2,
+            uint256 ecHashChain1,
+            uint256 ecHashChain2,
+            uint256 expectedChallenge
+        ) = _loadFixture();
+
+        uint256 gasBefore = gasleft();
+
+        // Decode
+        this._decodeSummaryE2E(proofData);
+        uint256[] memory pubInputs = this._decodePublicInputsE2E(proofData);
+        HyraxProofDecoder.DecodedPoint[] memory points = this._decodeInputCommitsE2E(proofData);
+
+        uint256 decodeGas = gasBefore - gasleft();
+        gasBefore = gasleft();
+
+        // Transcript replay
+        PoseidonSponge.Sponge memory sponge = PoseidonSponge.init();
+        PoseidonSponge.absorb(sponge, circuitHashFq1);
+        PoseidonSponge.absorb(sponge, circuitHashFq2);
+        PoseidonSponge.absorb(sponge, pubInputs[0]);
+        PoseidonSponge.absorb(sponge, pubInputs[1]);
+        PoseidonSponge.absorb(sponge, pubHashChain1);
+        PoseidonSponge.absorb(sponge, pubHashChain2);
+        for (uint256 i = 0; i < points.length; i++) {
+            PoseidonSponge.absorb(sponge, points[i].x);
+            PoseidonSponge.absorb(sponge, points[i].y);
+        }
+        PoseidonSponge.absorb(sponge, ecHashChain1);
+        PoseidonSponge.absorb(sponge, ecHashChain2);
+        uint256 challenge = PoseidonSponge.squeeze(sponge);
+
+        uint256 transcriptGas = gasBefore - gasleft();
+
+        emit log_named_uint("Decode gas (summary + pubInputs + commitPoints)", decodeGas);
+        emit log_named_uint("Transcript replay gas (12 absorbs + squeeze)", transcriptGas);
+        emit log_named_uint("Total E2E gas", decodeGas + transcriptGas);
+
+        assertEq(challenge, expectedChallenge, "Gas test: challenge mismatch");
+    }
+
+    // === External calldata wrappers ===
+
+    function _decodeSummaryE2E(bytes calldata data)
+        external
+        pure
+        returns (HyraxProofDecoder.ProofSummary memory)
+    {
+        return HyraxProofDecoder.decodeSummary(data);
+    }
+
+    function _decodePublicInputsE2E(bytes calldata data)
+        external
+        pure
+        returns (uint256[] memory)
+    {
+        return HyraxProofDecoder.decodePublicInputs(data);
+    }
+
+    function _decodeInputCommitsE2E(bytes calldata data)
+        external
+        pure
+        returns (HyraxProofDecoder.DecodedPoint[] memory)
+    {
+        return HyraxProofDecoder.decodeInputCommitmentPoints(data);
     }
 }
