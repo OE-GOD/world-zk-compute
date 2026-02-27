@@ -297,7 +297,7 @@ contract RemainderVerifierTest is Test {
         bytes32 fakeHash = keccak256("nonexistent");
 
         vm.expectRevert(RemainderVerifier.CircuitNotRegistered.selector);
-        verifier.verifyProof(proof, fakeHash, pubInputs);
+        verifier.verifyProof(proof, fakeHash, pubInputs, "");
     }
 
     function test_reject_wrong_selector() public {
@@ -305,7 +305,7 @@ contract RemainderVerifierTest is Test {
         bytes memory pubInputs = abi.encodePacked(uint256(1));
 
         vm.expectRevert(RemainderVerifier.InvalidProofSelector.selector);
-        verifier.verifyProof(proof, circuitHash, pubInputs);
+        verifier.verifyProof(proof, circuitHash, pubInputs, "");
     }
 
     function test_reject_empty_proof() public {
@@ -313,7 +313,7 @@ contract RemainderVerifierTest is Test {
         bytes memory pubInputs = abi.encodePacked(uint256(1));
 
         vm.expectRevert(RemainderVerifier.InvalidProofLength.selector);
-        verifier.verifyProof(proof, circuitHash, pubInputs);
+        verifier.verifyProof(proof, circuitHash, pubInputs, "");
     }
 
     function test_only_admin_can_register() public {

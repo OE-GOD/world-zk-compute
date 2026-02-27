@@ -67,7 +67,7 @@ contract RemainderE2E is Script {
 
         // Try to verify — this will test the full on-chain flow
         // Note: GKR verification may fail if Poseidon constants don't match Remainder_CE
-        try verifier.verifyProof(proof, circuitHash, publicInputs) returns (bool valid) {
+        try verifier.verifyProof(proof, circuitHash, publicInputs, "") returns (bool valid) {
             console.log("Proof verification result:", valid);
         } catch Error(string memory reason) {
             console.log("Proof verification reverted:", reason);

@@ -21,12 +21,15 @@ contract RemainderVerifierAdapter is IProofVerifier {
     }
 
     /// @notice Verify a Remainder proof
-    /// @param proofData ABI-encoded GKR+Hyrax proof
+    /// @param proofData ABI-encoded GKR+Hyrax proof (optionally with appended Pedersen generators)
     /// @param programId The circuit hash
-    /// @param publicData Public input values
+    /// @param publicData Public input values followed by ABI-encoded Pedersen generators
+    /// @dev The publicData is split: first N*32 bytes are public inputs, remaining bytes are gensData.
+    ///      For now, gensData is passed as empty (PODP generators must be included separately).
     function verify(bytes calldata proofData, bytes32 programId, bytes calldata publicData) external view override {
         // This reverts on invalid proof
-        remainderVerifier.verifyOrRevert(proofData, programId, publicData);
+        // Pass empty gensData for now — callers needing PODP verification should use verifyOrRevert directly
+        remainderVerifier.verifyOrRevert(proofData, programId, publicData, "");
     }
 
     /// @notice Return the proof system name

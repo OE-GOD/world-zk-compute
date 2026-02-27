@@ -39,59 +39,123 @@ library HyraxVerifier {
         uint256 y;
     }
 
+    /// @notice PODP (ProofOfDotProduct) — Sigma protocol proof
+    struct PODPProof {
+        G1Point commitD; // Commitment to random masking vector d
+        G1Point commitDDotA; // Commitment to <d, a>
+        uint256[] zVector; // Blinded vector z = c*x + d
+        uint256 zDelta; // Blinding factor for com(z)
+        uint256 zBeta; // Blinding factor for com(<z,a>)
+    }
+
+    /// @notice Pedersen generator set for PODP verification
+    struct PedersenGens {
+        G1Point[] messageGens; // g_1..g_m (vector Pedersen bases)
+        G1Point scalarGen; // g_scalar (for scalar_commit, = last generator)
+        G1Point blindingGen; // h (blinding generator)
+    }
+
     /// @notice Hyrax evaluation proof
     struct EvalProof {
         G1Point[] commitmentRows; // Commitment per matrix row
-        uint256[] dotProductProof; // Dot product argument scalars
-        G1Point comD; // Commitment to evaluation witness d
-        G1Point comZ; // Commitment to inner product result
+        PODPProof podp; // PODP proof for dot product argument
+        G1Point comEval; // Commitment to evaluation (commitmentToEvaluation)
     }
 
     // ========================================================================
     // VERIFICATION
     // ========================================================================
 
-    /// @notice Verify a Hyrax evaluation proof
+    /// @notice Verify a Hyrax evaluation proof with full PODP verification
     /// @param proof The evaluation proof
     /// @param lCoeffs The L tensor coefficients (from sumcheck challenges)
     /// @param rCoeffs The R tensor coefficients (from sumcheck challenges)
-    /// @param claimedEval The claimed evaluation value
+    /// @param claimedEval The claimed evaluation value (unused in PODP, kept for API)
+    /// @param podpChallenge The Fiat-Shamir challenge for the PODP protocol
+    /// @param gens Pedersen generators for commitment verification
     /// @return valid Whether the proof is valid
     function verifyEvaluation(
         EvalProof memory proof,
         uint256[] memory lCoeffs,
         uint256[] memory rCoeffs,
-        uint256 claimedEval
+        uint256 claimedEval,
+        uint256 podpChallenge,
+        PedersenGens memory gens
     ) internal view returns (bool) {
         uint256 numRows = proof.commitmentRows.length;
         require(numRows > 0, "HyraxVerifier: empty commitment");
         require(lCoeffs.length == numRows, "HyraxVerifier: L coeffs length mismatch");
+        require(proof.podp.zVector.length == rCoeffs.length, "HyraxVerifier: z_vector length != R coeffs length");
 
         // Step 1: Compute T' = sum(L_i * C_i) — MSM over commitment rows
-        // This combines all row commitments using the L tensor
-        G1Point memory tPrime = multiScalarMul(proof.commitmentRows, lCoeffs);
+        // This is com_x: the commitment to the L-tensor-compressed column vector
+        G1Point memory comX = multiScalarMul(proof.commitmentRows, lCoeffs);
 
-        // Step 2: Verify the dot product argument
-        // The dot product proof shows that <L, commitment_matrix, R> = claimedEval
-        // Using the ProofOfDotProduct protocol:
-        //   T' * r_challenge + comD == comZ
-        //   where comZ commits to claimedEval under the R-tensor basis
+        // Step 2: com_y is the commitmentToEvaluation from the proof
+        G1Point memory comY = proof.comEval;
 
-        // Step 3: Verify commitment to claimed evaluation
-        // com(claimedEval) using R coefficients as basis
-        G1Point memory expectedCom = scalarMul(G1Point(G1_X, G1_Y), claimedEval);
+        // Step 3: Verify the PODP (a_vector = R tensor coefficients)
+        return verifyPODP(proof.podp, podpChallenge, comX, comY, rCoeffs, gens);
+    }
 
-        // For the proof to be valid:
-        // 1. MSM is correctly computed (T' is consistent with commitments)
-        // 2. Dot product argument verifies
-        // 3. Opening matches claimed evaluation
+    /// @notice Verify a PODP (ProofOfDotProduct) Sigma protocol proof
+    /// @dev Checks two EC-point equations:
+    ///      Check 1: c * com_x + commit_d       == com_z       (vector commitment consistency)
+    ///      Check 2: c * com_y + commit_d_dot_a  == com_z_dot_a (dot product consistency)
+    ///
+    ///      Where:
+    ///        com_z       = MSM(g_1..g_m, z_vector) + z_delta * h
+    ///        com_z_dot_a = <z_vector, a_vector> * g_scalar + z_beta * h
+    ///
+    /// @param podp The PODP proof
+    /// @param challenge The Fiat-Shamir challenge c
+    /// @param comX Commitment to the private vector x
+    /// @param comY Commitment to <x, a> (the dot product result)
+    /// @param aVector The public vector a (R tensor coefficients)
+    /// @param gens Pedersen generators
+    /// @return valid Whether the PODP proof verifies
+    function verifyPODP(
+        PODPProof memory podp,
+        uint256 challenge,
+        G1Point memory comX,
+        G1Point memory comY,
+        uint256[] memory aVector,
+        PedersenGens memory gens
+    ) internal view returns (bool) {
+        require(podp.zVector.length == aVector.length, "HyraxVerifier: PODP vector length mismatch");
+        require(podp.zVector.length == gens.messageGens.length, "HyraxVerifier: PODP generators length mismatch");
 
-        // Point validity checks
-        if (!isOnCurve(tPrime)) return false;
-        if (!isOnCurve(proof.comD)) return false;
-        if (!isOnCurve(proof.comZ)) return false;
+        // 1. Compute z_dot_a = <z_vector, a_vector> (mod Fr)
+        uint256 zDotA = innerProduct(podp.zVector, aVector);
+
+        // 2. Compute com_z = MSM(g_1..g_m, z_vector) + z_delta * h
+        G1Point memory comZ = multiScalarMul(gens.messageGens, podp.zVector);
+        G1Point memory zDeltaH = scalarMul(gens.blindingGen, podp.zDelta);
+        comZ = ecAdd(comZ, zDeltaH);
+
+        // 3. Compute com_z_dot_a = z_dot_a * g_scalar + z_beta * h
+        G1Point memory comZDotA = scalarMul(gens.scalarGen, zDotA);
+        G1Point memory zBetaH = scalarMul(gens.blindingGen, podp.zBeta);
+        comZDotA = ecAdd(comZDotA, zBetaH);
+
+        // 4. Check 1: c * com_x + commit_d == com_z
+        G1Point memory lhs1 = ecAdd(scalarMul(comX, challenge), podp.commitD);
+        if (!isEqual(lhs1, comZ)) return false;
+
+        // 5. Check 2: c * com_y + commit_d_dot_a == com_z_dot_a
+        G1Point memory lhs2 = ecAdd(scalarMul(comY, challenge), podp.commitDDotA);
+        if (!isEqual(lhs2, comZDotA)) return false;
 
         return true;
+    }
+
+    /// @notice Compute inner product <a, b> mod Fr
+    function innerProduct(uint256[] memory a, uint256[] memory b) internal pure returns (uint256 result) {
+        require(a.length == b.length, "HyraxVerifier: inner product length mismatch");
+        result = 0;
+        for (uint256 i = 0; i < a.length; i++) {
+            result = addmod(result, mulmod(a[i], b[i], FR_MODULUS), FR_MODULUS);
+        }
     }
 
     // ========================================================================

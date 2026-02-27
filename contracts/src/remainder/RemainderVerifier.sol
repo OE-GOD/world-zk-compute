@@ -91,11 +91,14 @@ contract RemainderVerifier {
     /// @param proof ABI-encoded proof data (starts with "REM1" selector)
     /// @param circuitHash SHA-256 hash of the circuit description
     /// @param publicInputs Public input values
+    /// @param gensData ABI-encoded Pedersen generators for PODP verification
     /// @return valid Whether the proof is valid
-    function verifyProof(bytes calldata proof, bytes32 circuitHash, bytes calldata publicInputs)
-        external
-        returns (bool valid)
-    {
+    function verifyProof(
+        bytes calldata proof,
+        bytes32 circuitHash,
+        bytes calldata publicInputs,
+        bytes calldata gensData
+    ) external returns (bool valid) {
         // Check circuit is registered and active
         CircuitConfig storage config = circuits[circuitHash];
         if (config.circuitHash == bytes32(0)) revert CircuitNotRegistered();
@@ -106,11 +109,12 @@ contract RemainderVerifier {
         bytes4 selector = bytes4(proof[:4]);
         if (selector != bytes4("REM1")) revert InvalidProofSelector();
 
-        // Decode the proof
+        // Decode the proof and generators
         (GKRVerifier.GKRProof memory gkrProof, uint256[] memory pubInputs) = decodeProof(proof[4:], publicInputs);
+        HyraxVerifier.PedersenGens memory gens = decodePedersenGens(gensData);
 
         // Verify GKR proof
-        valid = GKRVerifier.verify(gkrProof, config.description, pubInputs);
+        valid = GKRVerifier.verify(gkrProof, config.description, pubInputs, gens);
 
         emit ProofVerified(circuitHash, valid);
     }
@@ -119,7 +123,13 @@ contract RemainderVerifier {
     /// @param proof ABI-encoded proof data
     /// @param circuitHash Circuit identifier
     /// @param publicInputs Public input values
-    function verifyOrRevert(bytes calldata proof, bytes32 circuitHash, bytes calldata publicInputs) external view {
+    /// @param gensData ABI-encoded Pedersen generators for PODP verification
+    function verifyOrRevert(
+        bytes calldata proof,
+        bytes32 circuitHash,
+        bytes calldata publicInputs,
+        bytes calldata gensData
+    ) external view {
         // Check circuit is registered and active
         CircuitConfig storage config = circuits[circuitHash];
         if (config.circuitHash == bytes32(0)) revert CircuitNotRegistered();
@@ -132,8 +142,9 @@ contract RemainderVerifier {
 
         // Decode and verify
         (GKRVerifier.GKRProof memory gkrProof, uint256[] memory pubInputs) = decodeProof(proof[4:], publicInputs);
+        HyraxVerifier.PedersenGens memory gens = decodePedersenGens(gensData);
 
-        bool valid = GKRVerifier.verify(gkrProof, config.description, pubInputs);
+        bool valid = GKRVerifier.verify(gkrProof, config.description, pubInputs, gens);
         if (!valid) revert ProofVerificationFailed();
     }
 
@@ -202,13 +213,13 @@ contract RemainderVerifier {
             }
         }
 
-        // Decode Hyrax evaluation proofs
+        // Decode Hyrax evaluation proofs (with PODP data)
         uint256 numInputProofs = uint256(bytes32(proofData[offset:offset + 32]));
         offset += 32;
 
         gkrProof.inputProofs = new HyraxVerifier.EvalProof[](numInputProofs);
         for (uint256 i = 0; i < numInputProofs; i++) {
-            // Read number of commitment rows
+            // Read commitment rows
             uint256 numRows = uint256(bytes32(proofData[offset:offset + 32]));
             offset += 32;
 
@@ -220,17 +231,53 @@ contract RemainderVerifier {
                 offset += 32;
             }
 
-            // Read comD point
-            gkrProof.inputProofs[i].comD.x = uint256(bytes32(proofData[offset:offset + 32]));
-            offset += 32;
-            gkrProof.inputProofs[i].comD.y = uint256(bytes32(proofData[offset:offset + 32]));
+            // Read number of evaluation proofs (typically 1)
+            uint256 numEvals = uint256(bytes32(proofData[offset:offset + 32]));
             offset += 32;
 
-            // Read comZ point
-            gkrProof.inputProofs[i].comZ.x = uint256(bytes32(proofData[offset:offset + 32]));
-            offset += 32;
-            gkrProof.inputProofs[i].comZ.y = uint256(bytes32(proofData[offset:offset + 32]));
-            offset += 32;
+            // Decode first PODP proof + comEval
+            if (numEvals > 0) {
+                // PODP: commitD (G1)
+                gkrProof.inputProofs[i].podp.commitD.x = uint256(bytes32(proofData[offset:offset + 32]));
+                offset += 32;
+                gkrProof.inputProofs[i].podp.commitD.y = uint256(bytes32(proofData[offset:offset + 32]));
+                offset += 32;
+
+                // PODP: commitDDotA (G1)
+                gkrProof.inputProofs[i].podp.commitDDotA.x = uint256(bytes32(proofData[offset:offset + 32]));
+                offset += 32;
+                gkrProof.inputProofs[i].podp.commitDDotA.y = uint256(bytes32(proofData[offset:offset + 32]));
+                offset += 32;
+
+                // PODP: z_vector
+                uint256 numZ = uint256(bytes32(proofData[offset:offset + 32]));
+                offset += 32;
+                gkrProof.inputProofs[i].podp.zVector = new uint256[](numZ);
+                for (uint256 z = 0; z < numZ; z++) {
+                    gkrProof.inputProofs[i].podp.zVector[z] = uint256(bytes32(proofData[offset:offset + 32]));
+                    offset += 32;
+                }
+
+                // PODP: z_delta, z_beta
+                gkrProof.inputProofs[i].podp.zDelta = uint256(bytes32(proofData[offset:offset + 32]));
+                offset += 32;
+                gkrProof.inputProofs[i].podp.zBeta = uint256(bytes32(proofData[offset:offset + 32]));
+                offset += 32;
+
+                // commitmentToEvaluation (G1)
+                gkrProof.inputProofs[i].comEval.x = uint256(bytes32(proofData[offset:offset + 32]));
+                offset += 32;
+                gkrProof.inputProofs[i].comEval.y = uint256(bytes32(proofData[offset:offset + 32]));
+                offset += 32;
+            }
+
+            // Skip additional eval proofs (uncommon)
+            for (uint256 e = 1; e < numEvals; e++) {
+                offset += 128; // commitD + commitDDotA
+                uint256 skipZ = uint256(bytes32(proofData[offset:offset + 32]));
+                offset += 32 + skipZ * 32 + 64; // z_vector + z_delta + z_beta
+                offset += 64; // comEval
+            }
         }
 
         // Decode public inputs
@@ -239,6 +286,51 @@ contract RemainderVerifier {
         for (uint256 i = 0; i < numPubInputs; i++) {
             pubInputs[i] = uint256(bytes32(publicInputBytes[i * 32:(i + 1) * 32]));
         }
+    }
+
+    // ========================================================================
+    // PEDERSEN GENERATORS DECODING
+    // ========================================================================
+
+    /// @notice Decode Pedersen generators from calldata bytes
+    /// @dev Format: numMessageGens (uint256) | G1[numMessageGens] | G1(scalarGen) | G1(blindingGen)
+    function decodePedersenGens(bytes calldata gensData)
+        internal
+        pure
+        returns (HyraxVerifier.PedersenGens memory gens)
+    {
+        if (gensData.length == 0) {
+            // Empty gens — PODP verification will fail if actually needed
+            gens.messageGens = new HyraxVerifier.G1Point[](0);
+            return gens;
+        }
+
+        uint256 offset = 0;
+
+        // Number of message generators
+        uint256 numGens = uint256(bytes32(gensData[offset:offset + 32]));
+        offset += 32;
+
+        // Message generators (g_1..g_m)
+        gens.messageGens = new HyraxVerifier.G1Point[](numGens);
+        for (uint256 i = 0; i < numGens; i++) {
+            gens.messageGens[i].x = uint256(bytes32(gensData[offset:offset + 32]));
+            offset += 32;
+            gens.messageGens[i].y = uint256(bytes32(gensData[offset:offset + 32]));
+            offset += 32;
+        }
+
+        // Scalar generator (g_scalar)
+        gens.scalarGen.x = uint256(bytes32(gensData[offset:offset + 32]));
+        offset += 32;
+        gens.scalarGen.y = uint256(bytes32(gensData[offset:offset + 32]));
+        offset += 32;
+
+        // Blinding generator (h)
+        gens.blindingGen.x = uint256(bytes32(gensData[offset:offset + 32]));
+        offset += 32;
+        gens.blindingGen.y = uint256(bytes32(gensData[offset:offset + 32]));
+        offset += 32;
     }
 
     // ========================================================================

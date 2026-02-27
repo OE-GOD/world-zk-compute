@@ -65,12 +65,14 @@ library GKRVerifier {
     /// @param proof The GKR proof
     /// @param circuit The circuit description
     /// @param publicInputs Public input values (for non-committed input layers)
+    /// @param gens Pedersen generators for PODP verification
     /// @return valid Whether the proof is valid
-    function verify(GKRProof memory proof, CircuitDescription memory circuit, uint256[] memory publicInputs)
-        internal
-        view
-        returns (bool)
-    {
+    function verify(
+        GKRProof memory proof,
+        CircuitDescription memory circuit,
+        uint256[] memory publicInputs,
+        HyraxVerifier.PedersenGens memory gens
+    ) internal view returns (bool) {
         require(proof.layerProofs.length == circuit.numLayers - 1, "GKRVerifier: wrong number of layer proofs");
 
         // Initialize Fiat-Shamir transcript
@@ -147,43 +149,66 @@ library GKRVerifier {
         }
 
         // Step 3: Verify input layer claims
-        // For committed (private) input layers, verify via Hyrax PCS
-        // For public input layers, verify against provided public inputs
+        return _verifyInputLayers(proof, circuit, publicInputs, gens, sponge, currentPoint, currentClaim);
+    }
 
+    /// @notice Verify input layer claims (extracted to avoid stack-too-deep)
+    function _verifyInputLayers(
+        GKRProof memory proof,
+        CircuitDescription memory circuit,
+        uint256[] memory publicInputs,
+        HyraxVerifier.PedersenGens memory gens,
+        PoseidonSponge.Sponge memory sponge,
+        uint256[] memory currentPoint,
+        uint256 currentClaim
+    ) private view returns (bool) {
         uint256 hyraxProofIdx = 0;
         for (uint256 i = 0; i < circuit.numLayers; i++) {
             if (circuit.layerTypes[i] != 3) continue; // Not an input layer
 
             if (circuit.isCommitted[i]) {
-                // Verify Hyrax evaluation proof
-                require(hyraxProofIdx < proof.inputProofs.length, "GKRVerifier: missing Hyrax proof");
-
-                // Split challenges into L and R tensors for Hyrax
-                uint256 halfLen = currentPoint.length / 2;
-                uint256[] memory lCoeffs = new uint256[](halfLen);
-                uint256[] memory rCoeffs = new uint256[](currentPoint.length - halfLen);
-
-                for (uint256 j = 0; j < halfLen; j++) {
-                    lCoeffs[j] = currentPoint[j];
+                if (!_verifyCommittedInput(proof.inputProofs[hyraxProofIdx], currentPoint, currentClaim, sponge, gens))
+                {
+                    return false;
                 }
-                for (uint256 j = halfLen; j < currentPoint.length; j++) {
-                    rCoeffs[j - halfLen] = currentPoint[j];
-                }
-
-                bool hyraxValid =
-                    HyraxVerifier.verifyEvaluation(proof.inputProofs[hyraxProofIdx], lCoeffs, rCoeffs, currentClaim);
-
-                if (!hyraxValid) return false;
                 hyraxProofIdx++;
             } else {
-                // Public input: verify claim matches the provided public inputs
-                // The claim should equal the MLE of public inputs evaluated at currentPoint
                 uint256 mleEval = evaluateMLEFromData(publicInputs, currentPoint);
                 if (mleEval != currentClaim) return false;
             }
         }
 
         return true;
+    }
+
+    /// @notice Verify a single committed input layer via Hyrax+PODP (extracted to avoid stack-too-deep)
+    function _verifyCommittedInput(
+        HyraxVerifier.EvalProof memory inputProof,
+        uint256[] memory currentPoint,
+        uint256 currentClaim,
+        PoseidonSponge.Sponge memory sponge,
+        HyraxVerifier.PedersenGens memory gens
+    ) private view returns (bool) {
+        // Split challenges into L and R tensors for Hyrax
+        uint256 halfLen = currentPoint.length / 2;
+        uint256[] memory lCoeffs = new uint256[](halfLen);
+        uint256[] memory rCoeffs = new uint256[](currentPoint.length - halfLen);
+
+        for (uint256 j = 0; j < halfLen; j++) {
+            lCoeffs[j] = currentPoint[j];
+        }
+        for (uint256 j = halfLen; j < currentPoint.length; j++) {
+            rCoeffs[j - halfLen] = currentPoint[j];
+        }
+
+        // Derive PODP challenge from transcript: absorb commit_d and commit_d_dot_a, then squeeze
+        PoseidonSponge.absorb(sponge, inputProof.podp.commitD.x);
+        PoseidonSponge.absorb(sponge, inputProof.podp.commitD.y);
+        PoseidonSponge.absorb(sponge, inputProof.podp.commitDDotA.x);
+        PoseidonSponge.absorb(sponge, inputProof.podp.commitDDotA.y);
+        uint256 podpChallenge = PoseidonSponge.squeeze(sponge) % FR_MODULUS;
+
+        return HyraxVerifier.verifyEvaluation(inputProof, lCoeffs, rCoeffs, currentClaim, podpChallenge, gens);
     }
 
     /// @notice Evaluate the multilinear extension of data at a given point
