@@ -108,11 +108,7 @@ library HyraxProofDecoder {
     /// @notice Decode input commitment points (from hyrax_input_proofs section)
     /// @dev Returns affine (x,y) coordinate pairs for all commitment rows across all input proofs.
     ///      These are the EC points absorbed into the Fiat-Shamir transcript.
-    function decodeInputCommitmentPoints(bytes calldata data)
-        internal
-        pure
-        returns (DecodedPoint[] memory points)
-    {
+    function decodeInputCommitmentPoints(bytes calldata data) internal pure returns (DecodedPoint[] memory points) {
         // Navigate to input proofs section
         uint256 offset = _offsetToInputProofs(data);
 

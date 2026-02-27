@@ -39,7 +39,10 @@ contract PoseidonSpongeTest is Test {
 
         assertEq(out1, out2, "Same input should produce same output");
         assertTrue(out1 != 0, "Output should be non-zero");
-        assertTrue(out1 < 21888242871839275222246405745257275088696311157297823662689037894645226208583, "Output should be < Fq");
+        assertTrue(
+            out1 < 21888242871839275222246405745257275088696311157297823662689037894645226208583,
+            "Output should be < Fq"
+        );
     }
 
     /// @notice Test that different inputs produce different outputs
@@ -530,11 +533,7 @@ contract HyraxProofDecoderTest is Test {
     }
 
     /// @notice External wrappers for calldata-based decoding
-    function _decodeSummaryCalldata(bytes calldata data)
-        external
-        pure
-        returns (HyraxProofDecoder.ProofSummary memory)
-    {
+    function _decodeSummaryCalldata(bytes calldata data) external pure returns (HyraxProofDecoder.ProofSummary memory) {
         return HyraxProofDecoder.decodeSummary(data);
     }
 
@@ -613,9 +612,7 @@ contract FiatShamirBridgeTest is Test {
 
         // From transcript_trace.json: first_challenge_for_output_claim
         assertEq(
-            challenge,
-            0x0d913ea20ccbceea7bb452e44f2b1e1bfd9efe3dca6898d297d23a2b22ea57ad,
-            "first FS challenge mismatch"
+            challenge, 0x0d913ea20ccbceea7bb452e44f2b1e1bfd9efe3dca6898d297d23a2b22ea57ad, "first FS challenge mismatch"
         );
     }
 
@@ -645,8 +642,8 @@ contract FiatShamirBridgeTest is Test {
         // Verify correctness
         assertEq(challenge, 0x0d913ea20ccbceea7bb452e44f2b1e1bfd9efe3dca6898d297d23a2b22ea57ad);
 
-        // Expect < 700K gas (reasonable for L2; ~56K per absorb+permute cycle)
-        assertLt(gasUsed, 700_000, "transcript replay gas too high");
+        // Expect < 350K gas (assembly-optimized Poseidon; ~46K per absorb+permute cycle)
+        assertLt(gasUsed, 350_000, "transcript replay gas too high");
     }
 }
 
@@ -761,11 +758,7 @@ contract E2ETranscriptReplayTest is Test {
         emit log_named_uint("Computed challenge", challenge);
         emit log_named_uint("Expected challenge", expectedChallenge);
 
-        assertEq(
-            challenge,
-            expectedChallenge,
-            "E2E: First Fiat-Shamir challenge mismatch"
-        );
+        assertEq(challenge, expectedChallenge, "E2E: First Fiat-Shamir challenge mismatch");
     }
 
     /// @notice Validates that decoded EC commitment points match fixture values
@@ -843,19 +836,11 @@ contract E2ETranscriptReplayTest is Test {
 
     // === External calldata wrappers ===
 
-    function _decodeSummaryE2E(bytes calldata data)
-        external
-        pure
-        returns (HyraxProofDecoder.ProofSummary memory)
-    {
+    function _decodeSummaryE2E(bytes calldata data) external pure returns (HyraxProofDecoder.ProofSummary memory) {
         return HyraxProofDecoder.decodeSummary(data);
     }
 
-    function _decodePublicInputsE2E(bytes calldata data)
-        external
-        pure
-        returns (uint256[] memory)
-    {
+    function _decodePublicInputsE2E(bytes calldata data) external pure returns (uint256[] memory) {
         return HyraxProofDecoder.decodePublicInputs(data);
     }
 

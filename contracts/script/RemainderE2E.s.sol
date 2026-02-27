@@ -60,7 +60,10 @@ contract RemainderE2E is Script {
         console.log("Public inputs size:", publicInputs.length, "bytes");
 
         // Verify proof selector is "REM1"
-        console.log("Proof starts with REM1 selector:", proof.length >= 4 && proof[0] == 0x52 && proof[1] == 0x45 && proof[2] == 0x4d && proof[3] == 0x31);
+        console.log(
+            "Proof starts with REM1 selector:",
+            proof.length >= 4 && proof[0] == 0x52 && proof[1] == 0x45 && proof[2] == 0x4d && proof[3] == 0x31
+        );
 
         // Try to verify — this will test the full on-chain flow
         // Note: GKR verification may fail if Poseidon constants don't match Remainder_CE
