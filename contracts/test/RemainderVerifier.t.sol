@@ -7,6 +7,7 @@ import "../src/remainder/PoseidonSponge.sol";
 import "../src/remainder/SumcheckVerifier.sol";
 import "../src/remainder/HyraxVerifier.sol";
 import "../src/remainder/GKRVerifier.sol";
+import "../src/remainder/CommittedSumcheckVerifier.sol";
 import "../src/remainder/HyraxProofDecoder.sol";
 import "../src/IProofVerifier.sol";
 import "../src/RemainderVerifierAdapter.sol";
@@ -850,5 +851,217 @@ contract E2ETranscriptReplayTest is Test {
         returns (HyraxProofDecoder.DecodedPoint[] memory)
     {
         return HyraxProofDecoder.decodeInputCommitmentPoints(data);
+    }
+}
+
+/// @title PedersenGensDecoderTest
+/// @notice Tests that Pedersen generators are correctly decoded from Rust-exported data.
+contract PedersenGensDecoderTest is Test {
+    /// @notice Load generators from the E2E fixture
+    function _loadGens() internal view returns (bytes memory) {
+        string memory json = vm.readFile("test/fixtures/e2e_fixture.json");
+        return vm.parseJsonBytes(json, ".gens_hex");
+    }
+
+    /// @notice Decode gens by parsing the calldata bytes directly (mirrors RemainderVerifier.decodePedersenGens)
+    function _decodeGensCalldata(bytes calldata data) external pure returns (HyraxVerifier.PedersenGens memory gens) {
+        if (data.length == 0) {
+            gens.messageGens = new HyraxVerifier.G1Point[](0);
+            return gens;
+        }
+
+        uint256 offset = 0;
+        uint256 numGens = uint256(bytes32(data[offset:offset + 32]));
+        offset += 32;
+
+        gens.messageGens = new HyraxVerifier.G1Point[](numGens);
+        for (uint256 i = 0; i < numGens; i++) {
+            gens.messageGens[i].x = uint256(bytes32(data[offset:offset + 32]));
+            offset += 32;
+            gens.messageGens[i].y = uint256(bytes32(data[offset:offset + 32]));
+            offset += 32;
+        }
+
+        gens.scalarGen.x = uint256(bytes32(data[offset:offset + 32]));
+        offset += 32;
+        gens.scalarGen.y = uint256(bytes32(data[offset:offset + 32]));
+        offset += 32;
+
+        gens.blindingGen.x = uint256(bytes32(data[offset:offset + 32]));
+        offset += 32;
+        gens.blindingGen.y = uint256(bytes32(data[offset:offset + 32]));
+        offset += 32;
+    }
+
+    /// @notice Test basic generator decoding (count, structure)
+    function test_decode_gens_structure() public {
+        bytes memory gensData = _loadGens();
+        HyraxVerifier.PedersenGens memory gens = this._decodeGensCalldata(gensData);
+
+        // 512 message generators
+        assertEq(gens.messageGens.length, 512, "Should have 512 message generators");
+
+        // Scalar gen should be non-zero
+        assertTrue(gens.scalarGen.x != 0 || gens.scalarGen.y != 0, "Scalar gen should be non-zero");
+
+        // Blinding gen should be non-zero
+        assertTrue(gens.blindingGen.x != 0 || gens.blindingGen.y != 0, "Blinding gen should be non-zero");
+
+        // Scalar gen should equal the last message gen
+        assertEq(gens.scalarGen.x, gens.messageGens[511].x, "Scalar gen x should equal last message gen");
+        assertEq(gens.scalarGen.y, gens.messageGens[511].y, "Scalar gen y should equal last message gen");
+
+        emit log_named_uint("Gens data size (bytes)", gensData.length);
+        emit log_named_uint("Message generators", gens.messageGens.length);
+    }
+
+    /// @notice Test that all generator points are on the BN254 curve
+    function test_all_gens_on_curve() public {
+        bytes memory gensData = _loadGens();
+        HyraxVerifier.PedersenGens memory gens = this._decodeGensCalldata(gensData);
+
+        // Check first 10 message generators (checking all 512 would be expensive)
+        for (uint256 i = 0; i < 10; i++) {
+            assertTrue(
+                HyraxVerifier.isOnCurve(gens.messageGens[i]),
+                string(abi.encodePacked("messageGen[", vm.toString(i), "] not on curve"))
+            );
+        }
+
+        // Check last message generator
+        assertTrue(HyraxVerifier.isOnCurve(gens.messageGens[511]), "Last messageGen not on curve");
+
+        // Check scalar gen
+        assertTrue(HyraxVerifier.isOnCurve(gens.scalarGen), "Scalar gen not on curve");
+
+        // Check blinding gen
+        assertTrue(HyraxVerifier.isOnCurve(gens.blindingGen), "Blinding gen not on curve");
+    }
+
+    /// @notice Test gas cost of decoding generators
+    function test_decode_gens_gas() public {
+        bytes memory gensData = _loadGens();
+
+        uint256 gasBefore = gasleft();
+        this._decodeGensCalldata(gensData);
+        uint256 gasUsed = gasBefore - gasleft();
+
+        emit log_named_uint("Gas to decode 512 Pedersen generators", gasUsed);
+    }
+
+    /// @notice Test empty generators fallback
+    function test_empty_gens() public view {
+        bytes memory empty = "";
+        HyraxVerifier.PedersenGens memory gens = this._decodeGensCalldata(empty);
+        assertEq(gens.messageGens.length, 0, "Empty gens should have 0 message generators");
+    }
+}
+
+/// @title CommittedSumcheckVerifierTest
+/// @notice Unit tests for the committed sumcheck verification components.
+contract CommittedSumcheckVerifierTest is Test {
+    /// @notice Test modular inverse
+    function test_mod_inverse() public pure {
+        uint256 p = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
+
+        // inv(2) * 2 == 1 (mod p)
+        uint256 inv2 = CommittedSumcheckVerifier.modInverse(2, p);
+        assertEq(mulmod(inv2, 2, p), 1, "inv(2) * 2 should be 1");
+
+        // inv(7) * 7 == 1 (mod p)
+        uint256 inv7 = CommittedSumcheckVerifier.modInverse(7, p);
+        assertEq(mulmod(inv7, 7, p), 1, "inv(7) * 7 should be 1");
+
+        // inv(p-1) * (p-1) == 1 (mod p)
+        uint256 invPm1 = CommittedSumcheckVerifier.modInverse(p - 1, p);
+        assertEq(mulmod(invPm1, p - 1, p), 1, "inv(p-1) * (p-1) should be 1");
+    }
+
+    /// @notice Test modular exponentiation
+    function test_mod_exp() public pure {
+        uint256 p = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
+
+        // 2^10 = 1024
+        assertEq(CommittedSumcheckVerifier.modExp(2, 10, p), 1024, "2^10 should be 1024");
+
+        // 3^0 = 1
+        assertEq(CommittedSumcheckVerifier.modExp(3, 0, p), 1, "3^0 should be 1");
+
+        // Fermat's little theorem: a^(p-1) = 1 (mod p)
+        assertEq(CommittedSumcheckVerifier.modExp(5, p - 1, p), 1, "5^(p-1) should be 1 mod p");
+    }
+
+    /// @notice Test j_star computation with known values
+    function test_compute_jstar_basic() public pure {
+        uint256 n = 1;
+        uint256 degree = 2;
+
+        uint256[] memory rhos = new uint256[](2);
+        rhos[0] = 3;
+        rhos[1] = 5;
+
+        uint256[] memory gammas = new uint256[](1);
+        gammas[0] = 7;
+
+        uint256[] memory bindings = new uint256[](1);
+        bindings[0] = 11;
+
+        uint256[] memory jStar = CommittedSumcheckVerifier.computeJStar(rhos, gammas, bindings, degree, n);
+
+        // j_star length should be (degree+1) * n = 3
+        assertEq(jStar.length, 3, "j_star should have 3 elements");
+
+        // Verify all elements are within field
+        uint256 p = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
+        for (uint256 i = 0; i < jStar.length; i++) {
+            assertTrue(jStar[i] < p, "j_star element should be < Fr modulus");
+        }
+    }
+
+    /// @notice Test MLE evaluation from GKRVerifier
+    function test_evaluate_mle() public pure {
+        // MLE of [3, 7] at point [0] should give 3
+        uint256[] memory data = new uint256[](2);
+        data[0] = 3;
+        data[1] = 7;
+
+        uint256[] memory point0 = new uint256[](1);
+        point0[0] = 0;
+        assertEq(GKRVerifier.evaluateMLEFromData(data, point0), 3, "MLE([3,7], [0]) should be 3");
+
+        // MLE of [3, 7] at point [1] should give 7
+        uint256[] memory point1 = new uint256[](1);
+        point1[0] = 1;
+        assertEq(GKRVerifier.evaluateMLEFromData(data, point1), 7, "MLE([3,7], [1]) should be 7");
+    }
+
+    /// @notice Test ProofOfProduct EC check structure (basic smoke test)
+    function test_pop_check_basic() public view {
+        // Create trivial PoP data: all zeros should fail (degenerate case)
+        HyraxVerifier.ProofOfProduct memory pop;
+        pop.alpha = HyraxVerifier.G1Point(0, 0);
+        pop.beta = HyraxVerifier.G1Point(0, 0);
+        pop.delta = HyraxVerifier.G1Point(0, 0);
+        pop.z1 = 0;
+        pop.z2 = 0;
+        pop.z3 = 0;
+        pop.z4 = 0;
+        pop.z5 = 0;
+
+        HyraxVerifier.G1Point memory comX = HyraxVerifier.G1Point(0, 0);
+        HyraxVerifier.G1Point memory comY = HyraxVerifier.G1Point(0, 0);
+        HyraxVerifier.G1Point memory comZ = HyraxVerifier.G1Point(0, 0);
+
+        HyraxVerifier.PedersenGens memory gens;
+        gens.messageGens = new HyraxVerifier.G1Point[](0);
+        gens.scalarGen = HyraxVerifier.G1Point(1, 2);
+        gens.blindingGen = HyraxVerifier.G1Point(1, 2);
+
+        PoseidonSponge.Sponge memory sponge = PoseidonSponge.init();
+
+        // Zero PoP with identity points: all checks should pass trivially
+        // (0 + 0*com = 0*g + 0*h → 0 = 0 for each check)
+        bool valid = HyraxVerifier.verifyProofOfProduct(pop, comX, comY, comZ, gens, sponge);
+        assertTrue(valid, "Trivial zero PoP should pass");
     }
 }

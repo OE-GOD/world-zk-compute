@@ -12,6 +12,8 @@ use anyhow::{anyhow, Result};
 use ff::{Field, PrimeField};
 use hyrax::gkr::HyraxProof;
 use serde_json::Value;
+use shared_types::curves::PrimeOrderCurve;
+use shared_types::pedersen::PedersenCommitter;
 use shared_types::{Bn256Point, Fq};
 
 /// ABI-encode a HyraxProof for on-chain verification.
@@ -128,6 +130,55 @@ pub fn encode_hyrax_proof(
     }
 
     Ok(buf)
+}
+
+/// ABI-encode Pedersen generators for on-chain PODP verification.
+///
+/// Format: numGens (uint256) | G1[numGens] (message gens) | G1 (scalarGen) | G1 (blindingGen)
+/// Each G1 point is 64 bytes (x, y) in big-endian.
+pub fn encode_pedersen_gens(
+    committer: &PedersenCommitter<Bn256Point>,
+) -> Result<Vec<u8>> {
+    let mut buf = Vec::new();
+
+    let num_gens = committer.generators.len();
+    encode_u256(&mut buf, num_gens as u64);
+
+    // Message generators
+    for gen in &committer.generators {
+        let (x, y) = gen
+            .affine_coordinates()
+            .ok_or_else(|| anyhow!("generator point at infinity"))?;
+        encode_fq_be(&mut buf, &x);
+        encode_fq_be(&mut buf, &y);
+    }
+
+    // Scalar generator (last message gen)
+    let scalar_gen = committer.scalar_commit_generator();
+    let (sx, sy) = scalar_gen
+        .affine_coordinates()
+        .ok_or_else(|| anyhow!("scalar gen point at infinity"))?;
+    encode_fq_be(&mut buf, &sx);
+    encode_fq_be(&mut buf, &sy);
+
+    // Blinding generator
+    let (bx, by) = committer
+        .blinding_generator
+        .affine_coordinates()
+        .ok_or_else(|| anyhow!("blinding gen point at infinity"))?;
+    encode_fq_be(&mut buf, &bx);
+    encode_fq_be(&mut buf, &by);
+
+    Ok(buf)
+}
+
+/// Encode an Fq field element as big-endian 32 bytes.
+fn encode_fq_be(buf: &mut Vec<u8>, val: &Fq) {
+    let repr = val.to_repr();
+    let mut be = [0u8; 32];
+    be.copy_from_slice(repr.as_ref());
+    be.reverse();
+    buf.extend_from_slice(&be);
 }
 
 fn encode_layer_proof(buf: &mut Vec<u8>, lp: &Value) -> Result<()> {

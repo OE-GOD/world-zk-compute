@@ -5,6 +5,7 @@ import {PoseidonSponge} from "./PoseidonSponge.sol";
 import {SumcheckVerifier} from "./SumcheckVerifier.sol";
 import {HyraxVerifier} from "./HyraxVerifier.sol";
 import {GKRVerifier} from "./GKRVerifier.sol";
+import {CommittedSumcheckVerifier} from "./CommittedSumcheckVerifier.sol";
 
 /// @title RemainderVerifier
 /// @notice Top-level on-chain verifier for Remainder (GKR+Hyrax) proofs
@@ -152,10 +153,10 @@ contract RemainderVerifier {
     // PROOF DECODING
     // ========================================================================
 
-    /// @notice Decode ABI-encoded proof bytes into GKR proof structure
+    /// @notice Decode ABI-encoded proof bytes into committed GKR proof structure
     /// @param proofData Proof data (after selector)
     /// @param publicInputBytes Raw public input bytes
-    /// @return gkrProof Decoded GKR proof
+    /// @return gkrProof Decoded GKR proof (committed sumcheck format)
     /// @return pubInputs Decoded public inputs as field elements
     function decodeProof(bytes calldata proofData, bytes calldata publicInputBytes)
         internal
@@ -164,128 +165,221 @@ contract RemainderVerifier {
     {
         uint256 offset = 0;
 
-        // Read circuit hash (32 bytes)
-        // bytes32 proofCircuitHash = bytes32(proofData[offset:offset + 32]);
+        // Skip circuit hash (32 bytes)
         offset += 32;
 
-        // Read number of GKR layers
-        uint256 numLayers = uint256(bytes32(proofData[offset:offset + 32]));
+        // Skip public inputs section (decoded separately from publicInputBytes)
+        uint256 numPubInputSections = uint256(bytes32(proofData[offset:offset + 32]));
         offset += 32;
-
-        // Decode layer proofs
-        gkrProof.layerProofs = new GKRVerifier.LayerProof[](numLayers > 0 ? numLayers - 1 : 0);
-        gkrProof.outputValues = new uint256[](0);
-
-        for (uint256 i = 0; i < gkrProof.layerProofs.length; i++) {
-            // Read number of sumcheck rounds
-            uint256 numRounds = uint256(bytes32(proofData[offset:offset + 32]));
-            offset += 32;
-
-            // Read round polynomials
-            SumcheckVerifier.RoundPoly[] memory rounds = new SumcheckVerifier.RoundPoly[](numRounds);
-            for (uint256 r = 0; r < numRounds; r++) {
-                // Read number of evaluations (degree + 1)
-                uint256 numEvals = uint256(bytes32(proofData[offset:offset + 32]));
-                offset += 32;
-
-                rounds[r].evals = new uint256[](numEvals);
-                for (uint256 e = 0; e < numEvals; e++) {
-                    rounds[r].evals[e] = uint256(bytes32(proofData[offset:offset + 32]));
-                    offset += 32;
-                }
-            }
-
-            // Read final evaluation
-            uint256 finalEval = uint256(bytes32(proofData[offset:offset + 32]));
-            offset += 32;
-
-            gkrProof.layerProofs[i].sumcheckProof =
-                SumcheckVerifier.SumcheckProof({rounds: rounds, finalEval: finalEval});
-
-            // Read claims on previous layer
-            uint256 numClaims = uint256(bytes32(proofData[offset:offset + 32]));
-            offset += 32;
-
-            gkrProof.layerProofs[i].claimsOnPrevLayer = new uint256[](numClaims);
-            for (uint256 c = 0; c < numClaims; c++) {
-                gkrProof.layerProofs[i].claimsOnPrevLayer[c] = uint256(bytes32(proofData[offset:offset + 32]));
-                offset += 32;
-            }
+        for (uint256 i = 0; i < numPubInputSections; i++) {
+            uint256 cnt = uint256(bytes32(proofData[offset:offset + 32]));
+            offset += 32 + cnt * 32;
         }
 
-        // Decode Hyrax evaluation proofs (with PODP data)
+        // Skip output layer proofs (G1 points)
+        uint256 numOutputProofs = uint256(bytes32(proofData[offset:offset + 32]));
+        offset += 32;
+        // Save output values (extract from proof)
+        gkrProof.outputValues = new uint256[](0); // Output values come from public inputs
+        offset += numOutputProofs * 64;
+
+        // Decode committed layer proofs
+        uint256 numLayerProofs = uint256(bytes32(proofData[offset:offset + 32]));
+        offset += 32;
+        gkrProof.layerProofs = new GKRVerifier.CommittedLayerProof[](numLayerProofs);
+
+        for (uint256 i = 0; i < numLayerProofs; i++) {
+            offset = _decodeCommittedLayerProof(proofData, offset, gkrProof.layerProofs[i]);
+        }
+
+        // Skip Fiat-Shamir claims section
+        uint256 numFsClaims = uint256(bytes32(proofData[offset:offset + 32]));
+        offset += 32;
+        for (uint256 i = 0; i < numFsClaims; i++) {
+            offset = _skipClaim(proofData, offset);
+        }
+
+        // Skip public value claims section
+        uint256 numPubClaims = uint256(bytes32(proofData[offset:offset + 32]));
+        offset += 32;
+        for (uint256 i = 0; i < numPubClaims; i++) {
+            offset = _skipClaim(proofData, offset);
+        }
+
+        // Decode Hyrax input proofs (with PODP data)
         uint256 numInputProofs = uint256(bytes32(proofData[offset:offset + 32]));
         offset += 32;
-
         gkrProof.inputProofs = new HyraxVerifier.EvalProof[](numInputProofs);
+
         for (uint256 i = 0; i < numInputProofs; i++) {
-            // Read commitment rows
-            uint256 numRows = uint256(bytes32(proofData[offset:offset + 32]));
-            offset += 32;
-
-            gkrProof.inputProofs[i].commitmentRows = new HyraxVerifier.G1Point[](numRows);
-            for (uint256 r = 0; r < numRows; r++) {
-                gkrProof.inputProofs[i].commitmentRows[r].x = uint256(bytes32(proofData[offset:offset + 32]));
-                offset += 32;
-                gkrProof.inputProofs[i].commitmentRows[r].y = uint256(bytes32(proofData[offset:offset + 32]));
-                offset += 32;
-            }
-
-            // Read number of evaluation proofs (typically 1)
-            uint256 numEvals = uint256(bytes32(proofData[offset:offset + 32]));
-            offset += 32;
-
-            // Decode first PODP proof + comEval
-            if (numEvals > 0) {
-                // PODP: commitD (G1)
-                gkrProof.inputProofs[i].podp.commitD.x = uint256(bytes32(proofData[offset:offset + 32]));
-                offset += 32;
-                gkrProof.inputProofs[i].podp.commitD.y = uint256(bytes32(proofData[offset:offset + 32]));
-                offset += 32;
-
-                // PODP: commitDDotA (G1)
-                gkrProof.inputProofs[i].podp.commitDDotA.x = uint256(bytes32(proofData[offset:offset + 32]));
-                offset += 32;
-                gkrProof.inputProofs[i].podp.commitDDotA.y = uint256(bytes32(proofData[offset:offset + 32]));
-                offset += 32;
-
-                // PODP: z_vector
-                uint256 numZ = uint256(bytes32(proofData[offset:offset + 32]));
-                offset += 32;
-                gkrProof.inputProofs[i].podp.zVector = new uint256[](numZ);
-                for (uint256 z = 0; z < numZ; z++) {
-                    gkrProof.inputProofs[i].podp.zVector[z] = uint256(bytes32(proofData[offset:offset + 32]));
-                    offset += 32;
-                }
-
-                // PODP: z_delta, z_beta
-                gkrProof.inputProofs[i].podp.zDelta = uint256(bytes32(proofData[offset:offset + 32]));
-                offset += 32;
-                gkrProof.inputProofs[i].podp.zBeta = uint256(bytes32(proofData[offset:offset + 32]));
-                offset += 32;
-
-                // commitmentToEvaluation (G1)
-                gkrProof.inputProofs[i].comEval.x = uint256(bytes32(proofData[offset:offset + 32]));
-                offset += 32;
-                gkrProof.inputProofs[i].comEval.y = uint256(bytes32(proofData[offset:offset + 32]));
-                offset += 32;
-            }
-
-            // Skip additional eval proofs (uncommon)
-            for (uint256 e = 1; e < numEvals; e++) {
-                offset += 128; // commitD + commitDDotA
-                uint256 skipZ = uint256(bytes32(proofData[offset:offset + 32]));
-                offset += 32 + skipZ * 32 + 64; // z_vector + z_delta + z_beta
-                offset += 64; // comEval
-            }
+            offset = _decodeInputProof(proofData, offset, gkrProof.inputProofs[i]);
         }
 
-        // Decode public inputs
+        // Decode public inputs from separate calldata
         uint256 numPubInputs = publicInputBytes.length / 32;
         pubInputs = new uint256[](numPubInputs);
         for (uint256 i = 0; i < numPubInputs; i++) {
             pubInputs[i] = uint256(bytes32(publicInputBytes[i * 32:(i + 1) * 32]));
         }
+    }
+
+    /// @dev Decode a single committed layer proof from proof bytes
+    function _decodeCommittedLayerProof(
+        bytes calldata data,
+        uint256 offset,
+        GKRVerifier.CommittedLayerProof memory layerProof
+    ) private pure returns (uint256) {
+        // ProofOfSumcheck: sum (G1)
+        layerProof.sumcheckProof.sum.x = uint256(bytes32(data[offset:offset + 32]));
+        layerProof.sumcheckProof.sum.y = uint256(bytes32(data[offset + 32:offset + 64]));
+        offset += 64;
+
+        // ProofOfSumcheck: messages (G1[])
+        uint256 numMessages = uint256(bytes32(data[offset:offset + 32]));
+        offset += 32;
+        layerProof.sumcheckProof.messages = new HyraxVerifier.G1Point[](numMessages);
+        for (uint256 j = 0; j < numMessages; j++) {
+            layerProof.sumcheckProof.messages[j].x = uint256(bytes32(data[offset:offset + 32]));
+            layerProof.sumcheckProof.messages[j].y = uint256(bytes32(data[offset + 32:offset + 64]));
+            offset += 64;
+        }
+
+        // ProofOfSumcheck: PODP
+        offset = _decodePODP(data, offset, layerProof.sumcheckProof.podp);
+
+        // Post-sumcheck commitments (G1[])
+        uint256 numCommits = uint256(bytes32(data[offset:offset + 32]));
+        offset += 32;
+        layerProof.commitments = new HyraxVerifier.G1Point[](numCommits);
+        for (uint256 j = 0; j < numCommits; j++) {
+            layerProof.commitments[j].x = uint256(bytes32(data[offset:offset + 32]));
+            layerProof.commitments[j].y = uint256(bytes32(data[offset + 32:offset + 64]));
+            offset += 64;
+        }
+
+        // ProofOfProduct entries
+        uint256 numPops = uint256(bytes32(data[offset:offset + 32]));
+        offset += 32;
+        layerProof.pops = new HyraxVerifier.ProofOfProduct[](numPops);
+        for (uint256 j = 0; j < numPops; j++) {
+            // 3 G1 points: alpha, beta, delta
+            layerProof.pops[j].alpha.x = uint256(bytes32(data[offset:offset + 32]));
+            layerProof.pops[j].alpha.y = uint256(bytes32(data[offset + 32:offset + 64]));
+            offset += 64;
+            layerProof.pops[j].beta.x = uint256(bytes32(data[offset:offset + 32]));
+            layerProof.pops[j].beta.y = uint256(bytes32(data[offset + 32:offset + 64]));
+            offset += 64;
+            layerProof.pops[j].delta.x = uint256(bytes32(data[offset:offset + 32]));
+            layerProof.pops[j].delta.y = uint256(bytes32(data[offset + 32:offset + 64]));
+            offset += 64;
+            // 5 scalars: z1..z5
+            layerProof.pops[j].z1 = uint256(bytes32(data[offset:offset + 32]));
+            offset += 32;
+            layerProof.pops[j].z2 = uint256(bytes32(data[offset:offset + 32]));
+            offset += 32;
+            layerProof.pops[j].z3 = uint256(bytes32(data[offset:offset + 32]));
+            offset += 32;
+            layerProof.pops[j].z4 = uint256(bytes32(data[offset:offset + 32]));
+            offset += 32;
+            layerProof.pops[j].z5 = uint256(bytes32(data[offset:offset + 32]));
+            offset += 32;
+        }
+
+        // Skip claim aggregation (optional)
+        uint256 hasAgg = uint256(bytes32(data[offset:offset + 32]));
+        offset += 32;
+        if (hasAgg == 1) {
+            // Skip coefficients
+            uint256 numCoeffs = uint256(bytes32(data[offset:offset + 32]));
+            offset += 32 + numCoeffs * 64;
+            // Skip openings
+            uint256 numOpenings = uint256(bytes32(data[offset:offset + 32]));
+            offset += 32 + numOpenings * (64 + 64);
+            // Skip equality proofs
+            uint256 numEq = uint256(bytes32(data[offset:offset + 32]));
+            offset += 32 + numEq * (64 + 32);
+        }
+
+        return offset;
+    }
+
+    /// @dev Decode a PODP proof from proof bytes
+    function _decodePODP(bytes calldata data, uint256 offset, HyraxVerifier.PODPProof memory podp)
+        private
+        pure
+        returns (uint256)
+    {
+        podp.commitD.x = uint256(bytes32(data[offset:offset + 32]));
+        podp.commitD.y = uint256(bytes32(data[offset + 32:offset + 64]));
+        offset += 64;
+
+        podp.commitDDotA.x = uint256(bytes32(data[offset:offset + 32]));
+        podp.commitDDotA.y = uint256(bytes32(data[offset + 32:offset + 64]));
+        offset += 64;
+
+        uint256 numZ = uint256(bytes32(data[offset:offset + 32]));
+        offset += 32;
+        podp.zVector = new uint256[](numZ);
+        for (uint256 i = 0; i < numZ; i++) {
+            podp.zVector[i] = uint256(bytes32(data[offset:offset + 32]));
+            offset += 32;
+        }
+
+        podp.zDelta = uint256(bytes32(data[offset:offset + 32]));
+        offset += 32;
+        podp.zBeta = uint256(bytes32(data[offset:offset + 32]));
+        offset += 32;
+
+        return offset;
+    }
+
+    /// @dev Decode a Hyrax input proof (commitment rows + PODP + comEval)
+    function _decodeInputProof(bytes calldata data, uint256 offset, HyraxVerifier.EvalProof memory proof)
+        private
+        pure
+        returns (uint256)
+    {
+        // Commitment rows
+        uint256 numRows = uint256(bytes32(data[offset:offset + 32]));
+        offset += 32;
+        proof.commitmentRows = new HyraxVerifier.G1Point[](numRows);
+        for (uint256 r = 0; r < numRows; r++) {
+            proof.commitmentRows[r].x = uint256(bytes32(data[offset:offset + 32]));
+            proof.commitmentRows[r].y = uint256(bytes32(data[offset + 32:offset + 64]));
+            offset += 64;
+        }
+
+        // Evaluation proofs
+        uint256 numEvals = uint256(bytes32(data[offset:offset + 32]));
+        offset += 32;
+
+        if (numEvals > 0) {
+            offset = _decodePODP(data, offset, proof.podp);
+            // commitmentToEvaluation
+            proof.comEval.x = uint256(bytes32(data[offset:offset + 32]));
+            proof.comEval.y = uint256(bytes32(data[offset + 32:offset + 64]));
+            offset += 64;
+        }
+
+        // Skip additional eval proofs
+        for (uint256 e = 1; e < numEvals; e++) {
+            offset += 128; // commitD + commitDDotA
+            uint256 skipZ = uint256(bytes32(data[offset:offset + 32]));
+            offset += 32 + skipZ * 32 + 64; // z_vector + z_delta + z_beta
+            offset += 64; // comEval
+        }
+
+        return offset;
+    }
+
+    /// @dev Skip a claim section in proof data
+    function _skipClaim(bytes calldata data, uint256 offset) private pure returns (uint256) {
+        offset += 32; // value
+        offset += 32; // blinding
+        offset += 64; // commitment point
+        uint256 numPoint = uint256(bytes32(data[offset:offset + 32]));
+        offset += 32 + numPoint * 32;
+        return offset;
     }
 
     // ========================================================================

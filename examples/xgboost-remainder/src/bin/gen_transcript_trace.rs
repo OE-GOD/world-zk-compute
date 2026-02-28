@@ -289,6 +289,14 @@ fn main() -> Result<()> {
         (abi_bytes.len() - 4) / 32
     );
 
+    // === ABI-encode the Pedersen generators ===
+    let gens_bytes = abi_encode::encode_pedersen_gens(&verifier_committer)?;
+    eprintln!(
+        "ABI-encoded generators: {} bytes ({} uint256 slots)",
+        gens_bytes.len(),
+        gens_bytes.len() / 32
+    );
+
     // Build the output JSON with all values
     let ec_points_hex: Vec<serde_json::Value> = input_commits
         .iter()
@@ -298,6 +306,8 @@ fn main() -> Result<()> {
     let output = json!({
         "proof_hex": format!("0x{}", hex::encode(&abi_bytes)),
         "proof_size_bytes": abi_bytes.len(),
+        "gens_hex": format!("0x{}", hex::encode(&gens_bytes)),
+        "gens_size_bytes": gens_bytes.len(),
         "circuit_hash_raw": format!("0x{}", hex::encode(&circuit_hash_raw)),
         "transcript_trace": {
             "circuit_hash_fq_1": fq_to_hex(&circuit_hash_1),

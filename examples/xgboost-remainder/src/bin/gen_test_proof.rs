@@ -110,6 +110,10 @@ fn main() -> Result<()> {
     let abi_bytes = abi_encode::encode_hyrax_proof(&proof, &circuit_hash)?;
     eprintln!("ABI-encoded proof: {} bytes ({} uint256 slots)", abi_bytes.len(), (abi_bytes.len() - 4) / 32);
 
+    // ABI-encode Pedersen generators
+    let gens_bytes = abi_encode::encode_pedersen_gens(&committer)?;
+    eprintln!("ABI-encoded generators: {} bytes ({} uint256 slots)", gens_bytes.len(), gens_bytes.len() / 32);
+
     // Also serialize the proof JSON for debugging
     let proof_json = serde_json::to_value(&proof)?;
 
@@ -123,8 +127,10 @@ fn main() -> Result<()> {
 
     let output = json!({
         "proof_hex": format!("0x{}", hex::encode(&abi_bytes)),
+        "gens_hex": format!("0x{}", hex::encode(&gens_bytes)),
         "circuit_hash": format!("0x{}", hex::encode(&circuit_hash)),
         "proof_size_bytes": abi_bytes.len(),
+        "gens_size_bytes": gens_bytes.len(),
         "structure": {
             "num_public_inputs": proof_json["public_inputs"].as_array().map(|a| a.len()).unwrap_or(0),
             "num_output_layer_proofs": num_output_proofs,

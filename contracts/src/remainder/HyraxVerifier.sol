@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity ^0.8.20;
 
+import {PoseidonSponge} from "./PoseidonSponge.sol";
+
 /// @title HyraxVerifier
 /// @notice Verifies Hyrax polynomial commitment scheme (PCS) evaluation proofs
 /// @dev Hyrax uses a matrix structure for Pedersen commitments:
@@ -53,6 +55,18 @@ library HyraxVerifier {
         G1Point[] messageGens; // g_1..g_m (vector Pedersen bases)
         G1Point scalarGen; // g_scalar (for scalar_commit, = last generator)
         G1Point blindingGen; // h (blinding generator)
+    }
+
+    /// @notice ProofOfProduct — Sigma protocol proof that x*y=z on committed values
+    struct ProofOfProduct {
+        G1Point alpha;
+        G1Point beta;
+        G1Point delta;
+        uint256 z1;
+        uint256 z2;
+        uint256 z3;
+        uint256 z4;
+        uint256 z5;
     }
 
     /// @notice Hyrax evaluation proof
@@ -156,6 +170,110 @@ library HyraxVerifier {
         for (uint256 i = 0; i < a.length; i++) {
             result = addmod(result, mulmod(a[i], b[i], FR_MODULUS), FR_MODULUS);
         }
+    }
+
+    // ========================================================================
+    // PROOF OF PRODUCT
+    // ========================================================================
+
+    /// @notice Verify a ProofOfProduct: proves x*y=z on committed values
+    /// @dev Transcript operations (from proof_of_product.rs):
+    ///      1. Absorb alpha, beta, delta (6 field elements)
+    ///      2. Squeeze challenge c
+    ///      3. Absorb z1..z5
+    ///
+    ///      EC checks (3 equations):
+    ///        alpha + c * com_x == z1 * g + z2 * h
+    ///        beta  + c * com_y == z3 * g + z4 * h
+    ///        delta + c * com_z == z3 * com_x + z5 * h
+    ///
+    /// @param pop The ProofOfProduct
+    /// @param comX Commitment to x
+    /// @param comY Commitment to y
+    /// @param comZ Commitment to z (= x*y)
+    /// @param gens Pedersen generators
+    /// @param sponge Fiat-Shamir transcript (modified in-place)
+    /// @return valid Whether the proof verifies
+    function verifyProofOfProduct(
+        ProofOfProduct memory pop,
+        G1Point memory comX,
+        G1Point memory comY,
+        G1Point memory comZ,
+        PedersenGens memory gens,
+        PoseidonSponge.Sponge memory sponge
+    ) internal view returns (bool) {
+        uint256 c = _popAbsorbAndSqueeze(pop, sponge);
+        return _popCheckEquations(pop, comX, comY, comZ, gens, c);
+    }
+
+    /// @notice Absorb PoP elements into transcript and squeeze challenge
+    function _popAbsorbAndSqueeze(ProofOfProduct memory pop, PoseidonSponge.Sponge memory sponge)
+        private
+        pure
+        returns (uint256 c)
+    {
+        // Absorb alpha, beta, delta
+        PoseidonSponge.absorb(sponge, pop.alpha.x);
+        PoseidonSponge.absorb(sponge, pop.alpha.y);
+        PoseidonSponge.absorb(sponge, pop.beta.x);
+        PoseidonSponge.absorb(sponge, pop.beta.y);
+        PoseidonSponge.absorb(sponge, pop.delta.x);
+        PoseidonSponge.absorb(sponge, pop.delta.y);
+
+        // Squeeze challenge
+        c = PoseidonSponge.squeeze(sponge) % FR_MODULUS;
+
+        // Absorb z1..z5
+        PoseidonSponge.absorb(sponge, pop.z1);
+        PoseidonSponge.absorb(sponge, pop.z2);
+        PoseidonSponge.absorb(sponge, pop.z3);
+        PoseidonSponge.absorb(sponge, pop.z4);
+        PoseidonSponge.absorb(sponge, pop.z5);
+    }
+
+    /// @notice Check the three PoP EC equations
+    function _popCheckEquations(
+        ProofOfProduct memory pop,
+        G1Point memory comX,
+        G1Point memory comY,
+        G1Point memory comZ,
+        PedersenGens memory gens,
+        uint256 c
+    ) private view returns (bool) {
+        // Check 1: alpha + c * com_x == z1 * g + z2 * h
+        if (!_popCheck1(pop, comX, gens, c)) return false;
+
+        // Check 2: beta + c * com_y == z3 * g + z4 * h
+        if (!_popCheck2(pop, comY, gens, c)) return false;
+
+        // Check 3: delta + c * com_z == z3 * com_x + z5 * h
+        G1Point memory lhs3 = ecAdd(pop.delta, scalarMul(comZ, c));
+        G1Point memory rhs3 = ecAdd(scalarMul(comX, pop.z3), scalarMul(gens.blindingGen, pop.z5));
+        if (!isEqual(lhs3, rhs3)) return false;
+
+        return true;
+    }
+
+    /// @notice PoP check 1: alpha + c * com_x == z1 * g + z2 * h
+    function _popCheck1(ProofOfProduct memory pop, G1Point memory comX, PedersenGens memory gens, uint256 c)
+        private
+        view
+        returns (bool)
+    {
+        G1Point memory lhs = ecAdd(pop.alpha, scalarMul(comX, c));
+        G1Point memory rhs = ecAdd(scalarMul(gens.scalarGen, pop.z1), scalarMul(gens.blindingGen, pop.z2));
+        return isEqual(lhs, rhs);
+    }
+
+    /// @notice PoP check 2: beta + c * com_y == z3 * g + z4 * h
+    function _popCheck2(ProofOfProduct memory pop, G1Point memory comY, PedersenGens memory gens, uint256 c)
+        private
+        view
+        returns (bool)
+    {
+        G1Point memory lhs = ecAdd(pop.beta, scalarMul(comY, c));
+        G1Point memory rhs = ecAdd(scalarMul(gens.scalarGen, pop.z3), scalarMul(gens.blindingGen, pop.z4));
+        return isEqual(lhs, rhs);
     }
 
     // ========================================================================
