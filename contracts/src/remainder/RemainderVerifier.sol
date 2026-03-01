@@ -32,6 +32,7 @@ contract RemainderVerifier {
         GKRVerifier.CircuitDescription description;
         bool active;
         string name; // Human-readable name (e.g., "XGBoost-5feat-10trees")
+        bytes32 gensHash; // keccak256 of expected Pedersen generators (0 = skip validation)
     }
 
     // ========================================================================
@@ -66,6 +67,7 @@ contract RemainderVerifier {
     error InvalidProofSelector();
     error InvalidProofLength();
     error ProofVerificationFailed();
+    error InvalidGenerators();
 
     // ========================================================================
     // MODIFIERS
@@ -110,12 +112,20 @@ contract RemainderVerifier {
         bytes4 selector = bytes4(proof[:4]);
         if (selector != bytes4("REM1")) revert InvalidProofSelector();
 
+        // Validate generators hash if configured
+        if (config.gensHash != bytes32(0) && gensData.length > 0) {
+            if (keccak256(gensData) != config.gensHash) revert InvalidGenerators();
+        }
+
         // Decode the proof and generators
         (GKRVerifier.GKRProof memory gkrProof, uint256[] memory pubInputs) = decodeProof(proof[4:], publicInputs);
         HyraxVerifier.PedersenGens memory gens = decodePedersenGens(gensData);
 
-        // Verify GKR proof
-        valid = GKRVerifier.verify(gkrProof, config.description, pubInputs, gens);
+        // Set up Fiat-Shamir transcript (matches Remainder's ECTranscript protocol)
+        PoseidonSponge.Sponge memory sponge = _setupTranscript(circuitHash, pubInputs, gkrProof);
+
+        // Verify GKR proof with pre-seeded transcript
+        valid = GKRVerifier.verify(gkrProof, config.description, pubInputs, gens, sponge);
 
         emit ProofVerified(circuitHash, valid);
     }
@@ -141,17 +151,66 @@ contract RemainderVerifier {
         bytes4 selector = bytes4(proof[:4]);
         if (selector != bytes4("REM1")) revert InvalidProofSelector();
 
-        // Decode and verify
+        // Validate generators hash if configured
+        if (config.gensHash != bytes32(0) && gensData.length > 0) {
+            if (keccak256(gensData) != config.gensHash) revert InvalidGenerators();
+        }
+
+        // Decode, set up transcript, and verify
         (GKRVerifier.GKRProof memory gkrProof, uint256[] memory pubInputs) = decodeProof(proof[4:], publicInputs);
         HyraxVerifier.PedersenGens memory gens = decodePedersenGens(gensData);
+        PoseidonSponge.Sponge memory sponge = _setupTranscript(circuitHash, pubInputs, gkrProof);
 
-        bool valid = GKRVerifier.verify(gkrProof, config.description, pubInputs, gens);
+        bool valid = GKRVerifier.verify(gkrProof, config.description, pubInputs, gens, sponge);
         if (!valid) revert ProofVerificationFailed();
     }
 
     // ========================================================================
     // PROOF DECODING
     // ========================================================================
+
+    /// @notice Decode proof and return top-level counts (for testing)
+    function decodeProofCounts(bytes calldata proofData, bytes calldata publicInputBytes)
+        external
+        pure
+        returns (uint256 numLayerProofs, uint256 numInputProofs, uint256 numPubInputs)
+    {
+        (GKRVerifier.GKRProof memory proof, uint256[] memory pubInputs) = decodeProof(proofData, publicInputBytes);
+        numLayerProofs = proof.layerProofs.length;
+        numInputProofs = proof.inputProofs.length;
+        numPubInputs = pubInputs.length;
+    }
+
+    /// @notice Decode proof with full structure (for testing)
+    function decodeProofCounted(bytes calldata proofData, bytes calldata publicInputBytes)
+        external
+        pure
+        returns (GKRVerifier.GKRProof memory gkrProof, uint256[] memory pubInputs)
+    {
+        return decodeProof(proofData, publicInputBytes);
+    }
+
+    /// @notice Public wrapper for _setupTranscript (for testing)
+    function setupTranscriptPublic(
+        bytes32 circuitHash,
+        uint256[] memory pubInputs,
+        GKRVerifier.GKRProof memory gkrProof
+    ) external view returns (PoseidonSponge.Sponge memory) {
+        return _setupTranscript(circuitHash, pubInputs, gkrProof);
+    }
+
+    /// @notice Decode proof and return per-layer structure (for testing)
+    function decodeLayerDetail(bytes calldata proofData, bytes calldata publicInputBytes, uint256 layerIdx)
+        external
+        pure
+        returns (uint256 numMessages, uint256 numCommits, uint256 numPops)
+    {
+        (GKRVerifier.GKRProof memory proof,) = decodeProof(proofData, publicInputBytes);
+        require(layerIdx < proof.layerProofs.length, "layer index out of bounds");
+        numMessages = proof.layerProofs[layerIdx].sumcheckProof.messages.length;
+        numCommits = proof.layerProofs[layerIdx].commitments.length;
+        numPops = proof.layerProofs[layerIdx].pops.length;
+    }
 
     /// @notice Decode ABI-encoded proof bytes into committed GKR proof structure
     /// @param proofData Proof data (after selector)
@@ -176,12 +235,16 @@ contract RemainderVerifier {
             offset += 32 + cnt * 32;
         }
 
-        // Skip output layer proofs (G1 points)
+        // Decode output layer proofs (claim commitment G1 points from prover)
         uint256 numOutputProofs = uint256(bytes32(proofData[offset:offset + 32]));
         offset += 32;
-        // Save output values (extract from proof)
         gkrProof.outputValues = new uint256[](0); // Output values come from public inputs
-        offset += numOutputProofs * 64;
+        gkrProof.outputClaimCommitments = new HyraxVerifier.G1Point[](numOutputProofs);
+        for (uint256 i = 0; i < numOutputProofs; i++) {
+            gkrProof.outputClaimCommitments[i].x = uint256(bytes32(proofData[offset:offset + 32]));
+            gkrProof.outputClaimCommitments[i].y = uint256(bytes32(proofData[offset + 32:offset + 64]));
+            offset += 64;
+        }
 
         // Decode committed layer proofs
         uint256 numLayerProofs = uint256(bytes32(proofData[offset:offset + 32]));
@@ -446,6 +509,32 @@ contract RemainderVerifier {
         bool[] calldata isCommitted,
         string calldata name
     ) external onlyAdmin {
+        _registerCircuit(circuitHash, numLayers, layerSizes, layerTypes, isCommitted, name, bytes32(0));
+    }
+
+    /// @notice Register a circuit with Pedersen generator hash validation
+    /// @param gensHash keccak256 of the expected Pedersen generators calldata (0 = skip validation)
+    function registerCircuitWithGens(
+        bytes32 circuitHash,
+        uint256 numLayers,
+        uint256[] calldata layerSizes,
+        uint8[] calldata layerTypes,
+        bool[] calldata isCommitted,
+        string calldata name,
+        bytes32 gensHash
+    ) external onlyAdmin {
+        _registerCircuit(circuitHash, numLayers, layerSizes, layerTypes, isCommitted, name, gensHash);
+    }
+
+    function _registerCircuit(
+        bytes32 circuitHash,
+        uint256 numLayers,
+        uint256[] calldata layerSizes,
+        uint8[] calldata layerTypes,
+        bool[] calldata isCommitted,
+        string calldata name,
+        bytes32 gensHash
+    ) private {
         require(circuits[circuitHash].circuitHash == bytes32(0), "Circuit already registered");
         require(layerSizes.length == numLayers, "Layer sizes length mismatch");
         require(layerTypes.length == numLayers, "Layer types length mismatch");
@@ -455,7 +544,8 @@ contract RemainderVerifier {
             numLayers: numLayers, layerSizes: layerSizes, layerTypes: layerTypes, isCommitted: isCommitted
         });
 
-        circuits[circuitHash] = CircuitConfig({circuitHash: circuitHash, description: desc, active: true, name: name});
+        circuits[circuitHash] =
+            CircuitConfig({circuitHash: circuitHash, description: desc, active: true, name: name, gensHash: gensHash});
 
         circuitHashes.push(circuitHash);
 
@@ -493,5 +583,118 @@ contract RemainderVerifier {
     /// @notice Get all registered circuit hashes
     function getCircuitHashes() external view returns (bytes32[] memory) {
         return circuitHashes;
+    }
+
+    // ========================================================================
+    // FIAT-SHAMIR TRANSCRIPT SETUP
+    // ========================================================================
+
+    /// @notice Set up the initial Fiat-Shamir transcript matching Remainder's ECTranscript protocol
+    /// @dev Absorbs: circuit hash Fq pair (2) + public inputs (N) + pub hash chain (2) +
+    ///      EC commitment points (M*2) + EC hash chain (2) = 6 + N + M*2 absorbs total
+    /// @param circuitHash SHA3-256 hash of the circuit description
+    /// @param pubInputs Decoded public input values
+    /// @param gkrProof Decoded proof (for extracting EC commitment points from input proofs)
+    /// @return sponge Initialized transcript ready for GKRVerifier
+    function _setupTranscript(bytes32 circuitHash, uint256[] memory pubInputs, GKRVerifier.GKRProof memory gkrProof)
+        internal
+        view
+        returns (PoseidonSponge.Sponge memory sponge)
+    {
+        sponge = PoseidonSponge.init();
+
+        // 1. Absorb circuit hash as two Fq elements (16-byte halves, LE interpreted)
+        (uint256 fq1, uint256 fq2) = _hashToFqPair(circuitHash);
+        PoseidonSponge.absorb(sponge, fq1);
+        PoseidonSponge.absorb(sponge, fq2);
+
+        // 2. Absorb public input values
+        for (uint256 i = 0; i < pubInputs.length; i++) {
+            PoseidonSponge.absorb(sponge, pubInputs[i]);
+        }
+
+        // 3. Absorb SHA-256 hash chain of public inputs
+        (uint256 pubHash1, uint256 pubHash2) = _sha256HashChain(pubInputs);
+        PoseidonSponge.absorb(sponge, pubHash1);
+        PoseidonSponge.absorb(sponge, pubHash2);
+
+        // 4. Absorb EC commitment points from input proofs
+        uint256[] memory ecCoords = _extractInputCommitCoords(gkrProof);
+        for (uint256 i = 0; i < ecCoords.length; i++) {
+            PoseidonSponge.absorb(sponge, ecCoords[i]);
+        }
+
+        // 5. Absorb SHA-256 hash chain of EC commitment coordinates
+        (uint256 ecHash1, uint256 ecHash2) = _sha256HashChain(ecCoords);
+        PoseidonSponge.absorb(sponge, ecHash1);
+        PoseidonSponge.absorb(sponge, ecHash2);
+    }
+
+    /// @notice Extract all input commitment point coordinates from decoded proof
+    /// @dev Returns [x0, y0, x1, y1, ...] for all commitment rows across all input proofs
+    function _extractInputCommitCoords(GKRVerifier.GKRProof memory proof)
+        internal
+        pure
+        returns (uint256[] memory coords)
+    {
+        // Count total coordinates
+        uint256 total = 0;
+        for (uint256 i = 0; i < proof.inputProofs.length; i++) {
+            total += proof.inputProofs[i].commitmentRows.length * 2;
+        }
+
+        coords = new uint256[](total);
+        uint256 idx = 0;
+        for (uint256 i = 0; i < proof.inputProofs.length; i++) {
+            for (uint256 j = 0; j < proof.inputProofs[i].commitmentRows.length; j++) {
+                coords[idx++] = proof.inputProofs[i].commitmentRows[j].x;
+                coords[idx++] = proof.inputProofs[i].commitmentRows[j].y;
+            }
+        }
+    }
+
+    /// @notice Convert a 32-byte hash into two Fq elements (each from a 16-byte half, LE interpreted)
+    /// @dev Matches Remainder's circuit_hash_to_fq_pair: split at byte 16, each half padded to 32 LE bytes
+    function _hashToFqPair(bytes32 hash) internal pure returns (uint256 fq1, uint256 fq2) {
+        assembly {
+            // First 16 bytes → LE uint256
+            fq1 := 0
+            for { let i := 0 } lt(i, 16) { i := add(i, 1) } { fq1 := or(shl(mul(i, 8), byte(i, hash)), fq1) }
+            // Second 16 bytes → LE uint256
+            fq2 := 0
+            for { let i := 0 } lt(i, 16) { i := add(i, 1) } {
+                fq2 := or(shl(mul(i, 8), byte(add(i, 16), hash)), fq2)
+            }
+        }
+    }
+
+    /// @notice Compute 1000-iteration SHA-256 hash chain, split into two Fq elements
+    /// @dev Matches Remainder's append_input_* hash chain:
+    ///      1. Concatenate Fq elements as LE 32-byte arrays
+    ///      2. SHA-256 of concatenation
+    ///      3. Iterate SHA-256 1000 times
+    ///      4. Split 32-byte result into two 16-byte halves → LE Fq
+    function _sha256HashChain(uint256[] memory fqElements) internal view returns (uint256 fq1, uint256 fq2) {
+        // Convert each Fq to 32 LE bytes and concatenate
+        bytes memory input = new bytes(fqElements.length * 32);
+        for (uint256 i = 0; i < fqElements.length; i++) {
+            uint256 val = fqElements[i];
+            uint256 base = i * 32;
+            for (uint256 j = 0; j < 32; j++) {
+                input[base + j] = bytes1(uint8(val & 0xff));
+                val >>= 8;
+            }
+        }
+
+        // Initial SHA-256
+        bytes32 hash = sha256(input);
+
+        // 1000 iterations
+        for (uint256 k = 0; k < 1000; k++) {
+            hash = sha256(abi.encodePacked(hash));
+        }
+
+        // Split and convert to LE Fq pair
+        (fq1, fq2) = _hashToFqPair(hash);
     }
 }

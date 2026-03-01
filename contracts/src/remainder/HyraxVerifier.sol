@@ -137,13 +137,14 @@ library HyraxVerifier {
         PedersenGens memory gens
     ) internal view returns (bool) {
         require(podp.zVector.length == aVector.length, "HyraxVerifier: PODP vector length mismatch");
-        require(podp.zVector.length == gens.messageGens.length, "HyraxVerifier: PODP generators length mismatch");
+        require(podp.zVector.length <= gens.messageGens.length, "HyraxVerifier: not enough generators for PODP");
 
         // 1. Compute z_dot_a = <z_vector, a_vector> (mod Fr)
         uint256 zDotA = innerProduct(podp.zVector, aVector);
 
-        // 2. Compute com_z = MSM(g_1..g_m, z_vector) + z_delta * h
-        G1Point memory comZ = multiScalarMul(gens.messageGens, podp.zVector);
+        // 2. Compute com_z = MSM(g_1..g_n, z_vector) + z_delta * h
+        // Use only the first n generators (PODP may use a subset of the full generator set)
+        G1Point memory comZ = _msmWithTruncatedGens(gens.messageGens, podp.zVector);
         G1Point memory zDeltaH = scalarMul(gens.blindingGen, podp.zDelta);
         comZ = ecAdd(comZ, zDeltaH);
 
@@ -338,6 +339,23 @@ library HyraxVerifier {
             G1Point memory term = scalarMul(points[i], scalars[i]);
             result = ecAdd(result, term);
         }
+    }
+
+    /// @notice MSM using only the first scalars.length generators (truncates if needed)
+    function _msmWithTruncatedGens(G1Point[] memory allGens, uint256[] memory scalars)
+        private
+        view
+        returns (G1Point memory)
+    {
+        uint256 n = scalars.length;
+        if (n == allGens.length) {
+            return multiScalarMul(allGens, scalars);
+        }
+        G1Point[] memory truncated = new G1Point[](n);
+        for (uint256 i = 0; i < n; i++) {
+            truncated[i] = allGens[i];
+        }
+        return multiScalarMul(truncated, scalars);
     }
 
     /// @notice Check if a point is on the BN254 curve (y^2 = x^3 + 3)

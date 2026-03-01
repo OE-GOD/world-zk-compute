@@ -304,7 +304,7 @@ fn encode_podp_from_json(buf: &mut Vec<u8>, podp: &Value) -> Result<()> {
 ///
 /// We recover y by solving y² = x³ + 3 (mod p) and selecting the root
 /// whose LE LSB matches the stored sign bit.
-fn decompress_point(compressed: &[u8]) -> Result<([u8; 32], [u8; 32])> {
+pub fn decompress_point(compressed: &[u8]) -> Result<([u8; 32], [u8; 32])> {
     if compressed.is_empty() {
         return Ok(([0u8; 32], [0u8; 32]));
     }

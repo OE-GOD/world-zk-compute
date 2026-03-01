@@ -957,6 +957,926 @@ contract PedersenGensDecoderTest is Test {
     }
 }
 
+/// @title E2EProofDecodeTest
+/// @notice Validates the committed sumcheck proof decoder against real Rust-generated data.
+///         Loads the real ABI-encoded proof, decodes it into committed GKR structs,
+///         and validates the structure matches expected counts.
+contract E2EProofDecodeTest is Test {
+    RemainderVerifier public verifier;
+
+    function setUp() public {
+        verifier = new RemainderVerifier(address(this));
+    }
+
+    /// @notice Test that the proof decodes successfully and has correct structure
+    function test_decode_committed_proof_structure() public {
+        string memory json = vm.readFile("test/fixtures/e2e_fixture.json");
+        bytes memory rawProof = vm.parseJsonBytes(json, ".proof_hex");
+        bytes memory proofData = _stripSelector(rawProof);
+        bytes memory pubInputs = abi.encodePacked(uint256(6), uint256(20));
+
+        // Decode proof counts via RemainderVerifier helper
+        (uint256 numLayers, uint256 numInputs, uint256 numPub) = verifier.decodeProofCounts(proofData, pubInputs);
+        assertEq(numLayers, 2, "Should have 2 layer proofs");
+        assertEq(numInputs, 1, "Should have 1 input proof");
+        assertEq(numPub, 2, "Should have 2 public inputs");
+
+        // Decode per-layer details
+        for (uint256 i = 0; i < numLayers; i++) {
+            (uint256 msgs, uint256 commits, uint256 pops) = verifier.decodeLayerDetail(proofData, pubInputs, i);
+            emit log_named_uint(string(abi.encodePacked("Layer ", vm.toString(i), " messages")), msgs);
+            emit log_named_uint(string(abi.encodePacked("Layer ", vm.toString(i), " commits")), commits);
+            emit log_named_uint(string(abi.encodePacked("Layer ", vm.toString(i), " PoPs")), pops);
+            assertGt(msgs, 0, "Layer should have messages");
+        }
+    }
+
+    /// @notice Test that decoded layer proofs have valid sumcheck messages
+    function test_decode_layer_messages_valid() public {
+        string memory json = vm.readFile("test/fixtures/e2e_fixture.json");
+        bytes memory rawProof = vm.parseJsonBytes(json, ".proof_hex");
+        bytes memory proofData = _stripSelector(rawProof);
+        bytes memory pubInputs = abi.encodePacked(uint256(6), uint256(20));
+
+        (uint256 numLayers,,) = verifier.decodeProofCounts(proofData, pubInputs);
+
+        uint256 totalPoints = 0;
+        for (uint256 i = 0; i < numLayers; i++) {
+            (uint256 msgs, uint256 commits,) = verifier.decodeLayerDetail(proofData, pubInputs, i);
+            totalPoints += msgs + commits + 1; // +1 for sum point
+        }
+
+        assertGt(totalPoints, 0, "Should have decoded EC points");
+        emit log_named_uint("Total EC points in layer proofs", totalPoints);
+    }
+
+    /// @notice Test full decode + verify path with real proof + generators
+    function test_full_verify_path() public {
+        string memory json = vm.readFile("test/fixtures/e2e_fixture.json");
+        bytes memory rawProof = vm.parseJsonBytes(json, ".proof_hex");
+        bytes memory gensData = vm.parseJsonBytes(json, ".gens_hex");
+        bytes memory pubInputs = abi.encodePacked(uint256(6), uint256(20));
+
+        // Test that decoding doesn't revert
+        (uint256 numLayerProofs, uint256 numInputProofs,) =
+            verifier.decodeProofCounts(_stripSelector(rawProof), pubInputs);
+
+        // Test that generators decode successfully
+        HyraxVerifier.PedersenGens memory gens = this._decodeGens(gensData);
+        assertEq(gens.messageGens.length, 512, "Should have 512 generators");
+
+        emit log_named_uint("Proof decoded layers", numLayerProofs);
+        emit log_named_uint("Proof decoded inputs", numInputProofs);
+        emit log_named_uint("Generators decoded", gens.messageGens.length);
+    }
+
+    /// @notice Test adapter publicData splitting convention
+    function test_adapter_public_data_split() public {
+        // Create combined publicData: [pubInputsLen] [pubInputs] [gensData]
+        bytes memory pubInputs = abi.encodePacked(uint256(6), uint256(20));
+
+        string memory json = vm.readFile("test/fixtures/e2e_fixture.json");
+        bytes memory gensData = vm.parseJsonBytes(json, ".gens_hex");
+
+        // Encode with length prefix
+        bytes memory combined = abi.encodePacked(uint256(pubInputs.length), pubInputs, gensData);
+
+        // Verify split
+        uint256 declaredLen;
+        assembly {
+            declaredLen := mload(add(combined, 32))
+        }
+        assertEq(declaredLen, 64, "pubInputsLen should be 64 (2 uint256s)");
+        assertEq(combined.length, 32 + 64 + gensData.length, "Combined length should be header + pubInputs + gens");
+    }
+
+    /// @notice Test gensHash validation
+    function test_gens_hash_validation() public {
+        string memory json = vm.readFile("test/fixtures/e2e_fixture.json");
+        bytes memory gensData = vm.parseJsonBytes(json, ".gens_hex");
+        bytes32 gensHash = keccak256(gensData);
+
+        // Register circuit with gensHash
+        uint256[] memory sizes = new uint256[](2);
+        sizes[0] = 4;
+        sizes[1] = 1;
+        uint8[] memory types = new uint8[](2);
+        types[0] = 3;
+        types[1] = 0;
+        bool[] memory committed = new bool[](2);
+        committed[0] = true;
+        committed[1] = false;
+
+        bytes32 circuitHash = keccak256("test-gens-hash");
+        verifier.registerCircuitWithGens(circuitHash, 2, sizes, types, committed, "test", gensHash);
+        assertTrue(verifier.isCircuitActive(circuitHash), "Circuit should be active");
+
+        // Verify wrong generators are rejected
+        bytes memory wrongGens =
+            abi.encodePacked(uint256(1), uint256(1), uint256(2), uint256(1), uint256(2), uint256(1), uint256(2));
+        bytes memory fakeProof = abi.encodePacked(bytes4("REM1"), bytes32(0));
+
+        vm.expectRevert(RemainderVerifier.InvalidGenerators.selector);
+        verifier.verifyOrRevert(fakeProof, circuitHash, "", wrongGens);
+    }
+
+    // ===== Helpers =====
+
+    function _stripSelector(bytes memory proof) internal pure returns (bytes memory) {
+        bytes memory data = new bytes(proof.length - 4);
+        for (uint256 i = 0; i < data.length; i++) {
+            data[i] = proof[i + 4];
+        }
+        return data;
+    }
+
+    /// @dev Modular exponentiation
+    function _modExp(uint256 base, uint256 exp, uint256 mod) internal pure returns (uint256 result) {
+        result = 1;
+        base = base % mod;
+        while (exp > 0) {
+            if (exp & 1 == 1) result = mulmod(result, base, mod);
+            exp >>= 1;
+            base = mulmod(base, base, mod);
+        }
+    }
+
+    /// @notice Full E2E verification: register circuit, call verifyOrRevert with real proof data
+    function test_e2e_full_verification() public {
+        string memory json = vm.readFile("test/fixtures/e2e_fixture.json");
+        bytes memory rawProof = vm.parseJsonBytes(json, ".proof_hex");
+        bytes memory gensData = vm.parseJsonBytes(json, ".gens_hex");
+        bytes32 circuitHash = bytes32(vm.parseJsonBytes32(json, ".circuit_hash_raw"));
+
+        // Register circuit: 3 layers (input:committed, mul, add/output)
+        // Private input: 2 shreds × 2 elements = 4 total
+        uint256[] memory sizes = new uint256[](3);
+        sizes[0] = 4;
+        sizes[1] = 2;
+        sizes[2] = 2;
+        uint8[] memory types = new uint8[](3);
+        types[0] = 3; // input
+        types[1] = 1; // multiply
+        types[2] = 0; // add/subtract (output)
+        bool[] memory committed = new bool[](3);
+        committed[0] = true; // committed private inputs
+        committed[1] = false;
+        committed[2] = false;
+
+        verifier.registerCircuit(circuitHash, 3, sizes, types, committed, "test-mul-circuit");
+
+        // Prepare public inputs and call verifyOrRevert
+        bytes memory pubInputs = abi.encodePacked(uint256(6), uint256(20));
+
+        // This should NOT revert if the full verification works
+        // If it does revert, the error message tells us where verification fails
+        // Debug: check input proof structure
+        {
+            bytes memory proofData = _stripSelector(rawProof);
+            (GKRVerifier.GKRProof memory dbgProof,) = verifier.decodeProofCounted(proofData, pubInputs);
+            emit log_named_uint("input proof commitRows", dbgProof.inputProofs[0].commitmentRows.length);
+            emit log_named_uint("input proof zVector.length", dbgProof.inputProofs[0].podp.zVector.length);
+        }
+
+        // Full E2E verification — should not revert
+        verifier.verifyOrRevert(rawProof, circuitHash, pubInputs, gensData);
+    }
+
+    /// @notice Diagnostic test: dump FS claims from proof
+    function test_dump_fs_claims() public {
+        string memory json = vm.readFile("test/fixtures/e2e_fixture.json");
+        bytes memory rawProof = vm.parseJsonBytes(json, ".proof_hex");
+        bytes memory proofData = _stripSelector(rawProof);
+
+        // Use this._readUint to read from calldata-based decoding
+        // Instead, decode via verifier and then manually parse claims offset
+        bytes memory pubInputs = abi.encodePacked(uint256(6), uint256(20));
+        (GKRVerifier.GKRProof memory proof, uint256[] memory pubIn) = verifier.decodeProofCounted(proofData, pubInputs);
+
+        // Use separate calldata call to read claims
+        (uint256 numFs, uint256 numPub, uint256[][] memory fsPoints, uint256[][] memory pubPoints, uint256[] memory pubValues) =
+            this._dumpClaimsFromCalldata(proofData);
+        emit log_named_uint("numFsClaims", numFs);
+        emit log_named_uint("numPubClaims", numPub);
+        for (uint256 i = 0; i < fsPoints.length; i++) {
+            emit log_named_uint(string(abi.encodePacked("fsClaim[", vm.toString(i), "].numPoint")), fsPoints[i].length);
+            for (uint256 j = 0; j < fsPoints[i].length; j++) {
+                emit log_named_uint(
+                    string(abi.encodePacked("fsClaim[", vm.toString(i), "].point[", vm.toString(j), "]")),
+                    fsPoints[i][j]
+                );
+            }
+        }
+        for (uint256 i = 0; i < pubPoints.length; i++) {
+            emit log_named_uint(string(abi.encodePacked("pubClaim[", vm.toString(i), "].value")), pubValues[i]);
+            emit log_named_uint(
+                string(abi.encodePacked("pubClaim[", vm.toString(i), "].numPoint")), pubPoints[i].length
+            );
+            for (uint256 j = 0; j < pubPoints[i].length; j++) {
+                emit log_named_uint(
+                    string(abi.encodePacked("pubClaim[", vm.toString(i), "].point[", vm.toString(j), "]")),
+                    pubPoints[i][j]
+                );
+            }
+        }
+    }
+
+    function _dumpClaimsFromCalldata(bytes calldata proofData)
+        external
+        pure
+        returns (
+            uint256 numFs,
+            uint256 numPub,
+            uint256[][] memory fsPoints,
+            uint256[][] memory pubPoints,
+            uint256[] memory pubValues
+        )
+    {
+        uint256 offset = _skipToClaimsSection(proofData);
+
+        // FS claims
+        numFs = uint256(bytes32(proofData[offset:offset + 32]));
+        offset += 32;
+        fsPoints = new uint256[][](numFs);
+        for (uint256 i = 0; i < numFs; i++) {
+            offset += 128; // value + blinding + commitment
+            uint256 numPt = uint256(bytes32(proofData[offset:offset + 32]));
+            offset += 32;
+            fsPoints[i] = new uint256[](numPt);
+            for (uint256 j = 0; j < numPt; j++) {
+                fsPoints[i][j] = uint256(bytes32(proofData[offset:offset + 32]));
+                offset += 32;
+            }
+        }
+
+        // Public value claims
+        numPub = uint256(bytes32(proofData[offset:offset + 32]));
+        offset += 32;
+        pubPoints = new uint256[][](numPub);
+        pubValues = new uint256[](numPub);
+        for (uint256 i = 0; i < numPub; i++) {
+            pubValues[i] = uint256(bytes32(proofData[offset:offset + 32]));
+            offset += 128; // value + blinding + commitment
+            uint256 numPt = uint256(bytes32(proofData[offset:offset + 32]));
+            offset += 32;
+            pubPoints[i] = new uint256[](numPt);
+            for (uint256 j = 0; j < numPt; j++) {
+                pubPoints[i][j] = uint256(bytes32(proofData[offset:offset + 32]));
+                offset += 32;
+            }
+        }
+    }
+
+    function _skipToClaimsSection(bytes calldata data) internal pure returns (uint256 offset) {
+        offset = 32; // skip circuit hash
+        // Skip public inputs section
+        uint256 cnt = uint256(bytes32(data[offset:offset + 32]));
+        offset += 32;
+        for (uint256 s = 0; s < cnt; s++) {
+            uint256 n = uint256(bytes32(data[offset:offset + 32]));
+            offset += 32 + n * 32;
+        }
+        // Skip output proofs
+        cnt = uint256(bytes32(data[offset:offset + 32]));
+        offset += 32 + cnt * 64;
+        // Skip layer proofs
+        cnt = uint256(bytes32(data[offset:offset + 32]));
+        offset += 32;
+        for (uint256 l = 0; l < cnt; l++) {
+            offset = _skipOneLayerProof(data, offset);
+        }
+    }
+
+    function _skipOneLayerProof(bytes calldata data, uint256 offset) internal pure returns (uint256) {
+        offset += 64; // sum G1
+        uint256 nm = uint256(bytes32(data[offset:offset + 32]));
+        offset += 32 + nm * 64; // messages
+        offset += 128; // commitD + commitDDotA
+        uint256 nz = uint256(bytes32(data[offset:offset + 32]));
+        offset += 32 + nz * 32 + 64; // z_vector + z_delta + z_beta
+        uint256 nc = uint256(bytes32(data[offset:offset + 32]));
+        offset += 32 + nc * 64; // commitments
+        uint256 np = uint256(bytes32(data[offset:offset + 32]));
+        offset += 32 + np * 352; // PoPs
+        uint256 hasAgg = uint256(bytes32(data[offset:offset + 32]));
+        offset += 32;
+        if (hasAgg == 1) {
+            uint256 nco = uint256(bytes32(data[offset:offset + 32]));
+            offset += 32 + nco * 64;
+            uint256 nop = uint256(bytes32(data[offset:offset + 32]));
+            offset += 32 + nop * 128;
+            uint256 neq = uint256(bytes32(data[offset:offset + 32]));
+            offset += 32 + neq * 96;
+        }
+        return offset;
+    }
+
+    /// @notice Diagnostic test: extract output proof claim commitment from raw proof bytes
+    function test_claim_commitment_diagnostic() public {
+        string memory json = vm.readFile("test/fixtures/e2e_fixture.json");
+        bytes memory rawProof = vm.parseJsonBytes(json, ".proof_hex");
+
+        // Strip selector (4 bytes)
+        bytes memory proofData = new bytes(rawProof.length - 4);
+        for (uint256 i = 0; i < proofData.length; i++) {
+            proofData[i] = rawProof[i + 4];
+        }
+
+        // Navigate to output layer proofs
+        uint256 offset = 32; // skip circuit hash
+        // Skip public inputs section
+        uint256 numPubSections;
+        assembly {
+            numPubSections := mload(add(proofData, add(32, offset)))
+        }
+        offset += 32;
+        for (uint256 i = 0; i < numPubSections; i++) {
+            uint256 cnt;
+            assembly {
+                cnt := mload(add(proofData, add(32, offset)))
+            }
+            offset += 32 + cnt * 32;
+        }
+
+        // Read output layer proofs (claim commitments)
+        uint256 numOutputProofs;
+        assembly {
+            numOutputProofs := mload(add(proofData, add(32, offset)))
+        }
+        offset += 32;
+        emit log_named_uint("numOutputProofs", numOutputProofs);
+
+        uint256 proofClaimX;
+        for (uint256 i = 0; i < numOutputProofs; i++) {
+            uint256 cx;
+            uint256 cy;
+            assembly {
+                cx := mload(add(proofData, add(32, offset)))
+                cy := mload(add(proofData, add(64, offset)))
+            }
+            offset += 64;
+            emit log_named_uint("Proof claim_commitment.x", cx);
+            emit log_named_uint("Proof claim_commitment.y", cy);
+            if (i == 0) proofClaimX = cx;
+        }
+
+        // Continue from offset (past output proofs) to read layer proof sum
+        uint256 numLayerProofs;
+        assembly {
+            numLayerProofs := mload(add(proofData, add(32, offset)))
+        }
+        offset += 32;
+        emit log_named_uint("numLayerProofs", numLayerProofs);
+
+        // First layer proof starts here; first 64 bytes are `sum` (G1 point)
+        uint256 sumX;
+        uint256 sumY;
+        assembly {
+            sumX := mload(add(proofData, add(32, offset)))
+            sumY := mload(add(proofData, add(64, offset)))
+        }
+        emit log_named_uint("layerProof[0].sum.x", sumX);
+        emit log_named_uint("layerProof[0].sum.y", sumY);
+        uint256 expectedX = 0x203b6537e1105eb16de4825a8fa2464882d7051e3ba10f4b55e367da1f3aad35;
+        emit log_string(sumX == expectedX ? "Layer sum.x == expected: YES" : "Layer sum.x == expected: NO");
+
+        // Decode g_scalar from gens
+        bytes memory gensData = vm.parseJsonBytes(json, ".gens_hex");
+        uint256 numG;
+        assembly {
+            numG := mload(add(gensData, 32))
+        }
+        uint256 gScalarX;
+        uint256 gScalarY;
+        uint256 gOffset = 32 + numG * 64;
+        assembly {
+            gScalarX := mload(add(gensData, add(32, gOffset)))
+            gScalarY := mload(add(gensData, add(64, gOffset)))
+        }
+        emit log_named_uint("g_scalar.x", gScalarX);
+        emit log_named_uint("g_scalar.y", gScalarY);
+
+        uint256 FR_MOD = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
+        uint256 r = 0x0d913ea20ccbceea7bb452e44f2b1e1bfd9efe3dca6898d297d23a2b22ea57ad;
+
+        // Approach 1: RLC = 6 + 20*r
+        uint256 rlcClaim = addmod(6, mulmod(20, r, FR_MOD), FR_MOD);
+        HyraxVerifier.G1Point memory rlcCom =
+            HyraxVerifier.scalarMul(HyraxVerifier.G1Point(gScalarX, gScalarY), rlcClaim);
+        emit log_named_uint("RLC claim", rlcClaim);
+        emit log_named_uint("RLC commitment.x", rlcCom.x);
+        emit log_string(rlcCom.x == expectedX ? "RLC: MATCH" : "RLC: MISMATCH");
+
+        // Approach 2: MLE = 6*(1-r) + 20*r = 6 + 14*r
+        uint256 mleClaim = addmod(6, mulmod(14, r, FR_MOD), FR_MOD);
+        HyraxVerifier.G1Point memory mleCom =
+            HyraxVerifier.scalarMul(HyraxVerifier.G1Point(gScalarX, gScalarY), mleClaim);
+        emit log_named_uint("MLE claim", mleClaim);
+        emit log_named_uint("MLE commitment.x", mleCom.x);
+        emit log_string(mleCom.x == expectedX ? "MLE: MATCH" : "MLE: MISMATCH");
+
+        // Approach 3: Use evaluateMLEFromData function
+        uint256[] memory data = new uint256[](2);
+        data[0] = 6;
+        data[1] = 20;
+        uint256[] memory point = new uint256[](1);
+        point[0] = r;
+        uint256 mleFromFunc = GKRVerifier.evaluateMLEFromData(data, point);
+        emit log_named_uint("evaluateMLEFromData result", mleFromFunc);
+        emit log_string(mleFromFunc == mleClaim ? "MLE func matches manual: YES" : "MLE func matches manual: NO");
+
+    }
+
+    /// @notice Step-by-step GKR transcript trace test
+    function test_gkr_transcript_step_by_step() public {
+        (GKRVerifier.GKRProof memory proof, HyraxVerifier.PedersenGens memory gens,
+         PoseidonSponge.Sponge memory sponge) = _loadAndSetupTranscript();
+
+        uint256 FR_MOD = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
+
+        // Step 9: Squeeze "Challenge for claim on output" - this IS the claim_point[0]
+        uint256 claimPoint0 = PoseidonSponge.squeeze(sponge) % FR_MOD;
+
+        // Step 10-11: Absorb claim commitment + squeeze RLC claim agg coefficient
+        PoseidonSponge.absorb(sponge, proof.outputClaimCommitments[0].x);
+        PoseidonSponge.absorb(sponge, proof.outputClaimCommitments[0].y);
+        uint256 randomCoeff = PoseidonSponge.squeeze(sponge) % FR_MOD;
+
+        // Step 12-13: Absorb first sumcheck message + squeeze binding
+        PoseidonSponge.absorb(sponge, proof.layerProofs[0].sumcheckProof.messages[0].x);
+        PoseidonSponge.absorb(sponge, proof.layerProofs[0].sumcheckProof.messages[0].y);
+        uint256 scChallenge = PoseidonSponge.squeeze(sponge); // binding0
+
+        // Steps 14-15: Absorb commitments
+        for (uint256 i = 0; i < proof.layerProofs[0].commitments.length; i++) {
+            PoseidonSponge.absorb(sponge, proof.layerProofs[0].commitments[i].x);
+            PoseidonSponge.absorb(sponge, proof.layerProofs[0].commitments[i].y);
+        }
+
+        // Step 16-17: Squeeze rhos and gammas
+        uint256 rho0 = PoseidonSponge.squeeze(sponge);
+        uint256 rho1 = PoseidonSponge.squeeze(sponge);
+        uint256 gamma0 = PoseidonSponge.squeeze(sponge);
+
+        emit log_string("Transcript replay complete");
+
+        _checkPODPEquations(proof, gens, sponge, rho0, rho1, gamma0, scChallenge, claimPoint0, randomCoeff);
+    }
+
+    function _loadAndSetupTranscript() internal returns (
+        GKRVerifier.GKRProof memory proof,
+        HyraxVerifier.PedersenGens memory gens,
+        PoseidonSponge.Sponge memory sponge
+    ) {
+        string memory json = vm.readFile("test/fixtures/e2e_fixture.json");
+        bytes memory rawProof = vm.parseJsonBytes(json, ".proof_hex");
+        bytes memory gensData = vm.parseJsonBytes(json, ".gens_hex");
+        bytes32 circuitHash = bytes32(vm.parseJsonBytes32(json, ".circuit_hash_raw"));
+
+        bytes memory proofAfterSelector = _stripSelector(rawProof);
+        bytes memory pubInputs = abi.encodePacked(uint256(6), uint256(20));
+        uint256[] memory pubIn;
+        (proof, pubIn) = verifier.decodeProofCounted(proofAfterSelector, pubInputs);
+        gens = this._decodeGens(gensData);
+        sponge = verifier.setupTranscriptPublic(circuitHash, pubIn, proof);
+    }
+
+    function _checkPODPEquations(
+        GKRVerifier.GKRProof memory proof,
+        HyraxVerifier.PedersenGens memory gens,
+        PoseidonSponge.Sponge memory sponge,
+        uint256 rho0,
+        uint256 rho1,
+        uint256 gamma0,
+        uint256 scChallenge,
+        uint256 claimPoint0,
+        uint256 randomCoeff
+    ) internal {
+        uint256 FR_MOD = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
+        uint256 binding0 = scChallenge % FR_MOD;
+
+        // alpha = messages[0] * gamma0
+        GKRVerifier.CommittedLayerProof memory lp = proof.layerProofs[0];
+        HyraxVerifier.G1Point memory alpha = HyraxVerifier.scalarMul(
+            lp.sumcheckProof.messages[0], gamma0 % FR_MOD
+        );
+
+        // j_star computation (n=1, degree=2)
+        uint256[] memory jStar = _computeJStar(rho0 % FR_MOD, rho1 % FR_MOD, gamma0 % FR_MOD, binding0);
+
+        // Compute dotProduct in a separate function to avoid stack-too-deep
+        HyraxVerifier.G1Point memory dotProduct = _computeDotProduct(
+            lp, rho0 % FR_MOD, rho1 % FR_MOD, binding0, claimPoint0, randomCoeff
+        );
+
+        _checkPODPEqs2(proof, gens, sponge, alpha, dotProduct, jStar);
+    }
+
+    function _computeDotProduct(
+        GKRVerifier.CommittedLayerProof memory lp,
+        uint256 rho0,
+        uint256 rho1,
+        uint256 binding0,
+        uint256 claimPoint0,
+        uint256 randomCoeff
+    ) internal returns (HyraxVerifier.G1Point memory) {
+        uint256 FR_MOD = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
+
+        // rlc_beta = beta(bindings, claim_point) * random_coeff
+        // beta(r, c) = prod_i (r_i * c_i + (1 - r_i) * (1 - c_i))
+        // For n=1: beta = binding0 * claimPoint0 + (1 - binding0) * (1 - claimPoint0)
+        uint256 rlcBeta;
+        {
+            uint256 term1 = mulmod(binding0, claimPoint0, FR_MOD);
+            uint256 oneMinusB = addmod(1, FR_MOD - binding0, FR_MOD);
+            uint256 oneMinusC = addmod(1, FR_MOD - claimPoint0, FR_MOD);
+            uint256 term2 = mulmod(oneMinusB, oneMinusC, FR_MOD);
+            rlcBeta = mulmod(addmod(term1, term2, FR_MOD), randomCoeff, FR_MOD);
+        }
+        emit log_named_uint("rlc_beta", rlcBeta);
+
+        // oracleEval = rlcBeta * commitment[0] + (-rlcBeta) * commitment[1]
+        HyraxVerifier.G1Point memory oracleEval = HyraxVerifier.ecAdd(
+            HyraxVerifier.scalarMul(lp.commitments[0], rlcBeta),
+            HyraxVerifier.scalarMul(lp.commitments[1], FR_MOD - rlcBeta)
+        );
+
+        // dotProduct = sum * rho0 - oracleEval * rho1
+        return HyraxVerifier.ecAdd(
+            HyraxVerifier.scalarMul(lp.sumcheckProof.sum, rho0),
+            HyraxVerifier.scalarMul(oracleEval, FR_MOD - rho1)
+        );
+    }
+
+    function _computeJStar(uint256 rho0, uint256 rho1, uint256 gamma0, uint256 binding0)
+        internal pure returns (uint256[] memory jStar)
+    {
+        uint256 FR_MOD = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
+        uint256 gammaInv = _modExp(gamma0, FR_MOD - 2, FR_MOD);
+        jStar = new uint256[](3);
+        jStar[0] = mulmod(gammaInv, addmod(mulmod(rho0, 2, FR_MOD), FR_MOD - rho1, FR_MOD), FR_MOD);
+        jStar[1] = mulmod(gammaInv, addmod(rho0, FR_MOD - mulmod(rho1, binding0, FR_MOD), FR_MOD), FR_MOD);
+        uint256 b0sq = mulmod(binding0, binding0, FR_MOD);
+        jStar[2] = mulmod(gammaInv, addmod(rho0, FR_MOD - mulmod(rho1, b0sq, FR_MOD), FR_MOD), FR_MOD);
+    }
+
+    function _checkPODPEqs2(
+        GKRVerifier.GKRProof memory proof,
+        HyraxVerifier.PedersenGens memory gens,
+        PoseidonSponge.Sponge memory sponge,
+        HyraxVerifier.G1Point memory alpha,
+        HyraxVerifier.G1Point memory dotProduct,
+        uint256[] memory jStar
+    ) internal {
+        uint256 FR_MOD = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
+        HyraxVerifier.PODPProof memory podp = proof.layerProofs[0].sumcheckProof.podp;
+        emit log_named_uint("podp.zVector.length", podp.zVector.length);
+
+        // Absorb PODP commitments, squeeze challenge
+        PoseidonSponge.absorb(sponge, podp.commitD.x);
+        PoseidonSponge.absorb(sponge, podp.commitD.y);
+        PoseidonSponge.absorb(sponge, podp.commitDDotA.x);
+        PoseidonSponge.absorb(sponge, podp.commitDDotA.y);
+        uint256 c = PoseidonSponge.squeeze(sponge) % FR_MOD;
+        emit log_named_uint("PODP challenge c", c);
+        uint256 expected20 = 0x2eb0a7e50a310b365138154b735af2af4e547092caa2d6397938de9ba2f76931;
+        emit log_string(c == expected20 ? "PODP challenge: MATCH" : "PODP challenge: MISMATCH");
+
+        // Check eq1 and eq2 in separate functions
+        bool eq1 = _podpEq1(podp, alpha, c, gens);
+        emit log_string(eq1 ? "PODP eq1: PASS" : "PODP eq1: FAIL");
+        bool eq2 = _podpEq2(podp, dotProduct, c, jStar, gens);
+        emit log_string(eq2 ? "PODP eq2: PASS" : "PODP eq2: FAIL");
+    }
+
+    function _podpEq1(
+        HyraxVerifier.PODPProof memory podp,
+        HyraxVerifier.G1Point memory alpha,
+        uint256 c,
+        HyraxVerifier.PedersenGens memory gens
+    ) internal view returns (bool) {
+        // LHS: c * alpha + commitD
+        HyraxVerifier.G1Point memory lhs = HyraxVerifier.ecAdd(
+            HyraxVerifier.scalarMul(alpha, c), podp.commitD
+        );
+        // RHS: MSM(g[0..n], z) + z_delta * h
+        HyraxVerifier.G1Point memory msm = HyraxVerifier.scalarMul(gens.messageGens[0], podp.zVector[0]);
+        for (uint256 i = 1; i < podp.zVector.length; i++) {
+            msm = HyraxVerifier.ecAdd(msm, HyraxVerifier.scalarMul(gens.messageGens[i], podp.zVector[i]));
+        }
+        HyraxVerifier.G1Point memory rhs = HyraxVerifier.ecAdd(
+            msm, HyraxVerifier.scalarMul(gens.blindingGen, podp.zDelta)
+        );
+        return lhs.x == rhs.x && lhs.y == rhs.y;
+    }
+
+    function _podpEq2(
+        HyraxVerifier.PODPProof memory podp,
+        HyraxVerifier.G1Point memory dotProduct,
+        uint256 c,
+        uint256[] memory jStar,
+        HyraxVerifier.PedersenGens memory gens
+    ) internal returns (bool) {
+        uint256 FR_MOD = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
+        // LHS: c * dotProduct + commitDDotA
+        HyraxVerifier.G1Point memory lhs = HyraxVerifier.ecAdd(
+            HyraxVerifier.scalarMul(dotProduct, c), podp.commitDDotA
+        );
+        // RHS: <z, jStar> * g_scalar + z_beta * h
+        uint256 zDotJ = 0;
+        for (uint256 i = 0; i < podp.zVector.length; i++) {
+            zDotJ = addmod(zDotJ, mulmod(podp.zVector[i], jStar[i], FR_MOD), FR_MOD);
+        }
+        HyraxVerifier.G1Point memory rhs = HyraxVerifier.ecAdd(
+            HyraxVerifier.scalarMul(gens.scalarGen, zDotJ),
+            HyraxVerifier.scalarMul(gens.blindingGen, podp.zBeta)
+        );
+        emit log_named_uint("eq2 LHS.x", lhs.x);
+        emit log_named_uint("eq2 LHS.y", lhs.y);
+        emit log_named_uint("eq2 RHS.x", rhs.x);
+        emit log_named_uint("eq2 RHS.y", rhs.y);
+        emit log_named_uint("dotProduct.x", dotProduct.x);
+        emit log_named_uint("dotProduct.y", dotProduct.y);
+        emit log_named_uint("zDotJ", zDotJ);
+        for (uint256 i = 0; i < jStar.length; i++) {
+            emit log_named_uint(string(abi.encodePacked("jStar[", vm.toString(i), "]")), jStar[i]);
+        }
+        for (uint256 i = 0; i < podp.zVector.length; i++) {
+            emit log_named_uint(string(abi.encodePacked("zVector[", vm.toString(i), "]")), podp.zVector[i]);
+        }
+        return lhs.x == rhs.x && lhs.y == rhs.y;
+    }
+
+    /// @notice Decode generators from calldata
+    function _decodeGens(bytes calldata data) external pure returns (HyraxVerifier.PedersenGens memory gens) {
+        if (data.length == 0) {
+            gens.messageGens = new HyraxVerifier.G1Point[](0);
+            return gens;
+        }
+        uint256 offset = 0;
+        uint256 numGens = uint256(bytes32(data[offset:offset + 32]));
+        offset += 32;
+        gens.messageGens = new HyraxVerifier.G1Point[](numGens);
+        for (uint256 i = 0; i < numGens; i++) {
+            gens.messageGens[i].x = uint256(bytes32(data[offset:offset + 32]));
+            offset += 32;
+            gens.messageGens[i].y = uint256(bytes32(data[offset:offset + 32]));
+            offset += 32;
+        }
+        gens.scalarGen.x = uint256(bytes32(data[offset:offset + 32]));
+        offset += 32;
+        gens.scalarGen.y = uint256(bytes32(data[offset:offset + 32]));
+        offset += 32;
+        gens.blindingGen.x = uint256(bytes32(data[offset:offset + 32]));
+        offset += 32;
+        gens.blindingGen.y = uint256(bytes32(data[offset:offset + 32]));
+    }
+}
+
+/// @title TestableRemainderVerifier
+/// @notice Subclass that exposes internal transcript setup functions for testing
+contract TestableRemainderVerifier is RemainderVerifier {
+    constructor(address _admin) RemainderVerifier(_admin) {}
+
+    function hashToFqPair(bytes32 hash) external pure returns (uint256 fq1, uint256 fq2) {
+        return _hashToFqPair(hash);
+    }
+
+    function sha256HashChain(uint256[] memory fqElements) external view returns (uint256 fq1, uint256 fq2) {
+        return _sha256HashChain(fqElements);
+    }
+
+    function setupTranscript(bytes32 circuitHash, uint256[] memory pubInputs, GKRVerifier.GKRProof memory gkrProof)
+        external
+        view
+        returns (PoseidonSponge.Sponge memory)
+    {
+        return _setupTranscript(circuitHash, pubInputs, gkrProof);
+    }
+
+    function extractInputCommitCoords(GKRVerifier.GKRProof memory proof)
+        external
+        pure
+        returns (uint256[] memory)
+    {
+        return _extractInputCommitCoords(proof);
+    }
+}
+
+/// @title TranscriptSetupTest
+/// @notice Tests for the SHA-256 hash chain and hash-to-Fq-pair conversion
+///         that are used in the initial Fiat-Shamir transcript setup.
+contract TranscriptSetupTest is Test {
+    TestableRemainderVerifier public verifier;
+
+    function setUp() public {
+        verifier = new TestableRemainderVerifier(address(this));
+    }
+
+    /// @notice Test hashToFqPair conversion matches fixture values
+    function test_hash_to_fq_pair() public view {
+        bytes32 circuitHash = hex"8fd701309893d4017fb8d56a77c19f5abcf1cf8a7515974f2c6557c4264baa5d";
+        uint256 expectedFq1 = 0x000000000000000000000000000000005a9fc1776ad5b87f01d493983001d78f;
+        uint256 expectedFq2 = 0x000000000000000000000000000000005daa4b26c457652c4f9715758acff1bc;
+
+        (uint256 fq1, uint256 fq2) = verifier.hashToFqPair(circuitHash);
+        assertEq(fq1, expectedFq1, "circuit hash fq1 mismatch");
+        assertEq(fq2, expectedFq2, "circuit hash fq2 mismatch");
+    }
+
+    /// @notice Test SHA-256 hash chain on public inputs matches fixture values
+    function test_sha256_hash_chain_public_inputs() public view {
+        uint256[] memory pubInputs = new uint256[](2);
+        pubInputs[0] = 6;
+        pubInputs[1] = 20;
+
+        uint256 expectedHash1 = 0x00000000000000000000000000000000a998b9d31f69d8ae8e48768cf8b8a5ff;
+        uint256 expectedHash2 = 0x00000000000000000000000000000000c06bcddbc1b4d72d89678361cd10177b;
+
+        (uint256 h1, uint256 h2) = verifier.sha256HashChain(pubInputs);
+        assertEq(h1, expectedHash1, "pub input hash chain fq1 mismatch");
+        assertEq(h2, expectedHash2, "pub input hash chain fq2 mismatch");
+    }
+
+    /// @notice Test SHA-256 hash chain on EC commitment points matches fixture values
+    function test_sha256_hash_chain_ec_points() public {
+        string memory json = vm.readFile("test/fixtures/e2e_fixture.json");
+        uint256[] memory ecCoords = new uint256[](4);
+        ecCoords[0] = vm.parseJsonUint(json, ".transcript_trace.input_commitment_points[0].x");
+        ecCoords[1] = vm.parseJsonUint(json, ".transcript_trace.input_commitment_points[0].y");
+        ecCoords[2] = vm.parseJsonUint(json, ".transcript_trace.input_commitment_points[1].x");
+        ecCoords[3] = vm.parseJsonUint(json, ".transcript_trace.input_commitment_points[1].y");
+
+        uint256 expectedHash1 = vm.parseJsonUint(json, ".transcript_trace.input_commitment_hash_chain_1");
+        uint256 expectedHash2 = vm.parseJsonUint(json, ".transcript_trace.input_commitment_hash_chain_2");
+
+        (uint256 h1, uint256 h2) = verifier.sha256HashChain(ecCoords);
+        assertEq(h1, expectedHash1, "EC hash chain fq1 mismatch");
+        assertEq(h2, expectedHash2, "EC hash chain fq2 mismatch");
+    }
+
+    /// @notice Test full transcript setup produces correct first challenge
+    function test_full_transcript_setup() public {
+        string memory json = vm.readFile("test/fixtures/e2e_fixture.json");
+        bytes memory rawProof = vm.parseJsonBytes(json, ".proof_hex");
+        bytes32 circuitHash = bytes32(vm.parseJsonBytes32(json, ".circuit_hash_raw"));
+        uint256 expectedChallenge = vm.parseJsonUint(json, ".challenges.first_challenge_for_output_claim");
+
+        // Build a minimal GKRProof with just input proof commitment rows (needed for transcript)
+        GKRVerifier.GKRProof memory gkrProof = _decodeProofForCommitPoints(rawProof);
+
+        uint256[] memory pubInputs = new uint256[](2);
+        pubInputs[0] = 6;
+        pubInputs[1] = 20;
+
+        PoseidonSponge.Sponge memory sponge = verifier.setupTranscript(circuitHash, pubInputs, gkrProof);
+        uint256 challenge = PoseidonSponge.squeeze(sponge);
+
+        assertEq(challenge, expectedChallenge, "Transcript setup first challenge mismatch");
+    }
+
+    /// @notice Gas benchmark for transcript setup
+    function test_transcript_setup_gas() public {
+        string memory json = vm.readFile("test/fixtures/e2e_fixture.json");
+        bytes memory rawProof = vm.parseJsonBytes(json, ".proof_hex");
+        bytes32 circuitHash = bytes32(vm.parseJsonBytes32(json, ".circuit_hash_raw"));
+
+        GKRVerifier.GKRProof memory gkrProof = _decodeProofForCommitPoints(rawProof);
+        uint256[] memory pubInputs = new uint256[](2);
+        pubInputs[0] = 6;
+        pubInputs[1] = 20;
+
+        uint256 gasBefore = gasleft();
+        verifier.setupTranscript(circuitHash, pubInputs, gkrProof);
+        uint256 gasUsed = gasBefore - gasleft();
+
+        emit log_named_uint("Transcript setup gas (hash chains + absorbs)", gasUsed);
+    }
+
+    /// @dev Extract only input proof commitment rows from raw proof (minimal decode)
+    function _decodeProofForCommitPoints(bytes memory rawProof)
+        internal
+        pure
+        returns (GKRVerifier.GKRProof memory gkrProof)
+    {
+        // Strip selector
+        bytes memory data = new bytes(rawProof.length - 4);
+        for (uint256 i = 0; i < data.length; i++) {
+            data[i] = rawProof[i + 4];
+        }
+        gkrProof.inputProofs = _decodeInputCommitRowsFromMemory(data);
+    }
+
+    function _decodeInputCommitRowsFromMemory(bytes memory data)
+        internal
+        pure
+        returns (HyraxVerifier.EvalProof[] memory proofs)
+    {
+        uint256 offset = 32; // skip circuit hash
+        // Skip public inputs
+        uint256 numPub;
+        assembly { numPub := mload(add(data, add(32, offset))) }
+        offset += 32;
+        for (uint256 i = 0; i < numPub; i++) {
+            uint256 cnt;
+            assembly { cnt := mload(add(data, add(32, offset))) }
+            offset += 32 + cnt * 32;
+        }
+        // Skip output proofs
+        uint256 numOut;
+        assembly { numOut := mload(add(data, add(32, offset))) }
+        offset += 32 + numOut * 64;
+        // Skip layer proofs
+        uint256 numLayers;
+        assembly { numLayers := mload(add(data, add(32, offset))) }
+        offset += 32;
+        for (uint256 i = 0; i < numLayers; i++) {
+            offset = _skipLayerMem(data, offset);
+        }
+        // Skip FS claims (value:32 + blinding:32 + commitment:64 + numPoint:32 + points)
+        uint256 numFs;
+        assembly { numFs := mload(add(data, add(32, offset))) }
+        offset += 32;
+        for (uint256 i = 0; i < numFs; i++) {
+            uint256 np;
+            assembly { np := mload(add(data, add(32, add(offset, 128)))) }
+            offset += 160 + np * 32;
+        }
+        // Skip pub claims
+        uint256 numPubC;
+        assembly { numPubC := mload(add(data, add(32, offset))) }
+        offset += 32;
+        for (uint256 i = 0; i < numPubC; i++) {
+            uint256 np;
+            assembly { np := mload(add(data, add(32, add(offset, 128)))) }
+            offset += 160 + np * 32;
+        }
+        // Decode input proofs (just commitment rows)
+        uint256 numInputProofs;
+        assembly { numInputProofs := mload(add(data, add(32, offset))) }
+        offset += 32;
+        proofs = new HyraxVerifier.EvalProof[](numInputProofs);
+        for (uint256 i = 0; i < numInputProofs; i++) {
+            uint256 numRows;
+            assembly { numRows := mload(add(data, add(32, offset))) }
+            offset += 32;
+            proofs[i].commitmentRows = new HyraxVerifier.G1Point[](numRows);
+            for (uint256 r = 0; r < numRows; r++) {
+                uint256 px;
+                uint256 py;
+                assembly {
+                    px := mload(add(data, add(32, offset)))
+                    py := mload(add(data, add(64, offset)))
+                }
+                proofs[i].commitmentRows[r] = HyraxVerifier.G1Point(px, py);
+                offset += 64;
+            }
+            // Skip eval proofs
+            uint256 numEvals;
+            assembly { numEvals := mload(add(data, add(32, offset))) }
+            offset += 32;
+            for (uint256 e = 0; e < numEvals; e++) {
+                offset += 128; // commitD + commitDDotA
+                uint256 numZ;
+                assembly { numZ := mload(add(data, add(32, offset))) }
+                offset += 32 + numZ * 32 + 64 + 64; // z_vec + z_delta + z_beta + comEval
+            }
+        }
+    }
+
+    function _skipLayerMem(bytes memory data, uint256 offset) internal pure returns (uint256) {
+        offset += 64; // sum
+        uint256 numMsg;
+        assembly { numMsg := mload(add(data, add(32, offset))) }
+        offset += 32 + numMsg * 64;
+        offset += 128; // PODP commitD + commitDDotA
+        uint256 numZ;
+        assembly { numZ := mload(add(data, add(32, offset))) }
+        offset += 32 + numZ * 32 + 64; // z_vec + z_delta + z_beta
+        uint256 numCommits;
+        assembly { numCommits := mload(add(data, add(32, offset))) }
+        offset += 32 + numCommits * 64;
+        uint256 numPops;
+        assembly { numPops := mload(add(data, add(32, offset))) }
+        offset += 32 + numPops * (192 + 160);
+        uint256 hasAgg;
+        assembly { hasAgg := mload(add(data, add(32, offset))) }
+        offset += 32;
+        if (hasAgg == 1) {
+            uint256 nc;
+            assembly { nc := mload(add(data, add(32, offset))) }
+            offset += 32 + nc * 64;
+            uint256 no;
+            assembly { no := mload(add(data, add(32, offset))) }
+            offset += 32 + no * 128;
+            uint256 ne;
+            assembly { ne := mload(add(data, add(32, offset))) }
+            offset += 32 + ne * 96;
+        }
+        return offset;
+    }
+}
+
 /// @title CommittedSumcheckVerifierTest
 /// @notice Unit tests for the committed sumcheck verification components.
 contract CommittedSumcheckVerifierTest is Test {

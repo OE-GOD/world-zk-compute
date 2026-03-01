@@ -21,11 +21,14 @@ use shared_types::pedersen::PedersenCommitter;
 use shared_types::transcript::ec_transcript::ECTranscript;
 use shared_types::transcript::poseidon_sponge::PoseidonSponge;
 use shared_types::transcript::TranscriptSponge;
+use ff::Field as FfField;
+use remainder::layer::LayerDescription;
 use shared_types::{
     curves::PrimeOrderCurve,
     perform_function_under_prover_config, perform_function_under_verifier_config, Bn256Point, Fq,
     Fr,
 };
+use shared_types::transcript::ec_transcript::ECTranscriptTrait;
 
 #[path = "../abi_encode.rs"]
 #[allow(clippy::all)]
@@ -297,6 +300,277 @@ fn main() -> Result<()> {
         gens_bytes.len() / 32
     );
 
+    // === Verify claim_commitment decompression ===
+    // Extract claim_commitment directly from proof struct (ground truth)
+    let output_layer_proofs = &proof.circuit_proof.output_layer_proofs;
+    let mut claim_commitment_coords: Vec<serde_json::Value> = Vec::new();
+    for (layer_id, _mle_indices, olp) in output_layer_proofs {
+        use shared_types::curves::PrimeOrderCurve;
+        let (cx, cy) = olp
+            .claim_commitment
+            .affine_coordinates()
+            .expect("claim_commitment not at infinity");
+        eprintln!(
+            "\n=== Output layer {:?} claim_commitment (direct affine) ===",
+            layer_id
+        );
+        eprintln!("  x: {}", fq_to_hex(&cx));
+        eprintln!("  y: {}", fq_to_hex(&cy));
+
+        // Also check what serde_json produces (compressed hex)
+        let json_val = serde_json::to_value(&olp.claim_commitment).unwrap();
+        let hex_str = json_val.as_str().unwrap();
+        eprintln!("  compressed hex: {}", hex_str);
+        eprintln!("  compressed len: {} bytes", hex::decode(hex_str).unwrap().len());
+
+        // Decompress and compare
+        let compressed_bytes = hex::decode(hex_str).unwrap();
+        let (x_be, y_be) = abi_encode::decompress_point(&compressed_bytes).unwrap();
+        let decompressed_x_hex = format!("0x{}", hex::encode(&x_be));
+        let decompressed_y_hex = format!("0x{}", hex::encode(&y_be));
+        eprintln!("  decompressed x: {}", decompressed_x_hex);
+        eprintln!("  decompressed y: {}", decompressed_y_hex);
+        let direct_x_hex = fq_to_hex(&cx);
+        let direct_y_hex = fq_to_hex(&cy);
+        let x_match = decompressed_x_hex == direct_x_hex;
+        let y_match = decompressed_y_hex == direct_y_hex;
+        eprintln!("  x MATCH: {}", x_match);
+        eprintln!("  y MATCH: {}", y_match);
+
+        claim_commitment_coords.push(json!({
+            "x": direct_x_hex,
+            "y": direct_y_hex,
+            "compressed_hex": hex_str,
+            "decompression_x_match": x_match,
+            "decompression_y_match": y_match,
+        }));
+    }
+
+    // === Dump PostSumcheckLayer structure for each intermediate layer ===
+    // This gives us the product coefficients needed for oracle_eval computation
+    let verifiable_ref = verifiable.get_gkr_circuit_description_ref();
+    eprintln!("\n=== Circuit layer structure ===");
+    eprintln!("  output_layers: {}", verifiable_ref.output_layers.len());
+    eprintln!("  intermediate_layers: {}", verifiable_ref.intermediate_layers.len());
+    eprintln!("  input_layers: {}", verifiable_ref.input_layers.len());
+
+    // Serialize layer proofs JSON to inspect structure
+    let proof_json = serde_json::to_value(&proof)?;
+    let layer_proofs_json = proof_json["circuit_proof"]["layer_proofs"].as_array().unwrap();
+    let mut layer_debug_info: Vec<serde_json::Value> = Vec::new();
+    for (i, lp_entry) in layer_proofs_json.iter().enumerate() {
+        let lp_arr = lp_entry.as_array().unwrap();
+        let layer_id = &lp_arr[0];
+        let lp = &lp_arr[1];
+        let commitments = lp["commitments"].as_array().unwrap();
+        let pops = lp["proofs_of_product"].as_array().unwrap();
+        let agg = &lp["maybe_proof_of_claim_agg"];
+        eprintln!("\n  Layer proof {} (id={}):", i, layer_id);
+        eprintln!("    commitments: {}", commitments.len());
+        eprintln!("    proofs_of_product: {}", pops.len());
+        eprintln!("    has_claim_agg: {}", !agg.is_null());
+
+        layer_debug_info.push(json!({
+            "layer_id": layer_id.to_string(),
+            "num_commitments": commitments.len(),
+            "num_pops": pops.len(),
+            "has_claim_agg": !agg.is_null(),
+        }));
+    }
+
+    // === Custom verification pass to dump oracle_eval, dot_product, j_star ===
+    // Replicate the verification logic to extract intermediate values
+    use hyrax::gkr::layer::{evaluate_committed_psl, HyraxClaim};
+    use remainder::layer::product::{new_with_values, PostSumcheckLayer};
+    use shared_types::config::{global_config::global_claim_agg_strategy, ClaimAggregationStrategy};
+    use std::ops::Neg;
+    use hyrax::primitives::proof_of_sumcheck::ProofOfSumcheck;
+
+    let mut custom_transcript: ECTranscript<Bn256Point, PoseidonSponge<Fq>> =
+        ECTranscript::new("gen-test-proof transcript");
+    // Replay initial transcript setup (same as debug_transcript)
+    {
+        use remainder::prover::helpers::get_circuit_description_hash_as_field_elems;
+        use shared_types::config::global_config::global_verifier_circuit_description_hash_type;
+        let hash_elems = get_circuit_description_hash_as_field_elems(
+            verifiable_ref, global_verifier_circuit_description_hash_type());
+        custom_transcript.append_scalar_field_elems("Circuit description hash", &hash_elems);
+        proof.public_inputs.iter()
+            .for_each(|(_, mle)| {
+                custom_transcript.append_input_scalar_field_elems(
+                    "Public input layer values",
+                    &mle.as_ref().unwrap().f.iter().collect::<Vec<_>>());
+            });
+        proof.hyrax_input_proofs.iter().for_each(|ip| {
+            custom_transcript.append_input_ec_points(
+                "Hyrax input layer commitment", ip.input_commitment.clone());
+        });
+        // FS challenges
+        for fs_desc in &verifiable_ref.fiat_shamir_challenges {
+            let num_evals = 1 << fs_desc.num_bits;
+            custom_transcript.get_scalar_field_challenges("Verifier challenges", num_evals);
+        }
+    }
+
+    // Output layer verification
+    let mut claim_tracker: std::collections::HashMap<remainder::layer::LayerId, Vec<HyraxClaim<Fr, Bn256Point>>> = std::collections::HashMap::new();
+    for (_, _, olp) in &proof.circuit_proof.output_layer_proofs {
+        let claim = hyrax::gkr::output_layer::HyraxOutputLayerProof::verify(
+            olp,
+            &verifiable_ref.output_layers[0],
+            &mut custom_transcript,
+        );
+        claim_tracker.insert(claim.to_layer_id, vec![claim]);
+    }
+
+    // Intermediate layer verification with intermediate value dumping
+    let mut layer_intermediates: Vec<serde_json::Value> = Vec::new();
+    for (layer_id, layer_proof) in &proof.circuit_proof.layer_proofs {
+        let layer_desc = verifiable_ref.intermediate_layers.iter()
+            .find(|ld| ld.layer_id() == *layer_id).unwrap();
+
+        let layer_claims_vec = claim_tracker.remove(&layer_desc.layer_id()).unwrap();
+
+        eprintln!("\n=== Layer {:?} verification intermediates ===", layer_id);
+        eprintln!("  num_claims: {}", layer_claims_vec.len());
+        eprintln!("  max_degree: {}", layer_desc.max_degree());
+
+        // Get RLC random coefficients
+        let random_coefficients = match global_claim_agg_strategy() {
+            ClaimAggregationStrategy::RLC => custom_transcript
+                .get_scalar_field_challenges("RLC Claim Agg Coefficients", layer_claims_vec.len()),
+            _ => vec![Fr::one()],
+        };
+
+        // RLC eval (sum commitment)
+        let rlc_eval = layer_claims_vec.iter().zip(random_coefficients.iter())
+            .fold(Bn256Point::zero(), |acc, (elem, rc)| acc + elem.evaluation * *rc);
+
+        // Verify sum matches
+        assert_eq!(layer_proof.proof_of_sumcheck.sum, rlc_eval);
+
+        // Absorb first message, collect bindings
+        let num_rounds = layer_desc.sumcheck_round_indices().len();
+        if num_rounds > 0 {
+            custom_transcript.append_ec_point("Commitment to sumcheck message",
+                layer_proof.proof_of_sumcheck.messages[0]);
+        }
+        let mut bindings: Vec<Fr> = vec![];
+        layer_proof.proof_of_sumcheck.messages.iter().skip(1).for_each(|msg| {
+            let challenge = custom_transcript.get_scalar_field_challenge("sumcheck round challenge");
+            bindings.push(challenge);
+            custom_transcript.append_ec_point("Commitment to sumcheck message", *msg);
+        });
+        if num_rounds > 0 {
+            let final_chal = custom_transcript.get_scalar_field_challenge("sumcheck round challenge");
+            bindings.push(final_chal);
+        }
+
+        eprintln!("  bindings: {:?}", bindings.iter().map(|b| format!("{:?}", b)).collect::<Vec<_>>());
+
+        // Absorb commitments
+        custom_transcript.append_ec_points(
+            "Commitments to all the layer's leaf values and intermediates",
+            &layer_proof.commitments);
+
+        // Reconstruct PostSumcheckLayer
+        let claim_points: Vec<Vec<Fr>> = layer_claims_vec.iter()
+            .map(|c| c.point.clone()).collect();
+        let claim_points_refs: Vec<&[Fr]> = claim_points.iter().map(|v| v.as_slice()).collect();
+        let psl_desc = layer_desc.get_post_sumcheck_layer(&bindings, &claim_points_refs, &random_coefficients);
+        let psl: PostSumcheckLayer<Fr, Bn256Point> = new_with_values(&psl_desc, &layer_proof.commitments);
+
+        // Dump product structure
+        for (pi, product) in psl.0.iter().enumerate() {
+            let coeff_repr = product.coefficient.to_repr();
+            let mut coeff_be = coeff_repr.as_ref().to_vec();
+            coeff_be.reverse();
+            eprintln!("  Product {}: coefficient=0x{}, num_intermediates={}", pi, hex::encode(&coeff_be), product.intermediates.len());
+            let result = product.get_result();
+            let (rx, ry) = result.affine_coordinates().unwrap_or((Fq::zero(), Fq::zero()));
+            eprintln!("    result.x: {}", fq_to_hex(&rx));
+            eprintln!("    result.y: {}", fq_to_hex(&ry));
+        }
+
+        // Compute oracle_eval
+        let oracle_eval = evaluate_committed_psl(&psl);
+        let (ox, oy) = oracle_eval.affine_coordinates().unwrap_or((Fq::zero(), Fq::zero()));
+        eprintln!("  oracle_eval.x: {}", fq_to_hex(&ox));
+        eprintln!("  oracle_eval.y: {}", fq_to_hex(&oy));
+
+        // Squeeze rhos and gammas (matching the proof_of_sumcheck verify)
+        let n = layer_proof.proof_of_sumcheck.messages.len();
+        let rhos = custom_transcript.get_scalar_field_challenges(
+            "Proof of sumcheck RLC coefficients for batching rows", n + 1);
+        let gammas = custom_transcript.get_scalar_field_challenges(
+            "Proof of sumcheck RLC coefficients for batching columns", n);
+
+        // Compute alpha
+        let alpha = gammas.iter().zip(layer_proof.proof_of_sumcheck.messages.iter())
+            .fold(Bn256Point::zero(), |acc, (gamma, msg)| acc + *msg * *gamma);
+        let (ax, ay) = alpha.affine_coordinates().unwrap_or((Fq::zero(), Fq::zero()));
+        eprintln!("  alpha.x: {}", fq_to_hex(&ax));
+        eprintln!("  alpha.y: {}", fq_to_hex(&ay));
+
+        // Compute j_star
+        let j_star = ProofOfSumcheck::<Bn256Point>::calculate_j_star(
+            &bindings, &rhos, &gammas, layer_desc.max_degree());
+        eprintln!("  j_star ({} elements):", j_star.len());
+        for (ji, jv) in j_star.iter().enumerate() {
+            let jr = jv.to_repr();
+            let mut jbe = jr.as_ref().to_vec();
+            jbe.reverse();
+            eprintln!("    j_star[{}]: 0x{}", ji, hex::encode(&jbe));
+        }
+
+        // Compute dot_product
+        let dot_product = layer_proof.proof_of_sumcheck.sum * rhos[0]
+            + oracle_eval * rhos[rhos.len() - 1].neg();
+        let (dx, dy) = dot_product.affine_coordinates().unwrap_or((Fq::zero(), Fq::zero()));
+        eprintln!("  dot_product.x: {}", fq_to_hex(&dx));
+        eprintln!("  dot_product.y: {}", fq_to_hex(&dy));
+
+        // Dump rhos and gammas
+        for (ri, rv) in rhos.iter().enumerate() {
+            let rr = PrimeField::to_repr(rv);
+            let mut rbe = rr.as_ref().to_vec();
+            rbe.reverse();
+            eprintln!("  rho[{}]: 0x{}", ri, hex::encode(&rbe));
+        }
+        for (gi, gv) in gammas.iter().enumerate() {
+            let gr = PrimeField::to_repr(gv);
+            let mut gbe = gr.as_ref().to_vec();
+            gbe.reverse();
+            eprintln!("  gamma[{}]: 0x{}", gi, hex::encode(&gbe));
+        }
+
+        layer_intermediates.push(json!({
+            "layer_id": format!("{:?}", layer_id),
+            "max_degree": layer_desc.max_degree(),
+            "oracle_eval_x": fq_to_hex(&ox),
+            "oracle_eval_y": fq_to_hex(&oy),
+            "dot_product_x": fq_to_hex(&dx),
+            "dot_product_y": fq_to_hex(&dy),
+            "alpha_x": fq_to_hex(&ax),
+            "alpha_y": fq_to_hex(&ay),
+            "num_products": psl.0.len(),
+        }));
+
+        // Continue verification (verify PODP + PoP, extract claims)
+        layer_proof.proof_of_sumcheck.verify(
+            &rlc_eval, layer_desc.max_degree(), &psl, &bindings, &verifier_committer, &mut custom_transcript);
+        let product_triples: Vec<(Bn256Point, Bn256Point, Bn256Point)> = psl.0.iter()
+            .filter_map(|p| p.get_product_triples()).flatten().collect();
+        product_triples.iter().zip(layer_proof.proofs_of_product.iter())
+            .for_each(|((x,y,z), pop)| { pop.verify(*x, *y, *z, &verifier_committer, &mut custom_transcript); });
+        let new_claims: Vec<HyraxClaim<Fr, Bn256Point>> = psl.0.iter()
+            .flat_map(|p| hyrax::gkr::layer::get_claims_from_product(p)).collect();
+        for claim in new_claims {
+            claim_tracker.entry(claim.to_layer_id).or_insert_with(Vec::new).push(claim);
+        }
+    }
+    eprintln!("\n=== Custom verification pass complete ===");
+
     // Build the output JSON with all values
     let ec_points_hex: Vec<serde_json::Value> = input_commits
         .iter()
@@ -320,6 +594,7 @@ fn main() -> Result<()> {
             "input_commitment_hash_chain_1": fq_to_hex(&ec_hash_1),
             "input_commitment_hash_chain_2": fq_to_hex(&ec_hash_2),
         },
+        "output_claim_commitments": claim_commitment_coords,
         "challenges": {
             "after_circuit_hash_and_public_inputs": fq_to_hex(&challenge_after_6),
             "first_challenge_for_output_claim": fq_to_hex(&first_challenge),

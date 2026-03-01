@@ -21,15 +21,27 @@ contract RemainderVerifierAdapter is IProofVerifier {
     }
 
     /// @notice Verify a Remainder proof
-    /// @param proofData ABI-encoded GKR+Hyrax proof (optionally with appended Pedersen generators)
+    /// @param proofData ABI-encoded GKR+Hyrax proof (starts with "REM1" selector)
     /// @param programId The circuit hash
-    /// @param publicData Public input values followed by ABI-encoded Pedersen generators
-    /// @dev The publicData is split: first N*32 bytes are public inputs, remaining bytes are gensData.
-    ///      For now, gensData is passed as empty (PODP generators must be included separately).
+    /// @param publicData Length-prefixed payload: [pubInputsLen (32 bytes)] [pubInputs...] [gensData...]
+    ///        If publicData.length < 32, it is treated as raw public inputs with no generators.
     function verify(bytes calldata proofData, bytes32 programId, bytes calldata publicData) external view override {
-        // This reverts on invalid proof
-        // Pass empty gensData for now — callers needing PODP verification should use verifyOrRevert directly
-        remainderVerifier.verifyOrRevert(proofData, programId, publicData, "");
+        if (publicData.length < 32) {
+            // Legacy/simple path: entire publicData is public inputs, no generators
+            remainderVerifier.verifyOrRevert(proofData, programId, publicData, "");
+        } else {
+            // Split publicData: first 32 bytes = pubInputs byte length
+            uint256 pubInputsLen = uint256(bytes32(publicData[:32]));
+
+            if (pubInputsLen + 32 > publicData.length) {
+                // Invalid length prefix — treat as raw public inputs
+                remainderVerifier.verifyOrRevert(proofData, programId, publicData, "");
+            } else {
+                bytes calldata pubInputs = publicData[32:32 + pubInputsLen];
+                bytes calldata gensData = publicData[32 + pubInputsLen:];
+                remainderVerifier.verifyOrRevert(proofData, programId, pubInputs, gensData);
+            }
+        }
     }
 
     /// @notice Return the proof system name
