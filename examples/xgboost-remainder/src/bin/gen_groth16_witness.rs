@@ -569,13 +569,13 @@ fn main() -> Result<()> {
 
     // Extract the actual circuit description hash (the one used in the transcript).
     // This is a pair of Fq values. We reconstruct the 32-byte hash from them.
+    use remainder::prover::helpers::get_circuit_description_hash_as_field_elems;
+    use shared_types::config::global_config::global_verifier_circuit_description_hash_type;
+    let hash_elems = get_circuit_description_hash_as_field_elems(
+        verifiable_ref,
+        global_verifier_circuit_description_hash_type(),
+    );
     let circuit_hash: [u8; 32] = {
-        use remainder::prover::helpers::get_circuit_description_hash_as_field_elems;
-        use shared_types::config::global_config::global_verifier_circuit_description_hash_type;
-        let hash_elems = get_circuit_description_hash_as_field_elems(
-            verifiable_ref,
-            global_verifier_circuit_description_hash_type(),
-        );
         // hash_elems are two Fq values, each from a 16-byte LE half of the SHA-256 hash.
         // Reconstruct the original 32-byte hash: first 16 LE bytes from hash_elems[0],
         // next 16 LE bytes from hash_elems[1].
@@ -610,8 +610,20 @@ fn main() -> Result<()> {
     // ================================================================
     // Build JSON output (all values as Fr hex strings)
     // ================================================================
-    let circuit_hash_0 = fr_to_hex(&Fr::from(12345u64)); // placeholder
-    let circuit_hash_1 = fr_to_hex(&Fr::from(67890u64)); // placeholder
+    // Convert circuit hash Fq values to Fr via shared byte representation.
+    // Safe because values are < 2^128 (derived from 16-byte LE halves).
+    let circuit_hash_0_fr = {
+        let mut repr = <Fr as PrimeField>::Repr::default();
+        repr.as_mut().copy_from_slice(hash_elems[0].to_repr().as_ref());
+        Fr::from_repr(repr).unwrap()
+    };
+    let circuit_hash_1_fr = {
+        let mut repr = <Fr as PrimeField>::Repr::default();
+        repr.as_mut().copy_from_slice(hash_elems[1].to_repr().as_ref());
+        Fr::from_repr(repr).unwrap()
+    };
+    let circuit_hash_0 = fr_to_hex(&circuit_hash_0_fr);
+    let circuit_hash_1 = fr_to_hex(&circuit_hash_1_fr);
 
     let output = json!({
         "public_inputs": {

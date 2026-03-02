@@ -194,38 +194,20 @@ contract RemainderVerifier {
         uint256[8] calldata groth16Proof,
         uint256[8] calldata groth16Outputs
     ) external view {
-        // Check proof selector
-        if (innerProof.length < 4) revert InvalidProofLength();
-        bytes4 selector = bytes4(innerProof[:4]);
-        if (selector != bytes4("REM1")) revert InvalidProofSelector();
+        // Validate circuit registration, proof format, generators, and structure
+        _validateHybridInputs(circuitHash, innerProof, gensData);
 
         // Decode the inner proof and generators
         (GKRVerifier.GKRProof memory gkrProof, uint256[] memory pubInputs) = decodeProof(innerProof[4:], publicInputs);
         HyraxVerifier.PedersenGens memory gens = decodePedersenGens(gensData);
 
-        // Set up Fiat-Shamir transcript
+        // Set up Fiat-Shamir transcript and replay to collect all challenges
         PoseidonSponge.Sponge memory sponge = _setupTranscript(circuitHash, pubInputs, gkrProof);
-
-        // Replay transcript to collect all challenges
         GKRHybridVerifier.TranscriptChallenges memory challenges =
             GKRHybridVerifier.replayTranscriptAndCollectChallenges(gkrProof, sponge);
 
-        // Build Groth16 public inputs (29 values)
-        // Circuit hash as Fr values (placeholder 12345, 67890 matching gen_groth16_witness.rs)
-        uint256 circuitHashFr0 = 12345;
-        uint256 circuitHashFr1 = 67890;
-
-        uint256[29] memory groth16Inputs = GKRHybridVerifier.buildGroth16Inputs(
-            circuitHashFr0, circuitHashFr1,
-            pubInputs.length > 0 ? pubInputs[0] : 0,
-            pubInputs.length > 1 ? pubInputs[1] : 0,
-            challenges,
-            groth16Outputs
-        );
-
-        // Verify Groth16 proof (reverts if invalid)
-        require(groth16Verifier != address(0), "Groth16 verifier not set");
-        Groth16Verifier(groth16Verifier).verifyProof(groth16Proof, groth16Inputs);
+        // Build and verify Groth16 proof
+        _verifyGroth16(circuitHash, pubInputs, challenges, groth16Proof, groth16Outputs);
 
         // Verify EC equations using Groth16 outputs
         GKRHybridVerifier.Groth16Outputs memory outputs = GKRHybridVerifier.Groth16Outputs({
@@ -241,6 +223,58 @@ contract RemainderVerifier {
 
         bool ecValid = GKRHybridVerifier.verifyECChecks(gkrProof, challenges, outputs, gens);
         if (!ecValid) revert ProofVerificationFailed();
+    }
+
+    /// @dev Validate circuit registration, proof format, generators, and circuit structure
+    function _validateHybridInputs(
+        bytes32 circuitHash,
+        bytes calldata innerProof,
+        bytes calldata gensData
+    ) private view {
+        // Check circuit is registered and active
+        CircuitConfig storage config = circuits[circuitHash];
+        if (config.circuitHash == bytes32(0)) revert CircuitNotRegistered();
+        if (!config.active) revert CircuitNotActive();
+
+        // Check proof selector
+        if (innerProof.length < 4) revert InvalidProofLength();
+        bytes4 selector = bytes4(innerProof[:4]);
+        if (selector != bytes4("REM1")) revert InvalidProofSelector();
+
+        // Validate generators hash if configured
+        if (config.gensHash != bytes32(0) && gensData.length > 0) {
+            if (keccak256(gensData) != config.gensHash) revert InvalidGenerators();
+        }
+
+        // Validate circuit structure is compatible with hybrid verifier
+        // (currently supports: 3 layers = input(committed) + multiply + subtract)
+        require(config.description.numLayers == 3, "Hybrid: requires 3-layer circuit");
+        require(config.description.layerTypes[0] == 3, "Hybrid: layer 0 must be input");
+        require(config.description.isCommitted[0], "Hybrid: layer 0 must be committed");
+    }
+
+    /// @dev Build Groth16 inputs and verify the proof
+    function _verifyGroth16(
+        bytes32 circuitHash,
+        uint256[] memory pubInputs,
+        GKRHybridVerifier.TranscriptChallenges memory challenges,
+        uint256[8] calldata groth16Proof,
+        uint256[8] calldata groth16Outputs
+    ) private view {
+        // Convert circuit hash to Fr pair (same LE 16-byte interpretation as Fq; values < 2^128)
+        (uint256 circuitHashFr0, uint256 circuitHashFr1) = _hashToFqPair(circuitHash);
+
+        uint256[29] memory groth16Inputs = GKRHybridVerifier.buildGroth16Inputs(
+            circuitHashFr0, circuitHashFr1,
+            pubInputs.length > 0 ? pubInputs[0] : 0,
+            pubInputs.length > 1 ? pubInputs[1] : 0,
+            challenges,
+            groth16Outputs
+        );
+
+        // Verify Groth16 proof (reverts if invalid)
+        require(groth16Verifier != address(0), "Groth16 verifier not set");
+        Groth16Verifier(groth16Verifier).verifyProof(groth16Proof, groth16Inputs);
     }
 
     /// @notice Public wrapper for transcript replay (for testing)
@@ -682,6 +716,11 @@ contract RemainderVerifier {
     /// @notice Check if a circuit is registered and active
     function isCircuitActive(bytes32 circuitHash) external view returns (bool) {
         return circuits[circuitHash].active;
+    }
+
+    /// @notice Public wrapper for _hashToFqPair (for testing)
+    function hashToFqPair(bytes32 hash) external pure returns (uint256 fq1, uint256 fq2) {
+        return _hashToFqPair(hash);
     }
 
     /// @notice Get all registered circuit hashes

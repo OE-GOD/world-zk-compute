@@ -1640,10 +1640,6 @@ contract E2EProofDecodeTest is Test {
 contract TestableRemainderVerifier is RemainderVerifier {
     constructor(address _admin) RemainderVerifier(_admin) {}
 
-    function hashToFqPair(bytes32 hash) external pure returns (uint256 fq1, uint256 fq2) {
-        return _hashToFqPair(hash);
-    }
-
     function sha256HashChain(uint256[] memory fqElements) external view returns (uint256 fq1, uint256 fq2) {
         return _sha256HashChain(fqElements);
     }
@@ -2075,6 +2071,27 @@ contract GKRHybridVerifierTest is Test {
         remainderVerifier = new RemainderVerifier(address(this));
         groth16Verifier = new Groth16Verifier();
         remainderVerifier.setGroth16Verifier(address(groth16Verifier));
+
+        // Register the test circuit (3 layers: input(committed), multiply, subtract)
+        // matching the circuit structure used in gen_groth16_witness.rs
+        bytes32 circuitHash = vm.parseJsonBytes32(
+            vm.readFile("test/fixtures/groth16_e2e_fixture.json"), ".circuit_hash_raw"
+        );
+        uint256[] memory sizes = new uint256[](3);
+        sizes[0] = 4; sizes[1] = 2; sizes[2] = 2;
+        uint8[] memory types = new uint8[](3);
+        types[0] = 3; types[1] = 1; types[2] = 0;
+        bool[] memory committed = new bool[](3);
+        committed[0] = true;
+        remainderVerifier.registerCircuit(circuitHash, 3, sizes, types, committed, "test-hybrid");
+
+        // Also register the circuit from e2e_fixture.json (used by non-Groth16 tests)
+        bytes32 e2eCircuitHash = vm.parseJsonBytes32(
+            vm.readFile("test/fixtures/e2e_fixture.json"), ".circuit_hash_raw"
+        );
+        if (e2eCircuitHash != circuitHash) {
+            remainderVerifier.registerCircuit(e2eCircuitHash, 3, sizes, types, committed, "test-e2e");
+        }
     }
 
     /// @notice Load e2e fixture data for testing
@@ -2254,9 +2271,18 @@ contract GKRHybridVerifierTest is Test {
     /// @notice Test that verifyWithGroth16 rejects when groth16Verifier is not set
     function test_hybrid_rejects_no_groth16_verifier() public {
         RemainderVerifier freshVerifier = new RemainderVerifier(address(this));
-        // Don't set groth16Verifier
+        // Don't set groth16Verifier, but register the circuit
 
         (bytes memory proofHex, bytes memory gensHex, bytes32 circuitHash) = _loadE2EFixture();
+
+        // Register circuit on freshVerifier
+        uint256[] memory sizes = new uint256[](3);
+        sizes[0] = 4; sizes[1] = 2; sizes[2] = 2;
+        uint8[] memory types = new uint8[](3);
+        types[0] = 3; types[1] = 1; types[2] = 0;
+        bool[] memory committed = new bool[](3);
+        committed[0] = true;
+        freshVerifier.registerCircuit(circuitHash, 3, sizes, types, committed, "test");
 
         bytes memory publicInputs = new bytes(64);
         assembly {
@@ -2277,6 +2303,11 @@ contract GKRHybridVerifierTest is Test {
 
     /// @notice Test that verifyWithGroth16 rejects invalid selector
     function test_hybrid_rejects_bad_selector() public {
+        // Use a registered circuit hash so we pass the registration check
+        bytes32 circuitHash = vm.parseJsonBytes32(
+            vm.readFile("test/fixtures/groth16_e2e_fixture.json"), ".circuit_hash_raw"
+        );
+
         bytes memory badProof = hex"DEADBEEF";
         bytes memory publicInputs = new bytes(64);
         bytes memory gensData = new bytes(0);
@@ -2284,11 +2315,16 @@ contract GKRHybridVerifierTest is Test {
         uint256[8] memory outputs;
 
         vm.expectRevert(RemainderVerifier.InvalidProofSelector.selector);
-        remainderVerifier.verifyWithGroth16(badProof, bytes32(0), publicInputs, gensData, proof, outputs);
+        remainderVerifier.verifyWithGroth16(badProof, circuitHash, publicInputs, gensData, proof, outputs);
     }
 
     /// @notice Test that verifyWithGroth16 rejects too-short proof
     function test_hybrid_rejects_short_proof() public {
+        // Use a registered circuit hash so we pass the registration check
+        bytes32 circuitHash = vm.parseJsonBytes32(
+            vm.readFile("test/fixtures/groth16_e2e_fixture.json"), ".circuit_hash_raw"
+        );
+
         bytes memory shortProof = hex"5245";
         bytes memory publicInputs = new bytes(0);
         bytes memory gensData = new bytes(0);
@@ -2296,7 +2332,7 @@ contract GKRHybridVerifierTest is Test {
         uint256[8] memory outputs;
 
         vm.expectRevert(RemainderVerifier.InvalidProofLength.selector);
-        remainderVerifier.verifyWithGroth16(shortProof, bytes32(0), publicInputs, gensData, proof, outputs);
+        remainderVerifier.verifyWithGroth16(shortProof, circuitHash, publicInputs, gensData, proof, outputs);
     }
 
     // ========================================================================
@@ -2379,9 +2415,10 @@ contract GKRHybridVerifierTest is Test {
         GKRHybridVerifier.TranscriptChallenges memory challenges =
             GKRHybridVerifier.replayTranscriptAndCollectChallenges(gkrProof, sponge);
 
-        // Build Groth16 public inputs
+        // Build Groth16 public inputs using actual circuit hash Fr values
+        (uint256 chFr0, uint256 chFr1) = remainderVerifier.hashToFqPair(circuitHash);
         uint256[29] memory groth16Inputs = GKRHybridVerifier.buildGroth16Inputs(
-            12345, 67890,
+            chFr0, chFr1,
             pubInputs.length > 0 ? pubInputs[0] : 0,
             pubInputs.length > 1 ? pubInputs[1] : 0,
             challenges,
@@ -2477,5 +2514,49 @@ contract GKRHybridVerifierTest is Test {
         uint256 gasUsed = gasBefore - gasleft();
 
         emit log_named_uint("Full hybrid E2E verification gas", gasUsed);
+    }
+
+    // ========================================================================
+    // CIRCUIT REGISTRATION REJECTION TESTS
+    // ========================================================================
+
+    /// @notice Test that verifyWithGroth16 rejects unregistered circuit
+    function test_hybrid_rejects_unregistered_circuit() public {
+        (
+            bytes memory innerProof,
+            bytes memory gensHex,
+            ,
+            bytes memory publicValuesAbi,
+            uint256[8] memory groth16Proof,
+            uint256[8] memory groth16Outputs
+        ) = _loadCombinedFixture();
+
+        // Use a wrong circuit hash that is not registered
+        bytes32 wrongHash = bytes32(uint256(0xDEAD));
+
+        vm.expectRevert(RemainderVerifier.CircuitNotRegistered.selector);
+        remainderVerifier.verifyWithGroth16(
+            innerProof, wrongHash, publicValuesAbi, gensHex, groth16Proof, groth16Outputs
+        );
+    }
+
+    /// @notice Test that verifyWithGroth16 rejects inactive circuit
+    function test_hybrid_rejects_inactive_circuit() public {
+        (
+            bytes memory innerProof,
+            bytes memory gensHex,
+            bytes32 circuitHash,
+            bytes memory publicValuesAbi,
+            uint256[8] memory groth16Proof,
+            uint256[8] memory groth16Outputs
+        ) = _loadCombinedFixture();
+
+        // Deactivate the circuit
+        remainderVerifier.deactivateCircuit(circuitHash);
+
+        vm.expectRevert(RemainderVerifier.CircuitNotActive.selector);
+        remainderVerifier.verifyWithGroth16(
+            innerProof, circuitHash, publicValuesAbi, gensHex, groth16Proof, groth16Outputs
+        );
     }
 }
