@@ -53,6 +53,12 @@ contract RemainderVerifier {
     /// @notice List of registered circuit hashes
     bytes32[] public circuitHashes;
 
+    /// @notice Per-circuit Groth16 verifier addresses
+    mapping(bytes32 => address) public circuitGroth16Verifiers;
+
+    /// @notice Per-circuit Groth16 function selectors (for verifyProof(uint256[8],uint256[N]))
+    mapping(bytes32 => bytes4) public circuitGroth16Selectors;
+
     // ========================================================================
     // EVENTS
     // ========================================================================
@@ -271,7 +277,7 @@ contract RemainderVerifier {
         require(config.description.isCommitted[0], "Hybrid: layer 0 must be committed");
     }
 
-    /// @dev Build Groth16 inputs and verify the proof
+    /// @dev Build Groth16 inputs and verify the proof via raw staticcall
     function _verifyGroth16(
         bytes32 circuitHash,
         uint256[] memory pubInputs,
@@ -282,12 +288,90 @@ contract RemainderVerifier {
         // Convert circuit hash to Fr pair (same LE 16-byte interpretation as Fq; values < 2^128)
         (uint256 circuitHashFr0, uint256 circuitHashFr1) = _hashToFqPair(circuitHash);
 
-        uint256[70] memory groth16Inputs =
+        uint256[] memory groth16Inputs =
             GKRHybridVerifier.buildGroth16Inputs(circuitHashFr0, circuitHashFr1, pubInputs, challenges, groth16Outputs);
 
-        // Verify Groth16 proof (reverts if invalid)
-        require(groth16Verifier != address(0), "Groth16 verifier not set");
-        Groth16Verifier(groth16Verifier).verifyProof(groth16Proof, groth16Inputs);
+        (address verifier, bytes4 selector) = _getCircuitGroth16Verifier(circuitHash);
+        _callGroth16Verifier(verifier, selector, groth16Proof, groth16Inputs);
+    }
+
+    /// @dev Resolve the Groth16 verifier address and selector for a circuit
+    function _getCircuitGroth16Verifier(bytes32 circuitHash)
+        private
+        view
+        returns (address verifier, bytes4 selector)
+    {
+        verifier = circuitGroth16Verifiers[circuitHash];
+        selector = circuitGroth16Selectors[circuitHash];
+        // Fallback to global verifier (backward compat with existing tests)
+        if (verifier == address(0)) {
+            verifier = groth16Verifier;
+            selector = bytes4(keccak256("verifyProof(uint256[8],uint256[70])"));
+        }
+        require(verifier != address(0), "Groth16 verifier not set");
+    }
+
+    /// @dev Call the Groth16 verifier with raw staticcall (inline encoding, no offset/length)
+    function _callGroth16Verifier(
+        address verifier,
+        bytes4 selector,
+        uint256[8] calldata proof,
+        uint256[] memory inputs
+    ) private view {
+        // Copy proof to memory for assembly access (calldata fixed arrays don't support .offset)
+        uint256[8] memory proofMem = proof;
+        uint256 n = inputs.length;
+        // Build calldata: selector(4) + 8 proof words + N input words (all inline, 32 bytes each)
+        bytes memory data = new bytes(4 + (8 + n) * 32);
+        assembly {
+            let ptr := add(data, 32) // skip Solidity length prefix
+            // Write selector (4 bytes, left-aligned in word)
+            mstore(ptr, shl(224, shr(224, selector)))
+            ptr := add(ptr, 4)
+            // Copy proof (8 uint256s from memory — fixed array has no length prefix)
+            for { let i := 0 } lt(i, 8) { i := add(i, 1) } {
+                mstore(ptr, mload(add(proofMem, mul(i, 32))))
+                ptr := add(ptr, 32)
+            }
+            // Copy inputs (N uint256s from memory dynamic array — skip length prefix)
+            let inputsPtr := add(inputs, 32)
+            for { let i := 0 } lt(i, n) { i := add(i, 1) } {
+                mstore(ptr, mload(add(inputsPtr, mul(i, 32))))
+                ptr := add(ptr, 32)
+            }
+        }
+        (bool success, bytes memory returnData) = verifier.staticcall(data);
+        if (!success) {
+            if (returnData.length > 0) {
+                assembly {
+                    revert(add(returnData, 32), mload(returnData))
+                }
+            }
+            revert("Groth16 verification failed");
+        }
+    }
+
+    /// @dev Compute the selector for verifyProof(uint256[8],uint256[N])
+    function _computeGroth16Selector(uint256 n) private pure returns (bytes4) {
+        return bytes4(keccak256(abi.encodePacked("verifyProof(uint256[8],uint256[", _uintToString(n), "])")));
+    }
+
+    /// @dev Convert uint to string for selector computation
+    function _uintToString(uint256 value) private pure returns (string memory) {
+        if (value == 0) return "0";
+        uint256 temp = value;
+        uint256 digits;
+        while (temp != 0) {
+            digits++;
+            temp /= 10;
+        }
+        bytes memory buffer = new bytes(digits);
+        while (value != 0) {
+            digits--;
+            buffer[digits] = bytes1(uint8(48 + value % 10));
+            value /= 10;
+        }
+        return string(buffer);
     }
 
     /// @notice Public wrapper for transcript replay (for testing)
@@ -718,6 +802,16 @@ contract RemainderVerifier {
         groth16Verifier = _groth16Verifier;
     }
 
+    /// @notice Set a per-circuit Groth16 verifier address and input count
+    function setCircuitGroth16Verifier(bytes32 circuitHash, address verifier, uint256 groth16InputCount)
+        external
+        onlyAdmin
+    {
+        require(circuits[circuitHash].circuitHash != bytes32(0), "Circuit not registered");
+        circuitGroth16Verifiers[circuitHash] = verifier;
+        circuitGroth16Selectors[circuitHash] = _computeGroth16Selector(groth16InputCount);
+    }
+
     // ========================================================================
     // VIEW FUNCTIONS
     // ========================================================================
@@ -757,8 +851,7 @@ contract RemainderVerifier {
 
         // 1. Absorb circuit hash as two Fq elements (16-byte halves, LE interpreted)
         (uint256 fq1, uint256 fq2) = _hashToFqPair(circuitHash);
-        PoseidonSponge.absorb(sponge, fq1);
-        PoseidonSponge.absorb(sponge, fq2);
+        PoseidonSponge.absorbPair(sponge, fq1, fq2);
 
         // 2. Absorb public input values
         for (uint256 i = 0; i < pubInputs.length; i++) {
@@ -767,19 +860,17 @@ contract RemainderVerifier {
 
         // 3. Absorb SHA-256 hash chain of public inputs
         (uint256 pubHash1, uint256 pubHash2) = _sha256HashChain(pubInputs);
-        PoseidonSponge.absorb(sponge, pubHash1);
-        PoseidonSponge.absorb(sponge, pubHash2);
+        PoseidonSponge.absorbPair(sponge, pubHash1, pubHash2);
 
         // 4. Absorb EC commitment points from input proofs
         uint256[] memory ecCoords = _extractInputCommitCoords(gkrProof);
-        for (uint256 i = 0; i < ecCoords.length; i++) {
-            PoseidonSponge.absorb(sponge, ecCoords[i]);
+        for (uint256 i = 0; i < ecCoords.length; i += 2) {
+            PoseidonSponge.absorbPair(sponge, ecCoords[i], ecCoords[i + 1]);
         }
 
         // 5. Absorb SHA-256 hash chain of EC commitment coordinates
         (uint256 ecHash1, uint256 ecHash2) = _sha256HashChain(ecCoords);
-        PoseidonSponge.absorb(sponge, ecHash1);
-        PoseidonSponge.absorb(sponge, ecHash2);
+        PoseidonSponge.absorbPair(sponge, ecHash1, ecHash2);
     }
 
     /// @notice Extract all input commitment point coordinates from decoded proof
@@ -827,26 +918,67 @@ contract RemainderVerifier {
     ///      3. Iterate SHA-256 1000 times
     ///      4. Split 32-byte result into two 16-byte halves → LE Fq
     function _sha256HashChain(uint256[] memory fqElements) internal view returns (uint256 fq1, uint256 fq2) {
-        // Convert each Fq to 32 LE bytes and concatenate
-        bytes memory input = new bytes(fqElements.length * 32);
-        for (uint256 i = 0; i < fqElements.length; i++) {
-            uint256 val = fqElements[i];
-            uint256 base = i * 32;
-            for (uint256 j = 0; j < 32; j++) {
-                input[base + j] = bytes1(uint8(val & 0xff));
-                val >>= 8;
+        assembly {
+            let count := mload(fqElements)
+            let inputLen := mul(count, 32)
+
+            // Use scratch space at free memory pointer for LE-encoded input
+            let ptr := mload(0x40)
+
+            // Convert each Fq element to 32-byte LE and write to ptr
+            for { let i := 0 } lt(i, count) { i := add(i, 1) } {
+                let val := mload(add(fqElements, mul(add(i, 1), 32)))
+                // Byte-reverse uint256: swap bytes using O(log n) bitwise operations
+                // Swap adjacent bytes (swap odd/even byte positions)
+                val :=
+                    or(
+                        and(shr(8, val), 0x00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF),
+                        and(shl(8, val), 0xFF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00)
+                    )
+                // Swap adjacent 2-byte groups
+                val :=
+                    or(
+                        and(shr(16, val), 0x0000FFFF0000FFFF0000FFFF0000FFFF0000FFFF0000FFFF0000FFFF0000FFFF),
+                        and(shl(16, val), 0xFFFF0000FFFF0000FFFF0000FFFF0000FFFF0000FFFF0000FFFF0000FFFF0000)
+                    )
+                // Swap adjacent 4-byte groups
+                val :=
+                    or(
+                        and(shr(32, val), 0x00000000FFFFFFFF00000000FFFFFFFF00000000FFFFFFFF00000000FFFFFFFF),
+                        and(shl(32, val), 0xFFFFFFFF00000000FFFFFFFF00000000FFFFFFFF00000000FFFFFFFF00000000)
+                    )
+                // Swap adjacent 8-byte groups
+                val :=
+                    or(
+                        and(shr(64, val), 0x0000000000000000FFFFFFFFFFFFFFFF0000000000000000FFFFFFFFFFFFFFFF),
+                        and(shl(64, val), 0xFFFFFFFFFFFFFFFF0000000000000000FFFFFFFFFFFFFFFF0000000000000000)
+                    )
+                // Swap 16-byte halves
+                val := or(shr(128, val), shl(128, val))
+                mstore(add(ptr, mul(i, 32)), val)
+            }
+
+            // Initial SHA-256 via precompile 0x02: sha256(inputBytes)
+            if iszero(staticcall(gas(), 0x02, ptr, inputLen, ptr, 32)) { revert(0, 0) }
+
+            // 1000-iteration hash chain: reuse same 32-byte slot at ptr
+            for { let k := 0 } lt(k, 1000) { k := add(k, 1) } {
+                if iszero(staticcall(gas(), 0x02, ptr, 32, ptr, 32)) { revert(0, 0) }
+            }
+
+            // Read final 32-byte hash and split into two 16-byte LE Fq values
+            let hash := mload(ptr)
+            // First 16 bytes (high 128 bits of hash) → LE uint256
+            fq1 := 0
+            for { let j := 0 } lt(j, 16) { j := add(j, 1) } {
+                fq1 := or(shl(mul(j, 8), byte(j, hash)), fq1)
+            }
+            // Second 16 bytes (low 128 bits of hash) → LE uint256
+            fq2 := 0
+            for { let j := 0 } lt(j, 16) { j := add(j, 1) } {
+                fq2 := or(shl(mul(j, 8), byte(add(j, 16), hash)), fq2)
             }
         }
-
-        // Initial SHA-256
-        bytes32 hash = sha256(input);
-
-        // 1000 iterations
-        for (uint256 k = 0; k < 1000; k++) {
-            hash = sha256(abi.encodePacked(hash));
-        }
-
-        // Split and convert to LE Fq pair
-        (fq1, fq2) = _hashToFqPair(hash);
     }
+
 }

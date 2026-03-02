@@ -43,6 +43,13 @@ library PoseidonSponge {
         }
     }
 
+    /// @notice Absorb a pair of field elements (e.g., EC point x,y)
+    /// @dev Saves one function call vs calling absorb() twice
+    function absorbPair(Sponge memory s, uint256 a, uint256 b) internal pure {
+        absorb(s, a);
+        absorb(s, b);
+    }
+
     /// @notice Absorb multiple field elements
     function absorbMany(Sponge memory s, uint256[] memory values) internal pure {
         for (uint256 i = 0; i < values.length; i++) {

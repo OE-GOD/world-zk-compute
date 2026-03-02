@@ -509,26 +509,31 @@ library GKRHybridVerifier {
     // PUBLIC INPUTS BUILDER (for Groth16 verifier)
     // ========================================================================
 
-    /// @notice Build the uint256[70] public inputs array for the Groth16 verifier
-    /// @dev Layout matches gnark circuit struct field declaration order (medium config, N=4):
-    ///      circuitHash(2) + pubInputs(16) + outputChallenges(4) + claimAggCoeff(1) +
-    ///      layer0(bindings=4, rhos=5, gammas=4, podpChallenge=1) +
-    ///      layer1(bindings=4, rhos=5, gammas=4, podpChallenge=1, popChallenge=1) +
+    /// @notice Build the public inputs array for the Groth16 verifier (dynamic size)
+    /// @dev Layout matches gnark circuit struct field declaration order:
+    ///      circuitHash(2) + pubInputs(2^N) + outputChallenges(N) + claimAggCoeff(1) +
+    ///      layer0(bindings=N, rhos=N+1, gammas=N, podpChallenge=1) +
+    ///      layer1(bindings=N, rhos=N+1, gammas=N, podpChallenge=1, popChallenge=1) +
     ///      inputRLCCoeffs(2) + inputPODPChallenge(1) + interLayerCoeff(1) +
-    ///      outputs(rlcBeta=2, zDotJStar=2, lTensor=8, zDotR=1, mleEval=1) = 70
+    ///      outputs(rlcBeta=2, zDotJStar=2, lTensor=2*2^floor(N/2), zDotR=1, mleEval=1)
     /// @param circuitHashFr0 Circuit hash Fr value 0
     /// @param circuitHashFr1 Circuit hash Fr value 1
     /// @param pubInputs Public input values (2^num_vars elements)
     /// @param challenges Transcript-derived challenges
     /// @param groth16Outputs Groth16 output values
-    /// @return inputs The 70-element array for Groth16 verifyProof
+    /// @return inputs Dynamic array for Groth16 verifyProof
     function buildGroth16Inputs(
         uint256 circuitHashFr0,
         uint256 circuitHashFr1,
         uint256[] memory pubInputs,
         TranscriptChallenges memory challenges,
         Groth16Outputs memory groth16Outputs
-    ) internal pure returns (uint256[70] memory inputs) {
+    ) internal pure returns (uint256[] memory inputs) {
+        uint256 total = 2 + pubInputs.length + challenges.outputChallenges.length + 1
+            + challenges.layer0Bindings.length + challenges.layer0Rhos.length + challenges.layer0Gammas.length + 1
+            + challenges.layer1Bindings.length + challenges.layer1Rhos.length + challenges.layer1Gammas.length + 2
+            + 4 + 4 + groth16Outputs.lTensor.length + 2;
+        inputs = new uint256[](total);
         uint256 idx = 0;
 
         // [0-1] Circuit hash

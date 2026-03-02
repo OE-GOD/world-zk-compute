@@ -1749,6 +1749,35 @@ contract TranscriptSetupTest is Test {
         emit log_named_uint("Transcript setup gas (hash chains + absorbs)", gasUsed);
     }
 
+    /// @notice Gas benchmark for SHA-256 hash chain on public inputs (2 elements)
+    function test_gas_sha256_hash_chain_pub_inputs() public {
+        uint256[] memory pubInputs = new uint256[](2);
+        pubInputs[0] = 6;
+        pubInputs[1] = 20;
+
+        uint256 gasBefore = gasleft();
+        verifier.sha256HashChain(pubInputs);
+        uint256 gasUsed = gasBefore - gasleft();
+
+        emit log_named_uint("SHA-256 hash chain gas (2 pub inputs)", gasUsed);
+    }
+
+    /// @notice Gas benchmark for SHA-256 hash chain on EC coords (4 elements)
+    function test_gas_sha256_hash_chain_ec_coords() public {
+        string memory json = vm.readFile("test/fixtures/e2e_fixture.json");
+        uint256[] memory ecCoords = new uint256[](4);
+        ecCoords[0] = vm.parseJsonUint(json, ".transcript_trace.input_commitment_points[0].x");
+        ecCoords[1] = vm.parseJsonUint(json, ".transcript_trace.input_commitment_points[0].y");
+        ecCoords[2] = vm.parseJsonUint(json, ".transcript_trace.input_commitment_points[1].x");
+        ecCoords[3] = vm.parseJsonUint(json, ".transcript_trace.input_commitment_points[1].y");
+
+        uint256 gasBefore = gasleft();
+        verifier.sha256HashChain(ecCoords);
+        uint256 gasUsed = gasBefore - gasleft();
+
+        emit log_named_uint("SHA-256 hash chain gas (4 EC coords)", gasUsed);
+    }
+
     /// @dev Extract only input proof commitment rows from raw proof (minimal decode)
     function _decodeProofForCommitPoints(bytes memory rawProof)
         internal
@@ -2084,6 +2113,9 @@ contract GKRHybridVerifierTest is Test {
         committed[0] = true;
         remainderVerifier.registerCircuit(circuitHash, 3, sizes, types, committed, "test-hybrid-medium");
 
+        // Register per-circuit Groth16 verifier (medium config: 70 inputs)
+        remainderVerifier.setCircuitGroth16Verifier(circuitHash, address(groth16Verifier), 70);
+
         // Also register the circuit from e2e_fixture.json (used by non-Groth16 tests)
         bytes32 e2eCircuitHash = vm.parseJsonBytes32(vm.readFile("test/fixtures/e2e_fixture.json"), ".circuit_hash_raw");
         if (e2eCircuitHash != circuitHash) {
@@ -2252,7 +2284,8 @@ contract GKRHybridVerifierTest is Test {
         outputs.zDotR = 2012;
         outputs.mleEval = 2013;
 
-        uint256[70] memory inputs = GKRHybridVerifier.buildGroth16Inputs(12345, 67890, pubInputs, challenges, outputs);
+        uint256[] memory inputs = GKRHybridVerifier.buildGroth16Inputs(12345, 67890, pubInputs, challenges, outputs);
+        assertEq(inputs.length, 70, "total length should be 70");
 
         uint256 idx = 0;
         // [0-1] Circuit hash
@@ -2315,7 +2348,76 @@ contract GKRHybridVerifierTest is Test {
         }
         assertEq(inputs[idx++], 2012, "zDotR");
         assertEq(inputs[idx++], 2013, "mleEval");
-        assertEq(idx, 70, "total should be 70");
+        assertEq(idx, inputs.length, "idx should equal array length");
+    }
+
+    /// @notice Test buildGroth16Inputs with small config (N=1) produces 29-element array
+    function test_buildGroth16Inputs_small_config() public pure {
+        GKRHybridVerifier.TranscriptChallenges memory challenges;
+
+        // Output challenges (1 value for N=1)
+        challenges.outputChallenges = new uint256[](1);
+        challenges.outputChallenges[0] = 100;
+
+        challenges.claimAggCoeff = 200;
+
+        // Layer 0: 1 binding, 2 rhos, 1 gamma
+        challenges.layer0Bindings = new uint256[](1);
+        challenges.layer0Bindings[0] = 300;
+        challenges.layer0Rhos = new uint256[](2);
+        challenges.layer0Rhos[0] = 400;
+        challenges.layer0Rhos[1] = 401;
+        challenges.layer0Gammas = new uint256[](1);
+        challenges.layer0Gammas[0] = 500;
+        challenges.layer0PodpChallenge = 550;
+
+        // Layer 1: 1 binding, 2 rhos, 1 gamma
+        challenges.layer1Bindings = new uint256[](1);
+        challenges.layer1Bindings[0] = 600;
+        challenges.layer1Rhos = new uint256[](2);
+        challenges.layer1Rhos[0] = 700;
+        challenges.layer1Rhos[1] = 701;
+        challenges.layer1Gammas = new uint256[](1);
+        challenges.layer1Gammas[0] = 800;
+        challenges.layer1PodpChallenge = 850;
+        challenges.layer1PopChallenge = 860;
+
+        challenges.inputRlcCoeffs = new uint256[](2);
+        challenges.inputRlcCoeffs[0] = 900;
+        challenges.inputRlcCoeffs[1] = 901;
+        challenges.inputPodpChallenge = 910;
+        challenges.interLayerCoeff = 1000;
+
+        // Public inputs (2^1 = 2 values for N=1)
+        uint256[] memory pubInputs = new uint256[](2);
+        pubInputs[0] = 10;
+        pubInputs[1] = 11;
+
+        // Groth16 outputs: rlcBeta(2) + zDotJStar(2) + lTensor(2) + zDotR + mleEval = 8
+        GKRHybridVerifier.Groth16Outputs memory outputs;
+        outputs.rlcBeta0 = 2000;
+        outputs.rlcBeta1 = 2001;
+        outputs.zDotJStar0 = 2002;
+        outputs.zDotJStar1 = 2003;
+        outputs.lTensor = new uint256[](2);
+        outputs.lTensor[0] = 2004;
+        outputs.lTensor[1] = 2005;
+        outputs.zDotR = 2006;
+        outputs.mleEval = 2007;
+
+        uint256[] memory inputs = GKRHybridVerifier.buildGroth16Inputs(12345, 67890, pubInputs, challenges, outputs);
+
+        // Total = 2 + 2 + 1 + 1 + 1 + 2 + 1 + 1 + 1 + 2 + 1 + 1 + 1 + 2 + 1 + 1 + 2 + 2 + 2 + 1 + 1 = 29
+        assertEq(inputs.length, 29, "Small config (N=1) should have 29 inputs");
+
+        // Spot-check key positions
+        assertEq(inputs[0], 12345, "circuitHash0");
+        assertEq(inputs[1], 67890, "circuitHash1");
+        assertEq(inputs[2], 10, "pubInput0");
+        assertEq(inputs[3], 11, "pubInput1");
+        assertEq(inputs[4], 100, "outputChallenge0");
+        assertEq(inputs[inputs.length - 1], 2007, "mleEval (last)");
+        assertEq(inputs[inputs.length - 2], 2006, "zDotR (second to last)");
     }
 
     /// @notice Gas measurement for hybrid transcript replay
@@ -2499,11 +2601,17 @@ contract GKRHybridVerifierTest is Test {
 
         // Build Groth16 public inputs using actual circuit hash Fr values
         (uint256 chFr0, uint256 chFr1) = remainderVerifier.hashToFqPair(circuitHash);
-        uint256[70] memory groth16Inputs =
+        uint256[] memory groth16Inputs =
             GKRHybridVerifier.buildGroth16Inputs(chFr0, chFr1, pubInputs, challenges, outputs);
+        assertEq(groth16Inputs.length, 70, "Expected 70 Groth16 inputs for medium config");
 
-        // Verify the Groth16 proof with our on-chain-derived inputs
-        groth16Verifier.verifyProof(groth16Proof, groth16Inputs);
+        // Verify the Groth16 proof with our on-chain-derived inputs via direct typed call
+        // Convert dynamic array to fixed-size for the typed verifier interface
+        uint256[70] memory fixedInputs;
+        for (uint256 i = 0; i < 70; i++) {
+            fixedInputs[i] = groth16Inputs[i];
+        }
+        groth16Verifier.verifyProof(groth16Proof, fixedInputs);
 
         emit log_string("Groth16 verification with replayed inputs: PASSED");
     }
