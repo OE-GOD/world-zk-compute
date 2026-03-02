@@ -14,6 +14,27 @@ type CircuitConfig struct {
 	Layer1Degree    int // multiply gate degree = 3
 }
 
+// LeftDims returns floor(NumVars/2) — the number of left-half bindings for
+// the Hyrax input layer matrix split.
+func (c CircuitConfig) LeftDims() int {
+	return c.NumVars / 2
+}
+
+// RightDims returns ceil(NumVars/2) — the number of right-half bindings.
+func (c CircuitConfig) RightDims() int {
+	return (c.NumVars + 1) / 2
+}
+
+// NumRTensorElems returns 2^RightDims — the size of the R-tensor and input PODP z_vector.
+func (c CircuitConfig) NumRTensorElems() int {
+	return 1 << c.RightDims()
+}
+
+// NumLTensorElems returns 2 * 2^LeftDims — the size of the combined L-tensor (2 shreds).
+func (c CircuitConfig) NumLTensorElems() int {
+	return 2 * (1 << c.LeftDims())
+}
+
 // SmallConfig returns the config for the toy circuit (num_vars=1, 2 public inputs).
 func SmallConfig() CircuitConfig {
 	return CircuitConfig{NumVars: 1, NumPublicInputs: 2, Layer0Degree: 2, Layer1Degree: 3}
@@ -47,10 +68,11 @@ type PopWitness struct {
 // relations, and exposes the scalar results as public outputs for on-chain EC checks.
 //
 // Parameterized for num_vars: 2 GKR layers (subtract + multiply), width = 2^num_vars.
+// The Hyrax input layer splits num_vars into left (floor(N/2)) and right (ceil(N/2)) halves.
 //
-// Public input count: 7*N + 2^N + 20 where N = num_vars.
-//   - Small  (N=1): 29
-//   - Medium (N=4): 64
+// Public input count: 7*N + 2^N + 18 + 2*2^floor(N/2)
+//   - Small  (N=1): 7+2+18+2 = 29
+//   - Medium (N=4): 28+16+18+8 = 70
 type RemainderWrapperCircuit struct {
 	// Config (not a circuit variable, used at compile time only)
 	Config CircuitConfig `gnark:"-"`
@@ -84,19 +106,22 @@ type RemainderWrapperCircuit struct {
 	InterLayerCoeff frontend.Variable `gnark:",public"`
 
 	// === Public outputs (gnark -> on-chain, used in EC equations) ===
-	RlcBeta0   frontend.Variable    `gnark:",public"`
-	RlcBeta1   frontend.Variable    `gnark:",public"`
-	ZDotJStar0 frontend.Variable    `gnark:",public"`
-	ZDotJStar1 frontend.Variable    `gnark:",public"`
-	LTensor    [2]frontend.Variable `gnark:",public"` // always 2 (2 shreds)
-	ZDotR      frontend.Variable    `gnark:",public"`
-	MLEEval    frontend.Variable    `gnark:",public"`
+	RlcBeta0   frontend.Variable `gnark:",public"`
+	RlcBeta1   frontend.Variable `gnark:",public"`
+	ZDotJStar0 frontend.Variable `gnark:",public"`
+	ZDotJStar1 frontend.Variable `gnark:",public"`
+
+	// L-tensor: 2 * 2^floor(num_vars/2) elements (2 shreds * left-half tensor product)
+	LTensor []frontend.Variable `gnark:",public"`
+
+	ZDotR   frontend.Variable `gnark:",public"`
+	MLEEval frontend.Variable `gnark:",public"`
 
 	// === Private witness (off-chain) ===
 	Layer0PODP PODPWitness
 	Layer1PODP PODPWitness
 	Layer1Pop  PopWitness
-	InputPODP  PODPWitness
+	InputPODP  PODPWitness // z_vector has 2^ceil(num_vars/2) elements
 }
 
 // Define implements the gnark circuit interface.
@@ -128,15 +153,32 @@ func (c *RemainderWrapperCircuit) Define(api frontend.API) error {
 	api.AssertIsEqual(zDotJStar1, c.ZDotJStar1)
 
 	// ======================================================================
-	// Input layer: tensor products and PODP
+	// Input layer: Hyrax matrix split for L-tensor and R-tensor
 	// ======================================================================
+	// The Hyrax committed input (2 shreds x 2^num_vars values) uses a matrix layout:
+	//   left_dims  = floor(num_vars/2) bindings -> L-tensor per shred
+	//   right_dims = ceil(num_vars/2) bindings  -> R-tensor
+	//
+	// L-tensor = [coeff0 * tensor(left_bindings), coeff1 * tensor(left_bindings)]
+	// R-tensor = tensor(right_bindings)
+	// PODP z_vector has 2^right_dims elements
 
-	// L-tensor = [coeff0, coeff1] (always 2 shreds)
-	api.AssertIsEqual(c.InputRLCCoeffs[0], c.LTensor[0])
-	api.AssertIsEqual(c.InputRLCCoeffs[1], c.LTensor[1])
+	leftDims := c.Config.LeftDims()
 
-	// R-tensor from layer1 bindings: tensor([b0, b1, ...]) -> 2^num_vars elements
-	rTensor := computeTensorProduct(api, c.Layer1Bindings)
+	// L-tensor: for each shred, scale tensor(left_bindings) by the RLC coefficient
+	leftBindings := c.Layer1Bindings[:leftDims]
+	lPerShred := computeTensorProduct(api, leftBindings) // 2^leftDims elements
+	lPerShredLen := len(lPerShred)
+	for i := 0; i < lPerShredLen; i++ {
+		expected0 := api.Mul(c.InputRLCCoeffs[0], lPerShred[i])
+		api.AssertIsEqual(expected0, c.LTensor[i])
+		expected1 := api.Mul(c.InputRLCCoeffs[1], lPerShred[i])
+		api.AssertIsEqual(expected1, c.LTensor[lPerShredLen+i])
+	}
+
+	// R-tensor from right-half bindings -> 2^rightDims elements
+	rightBindings := c.Layer1Bindings[leftDims:]
+	rTensor := computeTensorProduct(api, rightBindings)
 	zDotR := innerProduct(api, c.InputPODP.ZVector, rTensor)
 	api.AssertIsEqual(zDotR, c.ZDotR)
 
@@ -163,9 +205,10 @@ func AllocateCircuit(config CircuitConfig) *RemainderWrapperCircuit {
 		Layer1Bindings:   make([]frontend.Variable, nv),
 		Layer1Rhos:       make([]frontend.Variable, nv+1),
 		Layer1Gammas:     make([]frontend.Variable, nv),
+		LTensor:          make([]frontend.Variable, config.NumLTensorElems()),
 		Layer0PODP:       PODPWitness{ZVector: make([]frontend.Variable, (config.Layer0Degree+1)*nv)},
 		Layer1PODP:       PODPWitness{ZVector: make([]frontend.Variable, (config.Layer1Degree+1)*nv)},
-		InputPODP:        PODPWitness{ZVector: make([]frontend.Variable, config.NumPublicInputs)},
+		InputPODP:        PODPWitness{ZVector: make([]frontend.Variable, config.NumRTensorElems())},
 	}
 }
 

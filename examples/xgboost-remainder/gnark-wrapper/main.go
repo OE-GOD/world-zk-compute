@@ -104,7 +104,7 @@ type WitnessJSON struct {
 	PublicOutputs struct {
 		RlcBetas   []string  `json:"rlc_betas"`
 		ZDotJStars []string  `json:"z_dot_jstars"`
-		LTensor    [2]string `json:"l_tensor"`
+		LTensor    []string `json:"l_tensor"`
 		ZDotR      string    `json:"z_dot_r"`
 		MLEEval    string    `json:"mle_eval"`
 	} `json:"public_outputs"`
@@ -200,9 +200,8 @@ func buildAssignment(config CircuitConfig, w *WitnessJSON) *RemainderWrapperCirc
 	assignment.RlcBeta1 = parseBigInt(w.PublicOutputs.RlcBetas[1])
 	assignment.ZDotJStar0 = parseBigInt(w.PublicOutputs.ZDotJStars[0])
 	assignment.ZDotJStar1 = parseBigInt(w.PublicOutputs.ZDotJStars[1])
-	assignment.LTensor = [2]frontend.Variable{
-		parseBigInt(w.PublicOutputs.LTensor[0]),
-		parseBigInt(w.PublicOutputs.LTensor[1]),
+	for i := 0; i < config.NumLTensorElems(); i++ {
+		assignment.LTensor[i] = parseBigInt(w.PublicOutputs.LTensor[i])
 	}
 	assignment.ZDotR = parseBigInt(w.PublicOutputs.ZDotR)
 	assignment.MLEEval = parseBigInt(w.PublicOutputs.MLEEval)
@@ -218,13 +217,14 @@ func buildAssignment(config CircuitConfig, w *WitnessJSON) *RemainderWrapperCirc
 		ZDelta:  parseBigInt(w.Witness.LayerPODPs[1].ZDelta),
 		ZBeta:   parseBigInt(w.Witness.LayerPODPs[1].ZBeta),
 	}
-	if len(w.Witness.LayerPops) > 0 {
+	// Layer 1's PoP data is at index 1 (layer 0 has no PoP, but Rust outputs a dummy at index 0)
+	if len(w.Witness.LayerPops) > 1 {
 		assignment.Layer1Pop = PopWitness{
-			Z1: parseBigInt(w.Witness.LayerPops[0].Z1),
-			Z2: parseBigInt(w.Witness.LayerPops[0].Z2),
-			Z3: parseBigInt(w.Witness.LayerPops[0].Z3),
-			Z4: parseBigInt(w.Witness.LayerPops[0].Z4),
-			Z5: parseBigInt(w.Witness.LayerPops[0].Z5),
+			Z1: parseBigInt(w.Witness.LayerPops[1].Z1),
+			Z2: parseBigInt(w.Witness.LayerPops[1].Z2),
+			Z3: parseBigInt(w.Witness.LayerPops[1].Z3),
+			Z4: parseBigInt(w.Witness.LayerPops[1].Z4),
+			Z5: parseBigInt(w.Witness.LayerPops[1].Z5),
 		}
 	}
 	assignment.InputPODP = PODPWitness{
@@ -495,10 +495,10 @@ func cmdProveJSON() {
 	pubInputs = append(pubInputs, w.PublicInputs.InputPODPChallenge)
 	pubInputs = append(pubInputs, w.PublicInputs.InterLayerCoeff)
 
-	// Public outputs: RlcBeta0, RlcBeta1, ZDotJStar0, ZDotJStar1, LTensor[2], ZDotR, MLEEval
+	// Public outputs: RlcBeta0, RlcBeta1, ZDotJStar0, ZDotJStar1, LTensor[variable], ZDotR, MLEEval
 	pubInputs = append(pubInputs, w.PublicOutputs.RlcBetas[0], w.PublicOutputs.RlcBetas[1])
 	pubInputs = append(pubInputs, w.PublicOutputs.ZDotJStars[0], w.PublicOutputs.ZDotJStars[1])
-	pubInputs = append(pubInputs, w.PublicOutputs.LTensor[0], w.PublicOutputs.LTensor[1])
+	pubInputs = append(pubInputs, w.PublicOutputs.LTensor...)
 	pubInputs = append(pubInputs, w.PublicOutputs.ZDotR)
 	pubInputs = append(pubInputs, w.PublicOutputs.MLEEval)
 
@@ -567,7 +567,7 @@ func cmdInfo() {
 		fmt.Fprintf(os.Stderr, "compile error: %v\n", err)
 		os.Exit(1)
 	}
-	expectedPubInputs := 7*config.NumVars + config.NumPublicInputs + 20
+	expectedPubInputs := 7*config.NumVars + config.NumPublicInputs + 18 + config.NumLTensorElems()
 	fmt.Printf("Config: num_vars=%d, num_public_inputs=%d\n", config.NumVars, config.NumPublicInputs)
 	fmt.Printf("Constraints: %d\n", ccs.GetNbConstraints())
 	fmt.Printf("Expected public inputs: %d\n", expectedPubInputs)

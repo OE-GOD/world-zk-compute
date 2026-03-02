@@ -541,12 +541,22 @@ fn main() -> Result<()> {
         .zip(l1.j_star.iter())
         .fold(Fr::zero(), |acc, (a, b)| acc + *a * *b);
 
-    // L-tensor = [inputRLCCoeff0, inputRLCCoeff1]
-    let l_tensor_0 = input_rlc_0;
-    let l_tensor_1 = input_rlc_1;
+    // Hyrax input layer matrix split: left_dims = floor(N/2), right_dims = ceil(N/2)
+    let left_dims = num_vars / 2;
 
-    // R-tensor: tensor(l1_bindings) -> 2^num_vars elements
-    let r_tensor = compute_tensor_product_fr(&l1.bindings);
+    // L-tensor: for each shred, scale tensor(left_bindings) by the RLC coefficient
+    let left_bindings = &l1.bindings[..left_dims];
+    let l_per_shred = compute_tensor_product_fr(left_bindings); // 2^left_dims elements
+    let mut l_tensor: Vec<Fr> = Vec::new();
+    for coeff in &[input_rlc_0, input_rlc_1] {
+        for t in &l_per_shred {
+            l_tensor.push(*coeff * *t);
+        }
+    }
+
+    // R-tensor: tensor(right_bindings) -> 2^right_dims elements
+    let right_bindings = &l1.bindings[left_dims..];
+    let r_tensor = compute_tensor_product_fr(right_bindings);
 
     // z_dot_r = <input_z, R_tensor>
     let z_dot_r: Fr = input_podp_z_vector
@@ -688,7 +698,7 @@ fn main() -> Result<()> {
         "public_outputs": {
             "rlc_betas": [fr_to_hex(&rlc_beta_0), fr_to_hex(&rlc_beta_1)],
             "z_dot_jstars": [fr_to_hex(&z_dot_jstar_0), fr_to_hex(&z_dot_jstar_1)],
-            "l_tensor": [fr_to_hex(&l_tensor_0), fr_to_hex(&l_tensor_1)],
+            "l_tensor": l_tensor.iter().map(|v| fr_to_hex(v)).collect::<Vec<_>>(),
             "z_dot_r": fr_to_hex(&z_dot_r),
             "mle_eval": fr_to_hex(&mle_eval),
         },

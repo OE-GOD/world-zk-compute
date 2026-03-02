@@ -122,6 +122,10 @@ func TestMediumCircuitRejectsInvalidWitness(t *testing.T) {
 func makeDummyAssignment(config CircuitConfig) *RemainderWrapperCircuit {
 	nv := config.NumVars
 	numPub := config.NumPublicInputs // 2^nv
+	leftDims := config.LeftDims()
+	rightDims := config.RightDims()
+	numRTensor := 1 << rightDims
+	numLTensor := config.NumLTensorElems()
 
 	// Output challenges (num_vars values)
 	outputChallenges := make([]*big.Int, nv)
@@ -182,9 +186,9 @@ func makeDummyAssignment(config CircuitConfig) *RemainderWrapperCircuit {
 	l1zDelta := big.NewInt(550)
 	l1zBeta := big.NewInt(660)
 
-	// Input z_vector: 2^nv elements
-	inputZ := make([]*big.Int, numPub)
-	for i := 0; i < numPub; i++ {
+	// Input z_vector: 2^rightDims elements (NOT 2^num_vars)
+	inputZ := make([]*big.Int, numRTensor)
+	for i := 0; i < numRTensor; i++ {
 		inputZ[i] = big.NewInt(int64(700 + i*100))
 	}
 	inputZDelta := big.NewInt(900)
@@ -219,12 +223,19 @@ func makeDummyAssignment(config CircuitConfig) *RemainderWrapperCircuit {
 	jStar1 := nativeComputeJStar(l1rhos, l1gammas, l1bindings, config.Layer1Degree)
 	zDotJStar1 := nativeInnerProduct(l1z, jStar1)
 
-	// L-tensor: [coeff0, coeff1]
-	lTensor0 := new(big.Int).Set(inputRLCCoeff0)
-	lTensor1 := new(big.Int).Set(inputRLCCoeff1)
+	// L-tensor: tensor(left_bindings) scaled by RLC coefficients
+	leftBindings := l1bindings[:leftDims]
+	lPerShred := nativeComputeTensorProduct(leftBindings) // 2^leftDims elements
+	lTensor := make([]*big.Int, numLTensor)
+	lPerShredLen := len(lPerShred)
+	for i := 0; i < lPerShredLen; i++ {
+		lTensor[i] = mulMod(inputRLCCoeff0, lPerShred[i])
+		lTensor[lPerShredLen+i] = mulMod(inputRLCCoeff1, lPerShred[i])
+	}
 
-	// R-tensor: tensor(l1_bindings) -> 2^nv elements
-	rTensor := nativeComputeTensorProduct(l1bindings)
+	// R-tensor from right-half bindings
+	rightBindings := l1bindings[leftDims:]
+	rTensor := nativeComputeTensorProduct(rightBindings)
 
 	// <input_z, R_tensor>
 	zDotR := nativeInnerProduct(inputZ, rTensor)
@@ -272,7 +283,9 @@ func makeDummyAssignment(config CircuitConfig) *RemainderWrapperCircuit {
 	assignment.RlcBeta1 = rlcBeta1
 	assignment.ZDotJStar0 = zDotJStar0
 	assignment.ZDotJStar1 = zDotJStar1
-	assignment.LTensor = [2]frontend.Variable{lTensor0, lTensor1}
+	for i := 0; i < numLTensor; i++ {
+		assignment.LTensor[i] = lTensor[i]
+	}
 	assignment.ZDotR = zDotR
 	assignment.MLEEval = mleEval
 
@@ -291,12 +304,13 @@ func makeDummyAssignment(config CircuitConfig) *RemainderWrapperCircuit {
 
 	assignment.Layer1Pop = PopWitness{Z1: popZ1, Z2: popZ2, Z3: popZ3, Z4: popZ4, Z5: popZ5}
 
-	inputZVars := make([]frontend.Variable, numPub)
+	inputZVars := make([]frontend.Variable, numRTensor)
 	for i, v := range inputZ {
 		inputZVars[i] = v
 	}
 	assignment.InputPODP = PODPWitness{ZVector: inputZVars, ZDelta: inputZDelta, ZBeta: inputZBeta}
 
+	_ = rightDims
 	return assignment
 }
 
