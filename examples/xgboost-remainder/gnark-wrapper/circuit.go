@@ -1,10 +1,28 @@
 package main
 
 import (
-	"math/big"
-
 	"github.com/consensys/gnark/frontend"
 )
+
+// CircuitConfig defines the circuit dimensions for a 2-layer GKR circuit.
+// The number of GKR layers is always 2 (subtract + multiply); only the WIDTH
+// (bindings per layer = num_vars) changes.
+type CircuitConfig struct {
+	NumVars         int // bindings per GKR layer
+	NumPublicInputs int // 2^NumVars public input values
+	Layer0Degree    int // subtract gate degree = 2
+	Layer1Degree    int // multiply gate degree = 3
+}
+
+// SmallConfig returns the config for the toy circuit (num_vars=1, 2 public inputs).
+func SmallConfig() CircuitConfig {
+	return CircuitConfig{NumVars: 1, NumPublicInputs: 2, Layer0Degree: 2, Layer1Degree: 3}
+}
+
+// MediumConfig returns the config for medium XGBoost models (num_vars=4, 16 public inputs).
+func MediumConfig() CircuitConfig {
+	return CircuitConfig{NumVars: 4, NumPublicInputs: 16, Layer0Degree: 2, Layer1Degree: 3}
+}
 
 // PODPWitness holds private witness data for a PODP verification.
 type PODPWitness struct {
@@ -28,66 +46,51 @@ type PopWitness struct {
 // takes ALL Fiat-Shamir challenges as public inputs, computes Fr-based algebraic
 // relations, and exposes the scalar results as public outputs for on-chain EC checks.
 //
-// The on-chain verifier:
-//  1. Replays the Poseidon transcript to derive challenges
-//  2. Verifies this Groth16 proof with challenges as public inputs
-//  3. Reads the public outputs (Fr scalars) from the Groth16 proof
-//  4. Uses those scalars in EC equations (PODP, PoP) via precompiles
+// Parameterized for num_vars: 2 GKR layers (subtract + multiply), width = 2^num_vars.
 //
-// Fixed-size circuit for the test proof: 2 layers (subtract + multiply), 2 public inputs.
+// Public input count: 7*N + 2^N + 20 where N = num_vars.
+//   - Small  (N=1): 29
+//   - Medium (N=4): 64
 type RemainderWrapperCircuit struct {
-	// === Public inputs (on-chain → gnark, from Poseidon transcript) ===
-	CircuitHash0 frontend.Variable `gnark:",public"`
-	CircuitHash1 frontend.Variable `gnark:",public"`
-	PublicInput0 frontend.Variable `gnark:",public"`
-	PublicInput1 frontend.Variable `gnark:",public"`
+	// Config (not a circuit variable, used at compile time only)
+	Config CircuitConfig `gnark:"-"`
 
-	// Output challenge and claim aggregation coefficient
-	OutputChallenge frontend.Variable `gnark:",public"`
-	ClaimAggCoeff   frontend.Variable `gnark:",public"`
+	// === Public inputs (on-chain -> gnark, from Poseidon transcript) ===
+	CircuitHash  [2]frontend.Variable `gnark:",public"`
+	PublicInputs []frontend.Variable  `gnark:",public"` // 2^num_vars values
 
-	// Layer 0 (subtract): 1 binding, rhos[2], gammas[1], PODP challenge
-	Layer0Bindings      [1]frontend.Variable `gnark:",public"`
-	Layer0Rhos          [2]frontend.Variable `gnark:",public"`
-	Layer0Gammas        [1]frontend.Variable `gnark:",public"`
-	Layer0PODPChallenge frontend.Variable    `gnark:",public"`
+	// Output challenges (claim point for layer 0) and claim aggregation
+	OutputChallenges []frontend.Variable `gnark:",public"` // num_vars values
+	ClaimAggCoeff    frontend.Variable   `gnark:",public"`
 
-	// Layer 1 (multiply): 1 binding, rhos[2], gammas[1], PODP challenge, PoP challenge
-	Layer1Bindings      [1]frontend.Variable `gnark:",public"`
-	Layer1Rhos          [2]frontend.Variable `gnark:",public"`
-	Layer1Gammas        [1]frontend.Variable `gnark:",public"`
-	Layer1PODPChallenge frontend.Variable    `gnark:",public"`
-	Layer1PopChallenge  frontend.Variable    `gnark:",public"`
+	// Layer 0 (subtract): num_vars bindings, num_vars+1 rhos, num_vars gammas
+	Layer0Bindings      []frontend.Variable `gnark:",public"`
+	Layer0Rhos          []frontend.Variable `gnark:",public"`
+	Layer0Gammas        []frontend.Variable `gnark:",public"`
+	Layer0PODPChallenge frontend.Variable   `gnark:",public"`
 
-	// Input layer: RLC coefficients for multi-claim, PODP challenge
-	InputRLCCoeff0     frontend.Variable `gnark:",public"`
-	InputRLCCoeff1     frontend.Variable `gnark:",public"`
-	InputPODPChallenge frontend.Variable `gnark:",public"`
+	// Layer 1 (multiply): num_vars bindings, num_vars+1 rhos, num_vars gammas
+	Layer1Bindings      []frontend.Variable `gnark:",public"`
+	Layer1Rhos          []frontend.Variable `gnark:",public"`
+	Layer1Gammas        []frontend.Variable `gnark:",public"`
+	Layer1PODPChallenge frontend.Variable   `gnark:",public"`
+	Layer1PopChallenge  frontend.Variable   `gnark:",public"`
+
+	// Input layer: RLC coefficients for multi-claim (always 2 shreds), PODP challenge
+	InputRLCCoeffs     [2]frontend.Variable `gnark:",public"`
+	InputPODPChallenge frontend.Variable    `gnark:",public"`
 
 	// Inter-layer claim aggregation coefficient
 	InterLayerCoeff frontend.Variable `gnark:",public"`
 
-	// === Public outputs (gnark → on-chain, used in EC equations) ===
-	// These are the Fr scalar values that the on-chain verifier needs for
-	// EC operations (PODP, PoP, oracle_eval, Hyrax, MLE).
-
-	// Per-layer: rlc_beta values (used to scale commitments in oracle_eval)
-	RlcBeta0 frontend.Variable `gnark:",public"`
-	RlcBeta1 frontend.Variable `gnark:",public"`
-
-	// Per-layer: <z_vector, j_star> inner products (used in PODP com_z_dot_a)
-	ZDotJStar0 frontend.Variable `gnark:",public"`
-	ZDotJStar1 frontend.Variable `gnark:",public"`
-
-	// Input layer: L-tensor coefficients (used in Hyrax MSM over commitment rows)
-	LTensor0 frontend.Variable `gnark:",public"`
-	LTensor1 frontend.Variable `gnark:",public"`
-
-	// Input layer: <z_vector, R-tensor> (used in input PODP com_z_dot_a)
-	ZDotR frontend.Variable `gnark:",public"`
-
-	// Public input MLE evaluation (used to compute expectedCom = mleEval * g_scalar)
-	MLEEval frontend.Variable `gnark:",public"`
+	// === Public outputs (gnark -> on-chain, used in EC equations) ===
+	RlcBeta0   frontend.Variable    `gnark:",public"`
+	RlcBeta1   frontend.Variable    `gnark:",public"`
+	ZDotJStar0 frontend.Variable    `gnark:",public"`
+	ZDotJStar1 frontend.Variable    `gnark:",public"`
+	LTensor    [2]frontend.Variable `gnark:",public"` // always 2 (2 shreds)
+	ZDotR      frontend.Variable    `gnark:",public"`
+	MLEEval    frontend.Variable    `gnark:",public"`
 
 	// === Private witness (off-chain) ===
 	Layer0PODP PODPWitness
@@ -96,25 +99,18 @@ type RemainderWrapperCircuit struct {
 	InputPODP  PODPWitness
 }
 
-// BN254 scalar field modulus (Fr)
-var frModulus, _ = new(big.Int).SetString("21888242871839275222246405745257275088548364400416034343698204186575808495617", 10)
-
 // Define implements the gnark circuit interface.
 func (c *RemainderWrapperCircuit) Define(api frontend.API) error {
 	// ======================================================================
 	// Layer 0 (subtract gate, degree=2)
 	// ======================================================================
 
-	// Compute rlc_beta_0 = beta(layer0_bindings, [outputChallenge]) * claimAggCoeff
-	rlcBeta0 := computeRlcBeta(api,
-		c.Layer0Bindings[:],
-		[]frontend.Variable{c.OutputChallenge},
-		c.ClaimAggCoeff,
-	)
+	// rlc_beta_0 = beta(layer0_bindings, output_challenges) * claimAggCoeff
+	rlcBeta0 := computeRlcBeta(api, c.Layer0Bindings, c.OutputChallenges, c.ClaimAggCoeff)
 	api.AssertIsEqual(rlcBeta0, c.RlcBeta0)
 
-	// Compute j_star for layer 0 and inner product <z, j_star>
-	jStar0 := computeJStar(api, c.Layer0Rhos[:], c.Layer0Gammas[:], c.Layer0Bindings[:], 2)
+	// j_star and <z, j_star> for layer 0
+	jStar0 := computeJStar(api, c.Layer0Rhos, c.Layer0Gammas, c.Layer0Bindings, c.Config.Layer0Degree)
 	zDotJStar0 := innerProduct(api, c.Layer0PODP.ZVector, jStar0)
 	api.AssertIsEqual(zDotJStar0, c.ZDotJStar0)
 
@@ -122,77 +118,78 @@ func (c *RemainderWrapperCircuit) Define(api frontend.API) error {
 	// Layer 1 (multiply gate, degree=3)
 	// ======================================================================
 
-	// Compute rlc_beta_1 = beta(layer1_bindings, layer0_bindings) * interLayerCoeff
-	rlcBeta1 := computeRlcBeta(api,
-		c.Layer1Bindings[:],
-		c.Layer0Bindings[:],
-		c.InterLayerCoeff,
-	)
+	// rlc_beta_1 = beta(layer1_bindings, layer0_bindings) * interLayerCoeff
+	rlcBeta1 := computeRlcBeta(api, c.Layer1Bindings, c.Layer0Bindings, c.InterLayerCoeff)
 	api.AssertIsEqual(rlcBeta1, c.RlcBeta1)
 
-	// Compute j_star for layer 1 and inner product
-	jStar1 := computeJStar(api, c.Layer1Rhos[:], c.Layer1Gammas[:], c.Layer1Bindings[:], 3)
+	// j_star and <z, j_star> for layer 1
+	jStar1 := computeJStar(api, c.Layer1Rhos, c.Layer1Gammas, c.Layer1Bindings, c.Config.Layer1Degree)
 	zDotJStar1 := innerProduct(api, c.Layer1PODP.ZVector, jStar1)
 	api.AssertIsEqual(zDotJStar1, c.ZDotJStar1)
-
-	// PoP scalar relations: z1..z5 are absorbed into transcript on-chain.
-	// The 3 EC equations are verified on-chain via precompiles.
-	// No additional Fr constraints needed here — the PoP values are
-	// only relevant to the EC checks.
 
 	// ======================================================================
 	// Input layer: tensor products and PODP
 	// ======================================================================
 
-	// L-tensor = RLC of individual L-tensors using input RLC coefficients.
-	// For 2-shred input with claim points (0, r) and (1, r):
-	//   L-tensor for claim 0 (first var=0): [1, 0]
-	//   L-tensor for claim 1 (first var=1): [0, 1]
-	//   lCoeffs = coeff0 * [1,0] + coeff1 * [0,1] = [coeff0, coeff1]
-	api.AssertIsEqual(c.InputRLCCoeff0, c.LTensor0)
-	api.AssertIsEqual(c.InputRLCCoeff1, c.LTensor1)
+	// L-tensor = [coeff0, coeff1] (always 2 shreds)
+	api.AssertIsEqual(c.InputRLCCoeffs[0], c.LTensor[0])
+	api.AssertIsEqual(c.InputRLCCoeffs[1], c.LTensor[1])
 
-	// R-tensor from shared R-half (layer1 binding):
-	// tensor([r]) = [(1-r), r]
-	rCoeff0 := api.Sub(1, c.Layer1Bindings[0])
-	rCoeff1 := c.Layer1Bindings[0]
-
-	// Inner product <z_vector, R_tensor>
-	zDotR := innerProduct(api, c.InputPODP.ZVector, []frontend.Variable{rCoeff0, rCoeff1})
+	// R-tensor from layer1 bindings: tensor([b0, b1, ...]) -> 2^num_vars elements
+	rTensor := computeTensorProduct(api, c.Layer1Bindings)
+	zDotR := innerProduct(api, c.InputPODP.ZVector, rTensor)
 	api.AssertIsEqual(zDotR, c.ZDotR)
 
 	// ======================================================================
 	// Public input MLE evaluation
 	// ======================================================================
-	// MLE([pubInput0, pubInput1], [x]) = (1-x)*pubInput0 + x*pubInput1
-	// where x = layer0 binding
-	{
-		oneMinusX := api.Sub(1, c.Layer0Bindings[0])
-		term0 := api.Mul(oneMinusX, c.PublicInput0)
-		term1 := api.Mul(c.Layer0Bindings[0], c.PublicInput1)
-		mleEval := api.Add(term0, term1)
-		api.AssertIsEqual(mleEval, c.MLEEval)
-	}
+	// MLE(publicInputs, layer0_bindings) via tensor product evaluation
+	mleEval := evaluateMLE(api, c.PublicInputs, c.Layer0Bindings)
+	api.AssertIsEqual(mleEval, c.MLEEval)
 
 	return nil
 }
 
-// AllocateCircuit returns a circuit definition with correct slice sizes for the test proof.
-func AllocateCircuit() *RemainderWrapperCircuit {
+// AllocateCircuit returns a circuit definition with correct slice sizes for the given config.
+func AllocateCircuit(config CircuitConfig) *RemainderWrapperCircuit {
+	nv := config.NumVars
 	return &RemainderWrapperCircuit{
-		// Layer 0: subtract, 1 binding, degree=2 → PODP z_vector has 3 elements
-		Layer0PODP: PODPWitness{
-			ZVector: make([]frontend.Variable, 3),
-		},
-		// Layer 1: multiply, 1 binding, degree=3 → PODP z_vector has 4 elements
-		Layer1PODP: PODPWitness{
-			ZVector: make([]frontend.Variable, 4),
-		},
-		// Input layer: 2 R-tensor coefficients → z_vector has 2 elements
-		InputPODP: PODPWitness{
-			ZVector: make([]frontend.Variable, 2),
-		},
+		Config:           config,
+		PublicInputs:     make([]frontend.Variable, config.NumPublicInputs),
+		OutputChallenges: make([]frontend.Variable, nv),
+		Layer0Bindings:   make([]frontend.Variable, nv),
+		Layer0Rhos:       make([]frontend.Variable, nv+1),
+		Layer0Gammas:     make([]frontend.Variable, nv),
+		Layer1Bindings:   make([]frontend.Variable, nv),
+		Layer1Rhos:       make([]frontend.Variable, nv+1),
+		Layer1Gammas:     make([]frontend.Variable, nv),
+		Layer0PODP:       PODPWitness{ZVector: make([]frontend.Variable, (config.Layer0Degree+1)*nv)},
+		Layer1PODP:       PODPWitness{ZVector: make([]frontend.Variable, (config.Layer1Degree+1)*nv)},
+		InputPODP:        PODPWitness{ZVector: make([]frontend.Variable, config.NumPublicInputs)},
 	}
+}
+
+// computeTensorProduct computes tensor([b0, b1, ..., bn]) producing 2^n elements.
+// Each element is a product of (1-b_i) or b_i terms for the corresponding binary index.
+func computeTensorProduct(api frontend.API, bindings []frontend.Variable) []frontend.Variable {
+	result := []frontend.Variable{frontend.Variable(1)}
+	for _, b := range bindings {
+		oneMinusB := api.Sub(1, b)
+		newResult := make([]frontend.Variable, len(result)*2)
+		for j, r := range result {
+			newResult[2*j] = api.Mul(r, oneMinusB)
+			newResult[2*j+1] = api.Mul(r, b)
+		}
+		result = newResult
+	}
+	return result
+}
+
+// evaluateMLE evaluates the multilinear extension of values at point.
+// MLE(values, point) = sum_i values[i] * tensor(point)[i]
+func evaluateMLE(api frontend.API, values []frontend.Variable, point []frontend.Variable) frontend.Variable {
+	basis := computeTensorProduct(api, point)
+	return innerProduct(api, values, basis)
 }
 
 // computeJStar computes the j_star vector for PODP verification.

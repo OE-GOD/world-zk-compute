@@ -321,17 +321,20 @@ library GKRVerifier {
             if (circuit.isCommitted[i]) {
                 // For committed input: derive claim points from the multiply layer that references it
                 // The multiply layer (layer i+1) creates claims at points based on shred offsets
-                require(i + 1 < circuit.numLayers && allBindings[i + 1].length > 0,
-                    "GKRVerifier: no bindings for referencing layer");
+                require(
+                    i + 1 < circuit.numLayers && allBindings[i + 1].length > 0,
+                    "GKRVerifier: no bindings for referencing layer"
+                );
                 uint256[] memory mulBindings = allBindings[i + 1];
 
                 // Build claim points: for a 2-shred input (a, b), the multiply layer
                 // creates 2 claims at points (0, r) and (1, r) where r = multiply binding
                 uint256[][] memory claimPoints = _deriveInputClaimPoints(mulBindings, circuit.layerSizes[i]);
 
-                require(_verifyCommittedInputMultiClaim(
-                    proof.inputProofs[hyraxProofIdx], claimPoints, sponge, gens
-                ), "GKRVerifier: committed input verification failed");
+                require(
+                    _verifyCommittedInputMultiClaim(proof.inputProofs[hyraxProofIdx], claimPoints, sponge, gens),
+                    "GKRVerifier: committed input verification failed"
+                );
                 hyraxProofIdx++;
             } else {
                 // Public input: claim point = bindings from the layer that references it
@@ -339,8 +342,10 @@ library GKRVerifier {
                 uint256[] memory pubBindings = _findReferringBindings(i, circuit, allBindings);
                 uint256 mleEval = evaluateMLEFromData(publicInputs, pubBindings);
                 HyraxVerifier.G1Point memory expectedCom = HyraxVerifier.scalarMul(gens.scalarGen, mleEval);
-                require(HyraxVerifier.isEqual(expectedCom, currentClaimCommitment),
-                    "GKRVerifier: public input commitment mismatch");
+                require(
+                    HyraxVerifier.isEqual(expectedCom, currentClaimCommitment),
+                    "GKRVerifier: public input commitment mismatch"
+                );
             }
         }
 
@@ -443,12 +448,11 @@ library GKRVerifier {
     }
 
     /// @notice Compute RLC of tensor products for L-halves of multiple claim points
-    function _computeRlcTensor(
-        uint256[][] memory claimPoints,
-        uint256 lHalfLen,
-        uint256[] memory rlcCoeffs,
-        bool isL
-    ) private pure returns (uint256[] memory result) {
+    function _computeRlcTensor(uint256[][] memory claimPoints, uint256 lHalfLen, uint256[] memory rlcCoeffs, bool isL)
+        private
+        pure
+        returns (uint256[] memory result)
+    {
         uint256 tensorLen = 1 << lHalfLen;
         result = new uint256[](tensorLen);
 

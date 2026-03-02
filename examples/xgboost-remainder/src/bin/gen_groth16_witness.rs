@@ -5,10 +5,12 @@
 //! gnark `prove` command can consume.
 //!
 //! All challenge values are output as Fr (scalar field) hex strings. The gnark
-//! circuit operates over Fr, and the Solidity verifier reduces Fq→Fr via
+//! circuit operates over Fr, and the Solidity verifier reduces Fq->Fr via
 //! `% FR_MODULUS`.
 //!
-//! Usage: cargo run --release --bin gen_groth16_witness
+//! Usage:
+//!   cargo run --release --bin gen_groth16_witness               # num_vars=1 (default)
+//!   cargo run --release --bin gen_groth16_witness -- --num-vars 4  # num_vars=4
 
 use anyhow::Result;
 use ff::PrimeField;
@@ -83,16 +85,62 @@ fn compute_beta_fr(bindings: &[Fr], claim_point: &[Fr]) -> Fr {
     beta
 }
 
+/// Compute tensor product of bindings: tensor([b0, b1, ...]) -> 2^n elements
+fn compute_tensor_product_fr(bindings: &[Fr]) -> Vec<Fr> {
+    let mut result = vec![Fr::one()];
+    for b in bindings {
+        let one_minus_b = Fr::one() - b;
+        let new_result: Vec<Fr> = result
+            .iter()
+            .flat_map(|r| vec![*r * one_minus_b, *r * *b])
+            .collect();
+        result = new_result;
+    }
+    result
+}
+
+/// Evaluate multilinear extension: MLE(values, point) = sum_i values[i] * tensor(point)[i]
+fn evaluate_mle_fr(values: &[Fr], point: &[Fr]) -> Fr {
+    let basis = compute_tensor_product_fr(point);
+    values
+        .iter()
+        .zip(basis.iter())
+        .fold(Fr::zero(), |acc, (v, b)| acc + *v * *b)
+}
+
+/// Parse --num-vars from CLI args, default to 1
+fn parse_num_vars() -> usize {
+    let args: Vec<String> = std::env::args().collect();
+    for i in 1..args.len() {
+        if args[i] == "--num-vars" && i + 1 < args.len() {
+            return args[i + 1].parse().expect("invalid --num-vars value");
+        }
+    }
+    1
+}
+
 fn main() -> Result<()> {
-    let num_vars = 1;
+    let num_vars = parse_num_vars();
+    let size = 1usize << num_vars;
+    eprintln!("num_vars={}, size={}", num_vars, size);
+
     let base_circuit = build_circuit(num_vars);
 
     let mut prover_circuit = base_circuit.clone();
     let verifier_circuit = base_circuit.clone();
 
-    prover_circuit.set_input("a", vec![3u64, 5].into());
-    prover_circuit.set_input("b", vec![2u64, 4].into());
-    prover_circuit.set_input("expected", vec![6u64, 20].into());
+    // Generate input data dynamically
+    let a_vals: Vec<u64> = (1..=size as u64).map(|i| i * 3).collect();
+    let b_vals: Vec<u64> = (1..=size as u64).map(|i| i * 2).collect();
+    let expected_vals: Vec<u64> = a_vals
+        .iter()
+        .zip(b_vals.iter())
+        .map(|(a, b)| a * b)
+        .collect();
+
+    prover_circuit.set_input("a", a_vals.clone().into());
+    prover_circuit.set_input("b", b_vals.clone().into());
+    prover_circuit.set_input("expected", expected_vals.clone().into());
 
     let config = GKRCircuitProverConfig::hyrax_compatible_runtime_optimized_default();
     let verifier_config = GKRCircuitVerifierConfig::new_from_prover_config(&config, false);
@@ -145,10 +193,6 @@ fn main() -> Result<()> {
 
     // ================================================================
     // Replay ECTranscript to extract all challenges as Fr values.
-    // We manually replicate the verification transcript operations
-    // WITHOUT calling verify() (which would assert EC equations we
-    // don't need to re-check). This keeps the transcript state in
-    // sync for correct challenge derivation.
     // ================================================================
 
     let verifiable_ref = verifiable.get_gkr_circuit_description_ref();
@@ -210,7 +254,6 @@ fn main() -> Result<()> {
     }
 
     let mut layer_extracts: Vec<LayerExtract> = Vec::new();
-    let _num_layers = proof.circuit_proof.layer_proofs.len();
 
     for (layer_idx, (_layer_id, layer_proof)) in
         proof.circuit_proof.layer_proofs.iter().enumerate()
@@ -387,7 +430,7 @@ fn main() -> Result<()> {
     }
 
     // === Input layer ===
-    // Squeeze input RLC coefficients (2 claims → 2 squeezes)
+    // Squeeze input RLC coefficients (2 claims -> 2 squeezes)
     let input_rlc_coeffs =
         t.get_scalar_field_challenges("Input claim RLC coefficients", 2);
     let input_rlc_0 = input_rlc_coeffs[0];
@@ -436,53 +479,8 @@ fn main() -> Result<()> {
     let l0 = &layer_extracts[0];
     let l1 = &layer_extracts[1];
 
-    // For the gnark circuit, the "output_challenge" is the claim point for layer 0.
-    // The claim point comes from the output layer verification.
-    // We get it from the layer_claims that flowed into layer 0.
-    // Since we already processed layers, we can reconstruct:
-    // Layer 0 claim point = [output_challenge] (from output layer verify)
-    // Layer 1 claim point = [l0_binding] (from layer 0 bindings)
-    //
-    // For the gnark public inputs, the challenges are the Fr values
-    // (what Solidity will compute as Fq_squeeze % FR_MODULUS).
-
-    // rlc_beta_0 = beta(l0_bindings, [output_challenge]) * claim_agg_coeff
-    // The output_challenge is whatever the output layer used as claim point for layer 0.
-    // In the ECTranscript, this was squeezed during output layer verify.
-    // We captured it as layer 0's random_coeff = claim_agg_coeff.
-    // Actually, the claim point for layer 0 is the output challenge, and
-    // random_coeff is the RLC aggregation coefficient.
-    //
-    // From the circuit design:
-    //   rlc_beta_0 = beta(l0_bindings, claimPoint_0) * randomCoeff_0
-    //   rlc_beta_1 = beta(l1_bindings, claimPoint_1) * randomCoeff_1
-    // where claimPoint_0 = [outputChallenge], claimPoint_1 = l0_bindings
-    //
-    // The output challenge was squeezed during output layer verify and used as
-    // the claim point. The random_coeff was squeezed at the start of layer processing.
-    // Since these are internal to the Rust verification, we need to extract them.
-
-    // The claim point for layer 0 comes from the output layer's binding.
-    // For the test circuit, the output has 1 indexed variable, so 1 challenge.
-    // This is the point stored in the claim that flows to layer 0.
-    // We can get it from the proof structure.
-    let _output_claim_point = &proof.circuit_proof.output_layer_proofs[0].1;
-    // Actually output_layer_proofs[0].1 is the MLE indices, not the claim point.
-    // The claim point was generated during output layer verify from the transcript.
-    // Since we called HyraxOutputLayerProof::verify on our transcript, the claim
-    // was computed and inserted into claim_tracker. But we already consumed those claims.
-    //
-    // For the gnark circuit, we use a simpler approach: the output challenge is the
-    // claim point for layer 0, and the inter-layer coeff is the random coeff for layer 1.
-    // From the transcript replay, these map to:
-    // - Layer 0: random_coeff = the RLC coefficient squeezed before layer 0
-    // - Layer 1: random_coeff = the RLC coefficient squeezed before layer 1
-    //
-    // The output challenge (claim point for layer 0) was absorbed into claim.point
-    // during output layer verify. We need to recover it.
-    //
-    // WORKAROUND: Re-run output layer verify on a fresh transcript to capture the claim point.
-    let output_challenge = {
+    // Extract output challenges (claim point for layer 0) by re-running output layer verify.
+    let output_challenges: Vec<Fr> = {
         let mut t2: ECTranscript<Bn256Point, PoseidonSponge<Fq>> =
             ECTranscript::new("gen-test-proof transcript");
         {
@@ -515,15 +513,18 @@ fn main() -> Result<()> {
             &verifiable_ref.output_layers[0],
             &mut t2,
         );
-        claim.point[0] // This is the output challenge
+        claim.point.clone() // Vec<Fr> with num_vars elements
     };
 
-    eprintln!("output_challenge: {}", fr_to_hex(&output_challenge));
+    eprintln!(
+        "output_challenges: {:?}",
+        output_challenges.iter().map(|c| fr_to_hex(c)).collect::<Vec<_>>()
+    );
     eprintln!("claim_agg_coeff (l0 random_coeff): {}", fr_to_hex(&l0.random_coeff));
     eprintln!("inter_layer_coeff (l1 random_coeff): {}", fr_to_hex(&l1.random_coeff));
 
-    // rlc_beta_0 = beta(l0_bindings, [output_challenge]) * claim_agg_coeff
-    let rlc_beta_0 = compute_beta_fr(&l0.bindings, &[output_challenge]) * l0.random_coeff;
+    // rlc_beta_0 = beta(l0_bindings, output_challenges) * claim_agg_coeff
+    let rlc_beta_0 = compute_beta_fr(&l0.bindings, &output_challenges) * l0.random_coeff;
 
     // rlc_beta_1 = beta(l1_bindings, l0_bindings) * inter_layer_coeff
     let rlc_beta_1 = compute_beta_fr(&l1.bindings, &l0.bindings) * l1.random_coeff;
@@ -544,17 +545,18 @@ fn main() -> Result<()> {
     let l_tensor_0 = input_rlc_0;
     let l_tensor_1 = input_rlc_1;
 
-    // R-tensor: [(1-l1_binding), l1_binding]
-    let r0 = Fr::one() - l1.bindings[0];
-    let r1 = l1.bindings[0];
+    // R-tensor: tensor(l1_bindings) -> 2^num_vars elements
+    let r_tensor = compute_tensor_product_fr(&l1.bindings);
 
     // z_dot_r = <input_z, R_tensor>
-    let z_dot_r = input_podp_z_vector[0] * r0 + input_podp_z_vector[1] * r1;
+    let z_dot_r: Fr = input_podp_z_vector
+        .iter()
+        .zip(r_tensor.iter())
+        .fold(Fr::zero(), |acc, (z, r)| acc + *z * *r);
 
-    // MLE eval: (1-x)*pub0 + x*pub1, where x = l0_binding
-    let pub0 = Fr::from(6u64);
-    let pub1 = Fr::from(20u64);
-    let mle_eval = (Fr::one() - l0.bindings[0]) * pub0 + l0.bindings[0] * pub1;
+    // MLE eval: multilinear extension of pub_values at l0_bindings
+    let pub_values: Vec<Fr> = expected_vals.iter().map(|v| Fr::from(*v)).collect();
+    let mle_eval = evaluate_mle_fr(&pub_values, &l0.bindings);
 
     eprintln!("rlc_beta_0: {}", fr_to_hex(&rlc_beta_0));
     eprintln!("rlc_beta_1: {}", fr_to_hex(&rlc_beta_1));
@@ -567,8 +569,6 @@ fn main() -> Result<()> {
     // ABI-encode inner proof and generators for on-chain verification
     // ================================================================
 
-    // Extract the actual circuit description hash (the one used in the transcript).
-    // This is a pair of Fq values. We reconstruct the 32-byte hash from them.
     use remainder::prover::helpers::get_circuit_description_hash_as_field_elems;
     use shared_types::config::global_config::global_verifier_circuit_description_hash_type;
     let hash_elems = get_circuit_description_hash_as_field_elems(
@@ -576,9 +576,6 @@ fn main() -> Result<()> {
         global_verifier_circuit_description_hash_type(),
     );
     let circuit_hash: [u8; 32] = {
-        // hash_elems are two Fq values, each from a 16-byte LE half of the SHA-256 hash.
-        // Reconstruct the original 32-byte hash: first 16 LE bytes from hash_elems[0],
-        // next 16 LE bytes from hash_elems[1].
         let repr0 = hash_elems[0].to_repr();
         let repr1 = hash_elems[1].to_repr();
         let mut hash = [0u8; 32];
@@ -588,15 +585,23 @@ fn main() -> Result<()> {
     };
 
     let abi_bytes = abi_encode::encode_hyrax_proof(&proof, &circuit_hash)?;
-    eprintln!("ABI-encoded proof: {} bytes ({} uint256 slots)", abi_bytes.len(), (abi_bytes.len() - 4) / 32);
+    eprintln!(
+        "ABI-encoded proof: {} bytes ({} uint256 slots)",
+        abi_bytes.len(),
+        (abi_bytes.len() - 4) / 32
+    );
 
     let gens_bytes = abi_encode::encode_pedersen_gens(&committer)?;
-    eprintln!("ABI-encoded generators: {} bytes ({} uint256 slots)", gens_bytes.len(), gens_bytes.len() / 32);
+    eprintln!(
+        "ABI-encoded generators: {} bytes ({} uint256 slots)",
+        gens_bytes.len(),
+        gens_bytes.len() / 32
+    );
 
     // Encode public input values as flat big-endian bytes
     let pub_values_bytes = {
         let mut buf = Vec::new();
-        for val in &[pub0, pub1] {
+        for val in &pub_values {
             let repr = val.to_repr();
             let bytes: &[u8] = repr.as_ref();
             let mut be = [0u8; 32];
@@ -608,10 +613,8 @@ fn main() -> Result<()> {
     };
 
     // ================================================================
-    // Build JSON output (all values as Fr hex strings)
+    // Build JSON output (new parameterized format)
     // ================================================================
-    // Convert circuit hash Fq values to Fr via shared byte representation.
-    // Safe because values are < 2^128 (derived from 16-byte LE halves).
     let circuit_hash_0_fr = {
         let mut repr = <Fr as PrimeField>::Repr::default();
         repr.as_mut().copy_from_slice(hash_elems[0].to_repr().as_ref());
@@ -625,62 +628,80 @@ fn main() -> Result<()> {
     let circuit_hash_0 = fr_to_hex(&circuit_hash_0_fr);
     let circuit_hash_1 = fr_to_hex(&circuit_hash_1_fr);
 
+    // Build layers array
+    let layers: Vec<serde_json::Value> = layer_extracts
+        .iter()
+        .enumerate()
+        .map(|(idx, le)| {
+            let mut layer = json!({
+                "bindings": le.bindings.iter().map(|b| fr_to_hex(b)).collect::<Vec<_>>(),
+                "rhos": le.rhos.iter().map(|r| fr_to_hex(r)).collect::<Vec<_>>(),
+                "gammas": le.gammas.iter().map(|g| fr_to_hex(g)).collect::<Vec<_>>(),
+                "podp_challenge": "0x0",
+            });
+            // Layer 1 (multiply) has pop_challenge
+            if idx == 1 {
+                layer["pop_challenge"] = json!("0x0");
+            }
+            layer
+        })
+        .collect();
+
+    // Build layer_podps array
+    let layer_podps: Vec<serde_json::Value> = layer_extracts
+        .iter()
+        .map(|le| {
+            json!({
+                "z_vector": le.podp_z_vector.iter().map(|z| fr_to_hex(z)).collect::<Vec<_>>(),
+                "z_delta": fr_to_hex(&le.podp_z_delta),
+                "z_beta": fr_to_hex(&le.podp_z_beta),
+            })
+        })
+        .collect();
+
+    // Build layer_pops array (only layers with PoP data)
+    let layer_pops: Vec<serde_json::Value> = layer_extracts
+        .iter()
+        .flat_map(|le| {
+            if le.pop_data.is_empty() {
+                vec![json!({"z1": "0x0", "z2": "0x0", "z3": "0x0", "z4": "0x0", "z5": "0x0"})]
+            } else {
+                le.pop_data.clone()
+            }
+        })
+        .collect();
+
     let output = json!({
+        "config": {
+            "num_vars": num_vars,
+        },
         "public_inputs": {
             "circuit_hash": [circuit_hash_0, circuit_hash_1],
-            "public_values": [fr_to_hex(&pub0), fr_to_hex(&pub1)],
-            "output_challenge": fr_to_hex(&output_challenge),
+            "public_values": pub_values.iter().map(|v| fr_to_hex(v)).collect::<Vec<_>>(),
+            "output_challenges": output_challenges.iter().map(|c| fr_to_hex(c)).collect::<Vec<_>>(),
             "claim_agg_coeff": fr_to_hex(&l0.random_coeff),
             "inter_layer_coeff": fr_to_hex(&l1.random_coeff),
-            "layer_0": {
-                "bindings": l0.bindings.iter().map(|b| fr_to_hex(b)).collect::<Vec<_>>(),
-                "rhos": l0.rhos.iter().map(|r| fr_to_hex(r)).collect::<Vec<_>>(),
-                "gammas": l0.gammas.iter().map(|g| fr_to_hex(g)).collect::<Vec<_>>(),
-                "podp_challenge": "0x0", // PODP challenge used only for EC checks on-chain
-            },
-            "layer_1": {
-                "bindings": l1.bindings.iter().map(|b| fr_to_hex(b)).collect::<Vec<_>>(),
-                "rhos": l1.rhos.iter().map(|r| fr_to_hex(r)).collect::<Vec<_>>(),
-                "gammas": l1.gammas.iter().map(|g| fr_to_hex(g)).collect::<Vec<_>>(),
-                "podp_challenge": "0x0",
-                "pop_challenge": "0x0",
-            },
+            "layers": layers,
             "input_rlc_coeffs": [fr_to_hex(&input_rlc_0), fr_to_hex(&input_rlc_1)],
             "input_podp_challenge": "0x0",
         },
         "public_outputs": {
-            "rlc_beta_0": fr_to_hex(&rlc_beta_0),
-            "rlc_beta_1": fr_to_hex(&rlc_beta_1),
-            "z_dot_jstar_0": fr_to_hex(&z_dot_jstar_0),
-            "z_dot_jstar_1": fr_to_hex(&z_dot_jstar_1),
-            "l_tensor_0": fr_to_hex(&l_tensor_0),
-            "l_tensor_1": fr_to_hex(&l_tensor_1),
+            "rlc_betas": [fr_to_hex(&rlc_beta_0), fr_to_hex(&rlc_beta_1)],
+            "z_dot_jstars": [fr_to_hex(&z_dot_jstar_0), fr_to_hex(&z_dot_jstar_1)],
+            "l_tensor": [fr_to_hex(&l_tensor_0), fr_to_hex(&l_tensor_1)],
             "z_dot_r": fr_to_hex(&z_dot_r),
             "mle_eval": fr_to_hex(&mle_eval),
         },
         "witness": {
-            "layer_0_podp": {
-                "z_vector": l0.podp_z_vector.iter().map(|z| fr_to_hex(z)).collect::<Vec<_>>(),
-                "z_delta": fr_to_hex(&l0.podp_z_delta),
-                "z_beta": fr_to_hex(&l0.podp_z_beta),
-            },
-            "layer_1_podp": {
-                "z_vector": l1.podp_z_vector.iter().map(|z| fr_to_hex(z)).collect::<Vec<_>>(),
-                "z_delta": fr_to_hex(&l1.podp_z_delta),
-                "z_beta": fr_to_hex(&l1.podp_z_beta),
-            },
-            "layer_1_pop": if l1.pop_data.is_empty() {
-                json!({"z1": "0x0", "z2": "0x0", "z3": "0x0", "z4": "0x0", "z5": "0x0"})
-            } else {
-                l1.pop_data[0].clone()
-            },
+            "layer_podps": layer_podps,
+            "layer_pops": layer_pops,
             "input_podp": {
                 "z_vector": input_podp_z_vector.iter().map(|z| fr_to_hex(z)).collect::<Vec<_>>(),
                 "z_delta": fr_to_hex(&input_podp_z_delta),
                 "z_beta": fr_to_hex(&input_podp_z_beta),
             },
         },
-        // Inner proof and generators for on-chain hybrid verification
+        // Extra fields for on-chain hybrid verification
         "inner_proof_hex": format!("0x{}", hex::encode(&abi_bytes)),
         "gens_hex": format!("0x{}", hex::encode(&gens_bytes)),
         "circuit_hash_raw": format!("0x{}", hex::encode(&circuit_hash)),

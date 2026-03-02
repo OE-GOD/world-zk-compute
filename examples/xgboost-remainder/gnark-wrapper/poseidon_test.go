@@ -98,7 +98,7 @@ func TestPoseidonConsistency(t *testing.T) {
 
 // TestWrapperCircuitCompiles verifies the full wrapper circuit compiles.
 func TestWrapperCircuitCompiles(t *testing.T) {
-	circuit := AllocateCircuit()
+	circuit := AllocateCircuit(SmallConfig())
 	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, circuit)
 	if err != nil {
 		t.Fatalf("wrapper circuit compilation failed: %v", err)

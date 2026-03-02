@@ -11,20 +11,23 @@ import (
 	"github.com/consensys/gnark/test"
 )
 
-// TestCircuitCompiles verifies the wrapper circuit compiles and reports constraint count.
-func TestCircuitCompiles(t *testing.T) {
-	circuit := AllocateCircuit()
+// ============================================================
+// Small config tests (regression)
+// ============================================================
+
+func TestSmallCircuitCompiles(t *testing.T) {
+	circuit := AllocateCircuit(SmallConfig())
 	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, circuit)
 	if err != nil {
 		t.Fatalf("circuit compilation failed: %v", err)
 	}
-	t.Logf("RemainderWrapperCircuit: %d constraints", ccs.GetNbConstraints())
+	t.Logf("SmallConfig circuit: %d constraints", ccs.GetNbConstraints())
 }
 
-// TestCircuitProves verifies the circuit can produce a valid Groth16 proof with dummy witness.
-func TestCircuitProves(t *testing.T) {
-	circuit := AllocateCircuit()
-	assignment := makeDummyAssignment()
+func TestSmallCircuitProves(t *testing.T) {
+	config := SmallConfig()
+	circuit := AllocateCircuit(config)
+	assignment := makeDummyAssignment(config)
 
 	assert := test.NewAssert(t)
 	assert.ProverSucceeded(
@@ -33,14 +36,13 @@ func TestCircuitProves(t *testing.T) {
 		test.WithCurves(ecc.BN254),
 		test.WithBackends(backend.GROTH16),
 	)
-	t.Log("RemainderWrapperCircuit Groth16 proof verified successfully")
+	t.Log("SmallConfig Groth16 proof verified successfully")
 }
 
-// TestCircuitRejectsInvalidWitness verifies the circuit rejects an incorrect output.
-func TestCircuitRejectsInvalidWitness(t *testing.T) {
-	circuit := AllocateCircuit()
-	assignment := makeDummyAssignment()
-	// Corrupt a public output — the assertion should fail
+func TestSmallCircuitRejectsInvalidWitness(t *testing.T) {
+	config := SmallConfig()
+	circuit := AllocateCircuit(config)
+	assignment := makeDummyAssignment(config)
 	assignment.RlcBeta0 = big.NewInt(999)
 
 	assert := test.NewAssert(t)
@@ -53,11 +55,10 @@ func TestCircuitRejectsInvalidWitness(t *testing.T) {
 	t.Log("Circuit correctly rejected invalid witness")
 }
 
-// TestCircuitRejectsWrongInnerProduct verifies inner product constraint.
-func TestCircuitRejectsWrongInnerProduct(t *testing.T) {
-	circuit := AllocateCircuit()
-	assignment := makeDummyAssignment()
-	// Corrupt the z_dot_jstar output
+func TestSmallCircuitRejectsWrongInnerProduct(t *testing.T) {
+	config := SmallConfig()
+	circuit := AllocateCircuit(config)
+	assignment := makeDummyAssignment(config)
 	assignment.ZDotJStar0 = big.NewInt(12345)
 
 	assert := test.NewAssert(t)
@@ -70,25 +71,91 @@ func TestCircuitRejectsWrongInnerProduct(t *testing.T) {
 	t.Log("Circuit correctly rejected wrong inner product")
 }
 
-// makeDummyAssignment creates a self-consistent witness for testing.
-func makeDummyAssignment() *RemainderWrapperCircuit {
-	// Pick challenge values
-	outputChallenge := big.NewInt(7)
+// ============================================================
+// Medium config tests
+// ============================================================
+
+func TestMediumCircuitCompiles(t *testing.T) {
+	circuit := AllocateCircuit(MediumConfig())
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, circuit)
+	if err != nil {
+		t.Fatalf("circuit compilation failed: %v", err)
+	}
+	t.Logf("MediumConfig circuit: %d constraints", ccs.GetNbConstraints())
+}
+
+func TestMediumCircuitProves(t *testing.T) {
+	config := MediumConfig()
+	circuit := AllocateCircuit(config)
+	assignment := makeDummyAssignment(config)
+
+	assert := test.NewAssert(t)
+	assert.ProverSucceeded(
+		circuit,
+		assignment,
+		test.WithCurves(ecc.BN254),
+		test.WithBackends(backend.GROTH16),
+	)
+	t.Log("MediumConfig Groth16 proof verified successfully")
+}
+
+func TestMediumCircuitRejectsInvalidWitness(t *testing.T) {
+	config := MediumConfig()
+	circuit := AllocateCircuit(config)
+	assignment := makeDummyAssignment(config)
+	assignment.RlcBeta0 = big.NewInt(999)
+
+	assert := test.NewAssert(t)
+	assert.ProverFailed(
+		circuit,
+		assignment,
+		test.WithCurves(ecc.BN254),
+		test.WithBackends(backend.GROTH16),
+	)
+	t.Log("MediumConfig correctly rejected invalid witness")
+}
+
+// ============================================================
+// makeDummyAssignment: self-consistent witness for any config
+// ============================================================
+
+func makeDummyAssignment(config CircuitConfig) *RemainderWrapperCircuit {
+	nv := config.NumVars
+	numPub := config.NumPublicInputs // 2^nv
+
+	// Output challenges (num_vars values)
+	outputChallenges := make([]*big.Int, nv)
+	for i := 0; i < nv; i++ {
+		outputChallenges[i] = big.NewInt(int64(7 + i*3))
+	}
+
 	claimAggCoeff := big.NewInt(3)
 	interLayerCoeff := big.NewInt(5)
 
 	// Layer 0 (subtract, degree=2)
-	l0binding := big.NewInt(11)
-	l0rho0 := big.NewInt(13)
-	l0rho1 := big.NewInt(17)
-	l0gamma0 := big.NewInt(19)
+	l0bindings := make([]*big.Int, nv)
+	l0gammas := make([]*big.Int, nv)
+	l0rhos := make([]*big.Int, nv+1)
+	for i := 0; i < nv; i++ {
+		l0bindings[i] = big.NewInt(int64(11 + i*7))
+		l0gammas[i] = big.NewInt(int64(19 + i*5))
+	}
+	for i := 0; i <= nv; i++ {
+		l0rhos[i] = big.NewInt(int64(13 + i*4))
+	}
 	l0podpChallenge := big.NewInt(23)
 
 	// Layer 1 (multiply, degree=3)
-	l1binding := big.NewInt(29)
-	l1rho0 := big.NewInt(31)
-	l1rho1 := big.NewInt(37)
-	l1gamma0 := big.NewInt(41)
+	l1bindings := make([]*big.Int, nv)
+	l1gammas := make([]*big.Int, nv)
+	l1rhos := make([]*big.Int, nv+1)
+	for i := 0; i < nv; i++ {
+		l1bindings[i] = big.NewInt(int64(29 + i*11))
+		l1gammas[i] = big.NewInt(int64(41 + i*13))
+	}
+	for i := 0; i <= nv; i++ {
+		l1rhos[i] = big.NewInt(int64(31 + i*6))
+	}
 	l1podpChallenge := big.NewInt(43)
 	l1popChallenge := big.NewInt(47)
 
@@ -97,138 +164,140 @@ func makeDummyAssignment() *RemainderWrapperCircuit {
 	inputRLCCoeff1 := big.NewInt(59)
 	inputPODPChallenge := big.NewInt(61)
 
-	// Pick z_vectors (arbitrary)
-	l0z := []*big.Int{big.NewInt(100), big.NewInt(200), big.NewInt(300)}
+	// Layer 0 z_vector: (degree+1)*nv elements
+	l0zLen := (config.Layer0Degree + 1) * nv
+	l0z := make([]*big.Int, l0zLen)
+	for i := 0; i < l0zLen; i++ {
+		l0z[i] = big.NewInt(int64(100 + i*100))
+	}
 	l0zDelta := big.NewInt(400)
 	l0zBeta := big.NewInt(500)
 
-	l1z := []*big.Int{big.NewInt(110), big.NewInt(220), big.NewInt(330), big.NewInt(440)}
+	// Layer 1 z_vector: (degree+1)*nv elements
+	l1zLen := (config.Layer1Degree + 1) * nv
+	l1z := make([]*big.Int, l1zLen)
+	for i := 0; i < l1zLen; i++ {
+		l1z[i] = big.NewInt(int64(110 + i*110))
+	}
 	l1zDelta := big.NewInt(550)
 	l1zBeta := big.NewInt(660)
 
-	inputZ := []*big.Int{big.NewInt(700), big.NewInt(800)}
+	// Input z_vector: 2^nv elements
+	inputZ := make([]*big.Int, numPub)
+	for i := 0; i < numPub; i++ {
+		inputZ[i] = big.NewInt(int64(700 + i*100))
+	}
 	inputZDelta := big.NewInt(900)
 	inputZBeta := big.NewInt(1000)
 
-	// PoP witness (arbitrary — EC checks are on-chain)
+	// PoP witness (arbitrary - EC checks are on-chain)
 	popZ1 := big.NewInt(1001)
 	popZ2 := big.NewInt(1002)
 	popZ3 := big.NewInt(1003)
 	popZ4 := big.NewInt(1004)
 	popZ5 := big.NewInt(1005)
 
-	// Public inputs
-	pubInput0 := big.NewInt(6)
-	pubInput1 := big.NewInt(20)
+	// Public inputs (2^nv values)
+	pubInputs := make([]*big.Int, numPub)
+	for i := 0; i < numPub; i++ {
+		pubInputs[i] = big.NewInt(int64(6 + i*14))
+	}
 
 	// === Compute expected public outputs natively ===
 
-	// rlc_beta_0 = beta([l0binding], [outputChallenge]) * claimAggCoeff
-	rlcBeta0 := nativeComputeRlcBeta(
-		[]*big.Int{l0binding},
-		[]*big.Int{outputChallenge},
-		claimAggCoeff,
-	)
+	// rlc_beta_0 = beta(l0_bindings, output_challenges) * claimAggCoeff
+	rlcBeta0 := nativeComputeRlcBeta(l0bindings, outputChallenges, claimAggCoeff)
 
-	// rlc_beta_1 = beta([l1binding], [l0binding]) * interLayerCoeff
-	rlcBeta1 := nativeComputeRlcBeta(
-		[]*big.Int{l1binding},
-		[]*big.Int{l0binding},
-		interLayerCoeff,
-	)
+	// rlc_beta_1 = beta(l1_bindings, l0_bindings) * interLayerCoeff
+	rlcBeta1 := nativeComputeRlcBeta(l1bindings, l0bindings, interLayerCoeff)
 
 	// j_star_0 and <z, j_star> for layer 0 (degree=2)
-	jStar0 := nativeComputeJStar(
-		[]*big.Int{l0rho0, l0rho1},
-		[]*big.Int{l0gamma0},
-		[]*big.Int{l0binding},
-		2,
-	)
+	jStar0 := nativeComputeJStar(l0rhos, l0gammas, l0bindings, config.Layer0Degree)
 	zDotJStar0 := nativeInnerProduct(l0z, jStar0)
 
 	// j_star_1 and <z, j_star> for layer 1 (degree=3)
-	jStar1 := nativeComputeJStar(
-		[]*big.Int{l1rho0, l1rho1},
-		[]*big.Int{l1gamma0},
-		[]*big.Int{l1binding},
-		3,
-	)
+	jStar1 := nativeComputeJStar(l1rhos, l1gammas, l1bindings, config.Layer1Degree)
 	zDotJStar1 := nativeInnerProduct(l1z, jStar1)
 
 	// L-tensor: [coeff0, coeff1]
 	lTensor0 := new(big.Int).Set(inputRLCCoeff0)
 	lTensor1 := new(big.Int).Set(inputRLCCoeff1)
 
-	// R-tensor: [(1 - l1binding), l1binding]
-	rCoeff0 := subMod(big.NewInt(1), l1binding)
-	rCoeff1 := new(big.Int).Set(l1binding)
+	// R-tensor: tensor(l1_bindings) -> 2^nv elements
+	rTensor := nativeComputeTensorProduct(l1bindings)
 
 	// <input_z, R_tensor>
-	zDotR := nativeInnerProduct(inputZ, []*big.Int{rCoeff0, rCoeff1})
+	zDotR := nativeInnerProduct(inputZ, rTensor)
 
-	// MLE eval: (1-x)*pubInput0 + x*pubInput1, where x = l0binding
-	oneMinusX := subMod(big.NewInt(1), l0binding)
-	mleEval := addMod(mulMod(oneMinusX, pubInput0), mulMod(l0binding, pubInput1))
+	// MLE eval: multilinear extension of pubInputs evaluated at l0_bindings
+	mleEval := nativeEvaluateMLE(pubInputs, l0bindings)
 
-	return &RemainderWrapperCircuit{
-		// Public inputs
-		CircuitHash0:    big.NewInt(12345),
-		CircuitHash1:    big.NewInt(67890),
-		PublicInput0:    pubInput0,
-		PublicInput1:    pubInput1,
-		OutputChallenge: outputChallenge,
-		ClaimAggCoeff:   claimAggCoeff,
-		InterLayerCoeff: interLayerCoeff,
+	// === Build assignment ===
+	assignment := AllocateCircuit(config)
 
-		Layer0Bindings:      [1]frontend.Variable{l0binding},
-		Layer0Rhos:          [2]frontend.Variable{l0rho0, l0rho1},
-		Layer0Gammas:        [1]frontend.Variable{l0gamma0},
-		Layer0PODPChallenge: l0podpChallenge,
-
-		Layer1Bindings:      [1]frontend.Variable{l1binding},
-		Layer1Rhos:          [2]frontend.Variable{l1rho0, l1rho1},
-		Layer1Gammas:        [1]frontend.Variable{l1gamma0},
-		Layer1PODPChallenge: l1podpChallenge,
-		Layer1PopChallenge:  l1popChallenge,
-
-		InputRLCCoeff0:     inputRLCCoeff0,
-		InputRLCCoeff1:     inputRLCCoeff1,
-		InputPODPChallenge: inputPODPChallenge,
-
-		// Public outputs
-		RlcBeta0:   rlcBeta0,
-		RlcBeta1:   rlcBeta1,
-		ZDotJStar0: zDotJStar0,
-		ZDotJStar1: zDotJStar1,
-		LTensor0:   lTensor0,
-		LTensor1:   lTensor1,
-		ZDotR:      zDotR,
-		MLEEval:    mleEval,
-
-		// Private witnesses
-		Layer0PODP: PODPWitness{
-			ZVector: []frontend.Variable{l0z[0], l0z[1], l0z[2]},
-			ZDelta:  l0zDelta,
-			ZBeta:   l0zBeta,
-		},
-		Layer1PODP: PODPWitness{
-			ZVector: []frontend.Variable{l1z[0], l1z[1], l1z[2], l1z[3]},
-			ZDelta:  l1zDelta,
-			ZBeta:   l1zBeta,
-		},
-		Layer1Pop: PopWitness{
-			Z1: popZ1,
-			Z2: popZ2,
-			Z3: popZ3,
-			Z4: popZ4,
-			Z5: popZ5,
-		},
-		InputPODP: PODPWitness{
-			ZVector: []frontend.Variable{inputZ[0], inputZ[1]},
-			ZDelta:  inputZDelta,
-			ZBeta:   inputZBeta,
-		},
+	assignment.CircuitHash = [2]frontend.Variable{big.NewInt(12345), big.NewInt(67890)}
+	for i := 0; i < numPub; i++ {
+		assignment.PublicInputs[i] = pubInputs[i]
 	}
+	for i := 0; i < nv; i++ {
+		assignment.OutputChallenges[i] = outputChallenges[i]
+	}
+	assignment.ClaimAggCoeff = claimAggCoeff
+	assignment.InterLayerCoeff = interLayerCoeff
+
+	for i := 0; i < nv; i++ {
+		assignment.Layer0Bindings[i] = l0bindings[i]
+		assignment.Layer0Gammas[i] = l0gammas[i]
+	}
+	for i := 0; i <= nv; i++ {
+		assignment.Layer0Rhos[i] = l0rhos[i]
+	}
+	assignment.Layer0PODPChallenge = l0podpChallenge
+
+	for i := 0; i < nv; i++ {
+		assignment.Layer1Bindings[i] = l1bindings[i]
+		assignment.Layer1Gammas[i] = l1gammas[i]
+	}
+	for i := 0; i <= nv; i++ {
+		assignment.Layer1Rhos[i] = l1rhos[i]
+	}
+	assignment.Layer1PODPChallenge = l1podpChallenge
+	assignment.Layer1PopChallenge = l1popChallenge
+
+	assignment.InputRLCCoeffs = [2]frontend.Variable{inputRLCCoeff0, inputRLCCoeff1}
+	assignment.InputPODPChallenge = inputPODPChallenge
+
+	// Public outputs
+	assignment.RlcBeta0 = rlcBeta0
+	assignment.RlcBeta1 = rlcBeta1
+	assignment.ZDotJStar0 = zDotJStar0
+	assignment.ZDotJStar1 = zDotJStar1
+	assignment.LTensor = [2]frontend.Variable{lTensor0, lTensor1}
+	assignment.ZDotR = zDotR
+	assignment.MLEEval = mleEval
+
+	// Private witnesses
+	l0zVars := make([]frontend.Variable, l0zLen)
+	for i, v := range l0z {
+		l0zVars[i] = v
+	}
+	assignment.Layer0PODP = PODPWitness{ZVector: l0zVars, ZDelta: l0zDelta, ZBeta: l0zBeta}
+
+	l1zVars := make([]frontend.Variable, l1zLen)
+	for i, v := range l1z {
+		l1zVars[i] = v
+	}
+	assignment.Layer1PODP = PODPWitness{ZVector: l1zVars, ZDelta: l1zDelta, ZBeta: l1zBeta}
+
+	assignment.Layer1Pop = PopWitness{Z1: popZ1, Z2: popZ2, Z3: popZ3, Z4: popZ4, Z5: popZ5}
+
+	inputZVars := make([]frontend.Variable, numPub)
+	for i, v := range inputZ {
+		inputZVars[i] = v
+	}
+	assignment.InputPODP = PODPWitness{ZVector: inputZVars, ZDelta: inputZDelta, ZBeta: inputZBeta}
+
+	return assignment
 }
 
 // ---- Native Fr arithmetic helpers ----
@@ -307,4 +376,23 @@ func nativeInnerProduct(a, b []*big.Int) *big.Int {
 		result = addMod(result, term)
 	}
 	return result
+}
+
+func nativeComputeTensorProduct(bindings []*big.Int) []*big.Int {
+	result := []*big.Int{big.NewInt(1)}
+	for _, b := range bindings {
+		oneMinusB := subMod(big.NewInt(1), b)
+		newResult := make([]*big.Int, len(result)*2)
+		for j, r := range result {
+			newResult[2*j] = mulMod(r, oneMinusB)
+			newResult[2*j+1] = mulMod(r, b)
+		}
+		result = newResult
+	}
+	return result
+}
+
+func nativeEvaluateMLE(values []*big.Int, point []*big.Int) *big.Int {
+	basis := nativeComputeTensorProduct(point)
+	return nativeInnerProduct(values, basis)
 }

@@ -175,8 +175,7 @@ contract RemainderVerifier {
     // ========================================================================
 
     /// @notice BN254 scalar field modulus (Fr)
-    uint256 private constant FR_MODULUS =
-        21888242871839275222246405745257275088548364400416034343698204186575808495617;
+    uint256 private constant FR_MODULUS = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
 
     /// @notice Verify a Remainder proof using the hybrid Groth16 approach
     /// @dev Flow: decode inner proof → replay transcript → verify Groth16 → EC checks
@@ -226,11 +225,10 @@ contract RemainderVerifier {
     }
 
     /// @dev Validate circuit registration, proof format, generators, and circuit structure
-    function _validateHybridInputs(
-        bytes32 circuitHash,
-        bytes calldata innerProof,
-        bytes calldata gensData
-    ) private view {
+    function _validateHybridInputs(bytes32 circuitHash, bytes calldata innerProof, bytes calldata gensData)
+        private
+        view
+    {
         // Check circuit is registered and active
         CircuitConfig storage config = circuits[circuitHash];
         if (config.circuitHash == bytes32(0)) revert CircuitNotRegistered();
@@ -265,7 +263,8 @@ contract RemainderVerifier {
         (uint256 circuitHashFr0, uint256 circuitHashFr1) = _hashToFqPair(circuitHash);
 
         uint256[29] memory groth16Inputs = GKRHybridVerifier.buildGroth16Inputs(
-            circuitHashFr0, circuitHashFr1,
+            circuitHashFr0,
+            circuitHashFr1,
             pubInputs.length > 0 ? pubInputs[0] : 0,
             pubInputs.length > 1 ? pubInputs[1] : 0,
             challenges,
@@ -278,15 +277,11 @@ contract RemainderVerifier {
     }
 
     /// @notice Public wrapper for transcript replay (for testing)
-    function replayTranscriptPublic(
-        bytes calldata innerProof,
-        bytes32 circuitHash,
-        bytes calldata publicInputs
-    ) external view returns (
-        uint256 outputChallenge,
-        uint256 claimAggCoeff,
-        uint256 interLayerCoeff
-    ) {
+    function replayTranscriptPublic(bytes calldata innerProof, bytes32 circuitHash, bytes calldata publicInputs)
+        external
+        view
+        returns (uint256 outputChallenge, uint256 claimAggCoeff, uint256 interLayerCoeff)
+    {
         (GKRVerifier.GKRProof memory gkrProof, uint256[] memory pubInputs) = decodeProof(innerProof[4:], publicInputs);
         PoseidonSponge.Sponge memory sponge = _setupTranscript(circuitHash, pubInputs, gkrProof);
 

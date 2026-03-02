@@ -1156,8 +1156,13 @@ contract E2EProofDecodeTest is Test {
         (GKRVerifier.GKRProof memory proof, uint256[] memory pubIn) = verifier.decodeProofCounted(proofData, pubInputs);
 
         // Use separate calldata call to read claims
-        (uint256 numFs, uint256 numPub, uint256[][] memory fsPoints, uint256[][] memory pubPoints, uint256[] memory pubValues) =
-            this._dumpClaimsFromCalldata(proofData);
+        (
+            uint256 numFs,
+            uint256 numPub,
+            uint256[][] memory fsPoints,
+            uint256[][] memory pubPoints,
+            uint256[] memory pubValues
+        ) = this._dumpClaimsFromCalldata(proofData);
         emit log_named_uint("numFsClaims", numFs);
         emit log_named_uint("numPubClaims", numPub);
         for (uint256 i = 0; i < fsPoints.length; i++) {
@@ -1386,13 +1391,15 @@ contract E2EProofDecodeTest is Test {
         uint256 mleFromFunc = GKRVerifier.evaluateMLEFromData(data, point);
         emit log_named_uint("evaluateMLEFromData result", mleFromFunc);
         emit log_string(mleFromFunc == mleClaim ? "MLE func matches manual: YES" : "MLE func matches manual: NO");
-
     }
 
     /// @notice Step-by-step GKR transcript trace test
     function test_gkr_transcript_step_by_step() public {
-        (GKRVerifier.GKRProof memory proof, HyraxVerifier.PedersenGens memory gens,
-         PoseidonSponge.Sponge memory sponge) = _loadAndSetupTranscript();
+        (
+            GKRVerifier.GKRProof memory proof,
+            HyraxVerifier.PedersenGens memory gens,
+            PoseidonSponge.Sponge memory sponge
+        ) = _loadAndSetupTranscript();
 
         uint256 FR_MOD = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
 
@@ -1425,11 +1432,14 @@ contract E2EProofDecodeTest is Test {
         _checkPODPEquations(proof, gens, sponge, rho0, rho1, gamma0, scChallenge, claimPoint0, randomCoeff);
     }
 
-    function _loadAndSetupTranscript() internal returns (
-        GKRVerifier.GKRProof memory proof,
-        HyraxVerifier.PedersenGens memory gens,
-        PoseidonSponge.Sponge memory sponge
-    ) {
+    function _loadAndSetupTranscript()
+        internal
+        returns (
+            GKRVerifier.GKRProof memory proof,
+            HyraxVerifier.PedersenGens memory gens,
+            PoseidonSponge.Sponge memory sponge
+        )
+    {
         string memory json = vm.readFile("test/fixtures/e2e_fixture.json");
         bytes memory rawProof = vm.parseJsonBytes(json, ".proof_hex");
         bytes memory gensData = vm.parseJsonBytes(json, ".gens_hex");
@@ -1459,17 +1469,14 @@ contract E2EProofDecodeTest is Test {
 
         // alpha = messages[0] * gamma0
         GKRVerifier.CommittedLayerProof memory lp = proof.layerProofs[0];
-        HyraxVerifier.G1Point memory alpha = HyraxVerifier.scalarMul(
-            lp.sumcheckProof.messages[0], gamma0 % FR_MOD
-        );
+        HyraxVerifier.G1Point memory alpha = HyraxVerifier.scalarMul(lp.sumcheckProof.messages[0], gamma0 % FR_MOD);
 
         // j_star computation (n=1, degree=2)
         uint256[] memory jStar = _computeJStar(rho0 % FR_MOD, rho1 % FR_MOD, gamma0 % FR_MOD, binding0);
 
         // Compute dotProduct in a separate function to avoid stack-too-deep
-        HyraxVerifier.G1Point memory dotProduct = _computeDotProduct(
-            lp, rho0 % FR_MOD, rho1 % FR_MOD, binding0, claimPoint0, randomCoeff
-        );
+        HyraxVerifier.G1Point memory dotProduct =
+            _computeDotProduct(lp, rho0 % FR_MOD, rho1 % FR_MOD, binding0, claimPoint0, randomCoeff);
 
         _checkPODPEqs2(proof, gens, sponge, alpha, dotProduct, jStar);
     }
@@ -1505,13 +1512,14 @@ contract E2EProofDecodeTest is Test {
 
         // dotProduct = sum * rho0 - oracleEval * rho1
         return HyraxVerifier.ecAdd(
-            HyraxVerifier.scalarMul(lp.sumcheckProof.sum, rho0),
-            HyraxVerifier.scalarMul(oracleEval, FR_MOD - rho1)
+            HyraxVerifier.scalarMul(lp.sumcheckProof.sum, rho0), HyraxVerifier.scalarMul(oracleEval, FR_MOD - rho1)
         );
     }
 
     function _computeJStar(uint256 rho0, uint256 rho1, uint256 gamma0, uint256 binding0)
-        internal pure returns (uint256[] memory jStar)
+        internal
+        pure
+        returns (uint256[] memory jStar)
     {
         uint256 FR_MOD = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
         uint256 gammaInv = _modExp(gamma0, FR_MOD - 2, FR_MOD);
@@ -1558,17 +1566,14 @@ contract E2EProofDecodeTest is Test {
         HyraxVerifier.PedersenGens memory gens
     ) internal view returns (bool) {
         // LHS: c * alpha + commitD
-        HyraxVerifier.G1Point memory lhs = HyraxVerifier.ecAdd(
-            HyraxVerifier.scalarMul(alpha, c), podp.commitD
-        );
+        HyraxVerifier.G1Point memory lhs = HyraxVerifier.ecAdd(HyraxVerifier.scalarMul(alpha, c), podp.commitD);
         // RHS: MSM(g[0..n], z) + z_delta * h
         HyraxVerifier.G1Point memory msm = HyraxVerifier.scalarMul(gens.messageGens[0], podp.zVector[0]);
         for (uint256 i = 1; i < podp.zVector.length; i++) {
             msm = HyraxVerifier.ecAdd(msm, HyraxVerifier.scalarMul(gens.messageGens[i], podp.zVector[i]));
         }
-        HyraxVerifier.G1Point memory rhs = HyraxVerifier.ecAdd(
-            msm, HyraxVerifier.scalarMul(gens.blindingGen, podp.zDelta)
-        );
+        HyraxVerifier.G1Point memory rhs =
+            HyraxVerifier.ecAdd(msm, HyraxVerifier.scalarMul(gens.blindingGen, podp.zDelta));
         return lhs.x == rhs.x && lhs.y == rhs.y;
     }
 
@@ -1581,17 +1586,14 @@ contract E2EProofDecodeTest is Test {
     ) internal returns (bool) {
         uint256 FR_MOD = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
         // LHS: c * dotProduct + commitDDotA
-        HyraxVerifier.G1Point memory lhs = HyraxVerifier.ecAdd(
-            HyraxVerifier.scalarMul(dotProduct, c), podp.commitDDotA
-        );
+        HyraxVerifier.G1Point memory lhs = HyraxVerifier.ecAdd(HyraxVerifier.scalarMul(dotProduct, c), podp.commitDDotA);
         // RHS: <z, jStar> * g_scalar + z_beta * h
         uint256 zDotJ = 0;
         for (uint256 i = 0; i < podp.zVector.length; i++) {
             zDotJ = addmod(zDotJ, mulmod(podp.zVector[i], jStar[i], FR_MOD), FR_MOD);
         }
         HyraxVerifier.G1Point memory rhs = HyraxVerifier.ecAdd(
-            HyraxVerifier.scalarMul(gens.scalarGen, zDotJ),
-            HyraxVerifier.scalarMul(gens.blindingGen, podp.zBeta)
+            HyraxVerifier.scalarMul(gens.scalarGen, zDotJ), HyraxVerifier.scalarMul(gens.blindingGen, podp.zBeta)
         );
         emit log_named_uint("eq2 LHS.x", lhs.x);
         emit log_named_uint("eq2 LHS.y", lhs.y);
@@ -1652,11 +1654,7 @@ contract TestableRemainderVerifier is RemainderVerifier {
         return _setupTranscript(circuitHash, pubInputs, gkrProof);
     }
 
-    function extractInputCommitCoords(GKRVerifier.GKRProof memory proof)
-        external
-        pure
-        returns (uint256[] memory)
-    {
+    function extractInputCommitCoords(GKRVerifier.GKRProof memory proof) external pure returns (uint256[] memory) {
         return _extractInputCommitCoords(proof);
     }
 }
@@ -2074,32 +2072,33 @@ contract GKRHybridVerifierTest is Test {
 
         // Register the test circuit (3 layers: input(committed), multiply, subtract)
         // matching the circuit structure used in gen_groth16_witness.rs
-        bytes32 circuitHash = vm.parseJsonBytes32(
-            vm.readFile("test/fixtures/groth16_e2e_fixture.json"), ".circuit_hash_raw"
-        );
+        bytes32 circuitHash =
+            vm.parseJsonBytes32(vm.readFile("test/fixtures/groth16_e2e_fixture.json"), ".circuit_hash_raw");
         uint256[] memory sizes = new uint256[](3);
-        sizes[0] = 4; sizes[1] = 2; sizes[2] = 2;
+        sizes[0] = 4;
+        sizes[1] = 2;
+        sizes[2] = 2;
         uint8[] memory types = new uint8[](3);
-        types[0] = 3; types[1] = 1; types[2] = 0;
+        types[0] = 3;
+        types[1] = 1;
+        types[2] = 0;
         bool[] memory committed = new bool[](3);
         committed[0] = true;
         remainderVerifier.registerCircuit(circuitHash, 3, sizes, types, committed, "test-hybrid");
 
         // Also register the circuit from e2e_fixture.json (used by non-Groth16 tests)
-        bytes32 e2eCircuitHash = vm.parseJsonBytes32(
-            vm.readFile("test/fixtures/e2e_fixture.json"), ".circuit_hash_raw"
-        );
+        bytes32 e2eCircuitHash = vm.parseJsonBytes32(vm.readFile("test/fixtures/e2e_fixture.json"), ".circuit_hash_raw");
         if (e2eCircuitHash != circuitHash) {
             remainderVerifier.registerCircuit(e2eCircuitHash, 3, sizes, types, committed, "test-e2e");
         }
     }
 
     /// @notice Load e2e fixture data for testing
-    function _loadE2EFixture() internal view returns (
-        bytes memory proofHex,
-        bytes memory gensHex,
-        bytes32 circuitHash
-    ) {
+    function _loadE2EFixture()
+        internal
+        view
+        returns (bytes memory proofHex, bytes memory gensHex, bytes32 circuitHash)
+    {
         string memory json = vm.readFile("test/fixtures/e2e_fixture.json");
         proofHex = vm.parseJsonBytes(json, ".proof_hex");
         gensHex = vm.parseJsonBytes(json, ".gens_hex");
@@ -2108,7 +2107,7 @@ contract GKRHybridVerifierTest is Test {
 
     /// @notice Test that transcript replay produces deterministic challenges
     function test_hybrid_transcript_replay_deterministic() public {
-        (bytes memory proofHex, , bytes32 circuitHash) = _loadE2EFixture();
+        (bytes memory proofHex,, bytes32 circuitHash) = _loadE2EFixture();
 
         // Public inputs for our test circuit: [6, 20]
         bytes memory publicInputs = new bytes(64);
@@ -2146,7 +2145,7 @@ contract GKRHybridVerifierTest is Test {
     /// @dev Both the hybrid replay and the direct GKR verification should produce
     ///      the same output challenge (first squeeze after setup)
     function test_hybrid_transcript_matches_direct_gkr() public {
-        (bytes memory proofHex, , bytes32 circuitHash) = _loadE2EFixture();
+        (bytes memory proofHex,, bytes32 circuitHash) = _loadE2EFixture();
 
         bytes memory publicInputs = new bytes(64);
         assembly {
@@ -2157,7 +2156,7 @@ contract GKRHybridVerifierTest is Test {
         }
 
         // Get hybrid transcript output challenge
-        (uint256 hybridOutputChallenge, , ) =
+        (uint256 hybridOutputChallenge,,) =
             remainderVerifier.replayTranscriptPublic(proofHex, circuitHash, publicInputs);
 
         // The output challenge should match what GKRVerifier.verify() would squeeze
@@ -2177,13 +2176,18 @@ contract GKRHybridVerifierTest is Test {
         PoseidonSponge.Sponge memory sponge = remainderVerifier.setupTranscriptPublic(circuitHash, pubInputs, gkrProof);
         uint256 directOutputChallenge = PoseidonSponge.squeeze(sponge) % FR_MODULUS;
 
-        assertEq(hybridOutputChallenge, directOutputChallenge,
-            "Hybrid and direct transcript should produce same output challenge");
+        assertEq(
+            hybridOutputChallenge,
+            directOutputChallenge,
+            "Hybrid and direct transcript should produce same output challenge"
+        );
     }
 
     /// @notice Helper to call decodeProofCounted with calldata args
     function decodeProofHelper(bytes calldata proofData, bytes calldata publicInputs)
-        external view returns (GKRVerifier.GKRProof memory, uint256[] memory)
+        external
+        view
+        returns (GKRVerifier.GKRProof memory, uint256[] memory)
     {
         return remainderVerifier.decodeProofCounted(proofData, publicInputs);
     }
@@ -2217,9 +2221,7 @@ contract GKRHybridVerifierTest is Test {
             outputs[i] = 2000 + i;
         }
 
-        uint256[29] memory inputs = GKRHybridVerifier.buildGroth16Inputs(
-            12345, 67890, 6, 20, challenges, outputs
-        );
+        uint256[29] memory inputs = GKRHybridVerifier.buildGroth16Inputs(12345, 67890, 6, 20, challenges, outputs);
 
         // Verify layout
         assertEq(inputs[0], 12345, "circuitHash0");
@@ -2251,7 +2253,7 @@ contract GKRHybridVerifierTest is Test {
 
     /// @notice Gas measurement for hybrid transcript replay
     function test_hybrid_transcript_replay_gas() public {
-        (bytes memory proofHex, , bytes32 circuitHash) = _loadE2EFixture();
+        (bytes memory proofHex,, bytes32 circuitHash) = _loadE2EFixture();
 
         bytes memory publicInputs = new bytes(64);
         assembly {
@@ -2277,9 +2279,13 @@ contract GKRHybridVerifierTest is Test {
 
         // Register circuit on freshVerifier
         uint256[] memory sizes = new uint256[](3);
-        sizes[0] = 4; sizes[1] = 2; sizes[2] = 2;
+        sizes[0] = 4;
+        sizes[1] = 2;
+        sizes[2] = 2;
         uint8[] memory types = new uint8[](3);
-        types[0] = 3; types[1] = 1; types[2] = 0;
+        types[0] = 3;
+        types[1] = 1;
+        types[2] = 0;
         bool[] memory committed = new bool[](3);
         committed[0] = true;
         freshVerifier.registerCircuit(circuitHash, 3, sizes, types, committed, "test");
@@ -2296,17 +2302,14 @@ contract GKRHybridVerifierTest is Test {
         uint256[8] memory fakeOutputs;
 
         vm.expectRevert("Groth16 verifier not set");
-        freshVerifier.verifyWithGroth16(
-            proofHex, circuitHash, publicInputs, gensHex, fakeProof, fakeOutputs
-        );
+        freshVerifier.verifyWithGroth16(proofHex, circuitHash, publicInputs, gensHex, fakeProof, fakeOutputs);
     }
 
     /// @notice Test that verifyWithGroth16 rejects invalid selector
     function test_hybrid_rejects_bad_selector() public {
         // Use a registered circuit hash so we pass the registration check
-        bytes32 circuitHash = vm.parseJsonBytes32(
-            vm.readFile("test/fixtures/groth16_e2e_fixture.json"), ".circuit_hash_raw"
-        );
+        bytes32 circuitHash =
+            vm.parseJsonBytes32(vm.readFile("test/fixtures/groth16_e2e_fixture.json"), ".circuit_hash_raw");
 
         bytes memory badProof = hex"DEADBEEF";
         bytes memory publicInputs = new bytes(64);
@@ -2321,9 +2324,8 @@ contract GKRHybridVerifierTest is Test {
     /// @notice Test that verifyWithGroth16 rejects too-short proof
     function test_hybrid_rejects_short_proof() public {
         // Use a registered circuit hash so we pass the registration check
-        bytes32 circuitHash = vm.parseJsonBytes32(
-            vm.readFile("test/fixtures/groth16_e2e_fixture.json"), ".circuit_hash_raw"
-        );
+        bytes32 circuitHash =
+            vm.parseJsonBytes32(vm.readFile("test/fixtures/groth16_e2e_fixture.json"), ".circuit_hash_raw");
 
         bytes memory shortProof = hex"5245";
         bytes memory publicInputs = new bytes(0);
@@ -2340,14 +2342,18 @@ contract GKRHybridVerifierTest is Test {
     // ========================================================================
 
     /// @notice Load the combined fixture (single proof run: inner proof + Groth16)
-    function _loadCombinedFixture() internal view returns (
-        bytes memory innerProof,
-        bytes memory gensHex,
-        bytes32 circuitHash,
-        bytes memory publicValuesAbi,
-        uint256[8] memory groth16Proof,
-        uint256[8] memory groth16Outputs
-    ) {
+    function _loadCombinedFixture()
+        internal
+        view
+        returns (
+            bytes memory innerProof,
+            bytes memory gensHex,
+            bytes32 circuitHash,
+            bytes memory publicValuesAbi,
+            uint256[8] memory groth16Proof,
+            uint256[8] memory groth16Outputs
+        )
+    {
         string memory json = vm.readFile("test/fixtures/groth16_e2e_fixture.json");
         innerProof = vm.parseJsonBytes(json, ".inner_proof_hex");
         gensHex = vm.parseJsonBytes(json, ".gens_hex");
@@ -2389,8 +2395,7 @@ contract GKRHybridVerifierTest is Test {
     /// @notice Test Groth16 verification with replayed challenge inputs
     function test_combined_groth16_with_replayed_inputs() public {
         (
-            bytes memory innerProof,
-            ,
+            bytes memory innerProof,,
             bytes32 circuitHash,
             bytes memory publicValuesAbi,
             uint256[8] memory groth16Proof,
@@ -2407,9 +2412,7 @@ contract GKRHybridVerifierTest is Test {
 
         (GKRVerifier.GKRProof memory gkrProof, uint256[] memory pubInputs) =
             this.decodeProofHelper(proofData, publicValuesAbi);
-        PoseidonSponge.Sponge memory sponge = remainderVerifier.setupTranscriptPublic(
-            circuitHash, pubInputs, gkrProof
-        );
+        PoseidonSponge.Sponge memory sponge = remainderVerifier.setupTranscriptPublic(circuitHash, pubInputs, gkrProof);
 
         // Full transcript replay
         GKRHybridVerifier.TranscriptChallenges memory challenges =
@@ -2418,7 +2421,8 @@ contract GKRHybridVerifierTest is Test {
         // Build Groth16 public inputs using actual circuit hash Fr values
         (uint256 chFr0, uint256 chFr1) = remainderVerifier.hashToFqPair(circuitHash);
         uint256[29] memory groth16Inputs = GKRHybridVerifier.buildGroth16Inputs(
-            chFr0, chFr1,
+            chFr0,
+            chFr1,
             pubInputs.length > 0 ? pubInputs[0] : 0,
             pubInputs.length > 1 ? pubInputs[1] : 0,
             challenges,
@@ -2524,8 +2528,7 @@ contract GKRHybridVerifierTest is Test {
     function test_hybrid_rejects_unregistered_circuit() public {
         (
             bytes memory innerProof,
-            bytes memory gensHex,
-            ,
+            bytes memory gensHex,,
             bytes memory publicValuesAbi,
             uint256[8] memory groth16Proof,
             uint256[8] memory groth16Outputs
