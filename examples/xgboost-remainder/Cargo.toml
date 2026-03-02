@@ -75,3 +75,7 @@ path = "src/bin/gen_test_proof.rs"
 [[bin]]
 name = "gen_transcript_trace"
 path = "src/bin/gen_transcript_trace.rs"
+
+[[bin]]
+name = "gen_groth16_witness"
+path = "src/bin/gen_groth16_witness.rs"

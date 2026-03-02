@@ -9,6 +9,7 @@ import "../src/remainder/HyraxVerifier.sol";
 import "../src/remainder/GKRVerifier.sol";
 import "../src/remainder/CommittedSumcheckVerifier.sol";
 import "../src/remainder/HyraxProofDecoder.sol";
+import {Verifier as Groth16Verifier} from "../src/remainder/RemainderGroth16Verifier.sol";
 import "../src/IProofVerifier.sol";
 import "../src/RemainderVerifierAdapter.sol";
 import "../src/RiscZeroVerifierAdapter.sol";
@@ -1983,5 +1984,79 @@ contract CommittedSumcheckVerifierTest is Test {
         // (0 + 0*com = 0*g + 0*h → 0 = 0 for each check)
         bool valid = HyraxVerifier.verifyProofOfProduct(pop, comX, comY, comZ, gens, sponge);
         assertTrue(valid, "Trivial zero PoP should pass");
+    }
+}
+
+/// @title Groth16VerifierTest
+/// @notice E2E tests for the gnark-generated Groth16 verifier (Option C wrapper).
+/// The Groth16 proof certifies GKR algebraic relations (Fr arithmetic)
+/// while Poseidon transcript replay and EC checks stay on-chain.
+contract Groth16VerifierTest is Test {
+    Groth16Verifier verifier;
+
+    function setUp() public {
+        verifier = new Groth16Verifier();
+    }
+
+    /// @notice Full E2E: load fixture, call verifyProof, expect no revert
+    function test_e2e_groth16_verification() public view {
+        string memory json = vm.readFile("test/fixtures/groth16_fixture.json");
+
+        // Parse proof (8 uint256)
+        uint256[8] memory proof;
+        for (uint256 i = 0; i < 8; i++) {
+            string memory key = string.concat(".proof[", vm.toString(i), "]");
+            proof[i] = vm.parseJsonUint(json, key);
+        }
+
+        // Parse public inputs (29 uint256)
+        uint256[29] memory pubInputs;
+        for (uint256 i = 0; i < 29; i++) {
+            string memory key = string.concat(".public_inputs[", vm.toString(i), "]");
+            pubInputs[i] = vm.parseJsonUint(json, key);
+        }
+
+        // Should not revert — proof is valid
+        verifier.verifyProof(proof, pubInputs);
+    }
+
+    /// @notice Gas measurement for Groth16 verification
+    function test_e2e_groth16_gas() public {
+        string memory json = vm.readFile("test/fixtures/groth16_fixture.json");
+
+        uint256[8] memory proof;
+        for (uint256 i = 0; i < 8; i++) {
+            proof[i] = vm.parseJsonUint(json, string.concat(".proof[", vm.toString(i), "]"));
+        }
+        uint256[29] memory pubInputs;
+        for (uint256 i = 0; i < 29; i++) {
+            pubInputs[i] = vm.parseJsonUint(json, string.concat(".public_inputs[", vm.toString(i), "]"));
+        }
+
+        uint256 gasBefore = gasleft();
+        verifier.verifyProof(proof, pubInputs);
+        uint256 gasUsed = gasBefore - gasleft();
+
+        emit log_named_uint("Groth16 verification gas", gasUsed);
+    }
+
+    /// @notice Verify that a corrupted proof is rejected
+    function test_groth16_rejects_bad_proof() public {
+        string memory json = vm.readFile("test/fixtures/groth16_fixture.json");
+
+        uint256[8] memory proof;
+        for (uint256 i = 0; i < 8; i++) {
+            proof[i] = vm.parseJsonUint(json, string.concat(".proof[", vm.toString(i), "]"));
+        }
+        uint256[29] memory pubInputs;
+        for (uint256 i = 0; i < 29; i++) {
+            pubInputs[i] = vm.parseJsonUint(json, string.concat(".public_inputs[", vm.toString(i), "]"));
+        }
+
+        // Corrupt a public input
+        pubInputs[4] = pubInputs[4] ^ 1;
+
+        vm.expectRevert();
+        verifier.verifyProof(proof, pubInputs);
     }
 }

@@ -98,26 +98,12 @@ func TestPoseidonConsistency(t *testing.T) {
 
 // TestWrapperCircuitCompiles verifies the full wrapper circuit compiles.
 func TestWrapperCircuitCompiles(t *testing.T) {
-	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &RemainderWrapperCircuit{})
+	circuit := AllocateCircuit()
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, circuit)
 	if err != nil {
 		t.Fatalf("wrapper circuit compilation failed: %v", err)
 	}
 	t.Logf("Full wrapper circuit: %d constraints", ccs.GetNbConstraints())
-}
-
-// TestWrapperCircuitProves verifies the wrapper circuit can generate a valid Groth16 proof.
-func TestWrapperCircuitProves(t *testing.T) {
-	// This test uses gnark's test framework to verify end-to-end:
-	// compile -> setup -> solve -> prove -> verify
-	//
-	// We use dummy values — the circuit checks that the Poseidon sponge output
-	// matches the Challenge input, so we need internally consistent values.
-	// Since gnark operates over Fr (not Fq), we cannot use Solidity test vectors.
-	//
-	// Instead, we compute the expected challenge by running the Poseidon sponge
-	// natively in Go over Fr.
-	t.Log("Wrapper circuit proof generation test — skipped (requires native Fr Poseidon computation)")
-	t.Log("To enable: implement a native Go Poseidon-over-Fr to compute witness values")
 }
 
 // TestPoseidonSelfConsistent verifies absorb(1) produces a consistent provable circuit.
