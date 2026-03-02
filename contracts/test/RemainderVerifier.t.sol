@@ -2000,15 +2000,13 @@ contract Groth16VerifierTest is Test {
         // Parse proof (8 uint256)
         uint256[8] memory proof;
         for (uint256 i = 0; i < 8; i++) {
-            string memory key = string.concat(".proof[", vm.toString(i), "]");
-            proof[i] = vm.parseJsonUint(json, key);
+            proof[i] = vm.parseJsonUint(json, string.concat(".proof[", vm.toString(i), "]"));
         }
 
-        // Parse public inputs (29 uint256)
-        uint256[29] memory pubInputs;
-        for (uint256 i = 0; i < 29; i++) {
-            string memory key = string.concat(".public_inputs[", vm.toString(i), "]");
-            pubInputs[i] = vm.parseJsonUint(json, key);
+        // Parse public inputs (70 uint256 for medium config)
+        uint256[70] memory pubInputs;
+        for (uint256 i = 0; i < 70; i++) {
+            pubInputs[i] = vm.parseJsonUint(json, string.concat(".public_inputs[", vm.toString(i), "]"));
         }
 
         // Should not revert — proof is valid
@@ -2023,8 +2021,8 @@ contract Groth16VerifierTest is Test {
         for (uint256 i = 0; i < 8; i++) {
             proof[i] = vm.parseJsonUint(json, string.concat(".proof[", vm.toString(i), "]"));
         }
-        uint256[29] memory pubInputs;
-        for (uint256 i = 0; i < 29; i++) {
+        uint256[70] memory pubInputs;
+        for (uint256 i = 0; i < 70; i++) {
             pubInputs[i] = vm.parseJsonUint(json, string.concat(".public_inputs[", vm.toString(i), "]"));
         }
 
@@ -2043,8 +2041,8 @@ contract Groth16VerifierTest is Test {
         for (uint256 i = 0; i < 8; i++) {
             proof[i] = vm.parseJsonUint(json, string.concat(".proof[", vm.toString(i), "]"));
         }
-        uint256[29] memory pubInputs;
-        for (uint256 i = 0; i < 29; i++) {
+        uint256[70] memory pubInputs;
+        for (uint256 i = 0; i < 70; i++) {
             pubInputs[i] = vm.parseJsonUint(json, string.concat(".public_inputs[", vm.toString(i), "]"));
         }
 
@@ -2071,25 +2069,30 @@ contract GKRHybridVerifierTest is Test {
         remainderVerifier.setGroth16Verifier(address(groth16Verifier));
 
         // Register the test circuit (3 layers: input(committed), multiply, subtract)
-        // matching the circuit structure used in gen_groth16_witness.rs
+        // matching the circuit structure used in gen_groth16_witness.rs (medium config, num_vars=4)
         bytes32 circuitHash =
             vm.parseJsonBytes32(vm.readFile("test/fixtures/groth16_e2e_fixture.json"), ".circuit_hash_raw");
         uint256[] memory sizes = new uint256[](3);
-        sizes[0] = 4;
-        sizes[1] = 2;
-        sizes[2] = 2;
+        sizes[0] = 32; // input layer: 2 shreds * 2^num_vars = 2*16 = 32
+        sizes[1] = 16; // multiply layer: 2^num_vars = 16
+        sizes[2] = 16; // subtract layer: 2^num_vars = 16
         uint8[] memory types = new uint8[](3);
         types[0] = 3;
         types[1] = 1;
         types[2] = 0;
         bool[] memory committed = new bool[](3);
         committed[0] = true;
-        remainderVerifier.registerCircuit(circuitHash, 3, sizes, types, committed, "test-hybrid");
+        remainderVerifier.registerCircuit(circuitHash, 3, sizes, types, committed, "test-hybrid-medium");
 
         // Also register the circuit from e2e_fixture.json (used by non-Groth16 tests)
         bytes32 e2eCircuitHash = vm.parseJsonBytes32(vm.readFile("test/fixtures/e2e_fixture.json"), ".circuit_hash_raw");
         if (e2eCircuitHash != circuitHash) {
-            remainderVerifier.registerCircuit(e2eCircuitHash, 3, sizes, types, committed, "test-e2e");
+            // e2e_fixture is small config (num_vars=1, sizes 4/2/2)
+            uint256[] memory smallSizes = new uint256[](3);
+            smallSizes[0] = 4;
+            smallSizes[1] = 2;
+            smallSizes[2] = 2;
+            remainderVerifier.registerCircuit(e2eCircuitHash, 3, smallSizes, types, committed, "test-e2e");
         }
     }
 
@@ -2109,77 +2112,66 @@ contract GKRHybridVerifierTest is Test {
     function test_hybrid_transcript_replay_deterministic() public {
         (bytes memory proofHex,, bytes32 circuitHash) = _loadE2EFixture();
 
-        // Public inputs for our test circuit: [6, 20]
-        bytes memory publicInputs = new bytes(64);
-        assembly {
-            mstore(add(publicInputs, 0x20), 0)
-            mstore(add(publicInputs, 0x3F), 6)
-            mstore(add(publicInputs, 0x40), 0)
-            mstore(add(publicInputs, 0x5F), 20)
-        }
+        // Load public values ABI from combined fixture
+        string memory fixtureJson = vm.readFile("test/fixtures/groth16_e2e_fixture.json");
+        bytes memory publicInputs = vm.parseJsonBytes(fixtureJson, ".public_values_abi");
 
         // Replay transcript twice, verify determinism
-        (uint256 out1, uint256 agg1, uint256 inter1) =
+        (uint256[] memory out1, uint256 agg1, uint256 inter1) =
             remainderVerifier.replayTranscriptPublic(proofHex, circuitHash, publicInputs);
-        (uint256 out2, uint256 agg2, uint256 inter2) =
+        (uint256[] memory out2, uint256 agg2, uint256 inter2) =
             remainderVerifier.replayTranscriptPublic(proofHex, circuitHash, publicInputs);
 
-        assertEq(out1, out2, "Output challenge should be deterministic");
+        assertEq(out1.length, out2.length, "Output challenges length should match");
+        for (uint256 i = 0; i < out1.length; i++) {
+            assertEq(out1[i], out2[i], "Output challenge should be deterministic");
+        }
         assertEq(agg1, agg2, "Claim agg coeff should be deterministic");
         assertEq(inter1, inter2, "Inter-layer coeff should be deterministic");
 
         // All values should be non-zero and < FR_MODULUS
-        assertTrue(out1 > 0, "Output challenge should be non-zero");
+        assertTrue(out1[0] > 0, "Output challenge should be non-zero");
         assertTrue(agg1 > 0, "Claim agg coeff should be non-zero");
         assertTrue(inter1 > 0, "Inter-layer coeff should be non-zero");
-        assertTrue(out1 < FR_MODULUS, "Output challenge should be < FR_MODULUS");
+        assertTrue(out1[0] < FR_MODULUS, "Output challenge should be < FR_MODULUS");
         assertTrue(agg1 < FR_MODULUS, "Claim agg coeff should be < FR_MODULUS");
         assertTrue(inter1 < FR_MODULUS, "Inter-layer coeff should be < FR_MODULUS");
 
-        emit log_named_uint("Output challenge", out1);
+        emit log_named_uint("Output challenge[0]", out1[0]);
         emit log_named_uint("Claim agg coeff", agg1);
         emit log_named_uint("Inter-layer coeff", inter1);
     }
 
     /// @notice Test that the transcript replay matches the direct GKR transcript
     /// @dev Both the hybrid replay and the direct GKR verification should produce
-    ///      the same output challenge (first squeeze after setup)
+    ///      the same first output challenge (first squeeze after setup)
     function test_hybrid_transcript_matches_direct_gkr() public {
         (bytes memory proofHex,, bytes32 circuitHash) = _loadE2EFixture();
 
-        bytes memory publicInputs = new bytes(64);
-        assembly {
-            mstore(add(publicInputs, 0x20), 0)
-            mstore(add(publicInputs, 0x3F), 6)
-            mstore(add(publicInputs, 0x40), 0)
-            mstore(add(publicInputs, 0x5F), 20)
-        }
+        // Load public values ABI from combined fixture
+        string memory fixtureJson = vm.readFile("test/fixtures/groth16_e2e_fixture.json");
+        bytes memory publicInputs = vm.parseJsonBytes(fixtureJson, ".public_values_abi");
 
-        // Get hybrid transcript output challenge
-        (uint256 hybridOutputChallenge,,) =
+        // Get hybrid transcript output challenges
+        (uint256[] memory hybridOutputChallenges,,) =
             remainderVerifier.replayTranscriptPublic(proofHex, circuitHash, publicInputs);
 
-        // The output challenge should match what GKRVerifier.verify() would squeeze
-        // from the same transcript state. Since both use _setupTranscript() followed
-        // by PoseidonSponge.squeeze(), they must produce the same value.
-
+        // The first output challenge should match what a direct squeeze would produce.
         // Skip the 4-byte selector to get proof data
         bytes memory proofData = new bytes(proofHex.length - 4);
         for (uint256 i = 4; i < proofHex.length; i++) {
             proofData[i - 4] = proofHex[i];
         }
 
-        // Decode proof and setup transcript manually for comparison
-        // (use decodeProofCounted which takes calldata, so we call via this)
         (GKRVerifier.GKRProof memory gkrProof, uint256[] memory pubInputs) =
             this.decodeProofHelper(proofData, publicInputs);
         PoseidonSponge.Sponge memory sponge = remainderVerifier.setupTranscriptPublic(circuitHash, pubInputs, gkrProof);
         uint256 directOutputChallenge = PoseidonSponge.squeeze(sponge) % FR_MODULUS;
 
         assertEq(
-            hybridOutputChallenge,
+            hybridOutputChallenges[0],
             directOutputChallenge,
-            "Hybrid and direct transcript should produce same output challenge"
+            "Hybrid and direct transcript should produce same first output challenge"
         );
     }
 
@@ -2192,76 +2184,146 @@ contract GKRHybridVerifierTest is Test {
         return remainderVerifier.decodeProofCounted(proofData, publicInputs);
     }
 
-    /// @notice Test buildGroth16Inputs constructs the correct 29-element array
+    /// @notice Test buildGroth16Inputs constructs the correct 70-element array (medium config, N=4)
     function test_buildGroth16Inputs_layout() public pure {
         GKRHybridVerifier.TranscriptChallenges memory challenges;
-        challenges.outputChallenge = 100;
+
+        // Output challenges (4 values for N=4)
+        challenges.outputChallenges = new uint256[](4);
+        for (uint256 i = 0; i < 4; i++) {
+            challenges.outputChallenges[i] = 100 + i;
+        }
+
         challenges.claimAggCoeff = 200;
-        challenges.layer0Bindings = new uint256[](1);
-        challenges.layer0Bindings[0] = 300;
-        challenges.layer0Rhos = new uint256[](2);
-        challenges.layer0Rhos[0] = 400;
-        challenges.layer0Rhos[1] = 401;
-        challenges.layer0Gammas = new uint256[](1);
-        challenges.layer0Gammas[0] = 500;
-        challenges.layer1Bindings = new uint256[](1);
-        challenges.layer1Bindings[0] = 600;
-        challenges.layer1Rhos = new uint256[](2);
-        challenges.layer1Rhos[0] = 700;
-        challenges.layer1Rhos[1] = 701;
-        challenges.layer1Gammas = new uint256[](1);
-        challenges.layer1Gammas[0] = 800;
+
+        // Layer 0: 4 bindings, 5 rhos, 4 gammas
+        challenges.layer0Bindings = new uint256[](4);
+        for (uint256 i = 0; i < 4; i++) {
+            challenges.layer0Bindings[i] = 300 + i;
+        }
+        challenges.layer0Rhos = new uint256[](5);
+        for (uint256 i = 0; i < 5; i++) {
+            challenges.layer0Rhos[i] = 400 + i;
+        }
+        challenges.layer0Gammas = new uint256[](4);
+        for (uint256 i = 0; i < 4; i++) {
+            challenges.layer0Gammas[i] = 500 + i;
+        }
+        challenges.layer0PodpChallenge = 550;
+
+        // Layer 1: 4 bindings, 5 rhos, 4 gammas
+        challenges.layer1Bindings = new uint256[](4);
+        for (uint256 i = 0; i < 4; i++) {
+            challenges.layer1Bindings[i] = 600 + i;
+        }
+        challenges.layer1Rhos = new uint256[](5);
+        for (uint256 i = 0; i < 5; i++) {
+            challenges.layer1Rhos[i] = 700 + i;
+        }
+        challenges.layer1Gammas = new uint256[](4);
+        for (uint256 i = 0; i < 4; i++) {
+            challenges.layer1Gammas[i] = 800 + i;
+        }
+        challenges.layer1PodpChallenge = 850;
+        challenges.layer1PopChallenge = 860;
+
         challenges.inputRlcCoeffs = new uint256[](2);
         challenges.inputRlcCoeffs[0] = 900;
         challenges.inputRlcCoeffs[1] = 901;
+        challenges.inputPodpChallenge = 910;
         challenges.interLayerCoeff = 1000;
 
-        uint256[8] memory outputs;
-        for (uint256 i = 0; i < 8; i++) {
-            outputs[i] = 2000 + i;
+        // Public inputs (16 values for N=4)
+        uint256[] memory pubInputs = new uint256[](16);
+        for (uint256 i = 0; i < 16; i++) {
+            pubInputs[i] = 10 + i;
         }
 
-        uint256[29] memory inputs = GKRHybridVerifier.buildGroth16Inputs(12345, 67890, 6, 20, challenges, outputs);
-
-        // Verify layout
-        assertEq(inputs[0], 12345, "circuitHash0");
-        assertEq(inputs[1], 67890, "circuitHash1");
-        assertEq(inputs[2], 6, "pubInput0");
-        assertEq(inputs[3], 20, "pubInput1");
-        assertEq(inputs[4], 100, "outputChallenge");
-        assertEq(inputs[5], 200, "claimAggCoeff");
-        assertEq(inputs[6], 300, "layer0Binding");
-        assertEq(inputs[7], 400, "layer0Rho0");
-        assertEq(inputs[8], 401, "layer0Rho1");
-        assertEq(inputs[9], 500, "layer0Gamma0");
-        assertEq(inputs[10], 0, "layer0PodpChallenge (unused)");
-        assertEq(inputs[11], 600, "layer1Binding");
-        assertEq(inputs[12], 700, "layer1Rho0");
-        assertEq(inputs[13], 701, "layer1Rho1");
-        assertEq(inputs[14], 800, "layer1Gamma0");
-        assertEq(inputs[15], 0, "layer1PodpChallenge (unused)");
-        assertEq(inputs[16], 0, "layer1PopChallenge (unused)");
-        assertEq(inputs[17], 900, "inputRlcCoeff0");
-        assertEq(inputs[18], 901, "inputRlcCoeff1");
-        assertEq(inputs[19], 0, "inputPodpChallenge (unused)");
-        assertEq(inputs[20], 1000, "interLayerCoeff");
-        // Groth16 outputs at indices 21-28
+        // Groth16 outputs: rlcBeta(2) + zDotJStar(2) + lTensor(8) + zDotR + mleEval = 14
+        GKRHybridVerifier.Groth16Outputs memory outputs;
+        outputs.rlcBeta0 = 2000;
+        outputs.rlcBeta1 = 2001;
+        outputs.zDotJStar0 = 2002;
+        outputs.zDotJStar1 = 2003;
+        outputs.lTensor = new uint256[](8);
         for (uint256 i = 0; i < 8; i++) {
-            assertEq(inputs[21 + i], 2000 + i, string.concat("groth16Output", vm.toString(i)));
+            outputs.lTensor[i] = 2004 + i;
         }
+        outputs.zDotR = 2012;
+        outputs.mleEval = 2013;
+
+        uint256[70] memory inputs = GKRHybridVerifier.buildGroth16Inputs(12345, 67890, pubInputs, challenges, outputs);
+
+        uint256 idx = 0;
+        // [0-1] Circuit hash
+        assertEq(inputs[idx++], 12345, "circuitHash0");
+        assertEq(inputs[idx++], 67890, "circuitHash1");
+        // [2-17] Public inputs
+        for (uint256 i = 0; i < 16; i++) {
+            assertEq(inputs[idx++], 10 + i, "pubInput");
+        }
+        // [18-21] Output challenges
+        for (uint256 i = 0; i < 4; i++) {
+            assertEq(inputs[idx++], 100 + i, "outputChallenge");
+        }
+        // [22] Claim agg coeff
+        assertEq(inputs[idx++], 200, "claimAggCoeff");
+        // [23-26] Layer 0 bindings
+        for (uint256 i = 0; i < 4; i++) {
+            assertEq(inputs[idx++], 300 + i, "layer0Binding");
+        }
+        // [27-31] Layer 0 rhos
+        for (uint256 i = 0; i < 5; i++) {
+            assertEq(inputs[idx++], 400 + i, "layer0Rho");
+        }
+        // [32-35] Layer 0 gammas
+        for (uint256 i = 0; i < 4; i++) {
+            assertEq(inputs[idx++], 500 + i, "layer0Gamma");
+        }
+        // [36] Layer 0 PODP challenge
+        assertEq(inputs[idx++], 550, "layer0PodpChallenge");
+        // [37-40] Layer 1 bindings
+        for (uint256 i = 0; i < 4; i++) {
+            assertEq(inputs[idx++], 600 + i, "layer1Binding");
+        }
+        // [41-45] Layer 1 rhos
+        for (uint256 i = 0; i < 5; i++) {
+            assertEq(inputs[idx++], 700 + i, "layer1Rho");
+        }
+        // [46-49] Layer 1 gammas
+        for (uint256 i = 0; i < 4; i++) {
+            assertEq(inputs[idx++], 800 + i, "layer1Gamma");
+        }
+        // [50] Layer 1 PODP challenge
+        assertEq(inputs[idx++], 850, "layer1PodpChallenge");
+        // [51] Layer 1 PoP challenge
+        assertEq(inputs[idx++], 860, "layer1PopChallenge");
+        // [52-53] Input RLC coefficients
+        assertEq(inputs[idx++], 900, "inputRlcCoeff0");
+        assertEq(inputs[idx++], 901, "inputRlcCoeff1");
+        // [54] Input PODP challenge
+        assertEq(inputs[idx++], 910, "inputPodpChallenge");
+        // [55] Inter-layer coefficient
+        assertEq(inputs[idx++], 1000, "interLayerCoeff");
+        // [56-69] Groth16 outputs
+        assertEq(inputs[idx++], 2000, "rlcBeta0");
+        assertEq(inputs[idx++], 2001, "rlcBeta1");
+        assertEq(inputs[idx++], 2002, "zDotJStar0");
+        assertEq(inputs[idx++], 2003, "zDotJStar1");
+        for (uint256 i = 0; i < 8; i++) {
+            assertEq(inputs[idx++], 2004 + i, "lTensor");
+        }
+        assertEq(inputs[idx++], 2012, "zDotR");
+        assertEq(inputs[idx++], 2013, "mleEval");
+        assertEq(idx, 70, "total should be 70");
     }
 
     /// @notice Gas measurement for hybrid transcript replay
     function test_hybrid_transcript_replay_gas() public {
         (bytes memory proofHex,, bytes32 circuitHash) = _loadE2EFixture();
 
-        bytes memory publicInputs = new bytes(64);
-        assembly {
-            mstore(add(publicInputs, 0x20), 0)
-            mstore(add(publicInputs, 0x3F), 6)
-            mstore(add(publicInputs, 0x40), 0)
-            mstore(add(publicInputs, 0x5F), 20)
-        }
+        string memory fixtureJson = vm.readFile("test/fixtures/groth16_e2e_fixture.json");
+        bytes memory publicInputs = vm.parseJsonBytes(fixtureJson, ".public_values_abi");
 
         uint256 gasBefore = gasleft();
         remainderVerifier.replayTranscriptPublic(proofHex, circuitHash, publicInputs);
@@ -2277,11 +2339,11 @@ contract GKRHybridVerifierTest is Test {
 
         (bytes memory proofHex, bytes memory gensHex, bytes32 circuitHash) = _loadE2EFixture();
 
-        // Register circuit on freshVerifier
+        // Register circuit on freshVerifier (medium config sizes)
         uint256[] memory sizes = new uint256[](3);
-        sizes[0] = 4;
-        sizes[1] = 2;
-        sizes[2] = 2;
+        sizes[0] = 32;
+        sizes[1] = 16;
+        sizes[2] = 16;
         uint8[] memory types = new uint8[](3);
         types[0] = 3;
         types[1] = 1;
@@ -2290,16 +2352,11 @@ contract GKRHybridVerifierTest is Test {
         committed[0] = true;
         freshVerifier.registerCircuit(circuitHash, 3, sizes, types, committed, "test");
 
-        bytes memory publicInputs = new bytes(64);
-        assembly {
-            mstore(add(publicInputs, 0x20), 0)
-            mstore(add(publicInputs, 0x3F), 6)
-            mstore(add(publicInputs, 0x40), 0)
-            mstore(add(publicInputs, 0x5F), 20)
-        }
+        string memory fixtureJson = vm.readFile("test/fixtures/groth16_e2e_fixture.json");
+        bytes memory publicInputs = vm.parseJsonBytes(fixtureJson, ".public_values_abi");
 
         uint256[8] memory fakeProof;
-        uint256[8] memory fakeOutputs;
+        uint256[] memory fakeOutputs = new uint256[](14);
 
         vm.expectRevert("Groth16 verifier not set");
         freshVerifier.verifyWithGroth16(proofHex, circuitHash, publicInputs, gensHex, fakeProof, fakeOutputs);
@@ -2315,7 +2372,7 @@ contract GKRHybridVerifierTest is Test {
         bytes memory publicInputs = new bytes(64);
         bytes memory gensData = new bytes(0);
         uint256[8] memory proof;
-        uint256[8] memory outputs;
+        uint256[] memory outputs = new uint256[](14);
 
         vm.expectRevert(RemainderVerifier.InvalidProofSelector.selector);
         remainderVerifier.verifyWithGroth16(badProof, circuitHash, publicInputs, gensData, proof, outputs);
@@ -2331,7 +2388,7 @@ contract GKRHybridVerifierTest is Test {
         bytes memory publicInputs = new bytes(0);
         bytes memory gensData = new bytes(0);
         uint256[8] memory proof;
-        uint256[8] memory outputs;
+        uint256[] memory outputs = new uint256[](14);
 
         vm.expectRevert(RemainderVerifier.InvalidProofLength.selector);
         remainderVerifier.verifyWithGroth16(shortProof, circuitHash, publicInputs, gensData, proof, outputs);
@@ -2351,7 +2408,7 @@ contract GKRHybridVerifierTest is Test {
             bytes32 circuitHash,
             bytes memory publicValuesAbi,
             uint256[8] memory groth16Proof,
-            uint256[8] memory groth16Outputs
+            uint256[] memory groth16Outputs
         )
     {
         string memory json = vm.readFile("test/fixtures/groth16_e2e_fixture.json");
@@ -2363,9 +2420,10 @@ contract GKRHybridVerifierTest is Test {
         for (uint256 i = 0; i < 8; i++) {
             groth16Proof[i] = vm.parseJsonUint(json, string.concat(".groth16_proof[", vm.toString(i), "]"));
         }
-        for (uint256 i = 0; i < 8; i++) {
-            groth16Outputs[i] = vm.parseJsonUint(json, string.concat(".groth16_outputs[", vm.toString(i), "]"));
-        }
+
+        // Load groth16 outputs (14 values for medium config)
+        uint256[] memory jsonOutputs = vm.parseJsonUintArray(json, ".groth16_outputs");
+        groth16Outputs = jsonOutputs;
     }
 
     /// @notice Test transcript replay with combined fixture matches Rust-computed challenges
@@ -2375,21 +2433,28 @@ contract GKRHybridVerifierTest is Test {
         bytes32 circuitHash = vm.parseJsonBytes32(json, ".circuit_hash_raw");
         bytes memory publicValuesAbi = vm.parseJsonBytes(json, ".public_values_abi");
 
-        // Expected challenge values from Rust
-        uint256 expectedOutputChallenge = vm.parseJsonUint(json, ".challenges.output_challenge");
+        // Expected challenge values from Rust (arrays for medium config)
+        uint256[] memory expectedOutputChallenges = vm.parseJsonUintArray(json, ".challenges.output_challenges");
         uint256 expectedClaimAggCoeff = vm.parseJsonUint(json, ".challenges.claim_agg_coeff");
         uint256 expectedInterLayerCoeff = vm.parseJsonUint(json, ".challenges.inter_layer_coeff");
 
         // Replay transcript on-chain
-        (uint256 outputChallenge, uint256 claimAggCoeff, uint256 interLayerCoeff) =
+        (uint256[] memory outputChallenges, uint256 claimAggCoeff, uint256 interLayerCoeff) =
             remainderVerifier.replayTranscriptPublic(innerProof, circuitHash, publicValuesAbi);
 
-        assertEq(outputChallenge, expectedOutputChallenge, "Output challenge mismatch vs Rust");
+        assertEq(outputChallenges.length, expectedOutputChallenges.length, "Output challenges length mismatch");
+        for (uint256 i = 0; i < outputChallenges.length; i++) {
+            assertEq(
+                outputChallenges[i],
+                expectedOutputChallenges[i],
+                string.concat("Output challenge[", vm.toString(i), "] mismatch vs Rust")
+            );
+        }
         assertEq(claimAggCoeff, expectedClaimAggCoeff, "Claim agg coeff mismatch vs Rust");
         assertEq(interLayerCoeff, expectedInterLayerCoeff, "Inter-layer coeff mismatch vs Rust");
 
-        emit log_named_uint("Output challenge (Solidity)", outputChallenge);
-        emit log_named_uint("Output challenge (Rust)", expectedOutputChallenge);
+        emit log_named_uint("Output challenge[0] (Solidity)", outputChallenges[0]);
+        emit log_named_uint("Output challenge[0] (Rust)", expectedOutputChallenges[0]);
     }
 
     /// @notice Test Groth16 verification with replayed challenge inputs
@@ -2399,12 +2464,10 @@ contract GKRHybridVerifierTest is Test {
             bytes32 circuitHash,
             bytes memory publicValuesAbi,
             uint256[8] memory groth16Proof,
-            uint256[8] memory groth16Outputs
+            uint256[] memory groth16Outputs
         ) = _loadCombinedFixture();
 
         // Replay transcript to get challenges
-        // We need the full challenges, not just 3 values.
-        // Decode inner proof, setup transcript, then do full replay.
         bytes memory proofData = new bytes(innerProof.length - 4);
         for (uint256 i = 4; i < innerProof.length; i++) {
             proofData[i - 4] = innerProof[i];
@@ -2418,19 +2481,28 @@ contract GKRHybridVerifierTest is Test {
         GKRHybridVerifier.TranscriptChallenges memory challenges =
             GKRHybridVerifier.replayTranscriptAndCollectChallenges(gkrProof, sponge);
 
+        // Parse groth16Outputs into struct for buildGroth16Inputs
+        uint256 numLTensor = groth16Outputs.length - 6;
+        uint256[] memory lTensor = new uint256[](numLTensor);
+        for (uint256 i = 0; i < numLTensor; i++) {
+            lTensor[i] = groth16Outputs[4 + i];
+        }
+        GKRHybridVerifier.Groth16Outputs memory outputs = GKRHybridVerifier.Groth16Outputs({
+            rlcBeta0: groth16Outputs[0],
+            rlcBeta1: groth16Outputs[1],
+            zDotJStar0: groth16Outputs[2],
+            zDotJStar1: groth16Outputs[3],
+            lTensor: lTensor,
+            zDotR: groth16Outputs[groth16Outputs.length - 2],
+            mleEval: groth16Outputs[groth16Outputs.length - 1]
+        });
+
         // Build Groth16 public inputs using actual circuit hash Fr values
         (uint256 chFr0, uint256 chFr1) = remainderVerifier.hashToFqPair(circuitHash);
-        uint256[29] memory groth16Inputs = GKRHybridVerifier.buildGroth16Inputs(
-            chFr0,
-            chFr1,
-            pubInputs.length > 0 ? pubInputs[0] : 0,
-            pubInputs.length > 1 ? pubInputs[1] : 0,
-            challenges,
-            groth16Outputs
-        );
+        uint256[70] memory groth16Inputs =
+            GKRHybridVerifier.buildGroth16Inputs(chFr0, chFr1, pubInputs, challenges, outputs);
 
         // Verify the Groth16 proof with our on-chain-derived inputs
-        // This should NOT revert since challenges come from the same proof run
         groth16Verifier.verifyProof(groth16Proof, groth16Inputs);
 
         emit log_string("Groth16 verification with replayed inputs: PASSED");
@@ -2444,7 +2516,7 @@ contract GKRHybridVerifierTest is Test {
             bytes32 circuitHash,
             bytes memory publicValuesAbi,
             uint256[8] memory groth16Proof,
-            uint256[8] memory groth16Outputs
+            uint256[] memory groth16Outputs
         ) = _loadCombinedFixture();
 
         // Should not revert — this is the full hybrid verification flow
@@ -2463,13 +2535,12 @@ contract GKRHybridVerifierTest is Test {
             bytes32 circuitHash,
             bytes memory publicValuesAbi,
             uint256[8] memory groth16Proof,
-            uint256[8] memory groth16Outputs
+            uint256[] memory groth16Outputs
         ) = _loadCombinedFixture();
 
         // Corrupt a commitment point deep in the proof data.
-        // Bytes 36+ contain proof structure (after selector + circuit hash).
-        // Corrupt a commitment coordinate to break transcript replay.
-        uint256 corruptIdx = 300;
+        // Use an index well into the layer proof commitments section.
+        uint256 corruptIdx = 2000;
         if (innerProof.length > corruptIdx) {
             innerProof[corruptIdx] = bytes1(uint8(innerProof[corruptIdx]) ^ 0xFF);
         }
@@ -2488,7 +2559,7 @@ contract GKRHybridVerifierTest is Test {
             bytes32 circuitHash,
             bytes memory publicValuesAbi,
             uint256[8] memory groth16Proof,
-            uint256[8] memory groth16Outputs
+            uint256[] memory groth16Outputs
         ) = _loadCombinedFixture();
 
         // Corrupt a Groth16 output — the Groth16 proof should fail
@@ -2508,7 +2579,7 @@ contract GKRHybridVerifierTest is Test {
             bytes32 circuitHash,
             bytes memory publicValuesAbi,
             uint256[8] memory groth16Proof,
-            uint256[8] memory groth16Outputs
+            uint256[] memory groth16Outputs
         ) = _loadCombinedFixture();
 
         uint256 gasBefore = gasleft();
@@ -2531,7 +2602,7 @@ contract GKRHybridVerifierTest is Test {
             bytes memory gensHex,,
             bytes memory publicValuesAbi,
             uint256[8] memory groth16Proof,
-            uint256[8] memory groth16Outputs
+            uint256[] memory groth16Outputs
         ) = _loadCombinedFixture();
 
         // Use a wrong circuit hash that is not registered
@@ -2551,7 +2622,7 @@ contract GKRHybridVerifierTest is Test {
             bytes32 circuitHash,
             bytes memory publicValuesAbi,
             uint256[8] memory groth16Proof,
-            uint256[8] memory groth16Outputs
+            uint256[] memory groth16Outputs
         ) = _loadCombinedFixture();
 
         // Deactivate the circuit

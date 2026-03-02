@@ -30,7 +30,7 @@ library GKRHybridVerifier {
 
     /// @notice All challenges derived from transcript replay
     struct TranscriptChallenges {
-        uint256 outputChallenge; // [0] Squeezed after initial setup
+        uint256[] outputChallenges; // [0] num_vars challenges squeezed after initial setup
         uint256 claimAggCoeff; // [1] After absorb output claim commitment
         // Layer 0 (subtract, degree=2)
         uint256[] layer0Bindings; // [2] One binding (1-round sumcheck)
@@ -51,13 +51,13 @@ library GKRHybridVerifier {
     }
 
     /// @notice Groth16 public outputs (computed off-chain, verified by Groth16)
+    /// @dev For medium config (N=4): 14 values = rlcBeta(2) + zDotJStar(2) + lTensor(8) + zDotR + mleEval
     struct Groth16Outputs {
         uint256 rlcBeta0; // Layer 0 oracle eval coefficient
         uint256 rlcBeta1; // Layer 1 oracle eval coefficient
         uint256 zDotJStar0; // Layer 0 PODP inner product
         uint256 zDotJStar1; // Layer 1 PODP inner product
-        uint256 lTensor0; // Input Hyrax L-tensor[0]
-        uint256 lTensor1; // Input Hyrax L-tensor[1]
+        uint256[] lTensor; // Input Hyrax L-tensor: 2 * 2^floor(num_vars/2) elements
         uint256 zDotR; // Input PODP inner product
         uint256 mleEval; // Public input MLE evaluation
     }
@@ -76,8 +76,11 @@ library GKRHybridVerifier {
         GKRVerifier.GKRProof memory proof,
         PoseidonSponge.Sponge memory sponge
     ) internal pure returns (TranscriptChallenges memory challenges) {
-        // Step 1: Squeeze output challenge
-        challenges.outputChallenge = PoseidonSponge.squeeze(sponge) % FR_MODULUS;
+        // Step 1: Squeeze output challenges (num_vars values)
+        // num_vars = number of sumcheck messages per layer = number of bindings
+        require(proof.layerProofs.length >= 2, "GKRHybrid: need 2 layer proofs");
+        uint256 numVars = proof.layerProofs[0].sumcheckProof.messages.length;
+        challenges.outputChallenges = _squeezeMultiple(sponge, numVars);
 
         // Step 2: Absorb output claim commitment, squeeze claim agg coefficient
         require(proof.outputClaimCommitments.length > 0, "GKRHybrid: no output claims");
@@ -85,8 +88,7 @@ library GKRHybridVerifier {
         PoseidonSponge.absorb(sponge, proof.outputClaimCommitments[0].y);
         challenges.claimAggCoeff = PoseidonSponge.squeeze(sponge) % FR_MODULUS;
 
-        // Step 3: Layer 0 (subtract, degree=2, 1-round sumcheck → 1 binding)
-        require(proof.layerProofs.length >= 2, "GKRHybrid: need 2 layer proofs");
+        // Step 3: Layer 0 (subtract, degree=2, num_vars-round sumcheck → num_vars bindings)
         challenges.layer0Bindings =
             _absorbMessagesAndDeriveBindings(proof.layerProofs[0].sumcheckProof.messages, sponge);
 
@@ -109,7 +111,7 @@ library GKRHybridVerifier {
         // Step 4: Squeeze inter-layer coefficient
         challenges.interLayerCoeff = PoseidonSponge.squeeze(sponge) % FR_MODULUS;
 
-        // Step 5: Layer 1 (multiply, degree=3, 1-round sumcheck → 1 binding)
+        // Step 5: Layer 1 (multiply, degree=3, num_vars-round sumcheck → num_vars bindings)
         challenges.layer1Bindings =
             _absorbMessagesAndDeriveBindings(proof.layerProofs[1].sumcheckProof.messages, sponge);
 
@@ -323,10 +325,8 @@ library GKRHybridVerifier {
         HyraxVerifier.PedersenGens memory gens
     ) private view returns (bool) {
         // Step 1: Compute com_x = MSM(rows, lTensor) using Groth16 lTensor values
-        uint256[] memory lCoeffs = new uint256[](2);
-        lCoeffs[0] = outputs.lTensor0;
-        lCoeffs[1] = outputs.lTensor1;
-        HyraxVerifier.G1Point memory comX = HyraxVerifier.multiScalarMul(inputProof.commitmentRows, lCoeffs);
+        // lTensor has 2 * 2^floor(num_vars/2) elements (matching commitmentRows count)
+        HyraxVerifier.G1Point memory comX = HyraxVerifier.multiScalarMul(inputProof.commitmentRows, outputs.lTensor);
 
         // Step 2: com_y = commitmentToEvaluation
         HyraxVerifier.G1Point memory comY = inputProof.comEval;
@@ -509,63 +509,98 @@ library GKRHybridVerifier {
     // PUBLIC INPUTS BUILDER (for Groth16 verifier)
     // ========================================================================
 
-    /// @notice Build the uint256[29] public inputs array for the Groth16 verifier
-    /// @dev Layout: [circuitHash(2) + pubInputs(2) + challenges(17) + groth16Outputs(8)]
-    /// @param circuitHashFr0 Circuit hash Fr value 0 (placeholder)
-    /// @param circuitHashFr1 Circuit hash Fr value 1 (placeholder)
-    /// @param pubInput0 Public input value 0
-    /// @param pubInput1 Public input value 1
+    /// @notice Build the uint256[70] public inputs array for the Groth16 verifier
+    /// @dev Layout matches gnark circuit struct field declaration order (medium config, N=4):
+    ///      circuitHash(2) + pubInputs(16) + outputChallenges(4) + claimAggCoeff(1) +
+    ///      layer0(bindings=4, rhos=5, gammas=4, podpChallenge=1) +
+    ///      layer1(bindings=4, rhos=5, gammas=4, podpChallenge=1, popChallenge=1) +
+    ///      inputRLCCoeffs(2) + inputPODPChallenge(1) + interLayerCoeff(1) +
+    ///      outputs(rlcBeta=2, zDotJStar=2, lTensor=8, zDotR=1, mleEval=1) = 70
+    /// @param circuitHashFr0 Circuit hash Fr value 0
+    /// @param circuitHashFr1 Circuit hash Fr value 1
+    /// @param pubInputs Public input values (2^num_vars elements)
     /// @param challenges Transcript-derived challenges
-    /// @param groth16Outputs The 8 Groth16 output values
-    /// @return inputs The 29-element array for Groth16 verifyProof
+    /// @param groth16Outputs Groth16 output values
+    /// @return inputs The 70-element array for Groth16 verifyProof
     function buildGroth16Inputs(
         uint256 circuitHashFr0,
         uint256 circuitHashFr1,
-        uint256 pubInput0,
-        uint256 pubInput1,
+        uint256[] memory pubInputs,
         TranscriptChallenges memory challenges,
-        uint256[8] memory groth16Outputs
-    ) internal pure returns (uint256[29] memory inputs) {
+        Groth16Outputs memory groth16Outputs
+    ) internal pure returns (uint256[70] memory inputs) {
+        uint256 idx = 0;
+
         // [0-1] Circuit hash
-        inputs[0] = circuitHashFr0;
-        inputs[1] = circuitHashFr1;
-        // [2-3] Public inputs
-        inputs[2] = pubInput0;
-        inputs[3] = pubInput1;
-        // [4] Output challenge
-        inputs[4] = challenges.outputChallenge;
-        // [5] Claim agg coefficient
-        inputs[5] = challenges.claimAggCoeff;
-        // [6] Layer 0 binding (1 element)
-        inputs[6] = challenges.layer0Bindings[0];
-        // [7-8] Layer 0 rhos (2 elements)
-        inputs[7] = challenges.layer0Rhos[0];
-        inputs[8] = challenges.layer0Rhos[1];
-        // [9] Layer 0 gamma (1 element)
-        inputs[9] = challenges.layer0Gammas[0];
-        // [10] Layer 0 PODP challenge — not used in Groth16 (set to 0)
-        inputs[10] = 0;
-        // [11] Layer 1 binding
-        inputs[11] = challenges.layer1Bindings[0];
-        // [12-13] Layer 1 rhos
-        inputs[12] = challenges.layer1Rhos[0];
-        inputs[13] = challenges.layer1Rhos[1];
-        // [14] Layer 1 gamma
-        inputs[14] = challenges.layer1Gammas[0];
-        // [15] Layer 1 PODP challenge — not used in Groth16
-        inputs[15] = 0;
-        // [16] Layer 1 PoP challenge — not used in Groth16
-        inputs[16] = 0;
-        // [17-18] Input RLC coefficients
-        inputs[17] = challenges.inputRlcCoeffs[0];
-        inputs[18] = challenges.inputRlcCoeffs[1];
-        // [19] Input PODP challenge — not used in Groth16
-        inputs[19] = 0;
-        // [20] Inter-layer coefficient
-        inputs[20] = challenges.interLayerCoeff;
-        // [21-28] Groth16 outputs
-        for (uint256 i = 0; i < 8; i++) {
-            inputs[21 + i] = groth16Outputs[i];
+        inputs[idx++] = circuitHashFr0;
+        inputs[idx++] = circuitHashFr1;
+
+        // [2-17] Public inputs (2^num_vars = 16 values)
+        for (uint256 i = 0; i < pubInputs.length; i++) {
+            inputs[idx++] = pubInputs[i];
         }
+
+        // [18-21] Output challenges (num_vars = 4 values)
+        for (uint256 i = 0; i < challenges.outputChallenges.length; i++) {
+            inputs[idx++] = challenges.outputChallenges[i];
+        }
+
+        // [22] Claim agg coefficient
+        inputs[idx++] = challenges.claimAggCoeff;
+
+        // [23-26] Layer 0 bindings (num_vars = 4)
+        for (uint256 i = 0; i < challenges.layer0Bindings.length; i++) {
+            inputs[idx++] = challenges.layer0Bindings[i];
+        }
+        // [27-31] Layer 0 rhos (num_vars+1 = 5)
+        for (uint256 i = 0; i < challenges.layer0Rhos.length; i++) {
+            inputs[idx++] = challenges.layer0Rhos[i];
+        }
+        // [32-35] Layer 0 gammas (num_vars = 4)
+        for (uint256 i = 0; i < challenges.layer0Gammas.length; i++) {
+            inputs[idx++] = challenges.layer0Gammas[i];
+        }
+        // [36] Layer 0 PODP challenge
+        inputs[idx++] = challenges.layer0PodpChallenge;
+
+        // [37-40] Layer 1 bindings (num_vars = 4)
+        for (uint256 i = 0; i < challenges.layer1Bindings.length; i++) {
+            inputs[idx++] = challenges.layer1Bindings[i];
+        }
+        // [41-45] Layer 1 rhos (num_vars+1 = 5)
+        for (uint256 i = 0; i < challenges.layer1Rhos.length; i++) {
+            inputs[idx++] = challenges.layer1Rhos[i];
+        }
+        // [46-49] Layer 1 gammas (num_vars = 4)
+        for (uint256 i = 0; i < challenges.layer1Gammas.length; i++) {
+            inputs[idx++] = challenges.layer1Gammas[i];
+        }
+        // [50] Layer 1 PODP challenge
+        inputs[idx++] = challenges.layer1PodpChallenge;
+        // [51] Layer 1 PoP challenge
+        inputs[idx++] = challenges.layer1PopChallenge;
+
+        // [52-53] Input RLC coefficients
+        inputs[idx++] = challenges.inputRlcCoeffs[0];
+        inputs[idx++] = challenges.inputRlcCoeffs[1];
+        // [54] Input PODP challenge
+        inputs[idx++] = challenges.inputPodpChallenge;
+        // [55] Inter-layer coefficient
+        inputs[idx++] = challenges.interLayerCoeff;
+
+        // [56-57] Groth16 outputs: rlcBeta0, rlcBeta1
+        inputs[idx++] = groth16Outputs.rlcBeta0;
+        inputs[idx++] = groth16Outputs.rlcBeta1;
+        // [58-59] zDotJStar0, zDotJStar1
+        inputs[idx++] = groth16Outputs.zDotJStar0;
+        inputs[idx++] = groth16Outputs.zDotJStar1;
+        // [60-67] lTensor (2 * 2^floor(num_vars/2) = 8 elements)
+        for (uint256 i = 0; i < groth16Outputs.lTensor.length; i++) {
+            inputs[idx++] = groth16Outputs.lTensor[i];
+        }
+        // [68] zDotR
+        inputs[idx++] = groth16Outputs.zDotR;
+        // [69] mleEval
+        inputs[idx++] = groth16Outputs.mleEval;
     }
 }

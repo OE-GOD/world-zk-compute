@@ -184,44 +184,64 @@ contract RemainderVerifier {
     /// @param publicInputs Public input values
     /// @param gensData ABI-encoded Pedersen generators
     /// @param groth16Proof Groth16 proof (8 uint256 values: A.x, A.y, B.x1, B.x0, B.y1, B.y0, C.x, C.y)
-    /// @param groth16Outputs 8 Groth16 public output values (rlcBeta0..1, zDotJStar0..1, lTensor0..1, zDotR, mleEval)
+    /// @param groth16Outputs Groth16 public output values:
+    ///        [rlcBeta0, rlcBeta1, zDotJStar0, zDotJStar1, lTensor[0..N], zDotR, mleEval]
+    ///        where N = 2 * 2^floor(num_vars/2). For medium config (num_vars=4): 14 values.
     function verifyWithGroth16(
         bytes calldata innerProof,
         bytes32 circuitHash,
         bytes calldata publicInputs,
         bytes calldata gensData,
         uint256[8] calldata groth16Proof,
-        uint256[8] calldata groth16Outputs
+        uint256[] calldata groth16Outputs
     ) external view {
         // Validate circuit registration, proof format, generators, and structure
         _validateHybridInputs(circuitHash, innerProof, gensData);
 
         // Decode the inner proof and generators
         (GKRVerifier.GKRProof memory gkrProof, uint256[] memory pubInputs) = decodeProof(innerProof[4:], publicInputs);
-        HyraxVerifier.PedersenGens memory gens = decodePedersenGens(gensData);
 
         // Set up Fiat-Shamir transcript and replay to collect all challenges
-        PoseidonSponge.Sponge memory sponge = _setupTranscript(circuitHash, pubInputs, gkrProof);
-        GKRHybridVerifier.TranscriptChallenges memory challenges =
-            GKRHybridVerifier.replayTranscriptAndCollectChallenges(gkrProof, sponge);
+        GKRHybridVerifier.TranscriptChallenges memory challenges;
+        {
+            PoseidonSponge.Sponge memory sponge = _setupTranscript(circuitHash, pubInputs, gkrProof);
+            challenges = GKRHybridVerifier.replayTranscriptAndCollectChallenges(gkrProof, sponge);
+        }
+
+        // Parse Groth16 outputs into struct
+        GKRHybridVerifier.Groth16Outputs memory outputs = _parseGroth16Outputs(groth16Outputs);
 
         // Build and verify Groth16 proof
-        _verifyGroth16(circuitHash, pubInputs, challenges, groth16Proof, groth16Outputs);
+        _verifyGroth16(circuitHash, pubInputs, challenges, groth16Proof, outputs);
 
         // Verify EC equations using Groth16 outputs
-        GKRHybridVerifier.Groth16Outputs memory outputs = GKRHybridVerifier.Groth16Outputs({
+        HyraxVerifier.PedersenGens memory gens = decodePedersenGens(gensData);
+        bool ecValid = GKRHybridVerifier.verifyECChecks(gkrProof, challenges, outputs, gens);
+        if (!ecValid) revert ProofVerificationFailed();
+    }
+
+    /// @dev Parse flat groth16Outputs array into Groth16Outputs struct
+    /// @param groth16Outputs [rlcBeta0, rlcBeta1, zDotJStar0, zDotJStar1, lTensor[...], zDotR, mleEval]
+    function _parseGroth16Outputs(uint256[] calldata groth16Outputs)
+        private
+        pure
+        returns (GKRHybridVerifier.Groth16Outputs memory outputs)
+    {
+        require(groth16Outputs.length >= 6, "Hybrid: need at least 6 groth16 outputs");
+        uint256 numLTensor = groth16Outputs.length - 6;
+        uint256[] memory lTensor = new uint256[](numLTensor);
+        for (uint256 i = 0; i < numLTensor; i++) {
+            lTensor[i] = groth16Outputs[4 + i];
+        }
+        outputs = GKRHybridVerifier.Groth16Outputs({
             rlcBeta0: groth16Outputs[0],
             rlcBeta1: groth16Outputs[1],
             zDotJStar0: groth16Outputs[2],
             zDotJStar1: groth16Outputs[3],
-            lTensor0: groth16Outputs[4],
-            lTensor1: groth16Outputs[5],
-            zDotR: groth16Outputs[6],
-            mleEval: groth16Outputs[7]
+            lTensor: lTensor,
+            zDotR: groth16Outputs[groth16Outputs.length - 2],
+            mleEval: groth16Outputs[groth16Outputs.length - 1]
         });
-
-        bool ecValid = GKRHybridVerifier.verifyECChecks(gkrProof, challenges, outputs, gens);
-        if (!ecValid) revert ProofVerificationFailed();
     }
 
     /// @dev Validate circuit registration, proof format, generators, and circuit structure
@@ -257,19 +277,13 @@ contract RemainderVerifier {
         uint256[] memory pubInputs,
         GKRHybridVerifier.TranscriptChallenges memory challenges,
         uint256[8] calldata groth16Proof,
-        uint256[8] calldata groth16Outputs
+        GKRHybridVerifier.Groth16Outputs memory groth16Outputs
     ) private view {
         // Convert circuit hash to Fr pair (same LE 16-byte interpretation as Fq; values < 2^128)
         (uint256 circuitHashFr0, uint256 circuitHashFr1) = _hashToFqPair(circuitHash);
 
-        uint256[29] memory groth16Inputs = GKRHybridVerifier.buildGroth16Inputs(
-            circuitHashFr0,
-            circuitHashFr1,
-            pubInputs.length > 0 ? pubInputs[0] : 0,
-            pubInputs.length > 1 ? pubInputs[1] : 0,
-            challenges,
-            groth16Outputs
-        );
+        uint256[70] memory groth16Inputs =
+            GKRHybridVerifier.buildGroth16Inputs(circuitHashFr0, circuitHashFr1, pubInputs, challenges, groth16Outputs);
 
         // Verify Groth16 proof (reverts if invalid)
         require(groth16Verifier != address(0), "Groth16 verifier not set");
@@ -280,7 +294,7 @@ contract RemainderVerifier {
     function replayTranscriptPublic(bytes calldata innerProof, bytes32 circuitHash, bytes calldata publicInputs)
         external
         view
-        returns (uint256 outputChallenge, uint256 claimAggCoeff, uint256 interLayerCoeff)
+        returns (uint256[] memory outputChallenges, uint256 claimAggCoeff, uint256 interLayerCoeff)
     {
         (GKRVerifier.GKRProof memory gkrProof, uint256[] memory pubInputs) = decodeProof(innerProof[4:], publicInputs);
         PoseidonSponge.Sponge memory sponge = _setupTranscript(circuitHash, pubInputs, gkrProof);
@@ -288,7 +302,7 @@ contract RemainderVerifier {
         GKRHybridVerifier.TranscriptChallenges memory challenges =
             GKRHybridVerifier.replayTranscriptAndCollectChallenges(gkrProof, sponge);
 
-        outputChallenge = challenges.outputChallenge;
+        outputChallenges = challenges.outputChallenges;
         claimAggCoeff = challenges.claimAggCoeff;
         interLayerCoeff = challenges.interLayerCoeff;
     }
