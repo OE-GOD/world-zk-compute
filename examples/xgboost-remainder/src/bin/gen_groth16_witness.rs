@@ -33,6 +33,10 @@ use shared_types::{
     perform_function_under_verifier_config, Bn256Point, Fq, Fr,
 };
 
+#[path = "../abi_encode.rs"]
+#[allow(clippy::all)]
+mod abi_encode;
+
 fn build_circuit(num_vars: usize) -> Circuit<Fr> {
     let mut builder = CircuitBuilder::<Fr>::new();
     let private = builder.add_input_layer("private", LayerVisibility::Committed);
@@ -560,6 +564,50 @@ fn main() -> Result<()> {
     eprintln!("mle_eval: {}", fr_to_hex(&mle_eval));
 
     // ================================================================
+    // ABI-encode inner proof and generators for on-chain verification
+    // ================================================================
+
+    // Extract the actual circuit description hash (the one used in the transcript).
+    // This is a pair of Fq values. We reconstruct the 32-byte hash from them.
+    let circuit_hash: [u8; 32] = {
+        use remainder::prover::helpers::get_circuit_description_hash_as_field_elems;
+        use shared_types::config::global_config::global_verifier_circuit_description_hash_type;
+        let hash_elems = get_circuit_description_hash_as_field_elems(
+            verifiable_ref,
+            global_verifier_circuit_description_hash_type(),
+        );
+        // hash_elems are two Fq values, each from a 16-byte LE half of the SHA-256 hash.
+        // Reconstruct the original 32-byte hash: first 16 LE bytes from hash_elems[0],
+        // next 16 LE bytes from hash_elems[1].
+        let repr0 = hash_elems[0].to_repr();
+        let repr1 = hash_elems[1].to_repr();
+        let mut hash = [0u8; 32];
+        hash[..16].copy_from_slice(&repr0.as_ref()[..16]);
+        hash[16..].copy_from_slice(&repr1.as_ref()[..16]);
+        hash
+    };
+
+    let abi_bytes = abi_encode::encode_hyrax_proof(&proof, &circuit_hash)?;
+    eprintln!("ABI-encoded proof: {} bytes ({} uint256 slots)", abi_bytes.len(), (abi_bytes.len() - 4) / 32);
+
+    let gens_bytes = abi_encode::encode_pedersen_gens(&committer)?;
+    eprintln!("ABI-encoded generators: {} bytes ({} uint256 slots)", gens_bytes.len(), gens_bytes.len() / 32);
+
+    // Encode public input values as flat big-endian bytes
+    let pub_values_bytes = {
+        let mut buf = Vec::new();
+        for val in &[pub0, pub1] {
+            let repr = val.to_repr();
+            let bytes: &[u8] = repr.as_ref();
+            let mut be = [0u8; 32];
+            be.copy_from_slice(bytes);
+            be.reverse();
+            buf.extend_from_slice(&be);
+        }
+        buf
+    };
+
+    // ================================================================
     // Build JSON output (all values as Fr hex strings)
     // ================================================================
     let circuit_hash_0 = fr_to_hex(&Fr::from(12345u64)); // placeholder
@@ -620,6 +668,11 @@ fn main() -> Result<()> {
                 "z_beta": fr_to_hex(&input_podp_z_beta),
             },
         },
+        // Inner proof and generators for on-chain hybrid verification
+        "inner_proof_hex": format!("0x{}", hex::encode(&abi_bytes)),
+        "gens_hex": format!("0x{}", hex::encode(&gens_bytes)),
+        "circuit_hash_raw": format!("0x{}", hex::encode(&circuit_hash)),
+        "public_values_abi": format!("0x{}", hex::encode(&pub_values_bytes)),
     });
 
     println!("{}", serde_json::to_string_pretty(&output)?);

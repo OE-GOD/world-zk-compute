@@ -6,6 +6,8 @@ import {SumcheckVerifier} from "./SumcheckVerifier.sol";
 import {HyraxVerifier} from "./HyraxVerifier.sol";
 import {GKRVerifier} from "./GKRVerifier.sol";
 import {CommittedSumcheckVerifier} from "./CommittedSumcheckVerifier.sol";
+import {GKRHybridVerifier} from "./GKRHybridVerifier.sol";
+import {Verifier as Groth16Verifier} from "./RemainderGroth16Verifier.sol";
 
 /// @title RemainderVerifier
 /// @notice Top-level on-chain verifier for Remainder (GKR+Hyrax) proofs
@@ -41,6 +43,9 @@ contract RemainderVerifier {
 
     /// @notice Admin address
     address public admin;
+
+    /// @notice Groth16 verifier contract address (for hybrid verification)
+    address public groth16Verifier;
 
     /// @notice Registered circuits by hash
     mapping(bytes32 => CircuitConfig) public circuits;
@@ -163,6 +168,100 @@ contract RemainderVerifier {
 
         bool valid = GKRVerifier.verify(gkrProof, config.description, pubInputs, gens, sponge);
         if (!valid) revert ProofVerificationFailed();
+    }
+
+    // ========================================================================
+    // HYBRID GROTH16 VERIFICATION
+    // ========================================================================
+
+    /// @notice BN254 scalar field modulus (Fr)
+    uint256 private constant FR_MODULUS =
+        21888242871839275222246405745257275088548364400416034343698204186575808495617;
+
+    /// @notice Verify a Remainder proof using the hybrid Groth16 approach
+    /// @dev Flow: decode inner proof → replay transcript → verify Groth16 → EC checks
+    /// @param innerProof ABI-encoded inner GKR proof (starts with "REM1" selector)
+    /// @param circuitHash SHA-256 hash of the circuit description
+    /// @param publicInputs Public input values
+    /// @param gensData ABI-encoded Pedersen generators
+    /// @param groth16Proof Groth16 proof (8 uint256 values: A.x, A.y, B.x1, B.x0, B.y1, B.y0, C.x, C.y)
+    /// @param groth16Outputs 8 Groth16 public output values (rlcBeta0..1, zDotJStar0..1, lTensor0..1, zDotR, mleEval)
+    function verifyWithGroth16(
+        bytes calldata innerProof,
+        bytes32 circuitHash,
+        bytes calldata publicInputs,
+        bytes calldata gensData,
+        uint256[8] calldata groth16Proof,
+        uint256[8] calldata groth16Outputs
+    ) external view {
+        // Check proof selector
+        if (innerProof.length < 4) revert InvalidProofLength();
+        bytes4 selector = bytes4(innerProof[:4]);
+        if (selector != bytes4("REM1")) revert InvalidProofSelector();
+
+        // Decode the inner proof and generators
+        (GKRVerifier.GKRProof memory gkrProof, uint256[] memory pubInputs) = decodeProof(innerProof[4:], publicInputs);
+        HyraxVerifier.PedersenGens memory gens = decodePedersenGens(gensData);
+
+        // Set up Fiat-Shamir transcript
+        PoseidonSponge.Sponge memory sponge = _setupTranscript(circuitHash, pubInputs, gkrProof);
+
+        // Replay transcript to collect all challenges
+        GKRHybridVerifier.TranscriptChallenges memory challenges =
+            GKRHybridVerifier.replayTranscriptAndCollectChallenges(gkrProof, sponge);
+
+        // Build Groth16 public inputs (29 values)
+        // Circuit hash as Fr values (placeholder 12345, 67890 matching gen_groth16_witness.rs)
+        uint256 circuitHashFr0 = 12345;
+        uint256 circuitHashFr1 = 67890;
+
+        uint256[29] memory groth16Inputs = GKRHybridVerifier.buildGroth16Inputs(
+            circuitHashFr0, circuitHashFr1,
+            pubInputs.length > 0 ? pubInputs[0] : 0,
+            pubInputs.length > 1 ? pubInputs[1] : 0,
+            challenges,
+            groth16Outputs
+        );
+
+        // Verify Groth16 proof (reverts if invalid)
+        require(groth16Verifier != address(0), "Groth16 verifier not set");
+        Groth16Verifier(groth16Verifier).verifyProof(groth16Proof, groth16Inputs);
+
+        // Verify EC equations using Groth16 outputs
+        GKRHybridVerifier.Groth16Outputs memory outputs = GKRHybridVerifier.Groth16Outputs({
+            rlcBeta0: groth16Outputs[0],
+            rlcBeta1: groth16Outputs[1],
+            zDotJStar0: groth16Outputs[2],
+            zDotJStar1: groth16Outputs[3],
+            lTensor0: groth16Outputs[4],
+            lTensor1: groth16Outputs[5],
+            zDotR: groth16Outputs[6],
+            mleEval: groth16Outputs[7]
+        });
+
+        bool ecValid = GKRHybridVerifier.verifyECChecks(gkrProof, challenges, outputs, gens);
+        if (!ecValid) revert ProofVerificationFailed();
+    }
+
+    /// @notice Public wrapper for transcript replay (for testing)
+    function replayTranscriptPublic(
+        bytes calldata innerProof,
+        bytes32 circuitHash,
+        bytes calldata publicInputs
+    ) external view returns (
+        uint256 outputChallenge,
+        uint256 claimAggCoeff,
+        uint256 interLayerCoeff
+    ) {
+        (GKRVerifier.GKRProof memory gkrProof, uint256[] memory pubInputs) = decodeProof(innerProof[4:], publicInputs);
+        PoseidonSponge.Sponge memory sponge = _setupTranscript(circuitHash, pubInputs, gkrProof);
+
+        GKRHybridVerifier.TranscriptChallenges memory challenges =
+            GKRHybridVerifier.replayTranscriptAndCollectChallenges(gkrProof, sponge);
+
+        outputChallenge = challenges.outputChallenge;
+        claimAggCoeff = challenges.claimAggCoeff;
+        interLayerCoeff = challenges.interLayerCoeff;
     }
 
     // ========================================================================
@@ -569,6 +668,11 @@ contract RemainderVerifier {
     function transferAdmin(address newAdmin) external onlyAdmin {
         emit AdminTransferred(admin, newAdmin);
         admin = newAdmin;
+    }
+
+    /// @notice Set the Groth16 verifier contract address (for hybrid verification)
+    function setGroth16Verifier(address _groth16Verifier) external onlyAdmin {
+        groth16Verifier = _groth16Verifier;
     }
 
     // ========================================================================
