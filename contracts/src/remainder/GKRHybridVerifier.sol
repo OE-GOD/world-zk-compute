@@ -28,35 +28,29 @@ library GKRHybridVerifier {
     // TYPES
     // ========================================================================
 
+    /// @notice Per-layer challenge container
+    struct LayerChallenges {
+        uint256[] bindings;
+        uint256[] rhos;
+        uint256[] gammas;
+        uint256 podpChallenge;
+        uint256 popChallenge; // 0 if layer has no PoPs
+    }
+
     /// @notice All challenges derived from transcript replay
     struct TranscriptChallenges {
-        uint256[] outputChallenges; // [0] num_vars challenges squeezed after initial setup
-        uint256 claimAggCoeff; // [1] After absorb output claim commitment
-        // Layer 0 (subtract, degree=2)
-        uint256[] layer0Bindings; // [2] One binding (1-round sumcheck)
-        uint256[] layer0Rhos; // [3] n+1 = 2 rhos
-        uint256[] layer0Gammas; // [4] n = 1 gamma
-        uint256 layer0PodpChallenge; // [5] PODP challenge
-        // Inter-layer
-        uint256 interLayerCoeff; // [6] Squeezed between layers
-        // Layer 1 (multiply, degree=3)
-        uint256[] layer1Bindings; // [7] One binding
-        uint256[] layer1Rhos; // [8] n+1 = 2 rhos
-        uint256[] layer1Gammas; // [9] n = 1 gamma
-        uint256 layer1PodpChallenge; // [10] PODP challenge
-        uint256 layer1PopChallenge; // [11] PoP challenge
-        // Input layer
-        uint256[] inputRlcCoeffs; // [12] 2 RLC coefficients
-        uint256 inputPodpChallenge; // [13] Input PODP challenge
+        uint256[] outputChallenges; // num_vars challenges squeezed after initial setup
+        uint256 claimAggCoeff; // After absorb output claim commitment
+        LayerChallenges[] layers; // One per computation layer
+        uint256[] interLayerCoeffs; // N-1 values (between layers)
+        uint256[] inputRlcCoeffs; // 2 RLC coefficients
+        uint256 inputPodpChallenge; // Input PODP challenge
     }
 
     /// @notice Groth16 public outputs (computed off-chain, verified by Groth16)
-    /// @dev For medium config (N=4): 14 values = rlcBeta(2) + zDotJStar(2) + lTensor(8) + zDotR + mleEval
     struct Groth16Outputs {
-        uint256 rlcBeta0; // Layer 0 oracle eval coefficient
-        uint256 rlcBeta1; // Layer 1 oracle eval coefficient
-        uint256 zDotJStar0; // Layer 0 PODP inner product
-        uint256 zDotJStar1; // Layer 1 PODP inner product
+        uint256[] rlcBeta; // One per computation layer
+        uint256[] zDotJStar; // One per computation layer
         uint256[] lTensor; // Input Hyrax L-tensor: 2 * 2^floor(num_vars/2) elements
         uint256 zDotR; // Input PODP inner product
         uint256 mleEval; // Public input MLE evaluation
@@ -76,9 +70,10 @@ library GKRHybridVerifier {
         GKRVerifier.GKRProof memory proof,
         PoseidonSponge.Sponge memory sponge
     ) internal pure returns (TranscriptChallenges memory challenges) {
+        uint256 numLayers = proof.layerProofs.length;
+        require(numLayers >= 1, "GKRHybrid: need at least 1 layer proof");
+
         // Step 1: Squeeze output challenges (num_vars values)
-        // num_vars = number of sumcheck messages per layer = number of bindings
-        require(proof.layerProofs.length >= 2, "GKRHybrid: need 2 layer proofs");
         uint256 numVars = proof.layerProofs[0].sumcheckProof.messages.length;
         challenges.outputChallenges = _squeezeMultiple(sponge, numVars);
 
@@ -88,67 +83,53 @@ library GKRHybridVerifier {
         PoseidonSponge.absorb(sponge, proof.outputClaimCommitments[0].y);
         challenges.claimAggCoeff = PoseidonSponge.squeeze(sponge) % FR_MODULUS;
 
-        // Step 3: Layer 0 (subtract, degree=2, num_vars-round sumcheck → num_vars bindings)
-        challenges.layer0Bindings =
-            _absorbMessagesAndDeriveBindings(proof.layerProofs[0].sumcheckProof.messages, sponge);
+        // Step 3: Loop over computation layers
+        challenges.layers = new LayerChallenges[](numLayers);
+        challenges.interLayerCoeffs = new uint256[](numLayers > 1 ? numLayers - 1 : 0);
 
-        // Absorb layer 0 post-sumcheck commitments
-        for (uint256 j = 0; j < proof.layerProofs[0].commitments.length; j++) {
-            PoseidonSponge.absorb(sponge, proof.layerProofs[0].commitments[j].x);
-            PoseidonSponge.absorb(sponge, proof.layerProofs[0].commitments[j].y);
+        for (uint256 i = 0; i < numLayers; i++) {
+            // Absorb sumcheck messages → derive bindings
+            challenges.layers[i].bindings =
+                _absorbMessagesAndDeriveBindings(proof.layerProofs[i].sumcheckProof.messages, sponge);
+
+            // Absorb post-sumcheck commitments
+            for (uint256 j = 0; j < proof.layerProofs[i].commitments.length; j++) {
+                PoseidonSponge.absorb(sponge, proof.layerProofs[i].commitments[j].x);
+                PoseidonSponge.absorb(sponge, proof.layerProofs[i].commitments[j].y);
+            }
+
+            // Squeeze rhos (n+1) and gammas (n)
+            uint256 n = proof.layerProofs[i].sumcheckProof.messages.length;
+            challenges.layers[i].rhos = _squeezeMultiple(sponge, n + 1);
+            challenges.layers[i].gammas = _squeezeMultiple(sponge, n);
+
+            // PODP transcript
+            challenges.layers[i].podpChallenge =
+                _absorbPODPAndSqueeze(proof.layerProofs[i].sumcheckProof.podp, sponge);
+
+            // PoP transcript (if layer has product triples)
+            for (uint256 p = 0; p < proof.layerProofs[i].pops.length; p++) {
+                PoseidonSponge.absorb(sponge, proof.layerProofs[i].pops[p].alpha.x);
+                PoseidonSponge.absorb(sponge, proof.layerProofs[i].pops[p].alpha.y);
+                PoseidonSponge.absorb(sponge, proof.layerProofs[i].pops[p].beta.x);
+                PoseidonSponge.absorb(sponge, proof.layerProofs[i].pops[p].beta.y);
+                PoseidonSponge.absorb(sponge, proof.layerProofs[i].pops[p].delta.x);
+                PoseidonSponge.absorb(sponge, proof.layerProofs[i].pops[p].delta.y);
+                challenges.layers[i].popChallenge = PoseidonSponge.squeeze(sponge) % FR_MODULUS;
+                PoseidonSponge.absorb(sponge, proof.layerProofs[i].pops[p].z1);
+                PoseidonSponge.absorb(sponge, proof.layerProofs[i].pops[p].z2);
+                PoseidonSponge.absorb(sponge, proof.layerProofs[i].pops[p].z3);
+                PoseidonSponge.absorb(sponge, proof.layerProofs[i].pops[p].z4);
+                PoseidonSponge.absorb(sponge, proof.layerProofs[i].pops[p].z5);
+            }
+
+            // Inter-layer coefficient (except after last layer)
+            if (i < numLayers - 1) {
+                challenges.interLayerCoeffs[i] = PoseidonSponge.squeeze(sponge) % FR_MODULUS;
+            }
         }
 
-        // Squeeze layer 0 rhos (n+1) and gammas (n)
-        uint256 n0 = proof.layerProofs[0].sumcheckProof.messages.length;
-        challenges.layer0Rhos = _squeezeMultiple(sponge, n0 + 1);
-        challenges.layer0Gammas = _squeezeMultiple(sponge, n0);
-
-        // Layer 0 PODP transcript: absorb commitD, commitDDotA, squeeze challenge, absorb z data
-        challenges.layer0PodpChallenge = _absorbPODPAndSqueeze(proof.layerProofs[0].sumcheckProof.podp, sponge);
-
-        // Layer 0 has no PoP entries (subtract gate has no product triples)
-
-        // Step 4: Squeeze inter-layer coefficient
-        challenges.interLayerCoeff = PoseidonSponge.squeeze(sponge) % FR_MODULUS;
-
-        // Step 5: Layer 1 (multiply, degree=3, num_vars-round sumcheck → num_vars bindings)
-        challenges.layer1Bindings =
-            _absorbMessagesAndDeriveBindings(proof.layerProofs[1].sumcheckProof.messages, sponge);
-
-        // Absorb layer 1 post-sumcheck commitments
-        for (uint256 j = 0; j < proof.layerProofs[1].commitments.length; j++) {
-            PoseidonSponge.absorb(sponge, proof.layerProofs[1].commitments[j].x);
-            PoseidonSponge.absorb(sponge, proof.layerProofs[1].commitments[j].y);
-        }
-
-        // Squeeze layer 1 rhos and gammas
-        uint256 n1 = proof.layerProofs[1].sumcheckProof.messages.length;
-        challenges.layer1Rhos = _squeezeMultiple(sponge, n1 + 1);
-        challenges.layer1Gammas = _squeezeMultiple(sponge, n1);
-
-        // Layer 1 PODP transcript
-        challenges.layer1PodpChallenge = _absorbPODPAndSqueeze(proof.layerProofs[1].sumcheckProof.podp, sponge);
-
-        // Layer 1 PoP transcript (multiply gate has product triples)
-        for (uint256 i = 0; i < proof.layerProofs[1].pops.length; i++) {
-            // Absorb alpha, beta, delta
-            PoseidonSponge.absorb(sponge, proof.layerProofs[1].pops[i].alpha.x);
-            PoseidonSponge.absorb(sponge, proof.layerProofs[1].pops[i].alpha.y);
-            PoseidonSponge.absorb(sponge, proof.layerProofs[1].pops[i].beta.x);
-            PoseidonSponge.absorb(sponge, proof.layerProofs[1].pops[i].beta.y);
-            PoseidonSponge.absorb(sponge, proof.layerProofs[1].pops[i].delta.x);
-            PoseidonSponge.absorb(sponge, proof.layerProofs[1].pops[i].delta.y);
-            // Squeeze PoP challenge (save only the last one, matching test circuit with 1 PoP)
-            challenges.layer1PopChallenge = PoseidonSponge.squeeze(sponge) % FR_MODULUS;
-            // Absorb z1..z5
-            PoseidonSponge.absorb(sponge, proof.layerProofs[1].pops[i].z1);
-            PoseidonSponge.absorb(sponge, proof.layerProofs[1].pops[i].z2);
-            PoseidonSponge.absorb(sponge, proof.layerProofs[1].pops[i].z3);
-            PoseidonSponge.absorb(sponge, proof.layerProofs[1].pops[i].z4);
-            PoseidonSponge.absorb(sponge, proof.layerProofs[1].pops[i].z5);
-        }
-
-        // Step 6: Input layer — squeeze RLC coefficients
+        // Step 4: Input layer — squeeze RLC coefficients
         challenges.inputRlcCoeffs = _squeezeMultiple(sponge, 2);
 
         // Absorb comEval
@@ -169,57 +150,50 @@ library GKRHybridVerifier {
     /// @param challenges Transcript-derived challenges
     /// @param outputs Groth16 public outputs
     /// @param gens Pedersen generators
+    /// @param circuit Circuit description (for layer type mapping)
     /// @return valid Whether all EC checks pass
     function verifyECChecks(
         GKRVerifier.GKRProof memory proof,
         TranscriptChallenges memory challenges,
         Groth16Outputs memory outputs,
-        HyraxVerifier.PedersenGens memory gens
+        HyraxVerifier.PedersenGens memory gens,
+        GKRVerifier.CircuitDescription memory circuit
     ) internal view returns (bool) {
-        // Layer 0 PODP (subtract gate)
-        require(
-            _verifyLayerPODP(
-                proof.layerProofs[0],
-                challenges.layer0Rhos,
-                challenges.layer0Gammas,
-                challenges.layer0PodpChallenge,
-                outputs.rlcBeta0,
-                outputs.zDotJStar0,
-                0, // layerType = subtract
-                gens
-            ),
-            "Hybrid: Layer 0 PODP failed"
-        );
+        uint256 numComputeLayers = proof.layerProofs.length;
 
-        // Layer 1 PODP (multiply gate)
-        require(
-            _verifyLayerPODP(
-                proof.layerProofs[1],
-                challenges.layer1Rhos,
-                challenges.layer1Gammas,
-                challenges.layer1PodpChallenge,
-                outputs.rlcBeta1,
-                outputs.zDotJStar1,
-                1, // layerType = multiply
-                gens
-            ),
-            "Hybrid: Layer 1 PODP failed"
-        );
+        for (uint256 i = 0; i < numComputeLayers; i++) {
+            // Map proof index to circuit layer type
+            // proof.layerProofs[0] = output layer = circuit.layerTypes[numLayers-1]
+            uint8 layerType = circuit.layerTypes[circuit.numLayers - 1 - i];
 
-        // Layer 1 PoP (multiply gate has product triples)
-        require(
-            _verifyLayerPoPs(proof.layerProofs[1], challenges.layer1PopChallenge, gens), "Hybrid: Layer 1 PoP failed"
-        );
+            require(
+                _verifyLayerPODP(
+                    proof.layerProofs[i],
+                    challenges.layers[i].rhos,
+                    challenges.layers[i].gammas,
+                    challenges.layers[i].podpChallenge,
+                    outputs.rlcBeta[i],
+                    outputs.zDotJStar[i],
+                    layerType,
+                    gens
+                ),
+                "Hybrid: Layer PODP failed"
+            );
+
+            // PoP verification (if layer has product triples)
+            if (proof.layerProofs[i].pops.length > 0) {
+                require(
+                    _verifyLayerPoPs(proof.layerProofs[i], challenges.layers[i].popChallenge, gens),
+                    "Hybrid: Layer PoP failed"
+                );
+            }
+        }
 
         // Input Hyrax verification (committed input layer)
         require(
             _verifyInputHyrax(proof.inputProofs[0], challenges.inputPodpChallenge, outputs, gens),
             "Hybrid: Input Hyrax failed"
         );
-
-        // Note: mleEval is verified by Groth16 but only used for circuits with
-        // non-committed (public) input layers. For committed inputs, the Hyrax
-        // evaluation proof above is sufficient.
 
         return true;
     }
@@ -512,10 +486,9 @@ library GKRHybridVerifier {
     /// @notice Build the public inputs array for the Groth16 verifier (dynamic size)
     /// @dev Layout matches gnark circuit struct field declaration order:
     ///      circuitHash(2) + pubInputs(2^N) + outputChallenges(N) + claimAggCoeff(1) +
-    ///      layer0(bindings=N, rhos=N+1, gammas=N, podpChallenge=1) +
-    ///      layer1(bindings=N, rhos=N+1, gammas=N, podpChallenge=1, popChallenge=1) +
-    ///      inputRLCCoeffs(2) + inputPODPChallenge(1) + interLayerCoeff(1) +
-    ///      outputs(rlcBeta=2, zDotJStar=2, lTensor=2*2^floor(N/2), zDotR=1, mleEval=1)
+    ///      per-layer(bindings + rhos + gammas + podpChallenge + popChallenge?) +
+    ///      inputRLCCoeffs(2) + inputPODPChallenge(1) + interLayerCoeffs(numLayers-1) +
+    ///      outputs(rlcBeta(numLayers) + zDotJStar(numLayers) + lTensor + zDotR + mleEval)
     /// @param circuitHashFr0 Circuit hash Fr value 0
     /// @param circuitHashFr1 Circuit hash Fr value 1
     /// @param pubInputs Public input values (2^num_vars elements)
@@ -529,83 +502,80 @@ library GKRHybridVerifier {
         TranscriptChallenges memory challenges,
         Groth16Outputs memory groth16Outputs
     ) internal pure returns (uint256[] memory inputs) {
-        uint256 total = 2 + pubInputs.length + challenges.outputChallenges.length + 1 + challenges.layer0Bindings.length
-            + challenges.layer0Rhos.length + challenges.layer0Gammas.length + 1 + challenges.layer1Bindings.length
-            + challenges.layer1Rhos.length + challenges.layer1Gammas.length + 2 + 4 + 4 + groth16Outputs.lTensor.length
-            + 2;
+        // Calculate total size dynamically
+        uint256 total = 2 + pubInputs.length + challenges.outputChallenges.length + 1;
+        for (uint256 i = 0; i < challenges.layers.length; i++) {
+            total += challenges.layers[i].bindings.length + challenges.layers[i].rhos.length
+                + challenges.layers[i].gammas.length + 1; // +1 for podpChallenge
+            if (challenges.layers[i].popChallenge != 0) total += 1;
+        }
+        total += 2 + 1; // inputRlcCoeffs + inputPodpChallenge
+        total += challenges.interLayerCoeffs.length;
+        total += groth16Outputs.rlcBeta.length + groth16Outputs.zDotJStar.length
+            + groth16Outputs.lTensor.length + 2; // +2 for zDotR + mleEval
+
         inputs = new uint256[](total);
         uint256 idx = 0;
 
-        // [0-1] Circuit hash
+        // Circuit hash
         inputs[idx++] = circuitHashFr0;
         inputs[idx++] = circuitHashFr1;
 
-        // [2-17] Public inputs (2^num_vars = 16 values)
+        // Public inputs
         for (uint256 i = 0; i < pubInputs.length; i++) {
             inputs[idx++] = pubInputs[i];
         }
 
-        // [18-21] Output challenges (num_vars = 4 values)
+        // Output challenges
         for (uint256 i = 0; i < challenges.outputChallenges.length; i++) {
             inputs[idx++] = challenges.outputChallenges[i];
         }
 
-        // [22] Claim agg coefficient
+        // Claim agg coefficient
         inputs[idx++] = challenges.claimAggCoeff;
 
-        // [23-26] Layer 0 bindings (num_vars = 4)
-        for (uint256 i = 0; i < challenges.layer0Bindings.length; i++) {
-            inputs[idx++] = challenges.layer0Bindings[i];
+        // Per-layer challenges
+        for (uint256 layer = 0; layer < challenges.layers.length; layer++) {
+            for (uint256 i = 0; i < challenges.layers[layer].bindings.length; i++) {
+                inputs[idx++] = challenges.layers[layer].bindings[i];
+            }
+            for (uint256 i = 0; i < challenges.layers[layer].rhos.length; i++) {
+                inputs[idx++] = challenges.layers[layer].rhos[i];
+            }
+            for (uint256 i = 0; i < challenges.layers[layer].gammas.length; i++) {
+                inputs[idx++] = challenges.layers[layer].gammas[i];
+            }
+            inputs[idx++] = challenges.layers[layer].podpChallenge;
+            if (challenges.layers[layer].popChallenge != 0) {
+                inputs[idx++] = challenges.layers[layer].popChallenge;
+            }
         }
-        // [27-31] Layer 0 rhos (num_vars+1 = 5)
-        for (uint256 i = 0; i < challenges.layer0Rhos.length; i++) {
-            inputs[idx++] = challenges.layer0Rhos[i];
-        }
-        // [32-35] Layer 0 gammas (num_vars = 4)
-        for (uint256 i = 0; i < challenges.layer0Gammas.length; i++) {
-            inputs[idx++] = challenges.layer0Gammas[i];
-        }
-        // [36] Layer 0 PODP challenge
-        inputs[idx++] = challenges.layer0PodpChallenge;
 
-        // [37-40] Layer 1 bindings (num_vars = 4)
-        for (uint256 i = 0; i < challenges.layer1Bindings.length; i++) {
-            inputs[idx++] = challenges.layer1Bindings[i];
-        }
-        // [41-45] Layer 1 rhos (num_vars+1 = 5)
-        for (uint256 i = 0; i < challenges.layer1Rhos.length; i++) {
-            inputs[idx++] = challenges.layer1Rhos[i];
-        }
-        // [46-49] Layer 1 gammas (num_vars = 4)
-        for (uint256 i = 0; i < challenges.layer1Gammas.length; i++) {
-            inputs[idx++] = challenges.layer1Gammas[i];
-        }
-        // [50] Layer 1 PODP challenge
-        inputs[idx++] = challenges.layer1PodpChallenge;
-        // [51] Layer 1 PoP challenge
-        inputs[idx++] = challenges.layer1PopChallenge;
-
-        // [52-53] Input RLC coefficients
+        // Input RLC coefficients
         inputs[idx++] = challenges.inputRlcCoeffs[0];
         inputs[idx++] = challenges.inputRlcCoeffs[1];
-        // [54] Input PODP challenge
+        // Input PODP challenge
         inputs[idx++] = challenges.inputPodpChallenge;
-        // [55] Inter-layer coefficient
-        inputs[idx++] = challenges.interLayerCoeff;
+        // Inter-layer coefficients
+        for (uint256 i = 0; i < challenges.interLayerCoeffs.length; i++) {
+            inputs[idx++] = challenges.interLayerCoeffs[i];
+        }
 
-        // [56-57] Groth16 outputs: rlcBeta0, rlcBeta1
-        inputs[idx++] = groth16Outputs.rlcBeta0;
-        inputs[idx++] = groth16Outputs.rlcBeta1;
-        // [58-59] zDotJStar0, zDotJStar1
-        inputs[idx++] = groth16Outputs.zDotJStar0;
-        inputs[idx++] = groth16Outputs.zDotJStar1;
-        // [60-67] lTensor (2 * 2^floor(num_vars/2) = 8 elements)
+        // Groth16 outputs: rlcBeta (one per layer)
+        for (uint256 i = 0; i < groth16Outputs.rlcBeta.length; i++) {
+            inputs[idx++] = groth16Outputs.rlcBeta[i];
+        }
+        // zDotJStar (one per layer)
+        for (uint256 i = 0; i < groth16Outputs.zDotJStar.length; i++) {
+            inputs[idx++] = groth16Outputs.zDotJStar[i];
+        }
+        // lTensor
         for (uint256 i = 0; i < groth16Outputs.lTensor.length; i++) {
             inputs[idx++] = groth16Outputs.lTensor[i];
         }
-        // [68] zDotR
+        // zDotR
         inputs[idx++] = groth16Outputs.zDotR;
-        // [69] mleEval
+        // mleEval
         inputs[idx++] = groth16Outputs.mleEval;
     }
 }

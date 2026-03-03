@@ -212,35 +212,63 @@ contract RemainderVerifier {
         }
 
         // Parse Groth16 outputs into struct
-        GKRHybridVerifier.Groth16Outputs memory outputs = _parseGroth16Outputs(groth16Outputs);
+        GKRHybridVerifier.Groth16Outputs memory outputs;
+        {
+            uint256 numComputeLayers = gkrProof.layerProofs.length;
+            outputs = _parseGroth16Outputs(groth16Outputs, numComputeLayers);
+        }
 
         // Build and verify Groth16 proof
         _verifyGroth16(circuitHash, pubInputs, challenges, groth16Proof, outputs);
 
         // Verify EC equations using Groth16 outputs
+        _verifyECChecks(circuitHash, gkrProof, challenges, outputs, gensData);
+    }
+
+    /// @dev Verify EC equations (extracted to avoid stack-too-deep in verifyWithGroth16)
+    function _verifyECChecks(
+        bytes32 circuitHash,
+        GKRVerifier.GKRProof memory gkrProof,
+        GKRHybridVerifier.TranscriptChallenges memory challenges,
+        GKRHybridVerifier.Groth16Outputs memory outputs,
+        bytes calldata gensData
+    ) private view {
         HyraxVerifier.PedersenGens memory gens = decodePedersenGens(gensData);
-        bool ecValid = GKRHybridVerifier.verifyECChecks(gkrProof, challenges, outputs, gens);
+        GKRVerifier.CircuitDescription memory circuit = circuits[circuitHash].description;
+        bool ecValid = GKRHybridVerifier.verifyECChecks(gkrProof, challenges, outputs, gens, circuit);
         if (!ecValid) revert ProofVerificationFailed();
     }
 
     /// @dev Parse flat groth16Outputs array into Groth16Outputs struct
-    /// @param groth16Outputs [rlcBeta0, rlcBeta1, zDotJStar0, zDotJStar1, lTensor[...], zDotR, mleEval]
-    function _parseGroth16Outputs(uint256[] calldata groth16Outputs)
+    /// @param groth16Outputs [rlcBeta[0..N], zDotJStar[0..N], lTensor[...], zDotR, mleEval]
+    /// @param numComputeLayers Number of computation layers (N)
+    function _parseGroth16Outputs(uint256[] calldata groth16Outputs, uint256 numComputeLayers)
         private
         pure
         returns (GKRHybridVerifier.Groth16Outputs memory outputs)
     {
-        require(groth16Outputs.length >= 6, "Hybrid: need at least 6 groth16 outputs");
-        uint256 numLTensor = groth16Outputs.length - 6;
+        // Layout: rlcBeta(N) + zDotJStar(N) + lTensor(?) + zDotR(1) + mleEval(1)
+        uint256 minLen = 2 * numComputeLayers + 2; // rlcBeta + zDotJStar + zDotR + mleEval
+        require(groth16Outputs.length >= minLen, "Hybrid: groth16 outputs too short");
+
+        uint256[] memory rlcBeta = new uint256[](numComputeLayers);
+        uint256[] memory zDotJStar = new uint256[](numComputeLayers);
+        for (uint256 i = 0; i < numComputeLayers; i++) {
+            rlcBeta[i] = groth16Outputs[i];
+        }
+        for (uint256 i = 0; i < numComputeLayers; i++) {
+            zDotJStar[i] = groth16Outputs[numComputeLayers + i];
+        }
+
+        uint256 numLTensor = groth16Outputs.length - 2 * numComputeLayers - 2;
         uint256[] memory lTensor = new uint256[](numLTensor);
         for (uint256 i = 0; i < numLTensor; i++) {
-            lTensor[i] = groth16Outputs[4 + i];
+            lTensor[i] = groth16Outputs[2 * numComputeLayers + i];
         }
+
         outputs = GKRHybridVerifier.Groth16Outputs({
-            rlcBeta0: groth16Outputs[0],
-            rlcBeta1: groth16Outputs[1],
-            zDotJStar0: groth16Outputs[2],
-            zDotJStar1: groth16Outputs[3],
+            rlcBeta: rlcBeta,
+            zDotJStar: zDotJStar,
             lTensor: lTensor,
             zDotR: groth16Outputs[groth16Outputs.length - 2],
             mleEval: groth16Outputs[groth16Outputs.length - 1]
@@ -268,11 +296,8 @@ contract RemainderVerifier {
         }
 
         // Validate circuit structure is compatible with hybrid verifier
-        // Requires: committed input layer + at least 2 computation layers.
-        // The current transcript replay and EC check logic processes exactly 2
-        // computation layers (subtract + multiply). Circuits with more layers will
-        // need generalized replayTranscriptAndCollectChallenges() and verifyECChecks().
-        require(config.description.numLayers >= 3, "Hybrid: need >= 3 layers (input + 2 compute)");
+        // Requires: committed input layer + at least 1 computation layer.
+        require(config.description.numLayers >= 2, "Hybrid: need >= 2 layers (input + compute)");
         require(config.description.layerTypes[0] == 3, "Hybrid: layer 0 must be input");
         require(config.description.isCommitted[0], "Hybrid: layer 0 must be committed");
     }
@@ -382,7 +407,7 @@ contract RemainderVerifier {
 
         outputChallenges = challenges.outputChallenges;
         claimAggCoeff = challenges.claimAggCoeff;
-        interLayerCoeff = challenges.interLayerCoeff;
+        interLayerCoeff = challenges.interLayerCoeffs.length > 0 ? challenges.interLayerCoeffs[0] : 0;
     }
 
     // ========================================================================

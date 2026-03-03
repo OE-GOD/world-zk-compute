@@ -2224,6 +2224,34 @@ contract GKRHybridVerifierTest is Test {
         return remainderVerifier.decodeProofCounted(proofData, publicInputs);
     }
 
+    /// @notice Helper to parse flat groth16 outputs into struct (avoids stack-too-deep)
+    function _parseGroth16OutputsHelper(uint256[] memory groth16Outputs, uint256 numComputeLayers)
+        internal
+        pure
+        returns (GKRHybridVerifier.Groth16Outputs memory outputs)
+    {
+        uint256[] memory rlcBeta = new uint256[](numComputeLayers);
+        uint256[] memory zDotJStar = new uint256[](numComputeLayers);
+        for (uint256 i = 0; i < numComputeLayers; i++) {
+            rlcBeta[i] = groth16Outputs[i];
+        }
+        for (uint256 i = 0; i < numComputeLayers; i++) {
+            zDotJStar[i] = groth16Outputs[numComputeLayers + i];
+        }
+        uint256 numLTensor = groth16Outputs.length - 2 * numComputeLayers - 2;
+        uint256[] memory lTensor = new uint256[](numLTensor);
+        for (uint256 i = 0; i < numLTensor; i++) {
+            lTensor[i] = groth16Outputs[2 * numComputeLayers + i];
+        }
+        outputs = GKRHybridVerifier.Groth16Outputs({
+            rlcBeta: rlcBeta,
+            zDotJStar: zDotJStar,
+            lTensor: lTensor,
+            zDotR: groth16Outputs[groth16Outputs.length - 2],
+            mleEval: groth16Outputs[groth16Outputs.length - 1]
+        });
+    }
+
     /// @notice Test buildGroth16Inputs constructs the correct 70-element array (medium config, N=4)
     function test_buildGroth16Inputs_layout() public pure {
         GKRHybridVerifier.TranscriptChallenges memory challenges;
@@ -2236,42 +2264,47 @@ contract GKRHybridVerifierTest is Test {
 
         challenges.claimAggCoeff = 200;
 
-        // Layer 0: 4 bindings, 5 rhos, 4 gammas
-        challenges.layer0Bindings = new uint256[](4);
-        for (uint256 i = 0; i < 4; i++) {
-            challenges.layer0Bindings[i] = 300 + i;
-        }
-        challenges.layer0Rhos = new uint256[](5);
-        for (uint256 i = 0; i < 5; i++) {
-            challenges.layer0Rhos[i] = 400 + i;
-        }
-        challenges.layer0Gammas = new uint256[](4);
-        for (uint256 i = 0; i < 4; i++) {
-            challenges.layer0Gammas[i] = 500 + i;
-        }
-        challenges.layer0PodpChallenge = 550;
+        // 2 layers
+        challenges.layers = new GKRHybridVerifier.LayerChallenges[](2);
 
-        // Layer 1: 4 bindings, 5 rhos, 4 gammas
-        challenges.layer1Bindings = new uint256[](4);
+        // Layer 0: 4 bindings, 5 rhos, 4 gammas, no PoP
+        challenges.layers[0].bindings = new uint256[](4);
         for (uint256 i = 0; i < 4; i++) {
-            challenges.layer1Bindings[i] = 600 + i;
+            challenges.layers[0].bindings[i] = 300 + i;
         }
-        challenges.layer1Rhos = new uint256[](5);
+        challenges.layers[0].rhos = new uint256[](5);
         for (uint256 i = 0; i < 5; i++) {
-            challenges.layer1Rhos[i] = 700 + i;
+            challenges.layers[0].rhos[i] = 400 + i;
         }
-        challenges.layer1Gammas = new uint256[](4);
+        challenges.layers[0].gammas = new uint256[](4);
         for (uint256 i = 0; i < 4; i++) {
-            challenges.layer1Gammas[i] = 800 + i;
+            challenges.layers[0].gammas[i] = 500 + i;
         }
-        challenges.layer1PodpChallenge = 850;
-        challenges.layer1PopChallenge = 860;
+        challenges.layers[0].podpChallenge = 550;
+        // layer 0 has no PoP (popChallenge = 0)
+
+        // Layer 1: 4 bindings, 5 rhos, 4 gammas, has PoP
+        challenges.layers[1].bindings = new uint256[](4);
+        for (uint256 i = 0; i < 4; i++) {
+            challenges.layers[1].bindings[i] = 600 + i;
+        }
+        challenges.layers[1].rhos = new uint256[](5);
+        for (uint256 i = 0; i < 5; i++) {
+            challenges.layers[1].rhos[i] = 700 + i;
+        }
+        challenges.layers[1].gammas = new uint256[](4);
+        for (uint256 i = 0; i < 4; i++) {
+            challenges.layers[1].gammas[i] = 800 + i;
+        }
+        challenges.layers[1].podpChallenge = 850;
+        challenges.layers[1].popChallenge = 860;
 
         challenges.inputRlcCoeffs = new uint256[](2);
         challenges.inputRlcCoeffs[0] = 900;
         challenges.inputRlcCoeffs[1] = 901;
         challenges.inputPodpChallenge = 910;
-        challenges.interLayerCoeff = 1000;
+        challenges.interLayerCoeffs = new uint256[](1);
+        challenges.interLayerCoeffs[0] = 1000;
 
         // Public inputs (16 values for N=4)
         uint256[] memory pubInputs = new uint256[](16);
@@ -2281,10 +2314,12 @@ contract GKRHybridVerifierTest is Test {
 
         // Groth16 outputs: rlcBeta(2) + zDotJStar(2) + lTensor(8) + zDotR + mleEval = 14
         GKRHybridVerifier.Groth16Outputs memory outputs;
-        outputs.rlcBeta0 = 2000;
-        outputs.rlcBeta1 = 2001;
-        outputs.zDotJStar0 = 2002;
-        outputs.zDotJStar1 = 2003;
+        outputs.rlcBeta = new uint256[](2);
+        outputs.rlcBeta[0] = 2000;
+        outputs.rlcBeta[1] = 2001;
+        outputs.zDotJStar = new uint256[](2);
+        outputs.zDotJStar[0] = 2002;
+        outputs.zDotJStar[1] = 2003;
         outputs.lTensor = new uint256[](8);
         for (uint256 i = 0; i < 8; i++) {
             outputs.lTensor[i] = 2004 + i;
@@ -2369,32 +2404,36 @@ contract GKRHybridVerifierTest is Test {
 
         challenges.claimAggCoeff = 200;
 
-        // Layer 0: 1 binding, 2 rhos, 1 gamma
-        challenges.layer0Bindings = new uint256[](1);
-        challenges.layer0Bindings[0] = 300;
-        challenges.layer0Rhos = new uint256[](2);
-        challenges.layer0Rhos[0] = 400;
-        challenges.layer0Rhos[1] = 401;
-        challenges.layer0Gammas = new uint256[](1);
-        challenges.layer0Gammas[0] = 500;
-        challenges.layer0PodpChallenge = 550;
+        // 2 layers
+        challenges.layers = new GKRHybridVerifier.LayerChallenges[](2);
 
-        // Layer 1: 1 binding, 2 rhos, 1 gamma
-        challenges.layer1Bindings = new uint256[](1);
-        challenges.layer1Bindings[0] = 600;
-        challenges.layer1Rhos = new uint256[](2);
-        challenges.layer1Rhos[0] = 700;
-        challenges.layer1Rhos[1] = 701;
-        challenges.layer1Gammas = new uint256[](1);
-        challenges.layer1Gammas[0] = 800;
-        challenges.layer1PodpChallenge = 850;
-        challenges.layer1PopChallenge = 860;
+        // Layer 0: 1 binding, 2 rhos, 1 gamma, no PoP
+        challenges.layers[0].bindings = new uint256[](1);
+        challenges.layers[0].bindings[0] = 300;
+        challenges.layers[0].rhos = new uint256[](2);
+        challenges.layers[0].rhos[0] = 400;
+        challenges.layers[0].rhos[1] = 401;
+        challenges.layers[0].gammas = new uint256[](1);
+        challenges.layers[0].gammas[0] = 500;
+        challenges.layers[0].podpChallenge = 550;
+
+        // Layer 1: 1 binding, 2 rhos, 1 gamma, has PoP
+        challenges.layers[1].bindings = new uint256[](1);
+        challenges.layers[1].bindings[0] = 600;
+        challenges.layers[1].rhos = new uint256[](2);
+        challenges.layers[1].rhos[0] = 700;
+        challenges.layers[1].rhos[1] = 701;
+        challenges.layers[1].gammas = new uint256[](1);
+        challenges.layers[1].gammas[0] = 800;
+        challenges.layers[1].podpChallenge = 850;
+        challenges.layers[1].popChallenge = 860;
 
         challenges.inputRlcCoeffs = new uint256[](2);
         challenges.inputRlcCoeffs[0] = 900;
         challenges.inputRlcCoeffs[1] = 901;
         challenges.inputPodpChallenge = 910;
-        challenges.interLayerCoeff = 1000;
+        challenges.interLayerCoeffs = new uint256[](1);
+        challenges.interLayerCoeffs[0] = 1000;
 
         // Public inputs (2^1 = 2 values for N=1)
         uint256[] memory pubInputs = new uint256[](2);
@@ -2403,10 +2442,12 @@ contract GKRHybridVerifierTest is Test {
 
         // Groth16 outputs: rlcBeta(2) + zDotJStar(2) + lTensor(2) + zDotR + mleEval = 8
         GKRHybridVerifier.Groth16Outputs memory outputs;
-        outputs.rlcBeta0 = 2000;
-        outputs.rlcBeta1 = 2001;
-        outputs.zDotJStar0 = 2002;
-        outputs.zDotJStar1 = 2003;
+        outputs.rlcBeta = new uint256[](2);
+        outputs.rlcBeta[0] = 2000;
+        outputs.rlcBeta[1] = 2001;
+        outputs.zDotJStar = new uint256[](2);
+        outputs.zDotJStar[0] = 2002;
+        outputs.zDotJStar[1] = 2003;
         outputs.lTensor = new uint256[](2);
         outputs.lTensor[0] = 2004;
         outputs.lTensor[1] = 2005;
@@ -2426,6 +2467,143 @@ contract GKRHybridVerifierTest is Test {
         assertEq(inputs[4], 100, "outputChallenge0");
         assertEq(inputs[inputs.length - 1], 2007, "mleEval (last)");
         assertEq(inputs[inputs.length - 2], 2006, "zDotR (second to last)");
+    }
+
+    /// @notice Test buildGroth16Inputs with 3 computation layers (N=4) to verify N-layer generalization
+    function test_buildGroth16Inputs_three_layers() public pure {
+        GKRHybridVerifier.TranscriptChallenges memory challenges;
+
+        // Output challenges (4 values for N=4)
+        challenges.outputChallenges = new uint256[](4);
+        for (uint256 i = 0; i < 4; i++) {
+            challenges.outputChallenges[i] = 100 + i;
+        }
+
+        challenges.claimAggCoeff = 200;
+
+        // 3 computation layers (subtract + multiply + subtract)
+        challenges.layers = new GKRHybridVerifier.LayerChallenges[](3);
+
+        // Layer 0: 4 bindings, 5 rhos, 4 gammas, no PoP
+        challenges.layers[0].bindings = new uint256[](4);
+        for (uint256 i = 0; i < 4; i++) challenges.layers[0].bindings[i] = 300 + i;
+        challenges.layers[0].rhos = new uint256[](5);
+        for (uint256 i = 0; i < 5; i++) challenges.layers[0].rhos[i] = 400 + i;
+        challenges.layers[0].gammas = new uint256[](4);
+        for (uint256 i = 0; i < 4; i++) challenges.layers[0].gammas[i] = 500 + i;
+        challenges.layers[0].podpChallenge = 550;
+
+        // Layer 1: 4 bindings, 5 rhos, 4 gammas, no PoP
+        challenges.layers[1].bindings = new uint256[](4);
+        for (uint256 i = 0; i < 4; i++) challenges.layers[1].bindings[i] = 600 + i;
+        challenges.layers[1].rhos = new uint256[](5);
+        for (uint256 i = 0; i < 5; i++) challenges.layers[1].rhos[i] = 700 + i;
+        challenges.layers[1].gammas = new uint256[](4);
+        for (uint256 i = 0; i < 4; i++) challenges.layers[1].gammas[i] = 800 + i;
+        challenges.layers[1].podpChallenge = 850;
+
+        // Layer 2: 4 bindings, 5 rhos, 4 gammas, has PoP (last layer)
+        challenges.layers[2].bindings = new uint256[](4);
+        for (uint256 i = 0; i < 4; i++) challenges.layers[2].bindings[i] = 1100 + i;
+        challenges.layers[2].rhos = new uint256[](5);
+        for (uint256 i = 0; i < 5; i++) challenges.layers[2].rhos[i] = 1200 + i;
+        challenges.layers[2].gammas = new uint256[](4);
+        for (uint256 i = 0; i < 4; i++) challenges.layers[2].gammas[i] = 1300 + i;
+        challenges.layers[2].podpChallenge = 1350;
+        challenges.layers[2].popChallenge = 1360;
+
+        challenges.inputRlcCoeffs = new uint256[](2);
+        challenges.inputRlcCoeffs[0] = 900;
+        challenges.inputRlcCoeffs[1] = 901;
+        challenges.inputPodpChallenge = 910;
+        // 2 inter-layer coefficients for 3 layers
+        challenges.interLayerCoeffs = new uint256[](2);
+        challenges.interLayerCoeffs[0] = 1000;
+        challenges.interLayerCoeffs[1] = 1001;
+
+        // Public inputs (2^4 = 16 values)
+        uint256[] memory pubInputs = new uint256[](16);
+        for (uint256 i = 0; i < 16; i++) pubInputs[i] = 10 + i;
+
+        // Groth16 outputs: rlcBeta(3) + zDotJStar(3) + lTensor(8) + zDotR + mleEval = 16
+        GKRHybridVerifier.Groth16Outputs memory outputs;
+        outputs.rlcBeta = new uint256[](3);
+        outputs.rlcBeta[0] = 2000;
+        outputs.rlcBeta[1] = 2001;
+        outputs.rlcBeta[2] = 2002;
+        outputs.zDotJStar = new uint256[](3);
+        outputs.zDotJStar[0] = 2003;
+        outputs.zDotJStar[1] = 2004;
+        outputs.zDotJStar[2] = 2005;
+        outputs.lTensor = new uint256[](8);
+        for (uint256 i = 0; i < 8; i++) outputs.lTensor[i] = 2006 + i;
+        outputs.zDotR = 2014;
+        outputs.mleEval = 2015;
+
+        uint256[] memory inputs = GKRHybridVerifier.buildGroth16Inputs(12345, 67890, pubInputs, challenges, outputs);
+
+        // Total = 2(hash) + 16(pub) + 4(outCh) + 1(claimAgg)
+        //       + 14(L0: 4+5+4+1) + 14(L1: 4+5+4+1) + 15(L2: 4+5+4+1+1pop)
+        //       + 2(inputRlc) + 1(inputPodp) + 2(interLayer)
+        //       + 3(rlcBeta) + 3(zDotJStar) + 8(lTensor) + 1(zDotR) + 1(mleEval) = 87
+        assertEq(inputs.length, 87, "3-layer N=4 config should have 87 inputs");
+
+        // Verify structure: walk through all positions
+        uint256 idx = 0;
+
+        // Circuit hash
+        assertEq(inputs[idx++], 12345, "circuitHash0");
+        assertEq(inputs[idx++], 67890, "circuitHash1");
+
+        // Public inputs
+        for (uint256 i = 0; i < 16; i++) assertEq(inputs[idx++], 10 + i, "pubInput");
+
+        // Output challenges
+        for (uint256 i = 0; i < 4; i++) assertEq(inputs[idx++], 100 + i, "outputChallenge");
+
+        // Claim agg coeff
+        assertEq(inputs[idx++], 200, "claimAggCoeff");
+
+        // Layer 0
+        for (uint256 i = 0; i < 4; i++) assertEq(inputs[idx++], 300 + i, "L0 binding");
+        for (uint256 i = 0; i < 5; i++) assertEq(inputs[idx++], 400 + i, "L0 rho");
+        for (uint256 i = 0; i < 4; i++) assertEq(inputs[idx++], 500 + i, "L0 gamma");
+        assertEq(inputs[idx++], 550, "L0 podpChallenge");
+
+        // Layer 1
+        for (uint256 i = 0; i < 4; i++) assertEq(inputs[idx++], 600 + i, "L1 binding");
+        for (uint256 i = 0; i < 5; i++) assertEq(inputs[idx++], 700 + i, "L1 rho");
+        for (uint256 i = 0; i < 4; i++) assertEq(inputs[idx++], 800 + i, "L1 gamma");
+        assertEq(inputs[idx++], 850, "L1 podpChallenge");
+
+        // Layer 2 (with PoP)
+        for (uint256 i = 0; i < 4; i++) assertEq(inputs[idx++], 1100 + i, "L2 binding");
+        for (uint256 i = 0; i < 5; i++) assertEq(inputs[idx++], 1200 + i, "L2 rho");
+        for (uint256 i = 0; i < 4; i++) assertEq(inputs[idx++], 1300 + i, "L2 gamma");
+        assertEq(inputs[idx++], 1350, "L2 podpChallenge");
+        assertEq(inputs[idx++], 1360, "L2 popChallenge");
+
+        // Input RLC + PODP
+        assertEq(inputs[idx++], 900, "inputRlcCoeff0");
+        assertEq(inputs[idx++], 901, "inputRlcCoeff1");
+        assertEq(inputs[idx++], 910, "inputPodpChallenge");
+
+        // Inter-layer coefficients (2 for 3 layers)
+        assertEq(inputs[idx++], 1000, "interLayerCoeff0");
+        assertEq(inputs[idx++], 1001, "interLayerCoeff1");
+
+        // Groth16 outputs
+        assertEq(inputs[idx++], 2000, "rlcBeta0");
+        assertEq(inputs[idx++], 2001, "rlcBeta1");
+        assertEq(inputs[idx++], 2002, "rlcBeta2");
+        assertEq(inputs[idx++], 2003, "zDotJStar0");
+        assertEq(inputs[idx++], 2004, "zDotJStar1");
+        assertEq(inputs[idx++], 2005, "zDotJStar2");
+        for (uint256 i = 0; i < 8; i++) assertEq(inputs[idx++], 2006 + i, "lTensor");
+        assertEq(inputs[idx++], 2014, "zDotR");
+        assertEq(inputs[idx++], 2015, "mleEval");
+
+        assertEq(idx, inputs.length, "idx should equal array length");
     }
 
     /// @notice Gas measurement for hybrid transcript replay
@@ -2567,6 +2745,32 @@ contract GKRHybridVerifierTest is Test {
         emit log_named_uint("Output challenge[0] (Rust)", expectedOutputChallenges[0]);
     }
 
+    /// @notice Replay transcript and build Groth16 inputs from fixture data
+    function _replayAndBuildGroth16Inputs(
+        bytes memory innerProof,
+        bytes32 circuitHash,
+        bytes memory publicValuesAbi,
+        uint256[] memory groth16Outputs
+    ) internal returns (uint256[] memory groth16Inputs) {
+        bytes memory proofData = new bytes(innerProof.length - 4);
+        for (uint256 i = 4; i < innerProof.length; i++) {
+            proofData[i - 4] = innerProof[i];
+        }
+
+        (GKRVerifier.GKRProof memory gkrProof, uint256[] memory pubInputs) =
+            this.decodeProofHelper(proofData, publicValuesAbi);
+        PoseidonSponge.Sponge memory sponge = remainderVerifier.setupTranscriptPublic(circuitHash, pubInputs, gkrProof);
+
+        GKRHybridVerifier.TranscriptChallenges memory challenges =
+            GKRHybridVerifier.replayTranscriptAndCollectChallenges(gkrProof, sponge);
+
+        GKRHybridVerifier.Groth16Outputs memory outputs =
+            _parseGroth16OutputsHelper(groth16Outputs, gkrProof.layerProofs.length);
+
+        (uint256 chFr0, uint256 chFr1) = remainderVerifier.hashToFqPair(circuitHash);
+        groth16Inputs = GKRHybridVerifier.buildGroth16Inputs(chFr0, chFr1, pubInputs, challenges, outputs);
+    }
+
     /// @notice Test Groth16 verification with replayed challenge inputs
     function test_combined_groth16_with_replayed_inputs() public {
         (
@@ -2577,44 +2781,10 @@ contract GKRHybridVerifierTest is Test {
             uint256[] memory groth16Outputs
         ) = _loadCombinedFixture();
 
-        // Replay transcript to get challenges
-        bytes memory proofData = new bytes(innerProof.length - 4);
-        for (uint256 i = 4; i < innerProof.length; i++) {
-            proofData[i - 4] = innerProof[i];
-        }
-
-        (GKRVerifier.GKRProof memory gkrProof, uint256[] memory pubInputs) =
-            this.decodeProofHelper(proofData, publicValuesAbi);
-        PoseidonSponge.Sponge memory sponge = remainderVerifier.setupTranscriptPublic(circuitHash, pubInputs, gkrProof);
-
-        // Full transcript replay
-        GKRHybridVerifier.TranscriptChallenges memory challenges =
-            GKRHybridVerifier.replayTranscriptAndCollectChallenges(gkrProof, sponge);
-
-        // Parse groth16Outputs into struct for buildGroth16Inputs
-        uint256 numLTensor = groth16Outputs.length - 6;
-        uint256[] memory lTensor = new uint256[](numLTensor);
-        for (uint256 i = 0; i < numLTensor; i++) {
-            lTensor[i] = groth16Outputs[4 + i];
-        }
-        GKRHybridVerifier.Groth16Outputs memory outputs = GKRHybridVerifier.Groth16Outputs({
-            rlcBeta0: groth16Outputs[0],
-            rlcBeta1: groth16Outputs[1],
-            zDotJStar0: groth16Outputs[2],
-            zDotJStar1: groth16Outputs[3],
-            lTensor: lTensor,
-            zDotR: groth16Outputs[groth16Outputs.length - 2],
-            mleEval: groth16Outputs[groth16Outputs.length - 1]
-        });
-
-        // Build Groth16 public inputs using actual circuit hash Fr values
-        (uint256 chFr0, uint256 chFr1) = remainderVerifier.hashToFqPair(circuitHash);
         uint256[] memory groth16Inputs =
-            GKRHybridVerifier.buildGroth16Inputs(chFr0, chFr1, pubInputs, challenges, outputs);
+            _replayAndBuildGroth16Inputs(innerProof, circuitHash, publicValuesAbi, groth16Outputs);
         assertEq(groth16Inputs.length, 70, "Expected 70 Groth16 inputs for medium config");
 
-        // Verify the Groth16 proof with our on-chain-derived inputs via direct typed call
-        // Convert dynamic array to fixed-size for the typed verifier interface
         uint256[70] memory fixedInputs;
         for (uint256 i = 0; i < 70; i++) {
             fixedInputs[i] = groth16Inputs[i];
