@@ -36,12 +36,6 @@ library CommittedSumcheckVerifier {
         HyraxVerifier.PODPProof podp; // Dot product argument for final check
     }
 
-    /// @notice Result of committed sumcheck verification
-    struct CommittedSumcheckResult {
-        bool valid;
-        uint256[] bindings; // Fiat-Shamir challenges (one per round)
-    }
-
     // ========================================================================
     // VERIFICATION
     // ========================================================================

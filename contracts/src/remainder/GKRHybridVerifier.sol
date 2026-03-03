@@ -529,10 +529,10 @@ library GKRHybridVerifier {
         TranscriptChallenges memory challenges,
         Groth16Outputs memory groth16Outputs
     ) internal pure returns (uint256[] memory inputs) {
-        uint256 total = 2 + pubInputs.length + challenges.outputChallenges.length + 1
-            + challenges.layer0Bindings.length + challenges.layer0Rhos.length + challenges.layer0Gammas.length + 1
-            + challenges.layer1Bindings.length + challenges.layer1Rhos.length + challenges.layer1Gammas.length + 2
-            + 4 + 4 + groth16Outputs.lTensor.length + 2;
+        uint256 total = 2 + pubInputs.length + challenges.outputChallenges.length + 1 + challenges.layer0Bindings.length
+            + challenges.layer0Rhos.length + challenges.layer0Gammas.length + 1 + challenges.layer1Bindings.length
+            + challenges.layer1Rhos.length + challenges.layer1Gammas.length + 2 + 4 + 4 + groth16Outputs.lTensor.length
+            + 2;
         inputs = new uint256[](total);
         uint256 idx = 0;
 

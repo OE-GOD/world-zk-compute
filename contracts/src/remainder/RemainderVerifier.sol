@@ -2,12 +2,9 @@
 pragma solidity ^0.8.20;
 
 import {PoseidonSponge} from "./PoseidonSponge.sol";
-import {SumcheckVerifier} from "./SumcheckVerifier.sol";
 import {HyraxVerifier} from "./HyraxVerifier.sol";
 import {GKRVerifier} from "./GKRVerifier.sol";
-import {CommittedSumcheckVerifier} from "./CommittedSumcheckVerifier.sol";
 import {GKRHybridVerifier} from "./GKRHybridVerifier.sol";
-import {Verifier as Groth16Verifier} from "./RemainderGroth16Verifier.sol";
 
 /// @title RemainderVerifier
 /// @notice Top-level on-chain verifier for Remainder (GKR+Hyrax) proofs
@@ -271,8 +268,11 @@ contract RemainderVerifier {
         }
 
         // Validate circuit structure is compatible with hybrid verifier
-        // (currently supports: 3 layers = input(committed) + multiply + subtract)
-        require(config.description.numLayers == 3, "Hybrid: requires 3-layer circuit");
+        // Requires: committed input layer + at least 2 computation layers.
+        // The current transcript replay and EC check logic processes exactly 2
+        // computation layers (subtract + multiply). Circuits with more layers will
+        // need generalized replayTranscriptAndCollectChallenges() and verifyECChecks().
+        require(config.description.numLayers >= 3, "Hybrid: need >= 3 layers (input + 2 compute)");
         require(config.description.layerTypes[0] == 3, "Hybrid: layer 0 must be input");
         require(config.description.isCommitted[0], "Hybrid: layer 0 must be committed");
     }
@@ -296,11 +296,7 @@ contract RemainderVerifier {
     }
 
     /// @dev Resolve the Groth16 verifier address and selector for a circuit
-    function _getCircuitGroth16Verifier(bytes32 circuitHash)
-        private
-        view
-        returns (address verifier, bytes4 selector)
-    {
+    function _getCircuitGroth16Verifier(bytes32 circuitHash) private view returns (address verifier, bytes4 selector) {
         verifier = circuitGroth16Verifiers[circuitHash];
         selector = circuitGroth16Selectors[circuitHash];
         // Fallback to global verifier (backward compat with existing tests)
@@ -312,12 +308,10 @@ contract RemainderVerifier {
     }
 
     /// @dev Call the Groth16 verifier with raw staticcall (inline encoding, no offset/length)
-    function _callGroth16Verifier(
-        address verifier,
-        bytes4 selector,
-        uint256[8] calldata proof,
-        uint256[] memory inputs
-    ) private view {
+    function _callGroth16Verifier(address verifier, bytes4 selector, uint256[8] calldata proof, uint256[] memory inputs)
+        private
+        view
+    {
         // Copy proof to memory for assembly access (calldata fixed arrays don't support .offset)
         uint256[8] memory proofMem = proof;
         uint256 n = inputs.length;
@@ -930,29 +924,25 @@ contract RemainderVerifier {
                 let val := mload(add(fqElements, mul(add(i, 1), 32)))
                 // Byte-reverse uint256: swap bytes using O(log n) bitwise operations
                 // Swap adjacent bytes (swap odd/even byte positions)
-                val :=
-                    or(
-                        and(shr(8, val), 0x00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF),
-                        and(shl(8, val), 0xFF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00)
-                    )
+                val := or(
+                    and(shr(8, val), 0x00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF),
+                    and(shl(8, val), 0xFF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00FF00)
+                )
                 // Swap adjacent 2-byte groups
-                val :=
-                    or(
-                        and(shr(16, val), 0x0000FFFF0000FFFF0000FFFF0000FFFF0000FFFF0000FFFF0000FFFF0000FFFF),
-                        and(shl(16, val), 0xFFFF0000FFFF0000FFFF0000FFFF0000FFFF0000FFFF0000FFFF0000FFFF0000)
-                    )
+                val := or(
+                    and(shr(16, val), 0x0000FFFF0000FFFF0000FFFF0000FFFF0000FFFF0000FFFF0000FFFF0000FFFF),
+                    and(shl(16, val), 0xFFFF0000FFFF0000FFFF0000FFFF0000FFFF0000FFFF0000FFFF0000FFFF0000)
+                )
                 // Swap adjacent 4-byte groups
-                val :=
-                    or(
-                        and(shr(32, val), 0x00000000FFFFFFFF00000000FFFFFFFF00000000FFFFFFFF00000000FFFFFFFF),
-                        and(shl(32, val), 0xFFFFFFFF00000000FFFFFFFF00000000FFFFFFFF00000000FFFFFFFF00000000)
-                    )
+                val := or(
+                    and(shr(32, val), 0x00000000FFFFFFFF00000000FFFFFFFF00000000FFFFFFFF00000000FFFFFFFF),
+                    and(shl(32, val), 0xFFFFFFFF00000000FFFFFFFF00000000FFFFFFFF00000000FFFFFFFF00000000)
+                )
                 // Swap adjacent 8-byte groups
-                val :=
-                    or(
-                        and(shr(64, val), 0x0000000000000000FFFFFFFFFFFFFFFF0000000000000000FFFFFFFFFFFFFFFF),
-                        and(shl(64, val), 0xFFFFFFFFFFFFFFFF0000000000000000FFFFFFFFFFFFFFFF0000000000000000)
-                    )
+                val := or(
+                    and(shr(64, val), 0x0000000000000000FFFFFFFFFFFFFFFF0000000000000000FFFFFFFFFFFFFFFF),
+                    and(shl(64, val), 0xFFFFFFFFFFFFFFFF0000000000000000FFFFFFFFFFFFFFFF0000000000000000)
+                )
                 // Swap 16-byte halves
                 val := or(shr(128, val), shl(128, val))
                 mstore(add(ptr, mul(i, 32)), val)
@@ -980,5 +970,4 @@ contract RemainderVerifier {
             }
         }
     }
-
 }

@@ -11,9 +11,7 @@ import "../src/remainder/CommittedSumcheckVerifier.sol";
 import "../src/remainder/HyraxProofDecoder.sol";
 import {Verifier as Groth16Verifier} from "../src/remainder/RemainderGroth16Verifier.sol";
 import {GKRHybridVerifier} from "../src/remainder/GKRHybridVerifier.sol";
-import "../src/IProofVerifier.sol";
 import "../src/RemainderVerifierAdapter.sol";
-import "../src/RiscZeroVerifierAdapter.sol";
 import "../src/ProgramRegistry.sol";
 import "../src/ExecutionEngine.sol";
 import "../src/MockRiscZeroVerifier.sol";
@@ -1653,10 +1651,6 @@ contract TestableRemainderVerifier is RemainderVerifier {
     {
         return _setupTranscript(circuitHash, pubInputs, gkrProof);
     }
-
-    function extractInputCommitCoords(GKRVerifier.GKRProof memory proof) external pure returns (uint256[] memory) {
-        return _extractInputCommitCoords(proof);
-    }
 }
 
 /// @title TranscriptSetupTest
@@ -1776,6 +1770,20 @@ contract TranscriptSetupTest is Test {
         uint256 gasUsed = gasBefore - gasleft();
 
         emit log_named_uint("SHA-256 hash chain gas (4 EC coords)", gasUsed);
+    }
+
+    /// @notice Gas benchmark for SHA-256 hash chain on 16 elements (medium config public inputs)
+    function test_gas_sha256_hash_chain_16_elements() public {
+        uint256[] memory elements = new uint256[](16);
+        for (uint256 i = 0; i < 16; i++) {
+            elements[i] = uint256(keccak256(abi.encodePacked(i))) % type(uint128).max;
+        }
+
+        uint256 gasBefore = gasleft();
+        verifier.sha256HashChain(elements);
+        uint256 gasUsed = gasBefore - gasleft();
+
+        emit log_named_uint("SHA-256 hash chain gas (16 elements)", gasUsed);
     }
 
     /// @dev Extract only input proof commitment rows from raw proof (minimal decode)

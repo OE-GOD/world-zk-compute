@@ -50,13 +50,6 @@ library PoseidonSponge {
         absorb(s, b);
     }
 
-    /// @notice Absorb multiple field elements
-    function absorbMany(Sponge memory s, uint256[] memory values) internal pure {
-        for (uint256 i = 0; i < values.length; i++) {
-            absorb(s, values[i]);
-        }
-    }
-
     /// @notice Squeeze a single challenge from the sponge
     function squeeze(Sponge memory s) internal pure returns (uint256) {
         // Pad: add 1 to next rate position

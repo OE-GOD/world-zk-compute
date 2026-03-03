@@ -2,7 +2,6 @@
 pragma solidity ^0.8.20;
 
 import {PoseidonSponge} from "./PoseidonSponge.sol";
-import {SumcheckVerifier} from "./SumcheckVerifier.sol";
 import {HyraxVerifier} from "./HyraxVerifier.sol";
 import {CommittedSumcheckVerifier} from "./CommittedSumcheckVerifier.sol";
 
@@ -437,7 +436,7 @@ library GKRVerifier {
         }
 
         // L_tensor = RLC of individual L-tensors
-        lCoeffs = _computeRlcTensor(claimPoints, lHalfLen, rlcCoeffs, true);
+        lCoeffs = _computeRlcTensor(claimPoints, lHalfLen, rlcCoeffs);
 
         // R_tensor from shared R-half (same for all claims)
         uint256[] memory rVars = new uint256[](rHalfLen);
@@ -448,7 +447,7 @@ library GKRVerifier {
     }
 
     /// @notice Compute RLC of tensor products for L-halves of multiple claim points
-    function _computeRlcTensor(uint256[][] memory claimPoints, uint256 lHalfLen, uint256[] memory rlcCoeffs, bool isL)
+    function _computeRlcTensor(uint256[][] memory claimPoints, uint256 lHalfLen, uint256[] memory rlcCoeffs)
         private
         pure
         returns (uint256[] memory result)
@@ -469,54 +468,6 @@ library GKRVerifier {
                 result[j] = addmod(result[j], mulmod(tensor[j], rlcCoeffs[c], FR_MODULUS), FR_MODULUS);
             }
         }
-    }
-
-    /// @notice Verify a committed input layer via Hyrax+PODP (single claim)
-    function _verifyCommittedInput(
-        HyraxVerifier.EvalProof memory inputProof,
-        uint256[] memory currentBindings,
-        HyraxVerifier.G1Point memory currentClaimCommitment,
-        PoseidonSponge.Sponge memory sponge,
-        HyraxVerifier.PedersenGens memory gens
-    ) private view returns (bool) {
-        // Split bindings into L and R tensor products for Hyrax evaluation
-        (uint256[] memory lCoeffs, uint256[] memory rCoeffs) =
-            _computeHyraxTensors(inputProof.commitmentRows.length, currentBindings);
-
-        // Absorb commitment to evaluation before PODP
-        PoseidonSponge.absorb(sponge, inputProof.comEval.x);
-        PoseidonSponge.absorb(sponge, inputProof.comEval.y);
-
-        // Derive PODP challenge and advance transcript
-        uint256 podpChallenge = _absorbInputPODP(inputProof, sponge);
-
-        return HyraxVerifier.verifyEvaluation(inputProof, lCoeffs, rCoeffs, 0, podpChallenge, gens);
-    }
-
-    /// @notice Compute L and R tensor products for Hyrax evaluation
-    /// @dev Split point derived from commitment matrix: numRows = 2^(n - log_n_cols)
-    ///      L = first (n - log_n_cols) variables → tensor of length numRows
-    ///      R = last log_n_cols variables → tensor of length 2^(log_n_cols)
-    function _computeHyraxTensors(uint256 numRows, uint256[] memory bindings)
-        private
-        pure
-        returns (uint256[] memory lCoeffs, uint256[] memory rCoeffs)
-    {
-        uint256 lHalfLen = _log2(numRows > 0 ? numRows : 1);
-        uint256 n = bindings.length;
-        uint256 rHalfLen = n - lHalfLen;
-
-        uint256[] memory lVars = new uint256[](lHalfLen);
-        uint256[] memory rVars = new uint256[](rHalfLen);
-        for (uint256 j = 0; j < lHalfLen; j++) {
-            lVars[j] = bindings[j];
-        }
-        for (uint256 j = 0; j < rHalfLen; j++) {
-            rVars[j] = bindings[lHalfLen + j];
-        }
-
-        lCoeffs = _initializeTensor(lVars);
-        rCoeffs = _initializeTensor(rVars);
     }
 
     /// @notice Absorb input proof PODP data and return challenge
