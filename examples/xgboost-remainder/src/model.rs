@@ -152,6 +152,135 @@ pub fn dequantize(val: i64) -> f64 {
     val as f64 / FIXED_POINT_SCALE as f64
 }
 
+// ========================================================================
+// Tree inference circuit utilities
+// ========================================================================
+
+/// Compute the actual depth of a single tree (max path length from root to any leaf).
+pub fn tree_depth(tree: &DecisionTree) -> usize {
+    fn depth_of(nodes: &[TreeNode], idx: usize) -> usize {
+        let node = &nodes[idx];
+        if node.is_leaf {
+            return 0;
+        }
+        1 + depth_of(nodes, node.left_child).max(depth_of(nodes, node.right_child))
+    }
+    depth_of(&tree.nodes, 0)
+}
+
+/// Extract all leaf values from a tree as a flat array of length 2^depth.
+/// Trees that are not perfectly balanced are padded: missing leaves get value 0.
+/// Ordering: leaves are indexed by path bits (b_0, b_1, ..., b_{d-1}) in big-endian,
+/// where b_i=0 means left, b_i=1 means right.
+pub fn tree_leaf_values(tree: &DecisionTree, target_depth: usize) -> Vec<i64> {
+    let num_leaves = 1usize << target_depth;
+    let mut leaves = vec![0i64; num_leaves];
+
+    fn fill_leaves(
+        nodes: &[TreeNode],
+        idx: usize,
+        depth: usize,
+        target_depth: usize,
+        path_index: usize,
+        leaves: &mut Vec<i64>,
+    ) {
+        let node = &nodes[idx];
+        if node.is_leaf || depth == target_depth {
+            // Fill all descendants at target_depth with this leaf's value
+            let val = if node.is_leaf {
+                quantize(node.leaf_value)
+            } else {
+                0
+            };
+            let span = 1usize << (target_depth - depth);
+            for i in 0..span {
+                leaves[path_index + i] = val;
+            }
+            return;
+        }
+        let half = 1usize << (target_depth - depth - 1);
+        // Left child: path bit = 0 (lower half of indices)
+        fill_leaves(nodes, node.left_child, depth + 1, target_depth, path_index, leaves);
+        // Right child: path bit = 1 (upper half of indices)
+        fill_leaves(
+            nodes,
+            node.right_child,
+            depth + 1,
+            target_depth,
+            path_index + half,
+            leaves,
+        );
+    }
+
+    fill_leaves(&tree.nodes, 0, 0, target_depth, 0, &mut leaves);
+    leaves
+}
+
+/// Collect all leaf values from all trees, padded to uniform max depth.
+/// Returns (leaf_values_flat, max_depth).
+/// leaf_values_flat has T * 2^max_depth entries.
+pub fn collect_all_leaf_values(model: &XgboostModel) -> (Vec<i64>, usize) {
+    let max_d = model.trees.iter().map(|t| tree_depth(t)).max().unwrap_or(0);
+    let mut all_leaves = Vec::new();
+    for tree in &model.trees {
+        all_leaves.extend(tree_leaf_values(tree, max_d));
+    }
+    (all_leaves, max_d)
+}
+
+/// Compute path bits for all trees given features.
+/// Returns path_bits[t][k] = false (left) or true (right) for tree t at depth k.
+/// Paths are padded to max_depth (extra levels get false/left).
+pub fn compute_path_bits(model: &XgboostModel, features: &[f64]) -> (Vec<Vec<bool>>, usize) {
+    let max_d = model.trees.iter().map(|t| tree_depth(t)).max().unwrap_or(0);
+    let mut all_bits = Vec::new();
+
+    for tree in &model.trees {
+        let mut bits = vec![false; max_d];
+        let mut node_idx = 0;
+        for depth in 0..max_d {
+            let node = &tree.nodes[node_idx];
+            if node.is_leaf {
+                break; // remaining bits stay false (left)
+            }
+            let feature_val = features[node.feature_index as usize];
+            let goes_right = feature_val >= node.threshold;
+            bits[depth] = goes_right;
+            if goes_right {
+                node_idx = node.right_child;
+            } else {
+                node_idx = node.left_child;
+            }
+        }
+        all_bits.push(bits);
+    }
+
+    (all_bits, max_d)
+}
+
+/// Compute the expected sum of selected leaf values across all trees (quantized).
+pub fn compute_leaf_sum(model: &XgboostModel, features: &[f64]) -> i64 {
+    let mut total = quantize(model.base_score);
+    for tree in &model.trees {
+        total += quantize(traverse_tree(tree, features));
+    }
+    total
+}
+
+/// Compute ceil(log2(n)), minimum 1
+pub fn next_log2(n: usize) -> usize {
+    if n <= 1 {
+        return 1;
+    }
+    let mut v = n - 1;
+    let mut log = 0;
+    while v > 0 {
+        v >>= 1;
+        log += 1;
+    }
+    log
+}
+
 /// Create a sample XGBoost model for testing
 pub fn sample_model() -> XgboostModel {
     // Simple 2-tree binary classifier on 5 features

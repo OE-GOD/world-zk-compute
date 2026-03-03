@@ -1,15 +1,17 @@
-//! GKR Circuit Builder for XGBoost Decision Tree Inference
+//! GKR Circuit Builder for XGBoost Decision Tree Inference (Phase 1a)
 //!
 //! Uses Remainder_CE's CircuitBuilder API to encode XGBoost inference as a GKR circuit.
 //!
-//! Circuit structure:
-//!   - Input layer (Committed): quantized feature values (private)
-//!   - Public input layer (Public): expected output values
-//!   - Comparison layer: element-wise subtraction (feature * threshold - expected)
-//!   - Output layer: must evaluate to zero for valid proof
+//! Circuit structure (tree inference verification):
+//!   - Input layer (Committed): path bits — binary indicators for tree traversal (private)
+//!   - Public input layer: all leaf values from model + expected aggregate sum
+//!   - Binary check: verifies each path bit is 0 or 1
+//!   - Leaf fold: MLE evaluation selects the correct leaf per tree using path bits
+//!   - Aggregation: sums selected leaves across all trees
+//!   - Output layer: binary check values + (sum - expected) must all be zero
 //!
-//! The circuit proves that the XGBoost inference was performed correctly
-//! without revealing the input features.
+//! The circuit proves that valid binary paths select specific leaves from the public
+//! model, and those leaves aggregate to the claimed prediction.
 
 use crate::model::{self, XgboostModel};
 use anyhow::Result;
@@ -34,75 +36,58 @@ pub fn build_and_prove(
     features: &[f64],
     predicted_class: u32,
 ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
-    // Quantize feature values to integers for field arithmetic
-    let quantized_features: Vec<i64> = features.iter().map(|&f| model::quantize(f)).collect();
+    // === Collect model data for circuit ===
+    let (all_leaf_values, max_depth) = model::collect_all_leaf_values(model);
+    let (path_bits_2d, _) = model::compute_path_bits(model, features);
 
-    // Trace the inference to get leaf values per tree
-    let paths = model::trace_inference(model, features);
-    let mut leaf_values = Vec::new();
-    let mut total_score = model::quantize(model.base_score);
-    for (tree_idx, tree) in model.trees.iter().enumerate() {
-        let mut node_idx = 0;
-        loop {
-            let node = &tree.nodes[node_idx];
-            if node.is_leaf {
-                let leaf_val = model::quantize(node.leaf_value);
-                leaf_values.push(leaf_val);
-                total_score += leaf_val;
-                break;
-            }
-            let feature_val = features[node.feature_index as usize];
-            if feature_val < node.threshold {
-                node_idx = node.left_child;
-            } else {
-                node_idx = node.right_child;
-            }
-        }
-        let _ = &paths[tree_idx]; // Used above conceptually
+    let num_trees = model.trees.len();
+    let num_trees_padded = num_trees.next_power_of_two();
+    let leaves_per_tree = 1usize << max_depth;
+
+    // Flatten path bits: [tree0_b0, tree0_b1, ..., tree1_b0, ...]
+    let mut flat_path_bits: Vec<bool> = Vec::new();
+    for bits in &path_bits_2d {
+        flat_path_bits.extend(bits);
+    }
+    // Pad for extra trees (padding trees get all-false = left)
+    for _ in num_trees..num_trees_padded {
+        flat_path_bits.extend(vec![false; max_depth]);
+    }
+    // Pad to 2^pb_nv
+    let pb_nv = next_log2(num_trees_padded * max_depth);
+    while flat_path_bits.len() < (1 << pb_nv) {
+        flat_path_bits.push(false);
     }
 
-    // Pad inputs to power-of-two length (required by GKR MLE evaluation)
-    let num_vars = next_log2(quantized_features.len().max(leaf_values.len()).max(1));
-
-    let mut padded_features: Vec<u64> = quantized_features
-        .iter()
-        .map(|&v| if v >= 0 { v as u64 } else { 0u64 })
-        .collect();
-    while padded_features.len() < (1 << num_vars) {
-        padded_features.push(0);
+    // Leaf values: pad for extra trees (padding trees get all-zero leaves)
+    let mut leaf_values_padded = all_leaf_values;
+    for _ in num_trees..num_trees_padded {
+        leaf_values_padded.extend(vec![0i64; leaves_per_tree]);
     }
 
-    let mut padded_leaf_values: Vec<u64> = leaf_values
-        .iter()
-        .map(|&v| if v >= 0 { v as u64 } else { 0u64 })
-        .collect();
-    while padded_leaf_values.len() < (1 << num_vars) {
-        padded_leaf_values.push(0);
-    }
+    // Expected sum = sum of selected leaves only (base_score handled externally)
+    let expected_sum =
+        model::compute_leaf_sum(model, features) - model::quantize(model.base_score);
 
-    // Compute expected output: element-wise product minus expected
-    // For simplicity, use features * leaf_values as the "computation"
-    // and the expected result as the public output
-    let mut expected_output: Vec<u64> = Vec::new();
-    for i in 0..(1 << num_vars) {
-        expected_output.push(padded_features[i].wrapping_mul(padded_leaf_values[i]));
-    }
-
-    println!("  Circuit: num_vars={}, padded_size={}", num_vars, 1 << num_vars);
-    println!("  Features (quantized): {:?}", &quantized_features);
-    println!("  Leaf values: {:?}", &leaf_values);
+    println!(
+        "  Circuit: {} trees (padded to {}), depth {}",
+        num_trees, num_trees_padded, max_depth
+    );
+    println!("  Leaf values: {} entries", leaf_values_padded.len());
+    println!("  Expected leaf sum: {}", expected_sum);
     println!("  Predicted class: {}", predicted_class);
 
-    // === Build the GKR circuit using Remainder's CircuitBuilder ===
-    let base_circuit = build_remainder_circuit(num_vars);
+    // === Build the GKR circuit ===
+    let base_circuit = build_tree_inference_circuit(num_trees_padded, max_depth);
 
     let mut prover_circuit = base_circuit.clone();
     let verifier_circuit = base_circuit.clone();
 
-    // Set circuit inputs
-    prover_circuit.set_input("features", padded_features.clone().into());
-    prover_circuit.set_input("leaf_values", padded_leaf_values.clone().into());
-    prover_circuit.set_input("expected_output", expected_output.clone().into());
+    // Set circuit inputs (From<Vec<i64>> handles negatives via field negation,
+    // From<Vec<bool>> converts true→1, false→0)
+    prover_circuit.set_input("path_bits", flat_path_bits.into());
+    prover_circuit.set_input("leaf_values", leaf_values_padded.into());
+    prover_circuit.set_input("expected_sum", vec![expected_sum].into());
 
     // === Generate Hyrax proof (zero-knowledge) ===
     let hyrax_prover_config =
@@ -173,37 +158,134 @@ pub fn build_and_prove(
     Ok((proof_bytes, circuit_hash.to_vec(), public_inputs))
 }
 
-/// Build the Remainder circuit using CircuitBuilder.
+/// Build a GKR circuit for XGBoost tree inference verification (Phase 1a).
 ///
-/// The circuit computes: features * leaf_values == expected_output
-/// This is a simplified XGBoost proof-of-inference where:
-/// - Features are private (committed via Hyrax)
-/// - Leaf values are private (committed via Hyrax)
-/// - Expected output is public (verifier knows the result)
-fn build_remainder_circuit(num_vars: usize) -> Circuit<Fr> {
+/// The circuit verifies:
+/// 1. Path bits are binary (each bit is 0 or 1)
+/// 2. Correct leaf is selected for each tree via MLE fold
+/// 3. Sum of selected leaves equals expected_sum
+///
+/// Inputs:
+/// - path_bits (committed): T * d binary indicators (0=left, 1=right)
+/// - leaf_values (public): T * 2^d quantized leaf values (big-endian path ordering)
+/// - expected_sum (public): expected aggregate of selected leaves (scalar)
+///
+/// Leaf ordering is big-endian: leaf index = b_0 * 2^(d-1) + b_1 * 2^(d-2) + ... + b_{d-1}.
+/// The fold processes b_0 first (root decision), splitting each tree's leaves into
+/// first-half (left subtree) and second-half (right subtree).
+fn build_tree_inference_circuit(
+    num_trees_padded: usize,
+    max_depth: usize,
+) -> Circuit<Fr> {
+    assert!(num_trees_padded.is_power_of_two());
+    assert!(max_depth > 0);
+
+    // For a power-of-2 count, trailing_zeros gives exact log2
+    let tree_nv = num_trees_padded.trailing_zeros() as usize;
+    let pb_count = num_trees_padded * max_depth;
+    let pb_nv = model::next_log2(pb_count);
+    let lv_nv = tree_nv + max_depth; // log2(T * 2^d)
+
     let mut builder = CircuitBuilder::<Fr>::new();
 
-    // Input layer: private features and leaf values (committed via Hyrax PCS)
-    let private_input_layer =
-        builder.add_input_layer("private inputs", LayerVisibility::Committed);
-    // Public input layer: expected computation output
-    let public_input_layer =
-        builder.add_input_layer("public outputs", LayerVisibility::Public);
+    // Input layers
+    let committed = builder.add_input_layer("committed", LayerVisibility::Committed);
+    let public = builder.add_input_layer("public", LayerVisibility::Public);
 
-    // Create shreds (views into input layers)
-    let features = builder.add_input_shred("features", num_vars, &private_input_layer);
-    let leaf_values = builder.add_input_shred("leaf_values", num_vars, &private_input_layer);
-    let expected_output =
-        builder.add_input_shred("expected_output", num_vars, &public_input_layer);
+    // Input shreds
+    let path_bits = builder.add_input_shred("path_bits", pb_nv, &committed);
+    let leaf_values = builder.add_input_shred("leaf_values", lv_nv, &public);
+    let expected_sum = builder.add_input_shred("expected_sum", 0, &public);
 
-    // Computation: features * leaf_values
-    let product = builder.add_sector(features * leaf_values);
+    // === Binary check: b^2 - b = b*(b-1), must be zero for b in {0,1} ===
+    let b_squared = builder.add_sector(path_bits.expr() * path_bits.expr());
+    let bc = builder.add_sector(b_squared.expr() - path_bits.expr());
 
-    // Constraint: product - expected_output == 0
-    let diff = builder.add_sector(product - expected_output);
+    // === Leaf fold: d iterations, MSB-first (b_0 = root decision) ===
+    // At each level k, we fold using path bit b_k:
+    //   Split current into first-half (left subtree) and second-half (right subtree),
+    //   then compute: new[i] = first[i] + b_k * (second[i] - first[i])
+    let mut current = leaf_values;
+    for k in 0..max_depth {
+        let full = 1usize << (max_depth - k); // elements per tree before fold
+        let half = full / 2; // elements per tree after fold
+        let new_nv = tree_nv + max_depth - k - 1;
 
-    builder.set_output(&diff);
-    builder.build().expect("Failed to build circuit")
+        // Route first-half elements: current[t*full + i] for i in 0..half
+        let mut first_gates = Vec::new();
+        for t in 0..num_trees_padded {
+            for i in 0..half {
+                first_gates.push(((t * half + i) as u32, (t * full + i) as u32));
+            }
+        }
+        let first = builder.add_identity_gate_node(&current, first_gates, new_nv, None);
+
+        // Route second-half elements: current[t*full + half + i] for i in 0..half
+        let mut second_gates = Vec::new();
+        for t in 0..num_trees_padded {
+            for i in 0..half {
+                second_gates.push(((t * half + i) as u32, (t * full + half + i) as u32));
+            }
+        }
+        let second = builder.add_identity_gate_node(&current, second_gates, new_nv, None);
+
+        // Expand path bit b_k: replicate each tree's bit to half positions
+        // path_bits layout: [t0_b0, t0_b1, ..., t0_b{d-1}, t1_b0, ...]
+        let mut expand_gates = Vec::new();
+        for t in 0..num_trees_padded {
+            for i in 0..half {
+                expand_gates.push(((t * half + i) as u32, (t * max_depth + k) as u32));
+            }
+        }
+        let b_exp = builder.add_identity_gate_node(&path_bits, expand_gates, new_nv, None);
+
+        // Fold: first + b_k * (second - first)
+        let diff = builder.add_sector(second.expr() - first.expr());
+        let scaled = builder.add_sector(b_exp.expr() * diff.expr());
+        current = builder.add_sector(first.expr() + scaled.expr());
+    }
+    // current now has T values (one selected leaf per tree), num_vars = tree_nv
+
+    // === Aggregation: sum T values down to 1 ===
+    let mut agg = current;
+    for level in (0..tree_nv).rev() {
+        let half_n = 1usize << level;
+        let mut even_gates = Vec::new();
+        let mut odd_gates = Vec::new();
+        for i in 0..half_n {
+            even_gates.push((i as u32, (2 * i) as u32));
+            odd_gates.push((i as u32, (2 * i + 1) as u32));
+        }
+        let even = builder.add_identity_gate_node(&agg, even_gates, level, None);
+        let odd = builder.add_identity_gate_node(&agg, odd_gates, level, None);
+        agg = builder.add_sector(even.expr() + odd.expr());
+    }
+    // agg is a scalar (num_vars = 0): sum of all selected leaves
+
+    // === Sum residual: leaf_sum - expected_sum must be zero ===
+    let sum_residual = builder.add_sector(agg.expr() - expected_sum.expr());
+
+    // === Output: combine binary check and sum residual ===
+    // Output[0] = sum_residual, Output[1..bc_count+1] = binary check values
+    // All must be zero for a valid proof.
+    let output_nv = model::next_log2(pb_count + 1);
+
+    // Route sum residual to position 0
+    let sum_routed =
+        builder.add_identity_gate_node(&sum_residual, vec![(0, 0)], output_nv, None);
+
+    // Route binary check values to positions 1..bc_count+1
+    let mut bc_gates = Vec::new();
+    for i in 0..pb_count {
+        bc_gates.push(((i + 1) as u32, i as u32));
+    }
+    let bc_routed = builder.add_identity_gate_node(&bc, bc_gates, output_nv, None);
+
+    // Combine (no cancellation since they occupy disjoint positions)
+    let output = builder.add_sector(sum_routed.expr() + bc_routed.expr());
+
+    builder.set_output(&output);
+    builder.build().expect("Failed to build tree inference circuit")
 }
 
 /// Circuit description encodes the model structure (deterministic, for hashing).
@@ -246,7 +328,7 @@ fn next_log2(n: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model;
+    use crate::model::{self, DecisionTree, TreeNode, XgboostModel};
 
     #[test]
     fn test_build_circuit_description() {
@@ -266,8 +348,29 @@ mod tests {
         assert_eq!(next_log2(8), 3);
     }
 
+    /// Test that the tree inference circuit builds without panicking.
     #[test]
-    fn test_build_and_prove_real() {
+    fn test_build_tree_inference_circuit() {
+        // 2 trees, depth 2
+        let _circuit = build_tree_inference_circuit(2, 2);
+    }
+
+    /// Test that the tree inference circuit builds for a single tree.
+    #[test]
+    fn test_build_tree_inference_circuit_single_tree() {
+        // 1 tree, depth 1
+        let _circuit = build_tree_inference_circuit(1, 1);
+    }
+
+    /// Test that the tree inference circuit builds for 4 trees, depth 3.
+    #[test]
+    fn test_build_tree_inference_circuit_4_trees() {
+        let _circuit = build_tree_inference_circuit(4, 3);
+    }
+
+    /// Full prove-and-verify with the sample model (2 trees, depth 2).
+    #[test]
+    fn test_build_and_prove_tree_inference() {
         let model = model::sample_model();
         let features = vec![0.6, 0.2, 0.8, 0.5, 0.3];
         let predicted = model::predict(&model, &features);
@@ -278,5 +381,72 @@ mod tests {
         assert!(!proof.is_empty());
         assert_eq!(hash.len(), 32);
         assert_eq!(public_inputs.len(), 4);
+    }
+
+    /// Test with a minimal 1-tree depth-1 model.
+    #[test]
+    fn test_build_and_prove_single_tree_depth1() {
+        let model = XgboostModel {
+            num_features: 1,
+            num_classes: 2,
+            max_depth: 1,
+            base_score: 0.0,
+            trees: vec![DecisionTree {
+                nodes: vec![
+                    TreeNode {
+                        feature_index: 0,
+                        threshold: 0.5,
+                        left_child: 1,
+                        right_child: 2,
+                        leaf_value: 0.0,
+                        is_leaf: false,
+                    },
+                    TreeNode {
+                        feature_index: -1,
+                        threshold: 0.0,
+                        left_child: 0,
+                        right_child: 0,
+                        leaf_value: -1.0,
+                        is_leaf: true,
+                    },
+                    TreeNode {
+                        feature_index: -1,
+                        threshold: 0.0,
+                        left_child: 0,
+                        right_child: 0,
+                        leaf_value: 1.0,
+                        is_leaf: true,
+                    },
+                ],
+            }],
+        };
+        // Feature 0.3 < 0.5 → left → leaf value -1.0
+        let features = vec![0.3];
+        let predicted = model::predict(&model, &features);
+        assert_eq!(predicted, 0); // score = -1.0 → class 0
+        let result = build_and_prove(&model, &features, predicted);
+        assert!(result.is_ok(), "Single tree depth 1 failed: {:?}", result.err());
+    }
+
+    /// Test with features going right at all decisions.
+    #[test]
+    fn test_build_and_prove_all_right() {
+        let model = model::sample_model();
+        // All features high → go right at every node
+        let features = vec![0.9, 0.9, 0.9, 0.9, 0.9];
+        let predicted = model::predict(&model, &features);
+        let result = build_and_prove(&model, &features, predicted);
+        assert!(result.is_ok(), "All-right path failed: {:?}", result.err());
+    }
+
+    /// Test with features going left at all decisions.
+    #[test]
+    fn test_build_and_prove_all_left() {
+        let model = model::sample_model();
+        // All features low → go left at every node
+        let features = vec![0.1, 0.1, 0.1, 0.1, 0.1];
+        let predicted = model::predict(&model, &features);
+        let result = build_and_prove(&model, &features, predicted);
+        assert!(result.is_ok(), "All-left path failed: {:?}", result.err());
     }
 }
