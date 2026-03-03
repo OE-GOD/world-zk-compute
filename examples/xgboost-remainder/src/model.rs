@@ -281,6 +281,137 @@ pub fn next_log2(n: usize) -> usize {
     log
 }
 
+// ========================================================================
+// Phase 1b: Comparison constraint utilities
+// ========================================================================
+
+/// Default number of bits for decomposition (handles features in ~[-4, 4] range).
+pub const DEFAULT_DECOMP_K: usize = 18;
+
+/// Compute comparison tables for Phase 1b circuit verification.
+///
+/// For each (depth k, tree t, leaf position j), walks the tree from root
+/// following the k-bit prefix of j (big-endian) and records the node's properties.
+///
+/// Returns three flat arrays of size max_depth * num_trees * 2^max_depth:
+/// - thresholds: quantized threshold (0 for leaf nodes)
+/// - feature_indices: index into features array (0 for leaves)
+/// - is_real: 1 for real comparisons, 0 for leaves
+///
+/// Layout index: k * num_trees * 2^d + t * 2^d + j
+pub fn compute_comparison_tables(
+    model: &XgboostModel,
+    max_depth: usize,
+) -> (Vec<i64>, Vec<usize>, Vec<i64>) {
+    let num_trees = model.trees.len();
+    let num_positions = 1usize << max_depth;
+    let total = max_depth * num_trees * num_positions;
+
+    let mut thresholds = vec![0i64; total];
+    let mut feature_indices = vec![0usize; total];
+    let mut is_real = vec![0i64; total];
+
+    for k in 0..max_depth {
+        for (t, tree) in model.trees.iter().enumerate() {
+            for j in 0..num_positions {
+                let idx = k * num_trees * num_positions + t * num_positions + j;
+
+                // Walk tree from root following k-bit prefix (big-endian)
+                let mut node_idx = 0;
+                let mut reached_leaf = false;
+                for b in 0..k {
+                    let node = &tree.nodes[node_idx];
+                    if node.is_leaf {
+                        reached_leaf = true;
+                        break;
+                    }
+                    let bit = (j >> (max_depth - 1 - b)) & 1 == 1;
+                    node_idx = if bit { node.right_child } else { node.left_child };
+                }
+
+                if !reached_leaf {
+                    let node = &tree.nodes[node_idx];
+                    if !node.is_leaf {
+                        thresholds[idx] = quantize(node.threshold);
+                        feature_indices[idx] = node.feature_index as usize;
+                        is_real[idx] = 1;
+                    }
+                }
+            }
+        }
+    }
+
+    (thresholds, feature_indices, is_real)
+}
+
+/// Compute the bit decomposition witness for comparison verification.
+///
+/// For each (tree t, depth k) along the actual inference path:
+///   diff = quantize(feature) - quantize(threshold)
+///   shifted = diff + 2^(K-1)
+///   decompose shifted into K bits (little-endian)
+///
+/// For leaf positions (no real comparison), all bits are set to false
+/// (masked by is_real in the circuit, so correctness is not required).
+///
+/// Returns decomp_bits of size num_trees * max_depth * decomp_k.
+/// Layout: bits[(t * max_depth + k) * decomp_k + bit_i]
+pub fn compute_comparison_witness(
+    model: &XgboostModel,
+    features: &[f64],
+    max_depth: usize,
+    decomp_k: usize,
+) -> Vec<bool> {
+    let num_trees = model.trees.len();
+    let offset = 1i64 << (decomp_k - 1);
+    let mut decomp_bits = vec![false; num_trees * max_depth * decomp_k];
+
+    let (path_bits_2d, _) = compute_path_bits(model, features);
+
+    for (t, tree) in model.trees.iter().enumerate() {
+        let mut node_idx = 0;
+        for k in 0..max_depth {
+            let node = &tree.nodes[node_idx];
+            let pos = t * max_depth + k;
+
+            if node.is_leaf {
+                break; // remaining positions stay false (masked by is_real)
+            }
+
+            let feat_val = quantize(features[node.feature_index as usize]);
+            let thresh_val = quantize(node.threshold);
+            let diff = feat_val - thresh_val;
+            let shifted = diff + offset;
+
+            debug_assert!(
+                shifted >= 0,
+                "shifted underflow: diff={}, offset={}",
+                diff,
+                offset
+            );
+            debug_assert!(
+                shifted < (1 << decomp_k),
+                "shifted overflow: shifted={}, K={}",
+                shifted,
+                decomp_k
+            );
+
+            for bit_i in 0..decomp_k {
+                decomp_bits[pos * decomp_k + bit_i] = (shifted >> bit_i) & 1 == 1;
+            }
+
+            // Advance along actual path
+            if path_bits_2d[t][k] {
+                node_idx = node.right_child;
+            } else {
+                node_idx = node.left_child;
+            }
+        }
+    }
+
+    decomp_bits
+}
+
 /// Create a sample XGBoost model for testing
 pub fn sample_model() -> XgboostModel {
     // Simple 2-tree binary classifier on 5 features
@@ -397,5 +528,179 @@ pub fn sample_model() -> XgboostModel {
                 ],
             },
         ],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_comparison_tables_sample_model() {
+        let model = sample_model();
+        let (_, max_depth) = collect_all_leaf_values(&model);
+        let (thresholds, feature_indices, is_real) = compute_comparison_tables(&model, max_depth);
+
+        let num_trees = model.trees.len(); // 2
+        let num_positions = 1usize << max_depth; // 4 for depth=2
+        let total = max_depth * num_trees * num_positions;
+        assert_eq!(thresholds.len(), total);
+        assert_eq!(feature_indices.len(), total);
+        assert_eq!(is_real.len(), total);
+
+        // Depth 0: both trees have real comparisons at root
+        // Tree 0 root: feature_index=0, threshold=0.5
+        let idx_d0_t0 = 0 * num_trees * num_positions + 0 * num_positions;
+        for j in 0..num_positions {
+            assert_eq!(is_real[idx_d0_t0 + j], 1, "depth 0, tree 0, pos {}", j);
+            assert_eq!(thresholds[idx_d0_t0 + j], quantize(0.5));
+            assert_eq!(feature_indices[idx_d0_t0 + j], 0);
+        }
+
+        // Tree 1 root: feature_index=3, threshold=0.4
+        let idx_d0_t1 = 0 * num_trees * num_positions + 1 * num_positions;
+        for j in 0..num_positions {
+            assert_eq!(is_real[idx_d0_t1 + j], 1);
+            assert_eq!(thresholds[idx_d0_t1 + j], quantize(0.4));
+            assert_eq!(feature_indices[idx_d0_t1 + j], 3);
+        }
+
+        // Depth 1, tree 0: all positions have real comparisons
+        // Prefix 0 (j=0,1) → left child node 1: feature_index=1, threshold=0.3
+        // Prefix 1 (j=2,3) → right child node 2: feature_index=2, threshold=0.7
+        let idx_d1_t0 = 1 * num_trees * num_positions + 0 * num_positions;
+        assert_eq!(thresholds[idx_d1_t0 + 0], quantize(0.3));
+        assert_eq!(thresholds[idx_d1_t0 + 1], quantize(0.3));
+        assert_eq!(feature_indices[idx_d1_t0 + 0], 1);
+        assert_eq!(thresholds[idx_d1_t0 + 2], quantize(0.7));
+        assert_eq!(thresholds[idx_d1_t0 + 3], quantize(0.7));
+        assert_eq!(feature_indices[idx_d1_t0 + 2], 2);
+        assert_eq!(is_real[idx_d1_t0 + 0], 1);
+        assert_eq!(is_real[idx_d1_t0 + 2], 1);
+
+        // Depth 1, tree 1:
+        // Prefix 0 (j=0,1) → node 1 (leaf) → is_real=0
+        // Prefix 1 (j=2,3) → node 2: feature_index=4, threshold=0.6
+        let idx_d1_t1 = 1 * num_trees * num_positions + 1 * num_positions;
+        assert_eq!(is_real[idx_d1_t1 + 0], 0, "tree 1 left child is leaf");
+        assert_eq!(is_real[idx_d1_t1 + 1], 0);
+        assert_eq!(is_real[idx_d1_t1 + 2], 1, "tree 1 right child is internal");
+        assert_eq!(is_real[idx_d1_t1 + 3], 1);
+        assert_eq!(thresholds[idx_d1_t1 + 2], quantize(0.6));
+        assert_eq!(feature_indices[idx_d1_t1 + 2], 4);
+    }
+
+    #[test]
+    fn test_comparison_witness_sample_model() {
+        let model = sample_model();
+        let features = vec![0.6, 0.2, 0.8, 0.5, 0.3];
+        let (_, max_depth) = collect_all_leaf_values(&model);
+        let decomp_k = DEFAULT_DECOMP_K;
+        let offset = 1i64 << (decomp_k - 1);
+
+        let decomp_bits = compute_comparison_witness(&model, &features, max_depth, decomp_k);
+        assert_eq!(decomp_bits.len(), model.trees.len() * max_depth * decomp_k);
+
+        // Tree 0, depth 0: feature[0]=0.6, threshold=0.5, diff=quantize(0.6)-quantize(0.5)
+        let feat0 = quantize(0.6);
+        let thresh0 = quantize(0.5);
+        let diff0 = feat0 - thresh0;
+        let shifted0 = diff0 + offset;
+        let pos0 = (0 * max_depth + 0) * decomp_k;
+        let mut reconstructed = 0i64;
+        for bit_i in 0..decomp_k {
+            if decomp_bits[pos0 + bit_i] {
+                reconstructed += 1 << bit_i;
+            }
+        }
+        assert_eq!(reconstructed, shifted0, "reconstruction check for tree 0, depth 0");
+
+        // Verify sign bit matches path direction
+        // feature[0]=0.6 >= threshold=0.5, so goes right, path_bit=true, top_bit should be 1
+        let top_bit = decomp_bits[pos0 + decomp_k - 1];
+        assert!(top_bit, "sign bit should be 1 for right path");
+    }
+
+    #[test]
+    fn test_comparison_witness_left_path() {
+        let model = sample_model();
+        let features = vec![0.1, 0.1, 0.1, 0.1, 0.1]; // all left
+        let (_, max_depth) = collect_all_leaf_values(&model);
+        let decomp_k = DEFAULT_DECOMP_K;
+        let offset = 1i64 << (decomp_k - 1);
+
+        let decomp_bits = compute_comparison_witness(&model, &features, max_depth, decomp_k);
+
+        // Tree 0, depth 0: feature[0]=0.1 < threshold=0.5, goes left
+        let pos = 0;
+        let feat = quantize(0.1);
+        let thresh = quantize(0.5);
+        let shifted = (feat - thresh) + offset;
+        let mut reconstructed = 0i64;
+        for bit_i in 0..decomp_k {
+            if decomp_bits[pos * decomp_k + bit_i] {
+                reconstructed += 1 << bit_i;
+            }
+        }
+        assert_eq!(reconstructed, shifted);
+        // Top bit should be 0 (went left, diff < 0)
+        assert!(!decomp_bits[pos * decomp_k + decomp_k - 1], "sign bit should be 0 for left");
+    }
+
+    #[test]
+    fn test_comparison_tables_early_leaf() {
+        // Tree with depth 1 but max_depth forced to 2
+        let model = XgboostModel {
+            num_features: 2,
+            num_classes: 2,
+            max_depth: 2,
+            base_score: 0.0,
+            trees: vec![DecisionTree {
+                nodes: vec![
+                    TreeNode {
+                        feature_index: 0,
+                        threshold: 0.5,
+                        left_child: 1,
+                        right_child: 2,
+                        leaf_value: 0.0,
+                        is_leaf: false,
+                    },
+                    TreeNode {
+                        feature_index: -1,
+                        threshold: 0.0,
+                        left_child: 0,
+                        right_child: 0,
+                        leaf_value: -1.0,
+                        is_leaf: true,
+                    },
+                    TreeNode {
+                        feature_index: -1,
+                        threshold: 0.0,
+                        left_child: 0,
+                        right_child: 0,
+                        leaf_value: 1.0,
+                        is_leaf: true,
+                    },
+                ],
+            }],
+        };
+
+        // Actual tree depth = 1, but we use max_depth = 2
+        let (_, _, is_real_table) = compute_comparison_tables(&model, 2);
+
+        // Depth 0: root is internal → all is_real
+        let num_pos = 4;
+        for j in 0..num_pos {
+            assert_eq!(is_real_table[j], 1, "depth 0 should be real");
+        }
+
+        // Depth 1: all children are leaves → no real comparisons
+        for j in 0..num_pos {
+            assert_eq!(
+                is_real_table[num_pos + j],
+                0,
+                "depth 1 should not be real (all leaves)"
+            );
+        }
     }
 }
