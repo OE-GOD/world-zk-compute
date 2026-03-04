@@ -57,7 +57,6 @@ library CommittedSumcheckVerifier {
         PoseidonSponge.Sponge memory sponge
     ) internal view returns (bool valid) {
         uint256 n = proof.messages.length;
-        require(n > 0, "CommittedSumcheck: no messages");
         require(bindings.length == n, "CommittedSumcheck: bindings length mismatch");
 
         // Step 1: Squeeze rho challenges (n+1 values for batching rows)

@@ -2919,4 +2919,439 @@ contract GKRHybridVerifierTest is Test {
             innerProof, circuitHash, publicValuesAbi, gensHex, groth16Proof, groth16Outputs
         );
     }
+
+    // ========================================================================
+    // PUBLIC INPUT CLAIM VERIFICATION TESTS
+    // ========================================================================
+
+    /// @notice Test that non-committed input layer triggers the public input claim check.
+    /// @dev Registers the same circuit with isCommitted[0]=false. The Groth16 proof still
+    ///      passes (same circuit hash), but the claim commitment check fails because the
+    ///      fixture's final layer commitment is a Hyrax commitment, not scalarMul(g, mleEval).
+    function test_hybrid_noncommitted_triggers_claim_check() public {
+        // Deploy a fresh verifier and register the circuit with isCommitted[0] = false
+        RemainderVerifier freshVerifier = new RemainderVerifier(address(this));
+        freshVerifier.setGroth16Verifier(address(groth16Verifier));
+
+        string memory json = vm.readFile("test/fixtures/groth16_e2e_fixture.json");
+        bytes32 circuitHash = vm.parseJsonBytes32(json, ".circuit_hash_raw");
+
+        uint256[] memory sizes = new uint256[](3);
+        sizes[0] = 32;
+        sizes[1] = 16;
+        sizes[2] = 16;
+        uint8[] memory types = new uint8[](3);
+        types[0] = 3;
+        types[1] = 1;
+        types[2] = 0;
+        bool[] memory committed = new bool[](3);
+        committed[0] = false; // Non-committed input layer
+        freshVerifier.registerCircuit(circuitHash, 3, sizes, types, committed, "test-noncommitted");
+        freshVerifier.setCircuitGroth16Verifier(circuitHash, address(groth16Verifier), 70);
+
+        // Load fixture data
+        (
+            bytes memory innerProof,
+            bytes memory gensHex,,
+            bytes memory publicValuesAbi,
+            uint256[8] memory groth16Proof,
+            uint256[] memory groth16Outputs
+        ) = _loadCombinedFixture();
+
+        // The mleEval defense-in-depth check passes (on-chain MLE matches Groth16 output).
+        // But the claim commitment check fails because the fixture's final layer commitment
+        // is a Hyrax commitment (committed input), not scalarMul(g, mleEval).
+        vm.expectRevert("Hybrid: public input claim mismatch");
+        freshVerifier.verifyWithGroth16(
+            innerProof, circuitHash, publicValuesAbi, gensHex, groth16Proof, groth16Outputs
+        );
+    }
+
+    /// @notice Test that committed-only constraint is relaxed: registering with isCommitted[0]=false
+    ///         no longer reverts at _validateHybridInputs (it proceeds past validation).
+    function test_hybrid_accepts_noncommitted_registration() public {
+        RemainderVerifier freshVerifier = new RemainderVerifier(address(this));
+        freshVerifier.setGroth16Verifier(address(groth16Verifier));
+
+        string memory json = vm.readFile("test/fixtures/groth16_e2e_fixture.json");
+        bytes32 circuitHash = vm.parseJsonBytes32(json, ".circuit_hash_raw");
+
+        uint256[] memory sizes = new uint256[](3);
+        sizes[0] = 32;
+        sizes[1] = 16;
+        sizes[2] = 16;
+        uint8[] memory types = new uint8[](3);
+        types[0] = 3;
+        types[1] = 1;
+        types[2] = 0;
+        bool[] memory committed = new bool[](3);
+        committed[0] = false;
+        freshVerifier.registerCircuit(circuitHash, 3, sizes, types, committed, "test-noncommitted");
+        freshVerifier.setCircuitGroth16Verifier(circuitHash, address(groth16Verifier), 70);
+
+        (
+            bytes memory innerProof,
+            bytes memory gensHex,,
+            bytes memory publicValuesAbi,
+            uint256[8] memory groth16Proof,
+            uint256[] memory groth16Outputs
+        ) = _loadCombinedFixture();
+
+        // Should NOT revert with "Hybrid: layer 0 must be committed" — that constraint is removed.
+        // It will revert at the claim commitment check (fixture has Hyrax commitment, not scalar).
+        vm.expectRevert("Hybrid: public input claim mismatch");
+        freshVerifier.verifyWithGroth16(
+            innerProof, circuitHash, publicValuesAbi, gensHex, groth16Proof, groth16Outputs
+        );
+    }
+
+    /// @notice Regression: committed input circuit still passes E2E (new check is no-op)
+    function test_hybrid_committed_still_passes_e2e() public {
+        // This is the same as test_combined_e2e_full_verification but explicitly
+        // verifies the new code path doesn't break committed-input circuits.
+        (
+            bytes memory innerProof,
+            bytes memory gensHex,
+            bytes32 circuitHash,
+            bytes memory publicValuesAbi,
+            uint256[8] memory groth16Proof,
+            uint256[] memory groth16Outputs
+        ) = _loadCombinedFixture();
+
+        // Should not revert — committed input circuit bypasses the new check
+        remainderVerifier.verifyWithGroth16(
+            innerProof, circuitHash, publicValuesAbi, gensHex, groth16Proof, groth16Outputs
+        );
+    }
+}
+
+// ========================================================================
+// DAG Verifier Tests
+// ========================================================================
+
+contract GKRDAGVerifierTest is Test {
+    RemainderVerifier verifier;
+
+    function setUp() public {
+        verifier = new RemainderVerifier(address(this));
+    }
+
+    /// @notice Load fixture and build DAGCircuitDescription from JSON
+    function _loadFixture()
+        internal
+        view
+        returns (
+            bytes memory proofHex,
+            bytes memory gensHex,
+            bytes32 circuitHash,
+            bytes memory publicInputsHex,
+            GKRDAGVerifier.DAGCircuitDescription memory desc
+        )
+    {
+        string memory json = vm.readFile("test/fixtures/phase1a_dag_fixture.json");
+        proofHex = vm.parseJsonBytes(json, ".proof_hex");
+        gensHex = vm.parseJsonBytes(json, ".gens_hex");
+        circuitHash = vm.parseJsonBytes32(json, ".circuit_hash_raw");
+        publicInputsHex = vm.parseJsonBytes(json, ".public_inputs_hex");
+
+        // Parse DAG circuit description
+        desc.numComputeLayers = vm.parseJsonUint(json, ".dag_circuit_description.numComputeLayers");
+        desc.numInputLayers = vm.parseJsonUint(json, ".dag_circuit_description.numInputLayers");
+        desc.layerTypes = _parseJsonUint8Array(json, ".dag_circuit_description.layerTypes");
+        desc.numSumcheckRounds = vm.parseJsonUintArray(json, ".dag_circuit_description.numSumcheckRounds");
+        desc.atomOffsets = vm.parseJsonUintArray(json, ".dag_circuit_description.atomOffsets");
+        desc.atomTargetLayers = vm.parseJsonUintArray(json, ".dag_circuit_description.atomTargetLayers");
+        desc.atomCommitIdxs = vm.parseJsonUintArray(json, ".dag_circuit_description.atomCommitIdxs");
+        desc.ptOffsets = vm.parseJsonUintArray(json, ".dag_circuit_description.ptOffsets");
+        desc.ptData = vm.parseJsonUintArray(json, ".dag_circuit_description.ptData");
+        desc.inputIsCommitted = _parseJsonBoolArray(json, ".dag_circuit_description.inputIsCommitted");
+        desc.oracleProductOffsets = vm.parseJsonUintArray(json, ".dag_circuit_description.oracleProductOffsets");
+        desc.oracleResultIdxs = vm.parseJsonUintArray(json, ".dag_circuit_description.oracleResultIdxs");
+        desc.oracleExprCoeffs = _parseJsonUint256Array(json, ".dag_circuit_description.oracleExprCoeffs");
+    }
+
+    /// @notice Parse a JSON uint array as uint8[]
+    function _parseJsonUint8Array(string memory json, string memory key)
+        internal
+        pure
+        returns (uint8[] memory result)
+    {
+        uint256[] memory raw = vm.parseJsonUintArray(json, key);
+        result = new uint8[](raw.length);
+        for (uint256 i = 0; i < raw.length; i++) {
+            result[i] = uint8(raw[i]);
+        }
+    }
+
+    /// @notice Parse a JSON bool array using vm.parseJson (raw ABI decode)
+    function _parseJsonBoolArray(string memory json, string memory key)
+        internal
+        pure
+        returns (bool[] memory result)
+    {
+        bytes memory raw = vm.parseJson(json, key);
+        result = abi.decode(raw, (bool[]));
+    }
+
+    /// @notice Parse a JSON array of hex strings as uint256[]
+    function _parseJsonUint256Array(string memory json, string memory key)
+        internal
+        pure
+        returns (uint256[] memory result)
+    {
+        bytes memory raw = vm.parseJson(json, key);
+        bytes32[] memory parsed = abi.decode(raw, (bytes32[]));
+        result = new uint256[](parsed.length);
+        for (uint256 i = 0; i < parsed.length; i++) {
+            result[i] = uint256(parsed[i]);
+        }
+    }
+
+    /// @notice Test fixture loads correctly
+    function test_fixture_loads() public view {
+        (
+            bytes memory proofHex,
+            bytes memory gensHex,
+            bytes32 circuitHash,
+            bytes memory publicInputsHex,
+            GKRDAGVerifier.DAGCircuitDescription memory desc
+        ) = _loadFixture();
+
+        assertEq(desc.numComputeLayers, 88, "numComputeLayers");
+        assertEq(desc.numInputLayers, 2, "numInputLayers");
+        assertEq(desc.layerTypes.length, 88, "layerTypes length");
+        assertEq(desc.atomOffsets.length, 89, "atomOffsets length");
+        assertEq(desc.atomTargetLayers.length, 144, "atomTargetLayers length");
+        assertTrue(desc.inputIsCommitted[0], "input 0 committed");
+        assertFalse(desc.inputIsCommitted[1], "input 1 not committed");
+        assertTrue(proofHex.length > 0, "proof not empty");
+        assertTrue(gensHex.length > 0, "gens not empty");
+        assertTrue(circuitHash != bytes32(0), "circuit hash not zero");
+        assertTrue(publicInputsHex.length > 0, "public inputs not empty");
+    }
+
+    /// @notice Test DAG circuit registration
+    function test_register_dag_circuit() public {
+        (
+            ,
+            bytes memory gensHex,
+            bytes32 circuitHash,
+            ,
+            GKRDAGVerifier.DAGCircuitDescription memory desc
+        ) = _loadFixture();
+
+        bytes32 gensHash = keccak256(gensHex);
+        bytes memory descData = abi.encode(desc);
+
+        verifier.registerDAGCircuit(circuitHash, descData, "xgboost-phase1a", gensHash);
+        assertTrue(verifier.isDAGCircuitActive(circuitHash), "DAG circuit should be active");
+    }
+
+    /// @notice Test duplicate DAG circuit registration fails
+    function test_register_dag_circuit_duplicate_reverts() public {
+        (
+            ,
+            bytes memory gensHex,
+            bytes32 circuitHash,
+            ,
+            GKRDAGVerifier.DAGCircuitDescription memory desc
+        ) = _loadFixture();
+
+        bytes32 gensHash = keccak256(gensHex);
+        bytes memory descData = abi.encode(desc);
+
+        verifier.registerDAGCircuit(circuitHash, descData, "xgboost-phase1a", gensHash);
+
+        vm.expectRevert("DAG circuit already registered");
+        verifier.registerDAGCircuit(circuitHash, descData, "xgboost-phase1a-dup", gensHash);
+    }
+
+    function _stripSelector(bytes memory proof) internal pure returns (bytes memory) {
+        bytes memory data = new bytes(proof.length - 4);
+        for (uint256 i = 0; i < data.length; i++) {
+            data[i] = proof[i + 4];
+        }
+        return data;
+    }
+
+    /// @notice Diagnostic: check embedded public inputs from proof binary
+    function test_embedded_public_inputs() public {
+        (bytes memory proofHex,,,,) = _loadFixture();
+        bytes memory proofData = _stripSelector(proofHex);
+
+        uint256[] memory embedded = verifier.decodeEmbeddedPublicInputsExternal(proofData);
+        emit log_named_uint("Embedded pubInputs count", embedded.length);
+        assertEq(embedded.length, 64, "Embedded should be 64 (power-of-2 padded)");
+
+        // First value should be 0x8000 = 32768 (comparison offset 2^15)
+        emit log_named_uint("embedded[0]", embedded[0]);
+    }
+
+    /// @notice Diagnostic: step-by-step transcript trace for DAG circuit
+    function test_dag_transcript_trace() public {
+        (
+            bytes memory proofHex,
+            bytes memory gensHex,
+            bytes32 circuitHash,
+            ,
+            GKRDAGVerifier.DAGCircuitDescription memory desc
+        ) = _loadFixture();
+
+        // Decode proof
+        bytes memory proofData = _stripSelector(proofHex);
+        (GKRVerifier.GKRProof memory gkrProof,) = verifier.decodeProofCounted(proofData, "");
+
+        emit log_named_uint("Layer proofs count", gkrProof.layerProofs.length);
+        emit log_named_uint("Output claims count", gkrProof.outputClaimCommitments.length);
+        emit log_named_uint("Input proofs count", gkrProof.inputProofs.length);
+
+        // Check first layer proof structure
+        emit log_named_uint("Layer0 messages", gkrProof.layerProofs[0].sumcheckProof.messages.length);
+        emit log_named_uint("Layer0 commitments", gkrProof.layerProofs[0].commitments.length);
+        emit log_named_uint("Layer0 pops", gkrProof.layerProofs[0].pops.length);
+
+        // Check atom routing for layer 0: how many atoms target layers?
+        uint256 atomStart = desc.atomOffsets[0];
+        uint256 atomEnd = desc.atomOffsets[1];
+        emit log_named_uint("Layer0 atoms", atomEnd - atomStart);
+        for (uint256 a = atomStart; a < atomEnd; a++) {
+            emit log_named_uint(
+                string(abi.encodePacked("atom[", vm.toString(a), "] target")),
+                desc.atomTargetLayers[a]
+            );
+        }
+
+        // Setup transcript
+        uint256[] memory embeddedPubInputs = verifier.decodeEmbeddedPublicInputsExternal(proofData);
+        emit log_named_uint("Embedded pub inputs", embeddedPubInputs.length);
+
+        // Check _hashToFqPair
+        (uint256 fq1, uint256 fq2) = verifier.hashToFqPair(circuitHash);
+        emit log_named_uint("circuitHash fq1", fq1);
+        emit log_named_uint("circuitHash fq2", fq2);
+    }
+
+    /// @notice E2E: Register DAG circuit and verify proof
+    function test_e2e_dag_verification() public {
+        (
+            bytes memory proofHex,
+            bytes memory gensHex,
+            bytes32 circuitHash,
+            bytes memory publicInputsHex,
+            GKRDAGVerifier.DAGCircuitDescription memory desc
+        ) = _loadFixture();
+
+        bytes32 gensHash = keccak256(gensHex);
+        bytes memory descData = abi.encode(desc);
+
+        // Register circuit
+        verifier.registerDAGCircuit(circuitHash, descData, "xgboost-phase1a", gensHash);
+
+        // Verify proof
+        bool valid = verifier.verifyDAGProof(proofHex, circuitHash, publicInputsHex, gensHex);
+        assertTrue(valid, "DAG proof should verify");
+    }
+
+    /// @notice Test unregistered circuit reverts
+    function test_dag_unregistered_circuit_reverts() public {
+        bytes32 fakeHash = keccak256("nonexistent");
+        bytes memory fakeProof = abi.encodePacked(bytes4("REM1"), bytes32(0));
+
+        vm.expectRevert(RemainderVerifier.CircuitNotRegistered.selector);
+        verifier.verifyDAGProof(fakeProof, fakeHash, "", "");
+    }
+
+    /// @notice Test wrong generators are rejected
+    function test_dag_wrong_gens_reverts() public {
+        (
+            bytes memory proofHex,
+            bytes memory gensHex,
+            bytes32 circuitHash,
+            bytes memory publicInputsHex,
+            GKRDAGVerifier.DAGCircuitDescription memory desc
+        ) = _loadFixture();
+
+        bytes32 gensHash = keccak256(gensHex);
+        bytes memory descData = abi.encode(desc);
+        verifier.registerDAGCircuit(circuitHash, descData, "xgboost-phase1a", gensHash);
+
+        // Use wrong generators
+        bytes memory wrongGens = abi.encodePacked(
+            uint256(1), uint256(1), uint256(2), uint256(1), uint256(2), uint256(1), uint256(2)
+        );
+
+        vm.expectRevert(RemainderVerifier.InvalidGenerators.selector);
+        verifier.verifyDAGProof(proofHex, circuitHash, publicInputsHex, wrongGens);
+    }
+
+    /// @notice Test invalid proof selector reverts
+    function test_dag_invalid_selector_reverts() public {
+        (
+            ,
+            bytes memory gensHex,
+            bytes32 circuitHash,
+            ,
+            GKRDAGVerifier.DAGCircuitDescription memory desc
+        ) = _loadFixture();
+
+        bytes32 gensHash = keccak256(gensHex);
+        bytes memory descData = abi.encode(desc);
+        verifier.registerDAGCircuit(circuitHash, descData, "xgboost-phase1a", gensHash);
+
+        bytes memory badProof = abi.encodePacked(bytes4("FAKE"), bytes32(0));
+
+        vm.expectRevert(RemainderVerifier.InvalidProofSelector.selector);
+        verifier.verifyDAGProof(badProof, circuitHash, "", gensHex);
+    }
+
+    /// @notice Diagnostic: test DAG input proof decoding (all eval proofs)
+    function test_dag_input_proof_decode() public {
+        (bytes memory proofHex,,,,) = _loadFixture();
+        bytes memory proofData = _stripSelector(proofHex);
+
+        (uint256 numLayers, uint256[] memory numRows, uint256[] memory numEvals) = verifier.decodeDAGInputProofCounts(proofData);
+        emit log_named_uint("DAG input layers", numLayers);
+        for (uint256 i = 0; i < numLayers; i++) {
+            emit log_named_uint(string(abi.encodePacked("layer[", vm.toString(i), "].commitmentRows")), numRows[i]);
+            emit log_named_uint(string(abi.encodePacked("layer[", vm.toString(i), "].evalProofs")), numEvals[i]);
+        }
+    }
+
+    /// @notice Diagnostic: verify public value claims and MLE evaluation
+    function test_public_value_claims_diagnostic() public {
+        (bytes memory proofHex,,,,) = _loadFixture();
+        bytes memory proofData = _stripSelector(proofHex);
+
+        // Decode embedded public inputs (MLE data)
+        uint256[] memory embedded = verifier.decodeEmbeddedPublicInputsExternal(proofData);
+        emit log_named_uint("Embedded pubInputs count", embedded.length);
+
+        // Decode public value claims from proof
+        // The public claims are after the FS claims section in the proof
+        // Use the decodeProofForDAG which now returns publicValueClaims
+        // We need a wrapper for this...
+        // For now, let's decode manually from the fixture
+        // Read input_layers[1].claim_points from fixture
+        string memory json = vm.readFile("test/fixtures/phase1a_dag_fixture.json");
+
+        // Get the first claim point for input layer 1 (public)
+        string memory basePath = ".input_layers[1].claim_points[0]";
+        uint256[] memory point = new uint256[](6);
+        for (uint256 i = 0; i < 6; i++) {
+            string memory path = string(abi.encodePacked(basePath, "[", vm.toString(i), "]"));
+            bytes memory raw = vm.parseJson(json, path);
+            point[i] = abi.decode(raw, (uint256));
+        }
+
+        emit log_named_uint("claim point[0]", point[0]);
+        emit log_named_uint("claim point[1]", point[1]);
+        emit log_named_uint("claim point[2]", point[2]);
+        emit log_named_uint("claim point[3]", point[3]);
+        emit log_named_uint("claim point[4]", point[4]);
+        emit log_named_uint("claim point[5]", point[5]);
+
+        // Evaluate MLE
+        uint256 mleEval = GKRDAGVerifier.evaluateMLEFromData(embedded, point);
+        emit log_named_uint("MLE evaluation", mleEval);
+    }
 }

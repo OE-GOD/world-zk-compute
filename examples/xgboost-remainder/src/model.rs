@@ -5,6 +5,7 @@
 //! on input features.
 
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 /// A complete XGBoost model (ensemble of decision trees)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,6 +44,132 @@ pub struct TreeNode {
     pub leaf_value: f64,
     /// Whether this is a leaf node
     pub is_leaf: bool,
+}
+
+// ========================================================================
+// XGBoost JSON model import (from xgb.save_model("model.json"))
+// ========================================================================
+
+/// Raw XGBoost JSON model format (top-level)
+#[derive(Debug, Deserialize)]
+struct XgbJsonModel {
+    learner: XgbLearner,
+}
+
+#[derive(Debug, Deserialize)]
+struct XgbLearner {
+    learner_model_param: XgbModelParam,
+    gradient_booster: XgbGradientBooster,
+}
+
+#[derive(Debug, Deserialize)]
+struct XgbModelParam {
+    num_feature: String,
+    #[serde(default)]
+    num_class: String,
+    #[serde(default = "default_base_score")]
+    base_score: String,
+}
+
+fn default_base_score() -> String {
+    "5E-1".to_string()
+}
+
+#[derive(Debug, Deserialize)]
+struct XgbGradientBooster {
+    model: XgbGbtreeModel,
+}
+
+#[derive(Debug, Deserialize)]
+struct XgbGbtreeModel {
+    trees: Vec<XgbTree>,
+    #[serde(default)]
+    tree_info: Vec<i32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct XgbTree {
+    left_children: Vec<i32>,
+    right_children: Vec<i32>,
+    split_indices: Vec<i32>,
+    split_conditions: Vec<f64>,
+    base_weights: Vec<f64>,
+}
+
+/// Load an XGBoost model from a JSON file (saved with `xgb.save_model("model.json")`).
+pub fn load_xgboost_json(path: &Path) -> Result<XgboostModel, String> {
+    let data = std::fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read model file: {}", e))?;
+    parse_xgboost_json(&data)
+}
+
+/// Parse an XGBoost model from a JSON string.
+pub fn parse_xgboost_json(json_str: &str) -> Result<XgboostModel, String> {
+    let raw: XgbJsonModel =
+        serde_json::from_str(json_str).map_err(|e| format!("Failed to parse XGBoost JSON: {}", e))?;
+
+    let num_features: usize = raw
+        .learner
+        .learner_model_param
+        .num_feature
+        .parse()
+        .map_err(|e| format!("Invalid num_feature: {}", e))?;
+
+    let num_class_str = &raw.learner.learner_model_param.num_class;
+    let num_classes: usize = if num_class_str.is_empty() || num_class_str == "0" {
+        // XGBoost uses 0 for binary classification / regression
+        2
+    } else {
+        num_class_str
+            .parse()
+            .map_err(|e| format!("Invalid num_class: {}", e))?
+    };
+
+    let base_score: f64 = raw
+        .learner
+        .learner_model_param
+        .base_score
+        .parse()
+        .map_err(|e| format!("Invalid base_score: {}", e))?;
+
+    let xgb_trees = &raw.learner.gradient_booster.model.trees;
+    let mut trees = Vec::with_capacity(xgb_trees.len());
+    let mut max_depth = 0usize;
+
+    for (tree_idx, xgb_tree) in xgb_trees.iter().enumerate() {
+        let num_nodes = xgb_tree.left_children.len();
+        if num_nodes == 0 {
+            return Err(format!("Tree {} has no nodes", tree_idx));
+        }
+
+        let mut nodes = Vec::with_capacity(num_nodes);
+        for i in 0..num_nodes {
+            let is_leaf = xgb_tree.left_children[i] == -1;
+            nodes.push(TreeNode {
+                feature_index: if is_leaf { -1 } else { xgb_tree.split_indices[i] },
+                threshold: if is_leaf { 0.0 } else { xgb_tree.split_conditions[i] },
+                left_child: if is_leaf { 0 } else { xgb_tree.left_children[i] as usize },
+                right_child: if is_leaf { 0 } else { xgb_tree.right_children[i] as usize },
+                leaf_value: if is_leaf { xgb_tree.base_weights[i] } else { 0.0 },
+                is_leaf,
+            });
+        }
+
+        let dt = DecisionTree { nodes };
+        let d = tree_depth(&dt);
+        if d > max_depth {
+            max_depth = d;
+        }
+        trees.push(dt);
+    }
+
+    Ok(XgboostModel {
+        num_features,
+        num_classes,
+        max_depth,
+        trees,
+        base_score,
+    })
 }
 
 /// Run inference on a single input through the entire model
@@ -412,6 +539,76 @@ pub fn compute_comparison_witness(
     decomp_bits
 }
 
+/// Generate a perfect binary tree of given depth with deterministic thresholds and leaf values.
+/// Uses `num_features` features with thresholds spread across [0.1, 0.9] and
+/// leaf values in [-1.0, 1.0].
+pub fn generate_perfect_tree(depth: usize, num_features: usize, seed: u64) -> DecisionTree {
+    let num_internal = (1usize << depth) - 1;
+    let num_leaves = 1usize << depth;
+    let total_nodes = num_internal + num_leaves;
+    let mut nodes = Vec::with_capacity(total_nodes);
+
+    // Internal nodes (indices 0..num_internal)
+    for i in 0..num_internal {
+        let hash = seed.wrapping_mul(31).wrapping_add(i as u64);
+        let feature_index = (hash % num_features as u64) as i32;
+        let threshold = 0.1 + 0.8 * ((hash % 100) as f64 / 100.0);
+        nodes.push(TreeNode {
+            feature_index,
+            threshold,
+            left_child: 2 * i + 1,
+            right_child: 2 * i + 2,
+            leaf_value: 0.0,
+            is_leaf: false,
+        });
+    }
+
+    // Leaf nodes (indices num_internal..total_nodes)
+    for i in 0..num_leaves {
+        let hash = seed.wrapping_mul(17).wrapping_add(i as u64).wrapping_add(1000);
+        let leaf_value = -1.0 + 2.0 * ((hash % 200) as f64 / 200.0);
+        nodes.push(TreeNode {
+            feature_index: -1,
+            threshold: 0.0,
+            left_child: 0,
+            right_child: 0,
+            leaf_value,
+            is_leaf: true,
+        });
+    }
+
+    DecisionTree { nodes }
+}
+
+/// Generate a complete XGBoost model with `num_trees` perfect trees of given depth.
+pub fn generate_model(
+    num_trees: usize,
+    depth: usize,
+    num_features: usize,
+) -> XgboostModel {
+    let trees: Vec<DecisionTree> = (0..num_trees)
+        .map(|t| generate_perfect_tree(depth, num_features, (t + 1) as u64 * 137))
+        .collect();
+
+    XgboostModel {
+        num_features,
+        num_classes: 2,
+        max_depth: depth,
+        base_score: 0.0,
+        trees,
+    }
+}
+
+/// Generate deterministic feature values for testing (spread across [0.0, 1.0]).
+pub fn generate_features(num_features: usize, seed: u64) -> Vec<f64> {
+    (0..num_features)
+        .map(|i| {
+            let hash = seed.wrapping_mul(53).wrapping_add(i as u64);
+            (hash % 100) as f64 / 100.0
+        })
+        .collect()
+}
+
 /// Create a sample XGBoost model for testing
 pub fn sample_model() -> XgboostModel {
     // Simple 2-tree binary classifier on 5 features
@@ -702,5 +899,231 @@ mod tests {
                 "depth 1 should not be real (all leaves)"
             );
         }
+    }
+
+    // ========================================================================
+    // XGBoost JSON import tests
+    // ========================================================================
+
+    /// Minimal XGBoost JSON matching real `xgb.save_model("model.json")` output.
+    /// This is a binary classifier with 2 trees, 4 features, max depth 2.
+    const SAMPLE_XGBOOST_JSON: &str = r#"{
+        "version": [2, 0, 0],
+        "learner": {
+            "learner_model_param": {
+                "num_feature": "4",
+                "num_class": "0",
+                "base_score": "5E-1"
+            },
+            "gradient_booster": {
+                "name": "gbtree",
+                "model": {
+                    "gbtree_model_param": {
+                        "num_trees": "2"
+                    },
+                    "trees": [
+                        {
+                            "tree_param": { "num_nodes": "7" },
+                            "id": 0,
+                            "left_children": [1, 3, 5, -1, -1, -1, -1],
+                            "right_children": [2, 4, 6, -1, -1, -1, -1],
+                            "split_indices": [2, 0, 3, 0, 0, 0, 0],
+                            "split_conditions": [2.45, 1.5, 1.75, 0.0, 0.0, 0.0, 0.0],
+                            "base_weights": [0.0, 0.0, 0.0, -0.2, 0.5, -0.3, 0.8]
+                        },
+                        {
+                            "tree_param": { "num_nodes": "3" },
+                            "id": 1,
+                            "left_children": [1, -1, -1],
+                            "right_children": [2, -1, -1],
+                            "split_indices": [1, 0, 0],
+                            "split_conditions": [3.0, 0.0, 0.0],
+                            "base_weights": [0.0, -0.4, 0.6]
+                        }
+                    ],
+                    "tree_info": [0, 0]
+                }
+            },
+            "objective": {
+                "name": "binary:logistic"
+            }
+        }
+    }"#;
+
+    #[test]
+    fn test_parse_xgboost_json_structure() {
+        let model = parse_xgboost_json(SAMPLE_XGBOOST_JSON).unwrap();
+
+        assert_eq!(model.num_features, 4);
+        assert_eq!(model.num_classes, 2);
+        assert!((model.base_score - 0.5).abs() < 1e-9);
+        assert_eq!(model.trees.len(), 2);
+
+        // Tree 0: 7 nodes, depth 2
+        assert_eq!(model.trees[0].nodes.len(), 7);
+        assert_eq!(tree_depth(&model.trees[0]), 2);
+
+        // Root of tree 0: splits on feature 2 at threshold 2.45
+        let root = &model.trees[0].nodes[0];
+        assert!(!root.is_leaf);
+        assert_eq!(root.feature_index, 2);
+        assert!((root.threshold - 2.45).abs() < 1e-9);
+        assert_eq!(root.left_child, 1);
+        assert_eq!(root.right_child, 2);
+
+        // Node 3 (leaf): value -0.2
+        let leaf3 = &model.trees[0].nodes[3];
+        assert!(leaf3.is_leaf);
+        assert!((leaf3.leaf_value - (-0.2)).abs() < 1e-9);
+
+        // Node 6 (leaf): value 0.8
+        let leaf6 = &model.trees[0].nodes[6];
+        assert!(leaf6.is_leaf);
+        assert!((leaf6.leaf_value - 0.8).abs() < 1e-9);
+
+        // Tree 1: 3 nodes, depth 1
+        assert_eq!(model.trees[1].nodes.len(), 3);
+        assert_eq!(tree_depth(&model.trees[1]), 1);
+
+        // Root of tree 1: splits on feature 1 at threshold 3.0
+        let root1 = &model.trees[1].nodes[0];
+        assert!(!root1.is_leaf);
+        assert_eq!(root1.feature_index, 1);
+        assert!((root1.threshold - 3.0).abs() < 1e-9);
+
+        // max_depth should be 2 (max of tree depths)
+        assert_eq!(model.max_depth, 2);
+    }
+
+    #[test]
+    fn test_parse_xgboost_json_inference() {
+        let model = parse_xgboost_json(SAMPLE_XGBOOST_JSON).unwrap();
+
+        // features: [1.0, 2.0, 3.0, 1.0]
+        // Tree 0: root splits on feature[2]=3.0 >= 2.45 → right (node 2)
+        //   node 2: splits on feature[3]=1.0 < 1.75 → left (node 5)
+        //   node 5 (leaf): -0.3
+        // Tree 1: root splits on feature[1]=2.0 < 3.0 → left (node 1)
+        //   node 1 (leaf): -0.4
+        let features = vec![1.0, 2.0, 3.0, 1.0];
+        let tree0_val = traverse_tree(&model.trees[0], &features);
+        let tree1_val = traverse_tree(&model.trees[1], &features);
+
+        assert!((tree0_val - (-0.3)).abs() < 1e-9);
+        assert!((tree1_val - (-0.4)).abs() < 1e-9);
+
+        // Total score = base_score + tree0 + tree1 = 0.5 + (-0.3) + (-0.4) = -0.2
+        // Sigmoid(-0.2) < 0.5, so predict class 0
+        assert_eq!(predict(&model, &features), 0);
+    }
+
+    #[test]
+    fn test_parse_xgboost_json_circuit_compatible() {
+        // Verify that parsed model works with circuit utilities
+        let model = parse_xgboost_json(SAMPLE_XGBOOST_JSON).unwrap();
+        let features = vec![1.0, 2.0, 3.0, 1.0];
+
+        // collect_all_leaf_values should work
+        let (leaf_vals, max_d) = collect_all_leaf_values(&model);
+        assert_eq!(max_d, 2);
+        assert_eq!(leaf_vals.len(), 2 * 4); // 2 trees * 2^2 leaves
+
+        // compute_path_bits should work
+        let (path_bits, _) = compute_path_bits(&model, &features);
+        assert_eq!(path_bits.len(), 2); // 2 trees
+        assert_eq!(path_bits[0].len(), 2); // max_depth=2
+        // Tree 0: feature[2]=3.0 >= 2.45 → right (true), then feature[3]=1.0 < 1.75 → left (false)
+        assert!(path_bits[0][0]); // right at root
+        assert!(!path_bits[0][1]); // left at depth 1
+        // Tree 1: feature[1]=2.0 < 3.0 → left (false), then leaf (padded false)
+        assert!(!path_bits[1][0]); // left at root
+        assert!(!path_bits[1][1]); // padded
+
+        // compute_leaf_sum should work
+        let leaf_sum = compute_leaf_sum(&model, &features);
+        let expected_sum = quantize(0.5) + quantize(-0.3) + quantize(-0.4);
+        assert_eq!(leaf_sum, expected_sum);
+
+        // compute_comparison_tables should work
+        let (thresholds, fi, is_real) = compute_comparison_tables(&model, max_d);
+        assert_eq!(thresholds.len(), max_d * 2 * 4);
+
+        // compute_comparison_witness should work
+        let decomp_bits = compute_comparison_witness(&model, &features, max_d, DEFAULT_DECOMP_K);
+        assert_eq!(decomp_bits.len(), 2 * max_d * DEFAULT_DECOMP_K);
+
+        // Suppress unused variable warnings
+        let _ = (leaf_vals, fi, is_real, decomp_bits);
+    }
+
+    #[test]
+    fn test_parse_xgboost_json_multiclass() {
+        // 3-class model with 6 trees (2 per class)
+        let json = r#"{
+            "version": [2, 0, 0],
+            "learner": {
+                "learner_model_param": {
+                    "num_feature": "2",
+                    "num_class": "3",
+                    "base_score": "5E-1"
+                },
+                "gradient_booster": {
+                    "name": "gbtree",
+                    "model": {
+                        "trees": [
+                            {
+                                "left_children": [1, -1, -1],
+                                "right_children": [2, -1, -1],
+                                "split_indices": [0, 0, 0],
+                                "split_conditions": [0.5, 0.0, 0.0],
+                                "base_weights": [0.0, 0.9, -0.1]
+                            },
+                            {
+                                "left_children": [-1],
+                                "right_children": [-1],
+                                "split_indices": [0],
+                                "split_conditions": [0.0],
+                                "base_weights": [0.1]
+                            },
+                            {
+                                "left_children": [-1],
+                                "right_children": [-1],
+                                "split_indices": [0],
+                                "split_conditions": [0.0],
+                                "base_weights": [-0.5]
+                            },
+                            {
+                                "left_children": [-1],
+                                "right_children": [-1],
+                                "split_indices": [0],
+                                "split_conditions": [0.0],
+                                "base_weights": [0.3]
+                            },
+                            {
+                                "left_children": [-1],
+                                "right_children": [-1],
+                                "split_indices": [0],
+                                "split_conditions": [0.0],
+                                "base_weights": [0.2]
+                            },
+                            {
+                                "left_children": [-1],
+                                "right_children": [-1],
+                                "split_indices": [0],
+                                "split_conditions": [0.0],
+                                "base_weights": [-0.1]
+                            }
+                        ],
+                        "tree_info": [0, 1, 2, 0, 1, 2]
+                    }
+                },
+                "objective": { "name": "multi:softmax" }
+            }
+        }"#;
+
+        let model = parse_xgboost_json(json).unwrap();
+        assert_eq!(model.num_classes, 3);
+        assert_eq!(model.trees.len(), 6);
+        assert_eq!(model.num_features, 2);
     }
 }

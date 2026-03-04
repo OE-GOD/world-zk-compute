@@ -329,7 +329,7 @@ library HyraxVerifier {
         returns (G1Point memory result)
     {
         require(points.length == scalars.length, "HyraxVerifier: MSM length mismatch");
-        require(points.length > 0, "HyraxVerifier: empty MSM");
+        if (points.length == 0) return G1Point(0, 0); // Identity element
 
         // Start with first term
         result = scalarMul(points[0], scalars[0]);

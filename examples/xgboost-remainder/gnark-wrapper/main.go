@@ -48,7 +48,7 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Println("Usage: gnark-wrapper <command> [--config small|medium]")
+	fmt.Println("Usage: gnark-wrapper <command> [--config small|medium] [--config-json]")
 	fmt.Println()
 	fmt.Println("Commands:")
 	fmt.Println("  setup           Generate proving key and verification key")
@@ -60,6 +60,7 @@ func printUsage() {
 	fmt.Println("Options:")
 	fmt.Println("  --config small   Use small config (num_vars=1, default)")
 	fmt.Println("  --config medium  Use medium config (num_vars=4)")
+	fmt.Println("  --config-json    Derive config from witness JSON (per-layer num_vars)")
 }
 
 // parseConfig reads --config from os.Args and returns the matching CircuitConfig.
@@ -80,17 +81,98 @@ func parseConfig() CircuitConfig {
 	return SmallConfig() // default
 }
 
+// configFromWitness builds a CircuitConfig from the witness JSON config section.
+// If LayerNumVars is present, builds a per-layer config; otherwise falls back to
+// uniform NumVars for backward compatibility.
+func configFromWitness(w *WitnessJSON) CircuitConfig {
+	if len(w.Config.LayerNumVars) > 0 {
+		numLayers := w.Config.NumLayers
+		if numLayers == 0 {
+			numLayers = len(w.Config.LayerNumVars)
+		}
+		// Infer layer degrees from witness data (z_vector_len / num_vars_i = degree+1)
+		layerDegrees := make([]int, numLayers)
+		for i := 0; i < numLayers; i++ {
+			nv := w.Config.LayerNumVars[i]
+			zLen := len(w.Witness.LayerPODPs[i].ZVector)
+			if nv > 0 {
+				layerDegrees[i] = zLen/nv - 1
+			} else {
+				layerDegrees[i] = 2 // default for zero-var layers
+			}
+		}
+		outputNumVars := w.Config.OutputNumVars
+		if outputNumVars == 0 {
+			outputNumVars = len(w.PublicInputs.OutputChallenges)
+		}
+		pubInputCount := w.Config.PubInputCount
+		if pubInputCount == 0 {
+			pubInputCount = len(w.PublicInputs.PublicValues)
+		}
+		return CircuitConfig{
+			NumLayers:       numLayers,
+			LayerNumVars:    w.Config.LayerNumVars[:numLayers],
+			LayerDegrees:    layerDegrees,
+			OutputNumVars:   outputNumVars,
+			PubInputCount:   pubInputCount,
+			MleEvalLayerIdx: w.Config.MleEvalLayerIdx,
+		}
+	}
+
+	// Backward compat: uniform num_vars
+	nv := w.Config.NumVars
+	numLayers := w.Config.NumLayers
+	if numLayers == 0 {
+		numLayers = 2
+	}
+	// Infer layer degrees from witness data
+	layerDegrees := make([]int, numLayers)
+	layerNumVars := make([]int, numLayers)
+	for i := 0; i < numLayers; i++ {
+		layerNumVars[i] = nv
+		zLen := len(w.Witness.LayerPODPs[i].ZVector)
+		if nv > 0 {
+			layerDegrees[i] = zLen/nv - 1
+		} else {
+			layerDegrees[i] = 2
+		}
+	}
+	return CircuitConfig{
+		NumLayers:     numLayers,
+		LayerNumVars:  layerNumVars,
+		LayerDegrees:  layerDegrees,
+		OutputNumVars: nv,
+		PubInputCount: 1 << nv,
+	}
+}
+
+// hasConfigJSON returns true if --config-json flag is present.
+func hasConfigJSON() bool {
+	for _, arg := range os.Args {
+		if arg == "--config-json" {
+			return true
+		}
+	}
+	return false
+}
+
 // WitnessJSON is the JSON format for the witness data from the Rust generator.
 type WitnessJSON struct {
 	Config struct {
-		NumVars int `json:"num_vars"`
+		NumVars         int   `json:"num_vars"`
+		NumLayers       int   `json:"num_layers,omitempty"`
+		LayerNumVars    []int `json:"layer_num_vars,omitempty"`    // per-layer num_vars
+		OutputNumVars   int   `json:"output_num_vars,omitempty"`   // output challenge count
+		PubInputCount   int   `json:"pub_input_count,omitempty"`   // public input count
+		MleEvalLayerIdx int   `json:"mle_eval_layer_idx,omitempty"` // MLE eval binding layer
 	} `json:"config"`
 	PublicInputs struct {
 		CircuitHash      [2]string `json:"circuit_hash"`
 		PublicValues     []string  `json:"public_values"`
 		OutputChallenges []string  `json:"output_challenges"`
 		ClaimAggCoeff    string    `json:"claim_agg_coeff"`
-		InterLayerCoeff  string    `json:"inter_layer_coeff"`
+		InterLayerCoeff  string    `json:"inter_layer_coeff,omitempty"`  // old: single (backward compat)
+		InterLayerCoeffs []string  `json:"inter_layer_coeffs,omitempty"` // new: array
 		Layers           []struct {
 			Bindings      []string `json:"bindings"`
 			Rhos          []string `json:"rhos"`
@@ -102,11 +184,11 @@ type WitnessJSON struct {
 		InputPODPChallenge string    `json:"input_podp_challenge"`
 	} `json:"public_inputs"`
 	PublicOutputs struct {
-		RlcBetas   []string  `json:"rlc_betas"`
-		ZDotJStars []string  `json:"z_dot_jstars"`
+		RlcBetas   []string `json:"rlc_betas"`
+		ZDotJStars []string `json:"z_dot_jstars"`
 		LTensor    []string `json:"l_tensor"`
-		ZDotR      string    `json:"z_dot_r"`
-		MLEEval    string    `json:"mle_eval"`
+		ZDotR      string   `json:"z_dot_r"`
+		MLEEval    string   `json:"mle_eval"`
 	} `json:"public_outputs"`
 	Witness struct {
 		LayerPODPs []struct {
@@ -129,6 +211,19 @@ type WitnessJSON struct {
 	} `json:"witness"`
 }
 
+// getInterLayerCoeffs returns inter-layer coefficients from the witness JSON,
+// supporting both the old single-value format and the new array format.
+func getInterLayerCoeffs(w *WitnessJSON, numLayers int) []string {
+	if len(w.PublicInputs.InterLayerCoeffs) > 0 {
+		return w.PublicInputs.InterLayerCoeffs
+	}
+	// Backward compat: single inter_layer_coeff for 2-layer case
+	if w.PublicInputs.InterLayerCoeff != "" && numLayers == 2 {
+		return []string{w.PublicInputs.InterLayerCoeff}
+	}
+	return nil
+}
+
 func parseBigInt(s string) *big.Int {
 	v := new(big.Int)
 	if len(s) > 2 && s[:2] == "0x" {
@@ -149,7 +244,7 @@ func parseVarSlice(strs []string) []frontend.Variable {
 
 // buildAssignment constructs a circuit assignment from the parsed witness JSON.
 func buildAssignment(config CircuitConfig, w *WitnessJSON) *RemainderWrapperCircuit {
-	nv := config.NumVars
+	nLayers := config.NumLayers
 
 	assignment := AllocateCircuit(config)
 
@@ -157,37 +252,30 @@ func buildAssignment(config CircuitConfig, w *WitnessJSON) *RemainderWrapperCirc
 		parseBigInt(w.PublicInputs.CircuitHash[0]),
 		parseBigInt(w.PublicInputs.CircuitHash[1]),
 	}
-	for i := 0; i < config.NumPublicInputs; i++ {
+	for i := 0; i < config.PubInputCount; i++ {
 		assignment.PublicInputs[i] = parseBigInt(w.PublicInputs.PublicValues[i])
 	}
-	for i := 0; i < nv; i++ {
+	for i := 0; i < config.OutputNumVars; i++ {
 		assignment.OutputChallenges[i] = parseBigInt(w.PublicInputs.OutputChallenges[i])
 	}
 	assignment.ClaimAggCoeff = parseBigInt(w.PublicInputs.ClaimAggCoeff)
-	assignment.InterLayerCoeff = parseBigInt(w.PublicInputs.InterLayerCoeff)
 
-	// Layer 0
-	l0 := w.PublicInputs.Layers[0]
-	for i := 0; i < nv; i++ {
-		assignment.Layer0Bindings[i] = parseBigInt(l0.Bindings[i])
-		assignment.Layer0Gammas[i] = parseBigInt(l0.Gammas[i])
+	// Per-layer public inputs (each layer has its own num_vars)
+	for li := 0; li < nLayers; li++ {
+		nv := config.LayerNumVars[li]
+		layer := w.PublicInputs.Layers[li]
+		for i := 0; i < nv; i++ {
+			assignment.Layers[li].Bindings[i] = parseBigInt(layer.Bindings[i])
+			assignment.Layers[li].Gammas[i] = parseBigInt(layer.Gammas[i])
+		}
+		for i := 0; i <= nv; i++ {
+			assignment.Layers[li].Rhos[i] = parseBigInt(layer.Rhos[i])
+		}
+		assignment.Layers[li].PODPChallenge = parseBigInt(layer.PODPChallenge)
+		if config.HasPoP(li) && layer.PopChallenge != "" {
+			assignment.Layers[li].PopChallenge[0] = parseBigInt(layer.PopChallenge)
+		}
 	}
-	for i := 0; i <= nv; i++ {
-		assignment.Layer0Rhos[i] = parseBigInt(l0.Rhos[i])
-	}
-	assignment.Layer0PODPChallenge = parseBigInt(l0.PODPChallenge)
-
-	// Layer 1
-	l1 := w.PublicInputs.Layers[1]
-	for i := 0; i < nv; i++ {
-		assignment.Layer1Bindings[i] = parseBigInt(l1.Bindings[i])
-		assignment.Layer1Gammas[i] = parseBigInt(l1.Gammas[i])
-	}
-	for i := 0; i <= nv; i++ {
-		assignment.Layer1Rhos[i] = parseBigInt(l1.Rhos[i])
-	}
-	assignment.Layer1PODPChallenge = parseBigInt(l1.PODPChallenge)
-	assignment.Layer1PopChallenge = parseBigInt(l1.PopChallenge)
 
 	assignment.InputRLCCoeffs = [2]frontend.Variable{
 		parseBigInt(w.PublicInputs.InputRLCCoeffs[0]),
@@ -195,11 +283,17 @@ func buildAssignment(config CircuitConfig, w *WitnessJSON) *RemainderWrapperCirc
 	}
 	assignment.InputPODPChallenge = parseBigInt(w.PublicInputs.InputPODPChallenge)
 
+	// Inter-layer coefficients
+	interLayerCoeffs := getInterLayerCoeffs(w, nLayers)
+	for i := 0; i < len(assignment.InterLayerCoeffs); i++ {
+		assignment.InterLayerCoeffs[i] = parseBigInt(interLayerCoeffs[i])
+	}
+
 	// Public outputs
-	assignment.RlcBeta0 = parseBigInt(w.PublicOutputs.RlcBetas[0])
-	assignment.RlcBeta1 = parseBigInt(w.PublicOutputs.RlcBetas[1])
-	assignment.ZDotJStar0 = parseBigInt(w.PublicOutputs.ZDotJStars[0])
-	assignment.ZDotJStar1 = parseBigInt(w.PublicOutputs.ZDotJStars[1])
+	for i := 0; i < nLayers; i++ {
+		assignment.RlcBeta[i] = parseBigInt(w.PublicOutputs.RlcBetas[i])
+		assignment.ZDotJStar[i] = parseBigInt(w.PublicOutputs.ZDotJStars[i])
+	}
 	for i := 0; i < config.NumLTensorElems(); i++ {
 		assignment.LTensor[i] = parseBigInt(w.PublicOutputs.LTensor[i])
 	}
@@ -207,24 +301,24 @@ func buildAssignment(config CircuitConfig, w *WitnessJSON) *RemainderWrapperCirc
 	assignment.MLEEval = parseBigInt(w.PublicOutputs.MLEEval)
 
 	// Private witnesses
-	assignment.Layer0PODP = PODPWitness{
-		ZVector: parseVarSlice(w.Witness.LayerPODPs[0].ZVector),
-		ZDelta:  parseBigInt(w.Witness.LayerPODPs[0].ZDelta),
-		ZBeta:   parseBigInt(w.Witness.LayerPODPs[0].ZBeta),
-	}
-	assignment.Layer1PODP = PODPWitness{
-		ZVector: parseVarSlice(w.Witness.LayerPODPs[1].ZVector),
-		ZDelta:  parseBigInt(w.Witness.LayerPODPs[1].ZDelta),
-		ZBeta:   parseBigInt(w.Witness.LayerPODPs[1].ZBeta),
-	}
-	// Layer 1's PoP data is at index 1 (layer 0 has no PoP, but Rust outputs a dummy at index 0)
-	if len(w.Witness.LayerPops) > 1 {
-		assignment.Layer1Pop = PopWitness{
-			Z1: parseBigInt(w.Witness.LayerPops[1].Z1),
-			Z2: parseBigInt(w.Witness.LayerPops[1].Z2),
-			Z3: parseBigInt(w.Witness.LayerPops[1].Z3),
-			Z4: parseBigInt(w.Witness.LayerPops[1].Z4),
-			Z5: parseBigInt(w.Witness.LayerPops[1].Z5),
+	zero := big.NewInt(0)
+	for i := 0; i < nLayers; i++ {
+		assignment.LayerPODPs[i] = PODPWitness{
+			ZVector: parseVarSlice(w.Witness.LayerPODPs[i].ZVector),
+			ZDelta:  parseBigInt(w.Witness.LayerPODPs[i].ZDelta),
+			ZBeta:   parseBigInt(w.Witness.LayerPODPs[i].ZBeta),
+		}
+		// Always set PopWitness (gnark requires all private fields to have values)
+		if config.HasPoP(i) && i < len(w.Witness.LayerPops) {
+			assignment.LayerPops[i] = PopWitness{
+				Z1: parseBigInt(w.Witness.LayerPops[i].Z1),
+				Z2: parseBigInt(w.Witness.LayerPops[i].Z2),
+				Z3: parseBigInt(w.Witness.LayerPops[i].Z3),
+				Z4: parseBigInt(w.Witness.LayerPops[i].Z4),
+				Z5: parseBigInt(w.Witness.LayerPops[i].Z5),
+			}
+		} else {
+			assignment.LayerPops[i] = PopWitness{Z1: zero, Z2: zero, Z3: zero, Z4: zero, Z5: zero}
 		}
 	}
 	assignment.InputPODP = PODPWitness{
@@ -239,7 +333,7 @@ func buildAssignment(config CircuitConfig, w *WitnessJSON) *RemainderWrapperCirc
 // cmdSetup compiles the circuit and runs Groth16 trusted setup.
 func cmdSetup() {
 	config := parseConfig()
-	fmt.Fprintf(os.Stderr, "Compiling circuit (num_vars=%d)...\n", config.NumVars)
+	fmt.Fprintf(os.Stderr, "Compiling circuit (layer_num_vars=%v)...\n", config.LayerNumVars)
 	circuit := AllocateCircuit(config)
 	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, circuit)
 	if err != nil {
@@ -277,8 +371,6 @@ func cmdSetup() {
 
 // cmdProve generates a Groth16 proof from witness JSON on stdin.
 func cmdProve() {
-	config := parseConfig()
-
 	// Read witness JSON from stdin
 	data, err := io.ReadAll(os.Stdin)
 	if err != nil {
@@ -292,10 +384,17 @@ func cmdProve() {
 		os.Exit(1)
 	}
 
+	var config CircuitConfig
+	if hasConfigJSON() {
+		config = configFromWitness(&w)
+	} else {
+		config = parseConfig()
+	}
+
 	assignment := buildAssignment(config, &w)
 
 	// Compile circuit
-	fmt.Fprintf(os.Stderr, "Compiling circuit (num_vars=%d)...\n", config.NumVars)
+	fmt.Fprintf(os.Stderr, "Compiling circuit (layer_num_vars=%v)...\n", config.LayerNumVars)
 	circuit := AllocateCircuit(config)
 	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, circuit)
 	if err != nil {
@@ -366,8 +465,6 @@ func cmdProve() {
 
 // cmdProveJSON generates a Groth16 proof and outputs a JSON fixture for Solidity tests.
 func cmdProveJSON() {
-	config := parseConfig()
-
 	// Read witness JSON from stdin
 	data, err := io.ReadAll(os.Stdin)
 	if err != nil {
@@ -381,10 +478,17 @@ func cmdProveJSON() {
 		os.Exit(1)
 	}
 
+	var config CircuitConfig
+	if hasConfigJSON() {
+		config = configFromWitness(&w)
+	} else {
+		config = parseConfig()
+	}
+
 	assignment := buildAssignment(config, &w)
 
 	// Compile circuit
-	fmt.Fprintf(os.Stderr, "Compiling circuit (num_vars=%d)...\n", config.NumVars)
+	fmt.Fprintf(os.Stderr, "Compiling circuit (layer_num_vars=%v)...\n", config.LayerNumVars)
 	circuit := AllocateCircuit(config)
 	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, circuit)
 	if err != nil {
@@ -462,8 +566,8 @@ func cmdProveJSON() {
 	proofPoints[6] = fpToHex(&proofBn254.Krs.X)
 	proofPoints[7] = fpToHex(&proofBn254.Krs.Y)
 
-	// Build public inputs in struct field declaration order.
-	nv := config.NumVars
+	// Build public inputs in struct field declaration order (matches Solidity buildGroth16Inputs).
+	nLayers := config.NumLayers
 	var pubInputs []string
 
 	// CircuitHash [2]
@@ -475,29 +579,28 @@ func cmdProveJSON() {
 	// ClaimAggCoeff
 	pubInputs = append(pubInputs, w.PublicInputs.ClaimAggCoeff)
 
-	// Layer 0: bindings[nv], rhos[nv+1], gammas[nv], podp_challenge
-	l0 := w.PublicInputs.Layers[0]
-	pubInputs = append(pubInputs, l0.Bindings[:nv]...)
-	pubInputs = append(pubInputs, l0.Rhos[:nv+1]...)
-	pubInputs = append(pubInputs, l0.Gammas[:nv]...)
-	pubInputs = append(pubInputs, l0.PODPChallenge)
+	// Per-layer: bindings[nv], rhos[nv+1], gammas[nv], podp_challenge, pop_challenge?
+	for i, layer := range w.PublicInputs.Layers {
+		pubInputs = append(pubInputs, layer.Bindings...)
+		pubInputs = append(pubInputs, layer.Rhos...)
+		pubInputs = append(pubInputs, layer.Gammas...)
+		pubInputs = append(pubInputs, layer.PODPChallenge)
+		if config.HasPoP(i) && layer.PopChallenge != "" {
+			pubInputs = append(pubInputs, layer.PopChallenge)
+		}
+	}
 
-	// Layer 1: bindings[nv], rhos[nv+1], gammas[nv], podp_challenge, pop_challenge
-	l1 := w.PublicInputs.Layers[1]
-	pubInputs = append(pubInputs, l1.Bindings[:nv]...)
-	pubInputs = append(pubInputs, l1.Rhos[:nv+1]...)
-	pubInputs = append(pubInputs, l1.Gammas[:nv]...)
-	pubInputs = append(pubInputs, l1.PODPChallenge)
-	pubInputs = append(pubInputs, l1.PopChallenge)
-
-	// InputRLCCoeffs [2], InputPODPChallenge, InterLayerCoeff
+	// InputRLCCoeffs [2], InputPODPChallenge
 	pubInputs = append(pubInputs, w.PublicInputs.InputRLCCoeffs[0], w.PublicInputs.InputRLCCoeffs[1])
 	pubInputs = append(pubInputs, w.PublicInputs.InputPODPChallenge)
-	pubInputs = append(pubInputs, w.PublicInputs.InterLayerCoeff)
 
-	// Public outputs: RlcBeta0, RlcBeta1, ZDotJStar0, ZDotJStar1, LTensor[variable], ZDotR, MLEEval
-	pubInputs = append(pubInputs, w.PublicOutputs.RlcBetas[0], w.PublicOutputs.RlcBetas[1])
-	pubInputs = append(pubInputs, w.PublicOutputs.ZDotJStars[0], w.PublicOutputs.ZDotJStars[1])
+	// InterLayerCoeffs [L-1]
+	interLayerCoeffs := getInterLayerCoeffs(&w, nLayers)
+	pubInputs = append(pubInputs, interLayerCoeffs...)
+
+	// Public outputs: RlcBeta[L], ZDotJStar[L], LTensor[variable], ZDotR, MLEEval
+	pubInputs = append(pubInputs, w.PublicOutputs.RlcBetas...)
+	pubInputs = append(pubInputs, w.PublicOutputs.ZDotJStars...)
 	pubInputs = append(pubInputs, w.PublicOutputs.LTensor...)
 	pubInputs = append(pubInputs, w.PublicOutputs.ZDotR)
 	pubInputs = append(pubInputs, w.PublicOutputs.MLEEval)
@@ -510,7 +613,6 @@ func cmdProveJSON() {
 	out, _ := json.MarshalIndent(fixture, "", "  ")
 	fmt.Println(string(out))
 	fmt.Fprintf(os.Stderr, "JSON fixture written to stdout (%d proof points, %d public inputs)\n", len(proofPoints), len(pubInputs))
-	_ = nv
 }
 
 // fpToHex converts a bn254 base field element to a 0x-prefixed hex string
@@ -560,15 +662,15 @@ func cmdExportSolidity() {
 // cmdInfo shows circuit statistics.
 func cmdInfo() {
 	config := parseConfig()
-	fmt.Fprintf(os.Stderr, "Compiling circuit (num_vars=%d)...\n", config.NumVars)
+	fmt.Fprintf(os.Stderr, "Compiling circuit (layer_num_vars=%v, num_layers=%d)...\n", config.LayerNumVars, config.NumLayers)
 	circuit := AllocateCircuit(config)
 	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, circuit)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "compile error: %v\n", err)
 		os.Exit(1)
 	}
-	expectedPubInputs := 7*config.NumVars + config.NumPublicInputs + 18 + config.NumLTensorElems()
-	fmt.Printf("Config: num_vars=%d, num_public_inputs=%d\n", config.NumVars, config.NumPublicInputs)
+	expectedPubInputs := config.ExpectedPublicInputCount()
+	fmt.Printf("Config: layer_num_vars=%v, num_layers=%d, layer_degrees=%v\n", config.LayerNumVars, config.NumLayers, config.LayerDegrees)
 	fmt.Printf("Constraints: %d\n", ccs.GetNbConstraints())
 	fmt.Printf("Expected public inputs: %d\n", expectedPubInputs)
 }

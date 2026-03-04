@@ -4,25 +4,37 @@ import (
 	"github.com/consensys/gnark/frontend"
 )
 
-// CircuitConfig defines the circuit dimensions for a 2-layer GKR circuit.
-// The number of GKR layers is always 2 (subtract + multiply); only the WIDTH
-// (bindings per layer = num_vars) changes.
+// CircuitConfig defines the circuit dimensions for an N-layer GKR circuit.
+// Supports per-layer num_vars (variable binding counts across layers).
 type CircuitConfig struct {
-	NumVars         int // bindings per GKR layer
-	NumPublicInputs int // 2^NumVars public input values
-	Layer0Degree    int // subtract gate degree = 2
-	Layer1Degree    int // multiply gate degree = 3
+	NumLayers       int   // number of computation layers
+	LayerNumVars    []int // per-layer num_vars (binding count); len = NumLayers
+	LayerDegrees    []int // degree of each layer; len = NumLayers
+	OutputNumVars   int   // output challenge count (0 for scalar output)
+	PubInputCount   int   // number of public input values (for MLE eval)
+	MleEvalLayerIdx int   // which layer's bindings to use for MLE eval (default 0)
 }
 
-// LeftDims returns floor(NumVars/2) — the number of left-half bindings for
+// HasPoP returns true if the given layer has a ProofOfProduct challenge (degree > 2).
+func (c CircuitConfig) HasPoP(layerIdx int) bool {
+	return c.LayerDegrees[layerIdx] > 2
+}
+
+// LastLayerNumVars returns the num_vars of the last computation layer,
+// used for the Hyrax tensor split.
+func (c CircuitConfig) LastLayerNumVars() int {
+	return c.LayerNumVars[c.NumLayers-1]
+}
+
+// LeftDims returns floor(LastLayerNumVars/2) — the number of left-half bindings for
 // the Hyrax input layer matrix split.
 func (c CircuitConfig) LeftDims() int {
-	return c.NumVars / 2
+	return c.LastLayerNumVars() / 2
 }
 
-// RightDims returns ceil(NumVars/2) — the number of right-half bindings.
+// RightDims returns ceil(LastLayerNumVars/2) — the number of right-half bindings.
 func (c CircuitConfig) RightDims() int {
-	return (c.NumVars + 1) / 2
+	return (c.LastLayerNumVars() + 1) / 2
 }
 
 // NumRTensorElems returns 2^RightDims — the size of the R-tensor and input PODP z_vector.
@@ -35,14 +47,53 @@ func (c CircuitConfig) NumLTensorElems() int {
 	return 2 * (1 << c.LeftDims())
 }
 
+// NumPopLayers returns the count of layers that have a PoP challenge.
+func (c CircuitConfig) NumPopLayers() int {
+	count := 0
+	for i := 0; i < c.NumLayers; i++ {
+		if c.HasPoP(i) {
+			count++
+		}
+	}
+	return count
+}
+
+// ExpectedPublicInputCount returns the expected number of Groth16 public inputs.
+func (c CircuitConfig) ExpectedPublicInputCount() int {
+	// circuitHash(2) + pubInputs(P) + outputChallenges(O) + claimAggCoeff(1)
+	total := 2 + c.PubInputCount + c.OutputNumVars + 1
+	// per-layer: bindings(nv_i) + rhos(nv_i+1) + gammas(nv_i) + podpChallenge(1) + popChallenge(0 or 1)
+	for i := 0; i < c.NumLayers; i++ {
+		nv := c.LayerNumVars[i]
+		total += 3*nv + 2
+		if c.HasPoP(i) {
+			total++
+		}
+	}
+	// inputRLCCoeffs(2) + inputPODPChallenge(1) + interLayerCoeffs(L-1)
+	total += 2 + 1
+	if c.NumLayers > 1 {
+		total += c.NumLayers - 1
+	}
+	// rlcBeta(L) + zDotJStar(L) + lTensor(2*2^floor(nv_last/2)) + zDotR(1) + mleEval(1)
+	total += c.NumLayers + c.NumLayers + c.NumLTensorElems() + 2
+	return total
+}
+
 // SmallConfig returns the config for the toy circuit (num_vars=1, 2 public inputs).
 func SmallConfig() CircuitConfig {
-	return CircuitConfig{NumVars: 1, NumPublicInputs: 2, Layer0Degree: 2, Layer1Degree: 3}
+	return CircuitConfig{
+		NumLayers: 2, LayerNumVars: []int{1, 1}, LayerDegrees: []int{2, 3},
+		OutputNumVars: 1, PubInputCount: 2,
+	}
 }
 
 // MediumConfig returns the config for medium XGBoost models (num_vars=4, 16 public inputs).
 func MediumConfig() CircuitConfig {
-	return CircuitConfig{NumVars: 4, NumPublicInputs: 16, Layer0Degree: 2, Layer1Degree: 3}
+	return CircuitConfig{
+		NumLayers: 2, LayerNumVars: []int{4, 4}, LayerDegrees: []int{2, 3},
+		OutputNumVars: 4, PubInputCount: 16,
+	}
 }
 
 // PODPWitness holds private witness data for a PODP verification.
@@ -61,113 +112,97 @@ type PopWitness struct {
 	Z5 frontend.Variable
 }
 
+// LayerPublic holds the per-layer public inputs for the Groth16 circuit.
+// PopChallenge has length 0 (no PoP, degree <= 2) or 1 (has PoP, degree > 2).
+type LayerPublic struct {
+	Bindings      []frontend.Variable
+	Rhos          []frontend.Variable
+	Gammas        []frontend.Variable
+	PODPChallenge frontend.Variable
+	PopChallenge  []frontend.Variable
+}
+
 // RemainderWrapperCircuit wraps GKR algebraic verification inside a Groth16 SNARK.
 //
 // Option C design: Poseidon transcript replay stays on-chain (Fq). This circuit
 // takes ALL Fiat-Shamir challenges as public inputs, computes Fr-based algebraic
 // relations, and exposes the scalar results as public outputs for on-chain EC checks.
 //
-// Parameterized for num_vars: 2 GKR layers (subtract + multiply), width = 2^num_vars.
-// The Hyrax input layer splits num_vars into left (floor(N/2)) and right (ceil(N/2)) halves.
+// Parameterized for N layers with per-layer num_vars (variable binding counts).
+// The Hyrax input layer splits the last layer's num_vars into left/right halves.
 //
-// Public input count: 7*N + 2^N + 18 + 2*2^floor(N/2)
-//   - Small  (N=1): 7+2+18+2 = 29
-//   - Medium (N=4): 28+16+18+8 = 70
+// Public input layout matches Solidity buildGroth16Inputs():
+//
+//	circuitHash[2] | pubInputs[P] | outputChallenges[O] | claimAggCoeff |
+//	per-layer{ bindings[nv_i], rhos[nv_i+1], gammas[nv_i], podpChallenge, popChallenge? } |
+//	inputRLCCoeffs[2] | inputPODPChallenge | interLayerCoeffs[L-1] |
+//	rlcBeta[L] | zDotJStar[L] | lTensor[2*2^floor(nv_last/2)] | zDotR | mleEval
 type RemainderWrapperCircuit struct {
 	// Config (not a circuit variable, used at compile time only)
 	Config CircuitConfig `gnark:"-"`
 
 	// === Public inputs (on-chain -> gnark, from Poseidon transcript) ===
-	CircuitHash  [2]frontend.Variable `gnark:",public"`
-	PublicInputs []frontend.Variable  `gnark:",public"` // 2^num_vars values
+	CircuitHash      [2]frontend.Variable `gnark:",public"`
+	PublicInputs     []frontend.Variable  `gnark:",public"` // PubInputCount values
+	OutputChallenges []frontend.Variable  `gnark:",public"` // OutputNumVars values
+	ClaimAggCoeff    frontend.Variable    `gnark:",public"`
 
-	// Output challenges (claim point for layer 0) and claim aggregation
-	OutputChallenges []frontend.Variable `gnark:",public"` // num_vars values
-	ClaimAggCoeff    frontend.Variable   `gnark:",public"`
+	// Per-layer challenges
+	Layers []LayerPublic `gnark:",public"`
 
-	// Layer 0 (subtract): num_vars bindings, num_vars+1 rhos, num_vars gammas
-	Layer0Bindings      []frontend.Variable `gnark:",public"`
-	Layer0Rhos          []frontend.Variable `gnark:",public"`
-	Layer0Gammas        []frontend.Variable `gnark:",public"`
-	Layer0PODPChallenge frontend.Variable   `gnark:",public"`
-
-	// Layer 1 (multiply): num_vars bindings, num_vars+1 rhos, num_vars gammas
-	Layer1Bindings      []frontend.Variable `gnark:",public"`
-	Layer1Rhos          []frontend.Variable `gnark:",public"`
-	Layer1Gammas        []frontend.Variable `gnark:",public"`
-	Layer1PODPChallenge frontend.Variable   `gnark:",public"`
-	Layer1PopChallenge  frontend.Variable   `gnark:",public"`
-
-	// Input layer: RLC coefficients for multi-claim (always 2 shreds), PODP challenge
+	// Input layer
 	InputRLCCoeffs     [2]frontend.Variable `gnark:",public"`
 	InputPODPChallenge frontend.Variable    `gnark:",public"`
 
-	// Inter-layer claim aggregation coefficient
-	InterLayerCoeff frontend.Variable `gnark:",public"`
+	// Inter-layer claim aggregation coefficients (L-1 values)
+	InterLayerCoeffs []frontend.Variable `gnark:",public"`
 
 	// === Public outputs (gnark -> on-chain, used in EC equations) ===
-	RlcBeta0   frontend.Variable `gnark:",public"`
-	RlcBeta1   frontend.Variable `gnark:",public"`
-	ZDotJStar0 frontend.Variable `gnark:",public"`
-	ZDotJStar1 frontend.Variable `gnark:",public"`
-
-	// L-tensor: 2 * 2^floor(num_vars/2) elements (2 shreds * left-half tensor product)
-	LTensor []frontend.Variable `gnark:",public"`
-
-	ZDotR   frontend.Variable `gnark:",public"`
-	MLEEval frontend.Variable `gnark:",public"`
+	RlcBeta   []frontend.Variable `gnark:",public"` // one per layer
+	ZDotJStar []frontend.Variable `gnark:",public"` // one per layer
+	LTensor   []frontend.Variable `gnark:",public"` // 2 * 2^floor(num_vars/2)
+	ZDotR     frontend.Variable   `gnark:",public"`
+	MLEEval   frontend.Variable   `gnark:",public"`
 
 	// === Private witness (off-chain) ===
-	Layer0PODP PODPWitness
-	Layer1PODP PODPWitness
-	Layer1Pop  PopWitness
+	LayerPODPs []PODPWitness
+	LayerPops  []PopWitness
 	InputPODP  PODPWitness // z_vector has 2^ceil(num_vars/2) elements
 }
 
 // Define implements the gnark circuit interface.
 func (c *RemainderWrapperCircuit) Define(api frontend.API) error {
-	// ======================================================================
-	// Layer 0 (subtract gate, degree=2)
-	// ======================================================================
+	numLayers := c.Config.NumLayers
 
-	// rlc_beta_0 = beta(layer0_bindings, output_challenges) * claimAggCoeff
-	rlcBeta0 := computeRlcBeta(api, c.Layer0Bindings, c.OutputChallenges, c.ClaimAggCoeff)
-	api.AssertIsEqual(rlcBeta0, c.RlcBeta0)
+	for i := 0; i < numLayers; i++ {
+		// rlcBeta: beta(layer_bindings, claim_point) * coeff
+		var claimPoint []frontend.Variable
+		var coeff frontend.Variable
+		if i == 0 {
+			claimPoint = c.OutputChallenges
+			coeff = c.ClaimAggCoeff
+		} else {
+			claimPoint = c.Layers[i-1].Bindings
+			coeff = c.InterLayerCoeffs[i-1]
+		}
+		rlcBeta := computeRlcBeta(api, c.Layers[i].Bindings, claimPoint, coeff)
+		api.AssertIsEqual(rlcBeta, c.RlcBeta[i])
 
-	// j_star and <z, j_star> for layer 0
-	jStar0 := computeJStar(api, c.Layer0Rhos, c.Layer0Gammas, c.Layer0Bindings, c.Config.Layer0Degree)
-	zDotJStar0 := innerProduct(api, c.Layer0PODP.ZVector, jStar0)
-	api.AssertIsEqual(zDotJStar0, c.ZDotJStar0)
+		// j_star and <z, j_star> for this layer
+		jStar := computeJStar(api, c.Layers[i].Rhos, c.Layers[i].Gammas,
+			c.Layers[i].Bindings, c.Config.LayerDegrees[i])
+		zDotJStar := innerProduct(api, c.LayerPODPs[i].ZVector, jStar)
+		api.AssertIsEqual(zDotJStar, c.ZDotJStar[i])
+	}
 
-	// ======================================================================
-	// Layer 1 (multiply gate, degree=3)
-	// ======================================================================
-
-	// rlc_beta_1 = beta(layer1_bindings, layer0_bindings) * interLayerCoeff
-	rlcBeta1 := computeRlcBeta(api, c.Layer1Bindings, c.Layer0Bindings, c.InterLayerCoeff)
-	api.AssertIsEqual(rlcBeta1, c.RlcBeta1)
-
-	// j_star and <z, j_star> for layer 1
-	jStar1 := computeJStar(api, c.Layer1Rhos, c.Layer1Gammas, c.Layer1Bindings, c.Config.Layer1Degree)
-	zDotJStar1 := innerProduct(api, c.Layer1PODP.ZVector, jStar1)
-	api.AssertIsEqual(zDotJStar1, c.ZDotJStar1)
-
-	// ======================================================================
 	// Input layer: Hyrax matrix split for L-tensor and R-tensor
-	// ======================================================================
-	// The Hyrax committed input (2 shreds x 2^num_vars values) uses a matrix layout:
-	//   left_dims  = floor(num_vars/2) bindings -> L-tensor per shred
-	//   right_dims = ceil(num_vars/2) bindings  -> R-tensor
-	//
-	// L-tensor = [coeff0 * tensor(left_bindings), coeff1 * tensor(left_bindings)]
-	// R-tensor = tensor(right_bindings)
-	// PODP z_vector has 2^right_dims elements
-
+	// Uses LAST layer's bindings for L/R tensor split
+	lastLayer := numLayers - 1
 	leftDims := c.Config.LeftDims()
 
 	// L-tensor: for each shred, scale tensor(left_bindings) by the RLC coefficient
-	leftBindings := c.Layer1Bindings[:leftDims]
-	lPerShred := computeTensorProduct(api, leftBindings) // 2^leftDims elements
+	leftBindings := c.Layers[lastLayer].Bindings[:leftDims]
+	lPerShred := computeTensorProduct(api, leftBindings)
 	lPerShredLen := len(lPerShred)
 	for i := 0; i < lPerShredLen; i++ {
 		expected0 := api.Mul(c.InputRLCCoeffs[0], lPerShred[i])
@@ -177,16 +212,13 @@ func (c *RemainderWrapperCircuit) Define(api frontend.API) error {
 	}
 
 	// R-tensor from right-half bindings -> 2^rightDims elements
-	rightBindings := c.Layer1Bindings[leftDims:]
+	rightBindings := c.Layers[lastLayer].Bindings[leftDims:]
 	rTensor := computeTensorProduct(api, rightBindings)
 	zDotR := innerProduct(api, c.InputPODP.ZVector, rTensor)
 	api.AssertIsEqual(zDotR, c.ZDotR)
 
-	// ======================================================================
-	// Public input MLE evaluation
-	// ======================================================================
-	// MLE(publicInputs, layer0_bindings) via tensor product evaluation
-	mleEval := evaluateMLE(api, c.PublicInputs, c.Layer0Bindings)
+	// Public input MLE evaluation: uses the layer identified by MleEvalLayerIdx
+	mleEval := evaluateMLE(api, c.PublicInputs, c.Layers[c.Config.MleEvalLayerIdx].Bindings)
 	api.AssertIsEqual(mleEval, c.MLEEval)
 
 	return nil
@@ -194,20 +226,44 @@ func (c *RemainderWrapperCircuit) Define(api frontend.API) error {
 
 // AllocateCircuit returns a circuit definition with correct slice sizes for the given config.
 func AllocateCircuit(config CircuitConfig) *RemainderWrapperCircuit {
-	nv := config.NumVars
+	nLayers := config.NumLayers
+
+	layers := make([]LayerPublic, nLayers)
+	layerPODPs := make([]PODPWitness, nLayers)
+	layerPops := make([]PopWitness, nLayers)
+	for i := 0; i < nLayers; i++ {
+		nv := config.LayerNumVars[i]
+		popLen := 0
+		if config.HasPoP(i) {
+			popLen = 1
+		}
+		layers[i] = LayerPublic{
+			Bindings:     make([]frontend.Variable, nv),
+			Rhos:         make([]frontend.Variable, nv+1),
+			Gammas:       make([]frontend.Variable, nv),
+			PopChallenge: make([]frontend.Variable, popLen),
+		}
+		layerPODPs[i] = PODPWitness{
+			ZVector: make([]frontend.Variable, (config.LayerDegrees[i]+1)*nv),
+		}
+	}
+
+	interLayerCoeffs := make([]frontend.Variable, 0)
+	if nLayers > 1 {
+		interLayerCoeffs = make([]frontend.Variable, nLayers-1)
+	}
+
 	return &RemainderWrapperCircuit{
 		Config:           config,
-		PublicInputs:     make([]frontend.Variable, config.NumPublicInputs),
-		OutputChallenges: make([]frontend.Variable, nv),
-		Layer0Bindings:   make([]frontend.Variable, nv),
-		Layer0Rhos:       make([]frontend.Variable, nv+1),
-		Layer0Gammas:     make([]frontend.Variable, nv),
-		Layer1Bindings:   make([]frontend.Variable, nv),
-		Layer1Rhos:       make([]frontend.Variable, nv+1),
-		Layer1Gammas:     make([]frontend.Variable, nv),
+		PublicInputs:     make([]frontend.Variable, config.PubInputCount),
+		OutputChallenges: make([]frontend.Variable, config.OutputNumVars),
+		Layers:           layers,
+		InterLayerCoeffs: interLayerCoeffs,
+		RlcBeta:          make([]frontend.Variable, nLayers),
+		ZDotJStar:        make([]frontend.Variable, nLayers),
 		LTensor:          make([]frontend.Variable, config.NumLTensorElems()),
-		Layer0PODP:       PODPWitness{ZVector: make([]frontend.Variable, (config.Layer0Degree+1)*nv)},
-		Layer1PODP:       PODPWitness{ZVector: make([]frontend.Variable, (config.Layer1Degree+1)*nv)},
+		LayerPODPs:       layerPODPs,
+		LayerPops:        layerPops,
 		InputPODP:        PODPWitness{ZVector: make([]frontend.Variable, config.NumRTensorElems())},
 	}
 }

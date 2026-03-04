@@ -157,7 +157,8 @@ library GKRHybridVerifier {
         TranscriptChallenges memory challenges,
         Groth16Outputs memory outputs,
         HyraxVerifier.PedersenGens memory gens,
-        GKRVerifier.CircuitDescription memory circuit
+        GKRVerifier.CircuitDescription memory circuit,
+        uint256[] memory pubInputs
     ) internal view returns (bool) {
         uint256 numComputeLayers = proof.layerProofs.length;
 
@@ -190,12 +191,47 @@ library GKRHybridVerifier {
         }
 
         // Input Hyrax verification (committed input layer)
-        require(
-            _verifyInputHyrax(proof.inputProofs[0], challenges.inputPodpChallenge, outputs, gens),
-            "Hybrid: Input Hyrax failed"
-        );
+        if (proof.inputProofs.length > 0) {
+            require(
+                _verifyInputHyrax(proof.inputProofs[0], challenges.inputPodpChallenge, outputs, gens),
+                "Hybrid: Input Hyrax failed"
+            );
+        }
+
+        // Public input claim verification (for non-committed input layers)
+        if (_hasNonCommittedInputLayer(circuit) && pubInputs.length > 0) {
+            // Defense-in-depth: verify on-chain MLE evaluation matches Groth16's mleEval.
+            // The gnark tensor product reverses bit ordering vs Solidity's evaluateMLEFromData,
+            // so we reverse the bindings array before evaluating.
+            uint256 bLen = challenges.layers[0].bindings.length;
+            uint256[] memory revBindings = new uint256[](bLen);
+            for (uint256 i = 0; i < bLen; i++) {
+                revBindings[i] = challenges.layers[0].bindings[bLen - 1 - i];
+            }
+            uint256 onChainMle = GKRVerifier.evaluateMLEFromData(pubInputs, revBindings);
+            require(outputs.mleEval == onChainMle, "Hybrid: mleEval mismatch");
+
+            // Verify the MLE evaluation matches the final claim commitment
+            HyraxVerifier.G1Point memory claimCom = proof.layerProofs[numComputeLayers - 1].commitments[0];
+            HyraxVerifier.G1Point memory expectedCom = HyraxVerifier.scalarMul(gens.scalarGen, outputs.mleEval);
+            require(HyraxVerifier.isEqual(expectedCom, claimCom), "Hybrid: public input claim mismatch");
+        }
 
         return true;
+    }
+
+    /// @notice Check if the circuit has any non-committed input layer
+    function _hasNonCommittedInputLayer(GKRVerifier.CircuitDescription memory circuit)
+        private
+        pure
+        returns (bool)
+    {
+        for (uint256 i = 0; i < circuit.numLayers; i++) {
+            if (circuit.layerTypes[i] == 3 && !circuit.isCommitted[i]) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // ========================================================================

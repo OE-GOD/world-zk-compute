@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 description = "XGBoost decision tree inference proved with Remainder (GKR+Hyrax)"
 
+[lib]
+name = "xgboost_remainder"
+path = "src/lib.rs"
+
 [dependencies]
 # Remainder proof system (from World's Remainder_CE)
 frontend = { git = "https://github.com/worldcoin/Remainder_CE.git", branch = "main" }
@@ -79,3 +83,4 @@ path = "src/bin/gen_transcript_trace.rs"
 [[bin]]
 name = "gen_groth16_witness"
 path = "src/bin/gen_groth16_witness.rs"
+

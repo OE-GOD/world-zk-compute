@@ -43,7 +43,7 @@ func TestSmallCircuitRejectsInvalidWitness(t *testing.T) {
 	config := SmallConfig()
 	circuit := AllocateCircuit(config)
 	assignment := makeDummyAssignment(config)
-	assignment.RlcBeta0 = big.NewInt(999)
+	assignment.RlcBeta[0] = big.NewInt(999)
 
 	assert := test.NewAssert(t)
 	assert.ProverFailed(
@@ -59,7 +59,7 @@ func TestSmallCircuitRejectsWrongInnerProduct(t *testing.T) {
 	config := SmallConfig()
 	circuit := AllocateCircuit(config)
 	assignment := makeDummyAssignment(config)
-	assignment.ZDotJStar0 = big.NewInt(12345)
+	assignment.ZDotJStar[0] = big.NewInt(12345)
 
 	assert := test.NewAssert(t)
 	assert.ProverFailed(
@@ -103,7 +103,7 @@ func TestMediumCircuitRejectsInvalidWitness(t *testing.T) {
 	config := MediumConfig()
 	circuit := AllocateCircuit(config)
 	assignment := makeDummyAssignment(config)
-	assignment.RlcBeta0 = big.NewInt(999)
+	assignment.RlcBeta[0] = big.NewInt(999)
 
 	assert := test.NewAssert(t)
 	assert.ProverFailed(
@@ -120,73 +120,78 @@ func TestMediumCircuitRejectsInvalidWitness(t *testing.T) {
 // ============================================================
 
 func makeDummyAssignment(config CircuitConfig) *RemainderWrapperCircuit {
-	nv := config.NumVars
-	numPub := config.NumPublicInputs // 2^nv
+	numPub := config.PubInputCount
+	nLayers := config.NumLayers
 	leftDims := config.LeftDims()
 	rightDims := config.RightDims()
 	numRTensor := 1 << rightDims
 	numLTensor := config.NumLTensorElems()
 
-	// Output challenges (num_vars values)
-	outputChallenges := make([]*big.Int, nv)
-	for i := 0; i < nv; i++ {
+	// Output challenges (OutputNumVars values)
+	outputChallenges := make([]*big.Int, config.OutputNumVars)
+	for i := 0; i < config.OutputNumVars; i++ {
 		outputChallenges[i] = big.NewInt(int64(7 + i*3))
 	}
 
 	claimAggCoeff := big.NewInt(3)
-	interLayerCoeff := big.NewInt(5)
 
-	// Layer 0 (subtract, degree=2)
-	l0bindings := make([]*big.Int, nv)
-	l0gammas := make([]*big.Int, nv)
-	l0rhos := make([]*big.Int, nv+1)
-	for i := 0; i < nv; i++ {
-		l0bindings[i] = big.NewInt(int64(11 + i*7))
-		l0gammas[i] = big.NewInt(int64(19 + i*5))
+	// Per-layer test data
+	type layerData struct {
+		bindings      []*big.Int
+		gammas        []*big.Int
+		rhos          []*big.Int
+		podpChallenge *big.Int
+		popChallenge  *big.Int
+		zVector       []*big.Int
+		zDelta        *big.Int
+		zBeta         *big.Int
 	}
-	for i := 0; i <= nv; i++ {
-		l0rhos[i] = big.NewInt(int64(13 + i*4))
-	}
-	l0podpChallenge := big.NewInt(23)
 
-	// Layer 1 (multiply, degree=3)
-	l1bindings := make([]*big.Int, nv)
-	l1gammas := make([]*big.Int, nv)
-	l1rhos := make([]*big.Int, nv+1)
-	for i := 0; i < nv; i++ {
-		l1bindings[i] = big.NewInt(int64(29 + i*11))
-		l1gammas[i] = big.NewInt(int64(41 + i*13))
+	layersData := make([]layerData, nLayers)
+	for li := 0; li < nLayers; li++ {
+		nv := config.LayerNumVars[li]
+		offset := li * 18 // spread values apart per layer
+		ld := layerData{
+			bindings:      make([]*big.Int, nv),
+			gammas:        make([]*big.Int, nv),
+			rhos:          make([]*big.Int, nv+1),
+			podpChallenge: big.NewInt(int64(23 + offset)),
+		}
+		for i := 0; i < nv; i++ {
+			ld.bindings[i] = big.NewInt(int64(11 + i*7 + offset))
+			ld.gammas[i] = big.NewInt(int64(19 + i*5 + offset))
+		}
+		for i := 0; i <= nv; i++ {
+			ld.rhos[i] = big.NewInt(int64(13 + i*4 + offset))
+		}
+		if config.HasPoP(li) {
+			ld.popChallenge = big.NewInt(int64(47 + offset))
+		}
+		zLen := (config.LayerDegrees[li] + 1) * nv
+		ld.zVector = make([]*big.Int, zLen)
+		for i := 0; i < zLen; i++ {
+			ld.zVector[i] = big.NewInt(int64(100 + i*100 + offset*10))
+		}
+		ld.zDelta = big.NewInt(int64(400 + offset*10))
+		ld.zBeta = big.NewInt(int64(500 + offset*10))
+		layersData[li] = ld
 	}
-	for i := 0; i <= nv; i++ {
-		l1rhos[i] = big.NewInt(int64(31 + i*6))
+
+	// Inter-layer coefficients (L-1 values)
+	interLayerCoeffs := make([]*big.Int, 0)
+	if nLayers > 1 {
+		interLayerCoeffs = make([]*big.Int, nLayers-1)
+		for i := 0; i < nLayers-1; i++ {
+			interLayerCoeffs[i] = big.NewInt(int64(5 + i*3))
+		}
 	}
-	l1podpChallenge := big.NewInt(43)
-	l1popChallenge := big.NewInt(47)
 
 	// Input layer
 	inputRLCCoeff0 := big.NewInt(53)
 	inputRLCCoeff1 := big.NewInt(59)
 	inputPODPChallenge := big.NewInt(61)
 
-	// Layer 0 z_vector: (degree+1)*nv elements
-	l0zLen := (config.Layer0Degree + 1) * nv
-	l0z := make([]*big.Int, l0zLen)
-	for i := 0; i < l0zLen; i++ {
-		l0z[i] = big.NewInt(int64(100 + i*100))
-	}
-	l0zDelta := big.NewInt(400)
-	l0zBeta := big.NewInt(500)
-
-	// Layer 1 z_vector: (degree+1)*nv elements
-	l1zLen := (config.Layer1Degree + 1) * nv
-	l1z := make([]*big.Int, l1zLen)
-	for i := 0; i < l1zLen; i++ {
-		l1z[i] = big.NewInt(int64(110 + i*110))
-	}
-	l1zDelta := big.NewInt(550)
-	l1zBeta := big.NewInt(660)
-
-	// Input z_vector: 2^rightDims elements (NOT 2^num_vars)
+	// Input z_vector: 2^rightDims elements
 	inputZ := make([]*big.Int, numRTensor)
 	for i := 0; i < numRTensor; i++ {
 		inputZ[i] = big.NewInt(int64(700 + i*100))
@@ -201,7 +206,7 @@ func makeDummyAssignment(config CircuitConfig) *RemainderWrapperCircuit {
 	popZ4 := big.NewInt(1004)
 	popZ5 := big.NewInt(1005)
 
-	// Public inputs (2^nv values)
+	// Public inputs (PubInputCount values)
 	pubInputs := make([]*big.Int, numPub)
 	for i := 0; i < numPub; i++ {
 		pubInputs[i] = big.NewInt(int64(6 + i*14))
@@ -209,22 +214,29 @@ func makeDummyAssignment(config CircuitConfig) *RemainderWrapperCircuit {
 
 	// === Compute expected public outputs natively ===
 
-	// rlc_beta_0 = beta(l0_bindings, output_challenges) * claimAggCoeff
-	rlcBeta0 := nativeComputeRlcBeta(l0bindings, outputChallenges, claimAggCoeff)
+	// Per-layer: rlcBeta and zDotJStar
+	rlcBetas := make([]*big.Int, nLayers)
+	zDotJStars := make([]*big.Int, nLayers)
+	for i := 0; i < nLayers; i++ {
+		var claimPoint []*big.Int
+		var coeff *big.Int
+		if i == 0 {
+			claimPoint = outputChallenges
+			coeff = claimAggCoeff
+		} else {
+			claimPoint = layersData[i-1].bindings
+			coeff = interLayerCoeffs[i-1]
+		}
+		rlcBetas[i] = nativeComputeRlcBeta(layersData[i].bindings, claimPoint, coeff)
 
-	// rlc_beta_1 = beta(l1_bindings, l0_bindings) * interLayerCoeff
-	rlcBeta1 := nativeComputeRlcBeta(l1bindings, l0bindings, interLayerCoeff)
+		jStar := nativeComputeJStar(layersData[i].rhos, layersData[i].gammas,
+			layersData[i].bindings, config.LayerDegrees[i])
+		zDotJStars[i] = nativeInnerProduct(layersData[i].zVector, jStar)
+	}
 
-	// j_star_0 and <z, j_star> for layer 0 (degree=2)
-	jStar0 := nativeComputeJStar(l0rhos, l0gammas, l0bindings, config.Layer0Degree)
-	zDotJStar0 := nativeInnerProduct(l0z, jStar0)
-
-	// j_star_1 and <z, j_star> for layer 1 (degree=3)
-	jStar1 := nativeComputeJStar(l1rhos, l1gammas, l1bindings, config.Layer1Degree)
-	zDotJStar1 := nativeInnerProduct(l1z, jStar1)
-
-	// L-tensor: tensor(left_bindings) scaled by RLC coefficients
-	leftBindings := l1bindings[:leftDims]
+	// L-tensor: uses LAST layer's bindings
+	lastBindings := layersData[nLayers-1].bindings
+	leftBindings := lastBindings[:leftDims]
 	lPerShred := nativeComputeTensorProduct(leftBindings) // 2^leftDims elements
 	lTensor := make([]*big.Int, numLTensor)
 	lPerShredLen := len(lPerShred)
@@ -233,15 +245,15 @@ func makeDummyAssignment(config CircuitConfig) *RemainderWrapperCircuit {
 		lTensor[lPerShredLen+i] = mulMod(inputRLCCoeff1, lPerShred[i])
 	}
 
-	// R-tensor from right-half bindings
-	rightBindings := l1bindings[leftDims:]
+	// R-tensor from right-half bindings of LAST layer
+	rightBindings := lastBindings[leftDims:]
 	rTensor := nativeComputeTensorProduct(rightBindings)
 
 	// <input_z, R_tensor>
 	zDotR := nativeInnerProduct(inputZ, rTensor)
 
-	// MLE eval: multilinear extension of pubInputs evaluated at l0_bindings
-	mleEval := nativeEvaluateMLE(pubInputs, l0bindings)
+	// MLE eval: uses FIRST layer's bindings
+	mleEval := nativeEvaluateMLE(pubInputs, layersData[0].bindings)
 
 	// === Build assignment ===
 	assignment := AllocateCircuit(config)
@@ -250,39 +262,41 @@ func makeDummyAssignment(config CircuitConfig) *RemainderWrapperCircuit {
 	for i := 0; i < numPub; i++ {
 		assignment.PublicInputs[i] = pubInputs[i]
 	}
-	for i := 0; i < nv; i++ {
+	for i := 0; i < config.OutputNumVars; i++ {
 		assignment.OutputChallenges[i] = outputChallenges[i]
 	}
 	assignment.ClaimAggCoeff = claimAggCoeff
-	assignment.InterLayerCoeff = interLayerCoeff
 
-	for i := 0; i < nv; i++ {
-		assignment.Layer0Bindings[i] = l0bindings[i]
-		assignment.Layer0Gammas[i] = l0gammas[i]
+	// Per-layer public inputs (each layer has its own num_vars)
+	for li := 0; li < nLayers; li++ {
+		nv := config.LayerNumVars[li]
+		ld := layersData[li]
+		for i := 0; i < nv; i++ {
+			assignment.Layers[li].Bindings[i] = ld.bindings[i]
+			assignment.Layers[li].Gammas[i] = ld.gammas[i]
+		}
+		for i := 0; i <= nv; i++ {
+			assignment.Layers[li].Rhos[i] = ld.rhos[i]
+		}
+		assignment.Layers[li].PODPChallenge = ld.podpChallenge
+		if config.HasPoP(li) {
+			assignment.Layers[li].PopChallenge[0] = ld.popChallenge
+		}
 	}
-	for i := 0; i <= nv; i++ {
-		assignment.Layer0Rhos[i] = l0rhos[i]
-	}
-	assignment.Layer0PODPChallenge = l0podpChallenge
-
-	for i := 0; i < nv; i++ {
-		assignment.Layer1Bindings[i] = l1bindings[i]
-		assignment.Layer1Gammas[i] = l1gammas[i]
-	}
-	for i := 0; i <= nv; i++ {
-		assignment.Layer1Rhos[i] = l1rhos[i]
-	}
-	assignment.Layer1PODPChallenge = l1podpChallenge
-	assignment.Layer1PopChallenge = l1popChallenge
 
 	assignment.InputRLCCoeffs = [2]frontend.Variable{inputRLCCoeff0, inputRLCCoeff1}
 	assignment.InputPODPChallenge = inputPODPChallenge
 
+	// Inter-layer coefficients
+	for i := 0; i < len(interLayerCoeffs); i++ {
+		assignment.InterLayerCoeffs[i] = interLayerCoeffs[i]
+	}
+
 	// Public outputs
-	assignment.RlcBeta0 = rlcBeta0
-	assignment.RlcBeta1 = rlcBeta1
-	assignment.ZDotJStar0 = zDotJStar0
-	assignment.ZDotJStar1 = zDotJStar1
+	for i := 0; i < nLayers; i++ {
+		assignment.RlcBeta[i] = rlcBetas[i]
+		assignment.ZDotJStar[i] = zDotJStars[i]
+	}
 	for i := 0; i < numLTensor; i++ {
 		assignment.LTensor[i] = lTensor[i]
 	}
@@ -290,19 +304,17 @@ func makeDummyAssignment(config CircuitConfig) *RemainderWrapperCircuit {
 	assignment.MLEEval = mleEval
 
 	// Private witnesses
-	l0zVars := make([]frontend.Variable, l0zLen)
-	for i, v := range l0z {
-		l0zVars[i] = v
-	}
-	assignment.Layer0PODP = PODPWitness{ZVector: l0zVars, ZDelta: l0zDelta, ZBeta: l0zBeta}
+	for li := 0; li < nLayers; li++ {
+		ld := layersData[li]
+		zVars := make([]frontend.Variable, len(ld.zVector))
+		for i, v := range ld.zVector {
+			zVars[i] = v
+		}
+		assignment.LayerPODPs[li] = PODPWitness{ZVector: zVars, ZDelta: ld.zDelta, ZBeta: ld.zBeta}
 
-	l1zVars := make([]frontend.Variable, l1zLen)
-	for i, v := range l1z {
-		l1zVars[i] = v
+		// Always set PopWitness (gnark requires all private fields to have values)
+		assignment.LayerPops[li] = PopWitness{Z1: popZ1, Z2: popZ2, Z3: popZ3, Z4: popZ4, Z5: popZ5}
 	}
-	assignment.Layer1PODP = PODPWitness{ZVector: l1zVars, ZDelta: l1zDelta, ZBeta: l1zBeta}
-
-	assignment.Layer1Pop = PopWitness{Z1: popZ1, Z2: popZ2, Z3: popZ3, Z4: popZ4, Z5: popZ5}
 
 	inputZVars := make([]frontend.Variable, numRTensor)
 	for i, v := range inputZ {
@@ -409,4 +421,68 @@ func nativeComputeTensorProduct(bindings []*big.Int) []*big.Int {
 func nativeEvaluateMLE(values []*big.Int, point []*big.Int) *big.Int {
 	basis := nativeComputeTensorProduct(point)
 	return nativeInnerProduct(values, basis)
+}
+
+// ============================================================
+// Variable num_vars tests (per-layer parameterization)
+// ============================================================
+
+func TestVariableNumVarsCircuitCompiles(t *testing.T) {
+	config := CircuitConfig{
+		NumLayers:     3,
+		LayerNumVars:  []int{2, 3, 1},
+		LayerDegrees:  []int{2, 2, 3},
+		OutputNumVars: 2,
+		PubInputCount: 4,
+	}
+	circuit := AllocateCircuit(config)
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, circuit)
+	if err != nil {
+		t.Fatalf("circuit compilation failed: %v", err)
+	}
+	t.Logf("VariableNumVars circuit: %d constraints, expected pub inputs: %d",
+		ccs.GetNbConstraints(), config.ExpectedPublicInputCount())
+}
+
+func TestVariableNumVarsCircuitProves(t *testing.T) {
+	config := CircuitConfig{
+		NumLayers:     3,
+		LayerNumVars:  []int{2, 3, 1},
+		LayerDegrees:  []int{2, 2, 3},
+		OutputNumVars: 2,
+		PubInputCount: 4,
+	}
+	circuit := AllocateCircuit(config)
+	assignment := makeDummyAssignment(config)
+
+	assert := test.NewAssert(t)
+	assert.ProverSucceeded(
+		circuit,
+		assignment,
+		test.WithCurves(ecc.BN254),
+		test.WithBackends(backend.GROTH16),
+	)
+	t.Log("VariableNumVars Groth16 proof verified successfully")
+}
+
+func TestVariableNumVarsCircuitRejectsInvalidWitness(t *testing.T) {
+	config := CircuitConfig{
+		NumLayers:     3,
+		LayerNumVars:  []int{2, 3, 1},
+		LayerDegrees:  []int{2, 2, 3},
+		OutputNumVars: 2,
+		PubInputCount: 4,
+	}
+	circuit := AllocateCircuit(config)
+	assignment := makeDummyAssignment(config)
+	assignment.RlcBeta[1] = big.NewInt(999)
+
+	assert := test.NewAssert(t)
+	assert.ProverFailed(
+		circuit,
+		assignment,
+		test.WithCurves(ecc.BN254),
+		test.WithBackends(backend.GROTH16),
+	)
+	t.Log("VariableNumVars correctly rejected invalid witness")
 }

@@ -108,56 +108,134 @@ fn evaluate_mle_fr(values: &[Fr], point: &[Fr]) -> Fr {
         .fold(Fr::zero(), |acc, (v, b)| acc + *v * *b)
 }
 
-/// Parse --num-vars from CLI args, default to 1
-fn parse_num_vars() -> usize {
+/// CLI argument parsing helpers
+fn parse_arg(name: &str) -> Option<String> {
     let args: Vec<String> = std::env::args().collect();
     for i in 1..args.len() {
-        if args[i] == "--num-vars" && i + 1 < args.len() {
-            return args[i + 1].parse().expect("invalid --num-vars value");
+        if args[i] == name && i + 1 < args.len() {
+            return Some(args[i + 1].clone());
         }
     }
-    1
+    None
 }
 
-fn main() -> Result<()> {
-    let num_vars = parse_num_vars();
+fn parse_arg_usize(name: &str, default: usize) -> usize {
+    parse_arg(name)
+        .map(|s| s.parse().unwrap_or_else(|_| panic!("invalid {} value", name)))
+        .unwrap_or(default)
+}
+
+/// Holds the circuit + metadata needed for witness generation.
+struct CircuitSetup {
+    prover_circuit: Circuit<Fr>,
+    verifier_circuit: Circuit<Fr>,
+    /// Public input values (for MLE eval in the gnark circuit)
+    pub_values: Vec<Fr>,
+    transcript_label: &'static str,
+    pedersen_seed: &'static str,
+}
+
+fn setup_toy_circuit() -> CircuitSetup {
+    let num_vars = parse_arg_usize("--num-vars", 1);
     let size = 1usize << num_vars;
-    eprintln!("num_vars={}, size={}", num_vars, size);
+    eprintln!("Toy circuit: num_vars={}, size={}", num_vars, size);
 
     let base_circuit = build_circuit(num_vars);
-
     let mut prover_circuit = base_circuit.clone();
     let verifier_circuit = base_circuit.clone();
 
-    // Generate input data dynamically
     let a_vals: Vec<u64> = (1..=size as u64).map(|i| i * 3).collect();
     let b_vals: Vec<u64> = (1..=size as u64).map(|i| i * 2).collect();
-    let expected_vals: Vec<u64> = a_vals
-        .iter()
-        .zip(b_vals.iter())
-        .map(|(a, b)| a * b)
-        .collect();
+    let expected_vals: Vec<u64> = a_vals.iter().zip(b_vals.iter()).map(|(a, b)| a * b).collect();
 
-    prover_circuit.set_input("a", a_vals.clone().into());
-    prover_circuit.set_input("b", b_vals.clone().into());
+    prover_circuit.set_input("a", a_vals.into());
+    prover_circuit.set_input("b", b_vals.into());
     prover_circuit.set_input("expected", expected_vals.clone().into());
+
+    let pub_values: Vec<Fr> = expected_vals.iter().map(|v| Fr::from(*v)).collect();
+
+    CircuitSetup {
+        prover_circuit,
+        verifier_circuit,
+        pub_values,
+        transcript_label: "gen-test-proof transcript",
+        pedersen_seed: "gen-test-proof Pedersen committer seed string for generating bases",
+    }
+}
+
+fn setup_xgboost_circuit() -> CircuitSetup {
+    let num_trees = parse_arg_usize("--trees", 1);
+    let depth = parse_arg_usize("--depth", 1);
+    let num_features = parse_arg_usize("--features", 2);
+    let num_trees_padded = num_trees.next_power_of_two();
+
+    eprintln!(
+        "XGBoost circuit: trees={} (padded={}), depth={}, features={}",
+        num_trees, num_trees_padded, depth, num_features
+    );
+
+    // Generate a deterministic test model
+    let model = xgboost_remainder::model::generate_model(num_trees, depth, num_features);
+    let features = xgboost_remainder::model::generate_features(num_features, 123);
+
+    let inputs = xgboost_remainder::circuit::prepare_circuit_inputs(&model, &features);
+
+    let base_circuit = xgboost_remainder::circuit::build_full_inference_circuit(
+        inputs.num_trees_padded,
+        inputs.max_depth,
+        inputs.num_features_padded,
+        &inputs.fi_padded,
+        inputs.decomp_k,
+    );
+    let mut prover_circuit = base_circuit.clone();
+    let verifier_circuit = base_circuit.clone();
+
+    prover_circuit.set_input("path_bits", inputs.flat_path_bits.into());
+    prover_circuit.set_input("features", inputs.features_quantized.into());
+    prover_circuit.set_input("decomp_bits", inputs.decomp_bits_padded.into());
+    prover_circuit.set_input("leaf_values", inputs.leaf_values_padded.clone().into());
+    prover_circuit.set_input("expected_sum", vec![inputs.expected_sum].into());
+    prover_circuit.set_input("thresholds", inputs.thresholds_padded.into());
+    prover_circuit.set_input("is_real", inputs.is_real_padded.into());
+
+    // Public values = leaf_values + expected_sum (the full public input layer)
+    // NOTE: The actual public input order depends on the circuit builder's shred ordering.
+    // We'll extract the correct values from the proof's public_inputs field later.
+    let pub_values_placeholder: Vec<Fr> = Vec::new(); // filled from proof
+
+    CircuitSetup {
+        prover_circuit,
+        verifier_circuit,
+        pub_values: pub_values_placeholder,
+        transcript_label: "gen-test-proof transcript",
+        pedersen_seed: "gen-test-proof Pedersen committer seed string for generating bases",
+    }
+}
+
+fn main() -> Result<()> {
+    let circuit_type = parse_arg("--circuit").unwrap_or_else(|| "toy".to_string());
+
+    let mut setup = match circuit_type.as_str() {
+        "toy" => setup_toy_circuit(),
+        "xgboost" => setup_xgboost_circuit(),
+        other => {
+            eprintln!("Unknown circuit type: {}. Use 'toy' or 'xgboost'.", other);
+            std::process::exit(1);
+        }
+    };
 
     let config = GKRCircuitProverConfig::hyrax_compatible_runtime_optimized_default();
     let verifier_config = GKRCircuitVerifierConfig::new_from_prover_config(&config, false);
 
-    let mut provable = prover_circuit
+    let mut provable = setup.prover_circuit
         .gen_hyrax_provable_circuit()
         .expect("gen_hyrax_provable_circuit");
 
-    let committer = PedersenCommitter::new(
-        512,
-        "gen-test-proof Pedersen committer seed string for generating bases",
-        None,
-    );
+    let committer = PedersenCommitter::new(512, setup.pedersen_seed, None);
     let mut rng = thread_rng();
     let mut vander = VandermondeInverse::new();
     let mut transcript: ECTranscript<Bn256Point, PoseidonSponge<Fq>> =
-        ECTranscript::new("gen-test-proof transcript");
+        ECTranscript::new(setup.transcript_label);
 
     eprintln!("Generating Hyrax proof...");
     let (proof, proof_config) = perform_function_under_prover_config!(
@@ -169,17 +247,25 @@ fn main() -> Result<()> {
         &mut transcript
     );
 
+    // Extract public input values from the proof (correct for any circuit type)
+    if setup.pub_values.is_empty() {
+        // For XGBoost: extract public values from the proof's public_inputs field
+        for (_layer_id, mle_opt) in &proof.public_inputs {
+            if let Some(mle) = mle_opt {
+                setup.pub_values = mle.f.iter().collect();
+                break;
+            }
+        }
+    }
+    let pub_values = &setup.pub_values;
+
     // Verify proof (full verification, ensures proof is valid)
-    let verifiable = verifier_circuit
+    let verifiable = setup.verifier_circuit
         .gen_hyrax_verifiable_circuit()
         .expect("gen_hyrax_verifiable_circuit");
-    let verifier_committer = PedersenCommitter::new(
-        512,
-        "gen-test-proof Pedersen committer seed string for generating bases",
-        None,
-    );
+    let verifier_committer = PedersenCommitter::new(512, setup.pedersen_seed, None);
     let mut verifier_transcript: ECTranscript<Bn256Point, PoseidonSponge<Fq>> =
-        ECTranscript::new("gen-test-proof transcript");
+        ECTranscript::new(setup.transcript_label);
     perform_function_under_verifier_config!(
         verify_hyrax_proof,
         &verifier_config,
@@ -199,7 +285,7 @@ fn main() -> Result<()> {
 
     // === Initial transcript setup ===
     let mut t: ECTranscript<Bn256Point, PoseidonSponge<Fq>> =
-        ECTranscript::new("gen-test-proof transcript");
+        ECTranscript::new(setup.transcript_label);
     {
         use remainder::prover::helpers::get_circuit_description_hash_as_field_elems;
         use shared_types::config::global_config::global_verifier_circuit_description_hash_type;
@@ -254,6 +340,8 @@ fn main() -> Result<()> {
     }
 
     let mut layer_extracts: Vec<LayerExtract> = Vec::new();
+    let mut layer_num_vars: Vec<usize> = Vec::new();
+    let mut layer_degrees: Vec<usize> = Vec::new();
 
     for (layer_idx, (_layer_id, layer_proof)) in
         proof.circuit_proof.layer_proofs.iter().enumerate()
@@ -286,6 +374,9 @@ fn main() -> Result<()> {
         let msgs = &layer_proof.proof_of_sumcheck.messages;
         let n = msgs.len();
         let num_rounds = layer_desc.sumcheck_round_indices().len();
+
+        layer_num_vars.push(num_rounds);
+        layer_degrees.push(layer_desc.max_degree());
 
         if num_rounds > 0 {
             t.append_ec_point("Commitment to sumcheck message", msgs[0]);
@@ -476,13 +567,13 @@ fn main() -> Result<()> {
     // Compute public outputs (all in Fr)
     // ================================================================
 
-    let l0 = &layer_extracts[0];
-    let l1 = &layer_extracts[1];
+    let num_layers = layer_extracts.len();
+    eprintln!("num_layers={}", num_layers);
 
     // Extract output challenges (claim point for layer 0) by re-running output layer verify.
     let output_challenges: Vec<Fr> = {
         let mut t2: ECTranscript<Bn256Point, PoseidonSponge<Fq>> =
-            ECTranscript::new("gen-test-proof transcript");
+            ECTranscript::new(setup.transcript_label);
         {
             use remainder::prover::helpers::get_circuit_description_hash_as_field_elems;
             use shared_types::config::global_config::global_verifier_circuit_description_hash_type;
@@ -520,32 +611,49 @@ fn main() -> Result<()> {
         "output_challenges: {:?}",
         output_challenges.iter().map(|c| fr_to_hex(c)).collect::<Vec<_>>()
     );
-    eprintln!("claim_agg_coeff (l0 random_coeff): {}", fr_to_hex(&l0.random_coeff));
-    eprintln!("inter_layer_coeff (l1 random_coeff): {}", fr_to_hex(&l1.random_coeff));
+    eprintln!("claim_agg_coeff: {}", fr_to_hex(&layer_extracts[0].random_coeff));
 
-    // rlc_beta_0 = beta(l0_bindings, output_challenges) * claim_agg_coeff
-    let rlc_beta_0 = compute_beta_fr(&l0.bindings, &output_challenges) * l0.random_coeff;
+    // Per-layer: rlc_beta and z_dot_jstar
+    let mut rlc_betas: Vec<Fr> = Vec::new();
+    let mut z_dot_jstars: Vec<Fr> = Vec::new();
+    for i in 0..num_layers {
+        let le = &layer_extracts[i];
+        // rlc_beta: beta(bindings, claim_point) * coeff
+        let (claim_point, coeff) = if i == 0 {
+            (output_challenges.as_slice(), le.random_coeff)
+        } else {
+            (layer_extracts[i - 1].bindings.as_slice(), le.random_coeff)
+        };
+        let rlc_beta = compute_beta_fr(&le.bindings, claim_point) * coeff;
+        rlc_betas.push(rlc_beta);
 
-    // rlc_beta_1 = beta(l1_bindings, l0_bindings) * inter_layer_coeff
-    let rlc_beta_1 = compute_beta_fr(&l1.bindings, &l0.bindings) * l1.random_coeff;
+        // z_dot_jstar = <z_vector, j_star>
+        let z_dot_jstar: Fr = le
+            .podp_z_vector
+            .iter()
+            .zip(le.j_star.iter())
+            .fold(Fr::zero(), |acc, (a, b)| acc + *a * *b);
+        z_dot_jstars.push(z_dot_jstar);
 
-    // z_dot_jstar for each layer
-    let z_dot_jstar_0: Fr = l0
-        .podp_z_vector
+        eprintln!("  layer {}: rlc_beta={}, z_dot_jstar={}", i, fr_to_hex(&rlc_beta), fr_to_hex(&z_dot_jstar));
+    }
+
+    // Inter-layer coefficients (L-1 values: layer_extracts[1..].random_coeff)
+    let inter_layer_coeffs: Vec<Fr> = layer_extracts[1..]
         .iter()
-        .zip(l0.j_star.iter())
-        .fold(Fr::zero(), |acc, (a, b)| acc + *a * *b);
-    let z_dot_jstar_1: Fr = l1
-        .podp_z_vector
-        .iter()
-        .zip(l1.j_star.iter())
-        .fold(Fr::zero(), |acc, (a, b)| acc + *a * *b);
+        .map(|le| le.random_coeff)
+        .collect();
+    for (i, c) in inter_layer_coeffs.iter().enumerate() {
+        eprintln!("  inter_layer_coeff[{}]: {}", i, fr_to_hex(c));
+    }
 
-    // Hyrax input layer matrix split: left_dims = floor(N/2), right_dims = ceil(N/2)
-    let left_dims = num_vars / 2;
+    // Hyrax input layer matrix split: uses LAST layer's bindings
+    let last_layer = &layer_extracts[num_layers - 1];
+    let last_nv = layer_num_vars[num_layers - 1];
+    let left_dims = last_nv / 2;
 
     // L-tensor: for each shred, scale tensor(left_bindings) by the RLC coefficient
-    let left_bindings = &l1.bindings[..left_dims];
+    let left_bindings = &last_layer.bindings[..left_dims];
     let l_per_shred = compute_tensor_product_fr(left_bindings); // 2^left_dims elements
     let mut l_tensor: Vec<Fr> = Vec::new();
     for coeff in &[input_rlc_0, input_rlc_1] {
@@ -555,7 +663,7 @@ fn main() -> Result<()> {
     }
 
     // R-tensor: tensor(right_bindings) -> 2^right_dims elements
-    let right_bindings = &l1.bindings[left_dims..];
+    let right_bindings = &last_layer.bindings[left_dims..];
     let r_tensor = compute_tensor_product_fr(right_bindings);
 
     // z_dot_r = <input_z, R_tensor>
@@ -564,14 +672,34 @@ fn main() -> Result<()> {
         .zip(r_tensor.iter())
         .fold(Fr::zero(), |acc, (z, r)| acc + *z * *r);
 
-    // MLE eval: multilinear extension of pub_values at l0_bindings
-    let pub_values: Vec<Fr> = expected_vals.iter().map(|v| Fr::from(*v)).collect();
-    let mle_eval = evaluate_mle_fr(&pub_values, &l0.bindings);
+    // MLE eval: find which layer's bindings match the public input claim point.
+    // After all intermediate layers, claim_tracker has claims for input layers.
+    // Find the public input layer's claim and determine which layer produced it.
+    let mle_eval_layer_idx = {
+        // The public input claim's point tells us which binding point to use.
+        // For most circuits, the public input claim comes from the first layer (idx 0),
+        // but for complex circuits it may come from a different layer.
+        // We find the claim for any remaining (input) layer and match its point
+        // against intermediate layer bindings.
+        let mut found_idx = 0usize; // default to first layer
+        'outer: for (_lid, claims) in &claim_tracker {
+            for claim in claims {
+                let claim_point = &claim.point;
+                for (li, le) in layer_extracts.iter().enumerate() {
+                    if le.bindings.len() == claim_point.len()
+                        && le.bindings.iter().zip(claim_point.iter()).all(|(a, b)| a == b)
+                    {
+                        found_idx = li;
+                        break 'outer;
+                    }
+                }
+            }
+        }
+        found_idx
+    };
+    eprintln!("mle_eval_layer_idx: {}", mle_eval_layer_idx);
+    let mle_eval = evaluate_mle_fr(pub_values, &layer_extracts[mle_eval_layer_idx].bindings);
 
-    eprintln!("rlc_beta_0: {}", fr_to_hex(&rlc_beta_0));
-    eprintln!("rlc_beta_1: {}", fr_to_hex(&rlc_beta_1));
-    eprintln!("z_dot_jstar_0: {}", fr_to_hex(&z_dot_jstar_0));
-    eprintln!("z_dot_jstar_1: {}", fr_to_hex(&z_dot_jstar_1));
     eprintln!("z_dot_r: {}", fr_to_hex(&z_dot_r));
     eprintln!("mle_eval: {}", fr_to_hex(&mle_eval));
 
@@ -611,7 +739,7 @@ fn main() -> Result<()> {
     // Encode public input values as flat big-endian bytes
     let pub_values_bytes = {
         let mut buf = Vec::new();
-        for val in &pub_values {
+        for val in pub_values {
             let repr = val.to_repr();
             let bytes: &[u8] = repr.as_ref();
             let mut be = [0u8; 32];
@@ -641,16 +769,15 @@ fn main() -> Result<()> {
     // Build layers array
     let layers: Vec<serde_json::Value> = layer_extracts
         .iter()
-        .enumerate()
-        .map(|(idx, le)| {
+        .map(|le| {
             let mut layer = json!({
                 "bindings": le.bindings.iter().map(|b| fr_to_hex(b)).collect::<Vec<_>>(),
                 "rhos": le.rhos.iter().map(|r| fr_to_hex(r)).collect::<Vec<_>>(),
                 "gammas": le.gammas.iter().map(|g| fr_to_hex(g)).collect::<Vec<_>>(),
                 "podp_challenge": "0x0",
             });
-            // Layer 1 (multiply) has pop_challenge
-            if idx == 1 {
+            // Include pop_challenge for layers that have PoP data (degree > 2)
+            if !le.pop_data.is_empty() {
                 layer["pop_challenge"] = json!("0x0");
             }
             layer
@@ -683,21 +810,29 @@ fn main() -> Result<()> {
 
     let output = json!({
         "config": {
-            "num_vars": num_vars,
+            "num_vars": if layer_num_vars.iter().all(|&nv| nv == layer_num_vars[0]) { layer_num_vars[0] } else { 0 },
+            "num_layers": num_layers,
+            "layer_num_vars": layer_num_vars,
+            "layer_degrees": layer_degrees,
+            "output_num_vars": output_challenges.len(),
+            "pub_input_count": pub_values.len(),
+            "mle_eval_layer_idx": mle_eval_layer_idx,
         },
         "public_inputs": {
             "circuit_hash": [circuit_hash_0, circuit_hash_1],
-            "public_values": pub_values.iter().map(|v| fr_to_hex(v)).collect::<Vec<_>>(),
+            "public_values": pub_values.iter().map(fr_to_hex).collect::<Vec<_>>(),
             "output_challenges": output_challenges.iter().map(|c| fr_to_hex(c)).collect::<Vec<_>>(),
-            "claim_agg_coeff": fr_to_hex(&l0.random_coeff),
-            "inter_layer_coeff": fr_to_hex(&l1.random_coeff),
+            "claim_agg_coeff": fr_to_hex(&layer_extracts[0].random_coeff),
+            "inter_layer_coeffs": inter_layer_coeffs.iter().map(|c| fr_to_hex(c)).collect::<Vec<_>>(),
+            // Backward compat: single inter_layer_coeff for 2-layer case
+            "inter_layer_coeff": if num_layers >= 2 { fr_to_hex(&layer_extracts[1].random_coeff) } else { "0x0".to_string() },
             "layers": layers,
             "input_rlc_coeffs": [fr_to_hex(&input_rlc_0), fr_to_hex(&input_rlc_1)],
             "input_podp_challenge": "0x0",
         },
         "public_outputs": {
-            "rlc_betas": [fr_to_hex(&rlc_beta_0), fr_to_hex(&rlc_beta_1)],
-            "z_dot_jstars": [fr_to_hex(&z_dot_jstar_0), fr_to_hex(&z_dot_jstar_1)],
+            "rlc_betas": rlc_betas.iter().map(|v| fr_to_hex(v)).collect::<Vec<_>>(),
+            "z_dot_jstars": z_dot_jstars.iter().map(|v| fr_to_hex(v)).collect::<Vec<_>>(),
             "l_tensor": l_tensor.iter().map(|v| fr_to_hex(v)).collect::<Vec<_>>(),
             "z_dot_r": fr_to_hex(&z_dot_r),
             "mle_eval": fr_to_hex(&mle_eval),
