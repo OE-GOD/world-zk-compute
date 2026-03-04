@@ -672,33 +672,30 @@ fn main() -> Result<()> {
         .zip(r_tensor.iter())
         .fold(Fr::zero(), |acc, (z, r)| acc + *z * *r);
 
-    // MLE eval: find which layer's bindings match the public input claim point.
+    // MLE eval: extract the actual claim point for the public input layer from claim_tracker.
     // After all intermediate layers, claim_tracker has claims for input layers.
-    // Find the public input layer's claim and determine which layer produced it.
-    let mle_eval_layer_idx = {
-        // The public input claim's point tells us which binding point to use.
-        // For most circuits, the public input claim comes from the first layer (idx 0),
-        // but for complex circuits it may come from a different layer.
-        // We find the claim for any remaining (input) layer and match its point
-        // against intermediate layer bindings.
-        let mut found_idx = 0usize; // default to first layer
-        'outer: for (_lid, claims) in &claim_tracker {
+    // The public input claim's point is the MLE eval point.
+    let mle_eval_point: Vec<Fr> = {
+        let mut found_point: Option<Vec<Fr>> = None;
+        for (_lid, claims) in &claim_tracker {
             for claim in claims {
-                let claim_point = &claim.point;
-                for (li, le) in layer_extracts.iter().enumerate() {
-                    if le.bindings.len() == claim_point.len()
-                        && le.bindings.iter().zip(claim_point.iter()).all(|(a, b)| a == b)
-                    {
-                        found_idx = li;
-                        break 'outer;
-                    }
+                // Look for a claim whose point length matches log2(pub_input_count)
+                let expected_len = (pub_values.len() as f64).log2() as usize;
+                if claim.point.len() == expected_len {
+                    found_point = Some(claim.point.clone());
+                    break;
                 }
             }
+            if found_point.is_some() {
+                break;
+            }
         }
-        found_idx
+        // Fallback: use first layer's bindings (for toy circuits where they match)
+        found_point.unwrap_or_else(|| layer_extracts[0].bindings.clone())
     };
-    eprintln!("mle_eval_layer_idx: {}", mle_eval_layer_idx);
-    let mle_eval = evaluate_mle_fr(pub_values, &layer_extracts[mle_eval_layer_idx].bindings);
+    eprintln!("mle_eval_point (len={}): {:?}", mle_eval_point.len(),
+        mle_eval_point.iter().map(|p| fr_to_hex(p)).collect::<Vec<_>>());
+    let mle_eval = evaluate_mle_fr(pub_values, &mle_eval_point);
 
     eprintln!("z_dot_r: {}", fr_to_hex(&z_dot_r));
     eprintln!("mle_eval: {}", fr_to_hex(&mle_eval));
@@ -816,7 +813,7 @@ fn main() -> Result<()> {
             "layer_degrees": layer_degrees,
             "output_num_vars": output_challenges.len(),
             "pub_input_count": pub_values.len(),
-            "mle_eval_layer_idx": mle_eval_layer_idx,
+            "mle_eval_num_vars": mle_eval_point.len(),
         },
         "public_inputs": {
             "circuit_hash": [circuit_hash_0, circuit_hash_1],
@@ -829,6 +826,7 @@ fn main() -> Result<()> {
             "layers": layers,
             "input_rlc_coeffs": [fr_to_hex(&input_rlc_0), fr_to_hex(&input_rlc_1)],
             "input_podp_challenge": "0x0",
+            "mle_eval_point": mle_eval_point.iter().map(|p| fr_to_hex(p)).collect::<Vec<_>>(),
         },
         "public_outputs": {
             "rlc_betas": rlc_betas.iter().map(|v| fr_to_hex(v)).collect::<Vec<_>>(),

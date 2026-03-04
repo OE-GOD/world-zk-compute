@@ -7,12 +7,11 @@ import (
 // CircuitConfig defines the circuit dimensions for an N-layer GKR circuit.
 // Supports per-layer num_vars (variable binding counts across layers).
 type CircuitConfig struct {
-	NumLayers       int   // number of computation layers
-	LayerNumVars    []int // per-layer num_vars (binding count); len = NumLayers
-	LayerDegrees    []int // degree of each layer; len = NumLayers
-	OutputNumVars   int   // output challenge count (0 for scalar output)
-	PubInputCount   int   // number of public input values (for MLE eval)
-	MleEvalLayerIdx int   // which layer's bindings to use for MLE eval (default 0)
+	NumLayers    int   // number of computation layers
+	LayerNumVars []int // per-layer num_vars (binding count); len = NumLayers
+	LayerDegrees []int // degree of each layer; len = NumLayers
+	OutputNumVars int  // output challenge count (0 for scalar output)
+	PubInputCount int  // number of public input values (for MLE eval)
 }
 
 // HasPoP returns true if the given layer has a ProofOfProduct challenge (degree > 2).
@@ -47,6 +46,17 @@ func (c CircuitConfig) NumLTensorElems() int {
 	return 2 * (1 << c.LeftDims())
 }
 
+// MleEvalNumVars returns log2(PubInputCount) — the number of variables for MLE eval.
+func (c CircuitConfig) MleEvalNumVars() int {
+	n := c.PubInputCount
+	bits := 0
+	for n > 1 {
+		n >>= 1
+		bits++
+	}
+	return bits
+}
+
 // NumPopLayers returns the count of layers that have a PoP challenge.
 func (c CircuitConfig) NumPopLayers() int {
 	count := 0
@@ -75,6 +85,8 @@ func (c CircuitConfig) ExpectedPublicInputCount() int {
 	if c.NumLayers > 1 {
 		total += c.NumLayers - 1
 	}
+	// mleEvalPoint(M) where M = log2(PubInputCount)
+	total += c.MleEvalNumVars()
 	// rlcBeta(L) + zDotJStar(L) + lTensor(2*2^floor(nv_last/2)) + zDotR(1) + mleEval(1)
 	total += c.NumLayers + c.NumLayers + c.NumLTensorElems() + 2
 	return total
@@ -136,6 +148,7 @@ type LayerPublic struct {
 //	circuitHash[2] | pubInputs[P] | outputChallenges[O] | claimAggCoeff |
 //	per-layer{ bindings[nv_i], rhos[nv_i+1], gammas[nv_i], podpChallenge, popChallenge? } |
 //	inputRLCCoeffs[2] | inputPODPChallenge | interLayerCoeffs[L-1] |
+//	mleEvalPoint[M] |
 //	rlcBeta[L] | zDotJStar[L] | lTensor[2*2^floor(nv_last/2)] | zDotR | mleEval
 type RemainderWrapperCircuit struct {
 	// Config (not a circuit variable, used at compile time only)
@@ -156,6 +169,9 @@ type RemainderWrapperCircuit struct {
 
 	// Inter-layer claim aggregation coefficients (L-1 values)
 	InterLayerCoeffs []frontend.Variable `gnark:",public"`
+
+	// MLE evaluation point (log2(PubInputCount) values, from GKR claim propagation)
+	MleEvalPoint []frontend.Variable `gnark:",public"`
 
 	// === Public outputs (gnark -> on-chain, used in EC equations) ===
 	RlcBeta   []frontend.Variable `gnark:",public"` // one per layer
@@ -217,8 +233,8 @@ func (c *RemainderWrapperCircuit) Define(api frontend.API) error {
 	zDotR := innerProduct(api, c.InputPODP.ZVector, rTensor)
 	api.AssertIsEqual(zDotR, c.ZDotR)
 
-	// Public input MLE evaluation: uses the layer identified by MleEvalLayerIdx
-	mleEval := evaluateMLE(api, c.PublicInputs, c.Layers[c.Config.MleEvalLayerIdx].Bindings)
+	// Public input MLE evaluation: uses the explicit MLE eval point
+	mleEval := evaluateMLE(api, c.PublicInputs, c.MleEvalPoint)
 	api.AssertIsEqual(mleEval, c.MLEEval)
 
 	return nil
@@ -259,6 +275,7 @@ func AllocateCircuit(config CircuitConfig) *RemainderWrapperCircuit {
 		OutputChallenges: make([]frontend.Variable, config.OutputNumVars),
 		Layers:           layers,
 		InterLayerCoeffs: interLayerCoeffs,
+		MleEvalPoint:     make([]frontend.Variable, config.MleEvalNumVars()),
 		RlcBeta:          make([]frontend.Variable, nLayers),
 		ZDotJStar:        make([]frontend.Variable, nLayers),
 		LTensor:          make([]frontend.Variable, config.NumLTensorElems()),

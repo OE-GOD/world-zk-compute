@@ -110,12 +110,11 @@ func configFromWitness(w *WitnessJSON) CircuitConfig {
 			pubInputCount = len(w.PublicInputs.PublicValues)
 		}
 		return CircuitConfig{
-			NumLayers:       numLayers,
-			LayerNumVars:    w.Config.LayerNumVars[:numLayers],
-			LayerDegrees:    layerDegrees,
-			OutputNumVars:   outputNumVars,
-			PubInputCount:   pubInputCount,
-			MleEvalLayerIdx: w.Config.MleEvalLayerIdx,
+			NumLayers:     numLayers,
+			LayerNumVars:  w.Config.LayerNumVars[:numLayers],
+			LayerDegrees:  layerDegrees,
+			OutputNumVars: outputNumVars,
+			PubInputCount: pubInputCount,
 		}
 	}
 
@@ -164,7 +163,7 @@ type WitnessJSON struct {
 		LayerNumVars    []int `json:"layer_num_vars,omitempty"`    // per-layer num_vars
 		OutputNumVars   int   `json:"output_num_vars,omitempty"`   // output challenge count
 		PubInputCount   int   `json:"pub_input_count,omitempty"`   // public input count
-		MleEvalLayerIdx int   `json:"mle_eval_layer_idx,omitempty"` // MLE eval binding layer
+		MleEvalLayerIdx int   `json:"mle_eval_layer_idx,omitempty"` // deprecated: use mle_eval_point
 	} `json:"config"`
 	PublicInputs struct {
 		CircuitHash      [2]string `json:"circuit_hash"`
@@ -182,6 +181,7 @@ type WitnessJSON struct {
 		} `json:"layers"`
 		InputRLCCoeffs     [2]string `json:"input_rlc_coeffs"`
 		InputPODPChallenge string    `json:"input_podp_challenge"`
+		MleEvalPoint       []string `json:"mle_eval_point,omitempty"`
 	} `json:"public_inputs"`
 	PublicOutputs struct {
 		RlcBetas   []string `json:"rlc_betas"`
@@ -287,6 +287,21 @@ func buildAssignment(config CircuitConfig, w *WitnessJSON) *RemainderWrapperCirc
 	interLayerCoeffs := getInterLayerCoeffs(w, nLayers)
 	for i := 0; i < len(assignment.InterLayerCoeffs); i++ {
 		assignment.InterLayerCoeffs[i] = parseBigInt(interLayerCoeffs[i])
+	}
+
+	// MLE eval point: explicit from JSON, or fall back to layer bindings for backward compat
+	mleNumVars := config.MleEvalNumVars()
+	if len(w.PublicInputs.MleEvalPoint) >= mleNumVars {
+		for i := 0; i < mleNumVars; i++ {
+			assignment.MleEvalPoint[i] = parseBigInt(w.PublicInputs.MleEvalPoint[i])
+		}
+	} else {
+		// Backward compat: use first layer's bindings (works for toy/medium circuits)
+		mleLayerIdx := w.Config.MleEvalLayerIdx
+		layer := w.PublicInputs.Layers[mleLayerIdx]
+		for i := 0; i < mleNumVars; i++ {
+			assignment.MleEvalPoint[i] = parseBigInt(layer.Bindings[i])
+		}
 	}
 
 	// Public outputs
@@ -597,6 +612,18 @@ func cmdProveJSON() {
 	// InterLayerCoeffs [L-1]
 	interLayerCoeffs := getInterLayerCoeffs(&w, nLayers)
 	pubInputs = append(pubInputs, interLayerCoeffs...)
+
+	// MleEvalPoint [M]
+	if len(w.PublicInputs.MleEvalPoint) > 0 {
+		pubInputs = append(pubInputs, w.PublicInputs.MleEvalPoint...)
+	} else {
+		// Backward compat: use first layer's bindings
+		mleLayerIdx := w.Config.MleEvalLayerIdx
+		mleNumVars := config.MleEvalNumVars()
+		for i := 0; i < mleNumVars; i++ {
+			pubInputs = append(pubInputs, w.PublicInputs.Layers[mleLayerIdx].Bindings[i])
+		}
+	}
 
 	// Public outputs: RlcBeta[L], ZDotJStar[L], LTensor[variable], ZDotR, MLEEval
 	pubInputs = append(pubInputs, w.PublicOutputs.RlcBetas...)

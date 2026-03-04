@@ -252,8 +252,13 @@ func makeDummyAssignment(config CircuitConfig) *RemainderWrapperCircuit {
 	// <input_z, R_tensor>
 	zDotR := nativeInnerProduct(inputZ, rTensor)
 
-	// MLE eval: uses FIRST layer's bindings
-	mleEval := nativeEvaluateMLE(pubInputs, layersData[0].bindings)
+	// MLE eval point: use first layer's bindings (for test circuits, this matches claim propagation)
+	mleNumVars := config.MleEvalNumVars()
+	mleEvalPoint := make([]*big.Int, mleNumVars)
+	for i := 0; i < mleNumVars; i++ {
+		mleEvalPoint[i] = layersData[0].bindings[i]
+	}
+	mleEval := nativeEvaluateMLE(pubInputs, mleEvalPoint)
 
 	// === Build assignment ===
 	assignment := AllocateCircuit(config)
@@ -290,6 +295,11 @@ func makeDummyAssignment(config CircuitConfig) *RemainderWrapperCircuit {
 	// Inter-layer coefficients
 	for i := 0; i < len(interLayerCoeffs); i++ {
 		assignment.InterLayerCoeffs[i] = interLayerCoeffs[i]
+	}
+
+	// MLE eval point
+	for i := 0; i < mleNumVars; i++ {
+		assignment.MleEvalPoint[i] = mleEvalPoint[i]
 	}
 
 	// Public outputs
