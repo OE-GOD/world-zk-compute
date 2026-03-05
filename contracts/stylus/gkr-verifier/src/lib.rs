@@ -23,7 +23,6 @@
 // The alloc crate is needed unconditionally because stylus-sdk is no_std
 // and its proc macros generate code referencing alloc::vec.  On std builds
 // alloc is a subset of std and is always available.
-#[macro_use]
 extern crate alloc;
 
 // ------------------------------------------------------------------
@@ -349,6 +348,7 @@ impl GKRVerifier {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
     use crate::field::U256;
     use crate::gkr::DAGCircuitDescription;
 

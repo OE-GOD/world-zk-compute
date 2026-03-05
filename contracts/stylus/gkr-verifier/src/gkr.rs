@@ -5,7 +5,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::ec::{ec_add, ec_mul, G1Point, PedersenGens, PODPProof, ProofOfProduct};
-use crate::field::{Fr, Fq, U256, FR_MOD};
+use crate::field::{Fr, U256};
 use crate::poseidon::PoseidonSponge;
 use crate::sumcheck::{self, CommittedSumcheckProof};
 
@@ -133,7 +133,7 @@ fn process_one_layer(
     absorb_commitments(&lp.commitments, sponge);
 
     // Compute RLC eval and beta
-    let (rlc_eval, rlc_beta) = compute_rlc_eval_and_beta(
+    let (_rlc_eval, rlc_beta) = compute_rlc_eval_and_beta(
         layer_idx, proof, desc, ctx, &bindings, &rlc_coeffs,
     );
 

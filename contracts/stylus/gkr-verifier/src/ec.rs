@@ -3,7 +3,7 @@
 
 use alloc::vec::Vec;
 
-use crate::field::{Fq, Fr, U256};
+use crate::field::{Fr, U256};
 
 /// A G1 affine point on BN254
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -180,7 +180,7 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
 
 /// Call an EVM precompile. On Stylus, uses RawCall::new_static().
 /// For native testing, uses a mock/stub.
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "stylus"))]
 fn call_precompile(addr: u64, input: &[u8], output_len: usize) -> Vec<u8> {
     use stylus_sdk::call::RawCall;
     use alloy_primitives::Address;
@@ -203,19 +203,14 @@ fn call_precompile(addr: u64, input: &[u8], output_len: usize) -> Vec<u8> {
     }
 }
 
-/// Native test implementation using pure Rust (for unit tests)
-#[cfg(not(target_arch = "wasm32"))]
-fn call_precompile(addr: u64, input: &[u8], output_len: usize) -> Vec<u8> {
+/// Native/non-stylus implementation using pure Rust (for unit tests)
+#[cfg(not(all(target_arch = "wasm32", feature = "stylus")))]
+fn call_precompile(addr: u64, input: &[u8], _output_len: usize) -> Vec<u8> {
+    use alloc::vec;
     match addr {
         0x02 => {
-            // SHA-256
-            use std::collections::hash_map::DefaultHasher;
-            use std::hash::{Hash, Hasher};
-            // For testing, we'll use a simple placeholder
-            // In real tests, we should use the sha2 crate
-            // For now, return zeros — tests should use known vectors
+            // SHA-256 — simple FNV-style hash for testing (NOT cryptographic)
             let mut out = vec![0u8; 32];
-            // Simple hash for testing (NOT cryptographic)
             let mut h: u64 = 0xcbf29ce484222325;
             for &b in input {
                 h ^= b as u64;
@@ -225,73 +220,54 @@ fn call_precompile(addr: u64, input: &[u8], output_len: usize) -> Vec<u8> {
             out
         }
         0x06 => {
-            // EC Add — for testing, use the field math directly
-            // This is a simplified stub; real tests should validate against known vectors
-            ec_add_native(input)
+            // EC Add — placeholder for testing
+            use alloc::vec;
+            assert!(input.len() >= 128, "ecadd: need 128 bytes");
+            let mut x1_bytes = [0u8; 32];
+            let mut y1_bytes = [0u8; 32];
+            let mut x2_bytes = [0u8; 32];
+            let mut y2_bytes = [0u8; 32];
+            x1_bytes.copy_from_slice(&input[0..32]);
+            y1_bytes.copy_from_slice(&input[32..64]);
+            x2_bytes.copy_from_slice(&input[64..96]);
+            y2_bytes.copy_from_slice(&input[96..128]);
+            let p1_x = U256::from_be_bytes(&x1_bytes);
+            let p1_y = U256::from_be_bytes(&y1_bytes);
+            let p2_x = U256::from_be_bytes(&x2_bytes);
+            let p2_y = U256::from_be_bytes(&y2_bytes);
+
+            if p1_x.is_zero() && p1_y.is_zero() {
+                let mut out = vec![0u8; 64];
+                out[0..32].copy_from_slice(&p2_x.to_be_bytes());
+                out[32..64].copy_from_slice(&p2_y.to_be_bytes());
+                return out;
+            }
+            if p2_x.is_zero() && p2_y.is_zero() {
+                let mut out = vec![0u8; 64];
+                out[0..32].copy_from_slice(&p1_x.to_be_bytes());
+                out[32..64].copy_from_slice(&p1_y.to_be_bytes());
+                return out;
+            }
+            // Placeholder: real BN254 addition not implemented for native tests
+            vec![0u8; 64]
         }
         0x07 => {
-            // EC Mul — for testing, simplified stub
-            ec_mul_native(input)
+            // EC Mul — placeholder for testing
+            use alloc::vec;
+            assert!(input.len() >= 96, "ecmul: need 96 bytes");
+            let mut x_bytes = [0u8; 32];
+            let mut y_bytes = [0u8; 32];
+            x_bytes.copy_from_slice(&input[0..32]);
+            y_bytes.copy_from_slice(&input[32..64]);
+            let p_x = U256::from_be_bytes(&x_bytes);
+            let p_y = U256::from_be_bytes(&y_bytes);
+
+            if p_x.is_zero() && p_y.is_zero() {
+                return vec![0u8; 64];
+            }
+            // Placeholder
+            vec![0u8; 64]
         }
-        _ => panic!("unknown precompile {}", addr),
+        _ => panic!("unknown precompile"),
     }
-}
-
-/// Native EC add for testing (placeholder — returns identity for now)
-/// TODO: Replace with actual BN254 point addition for integration tests
-#[cfg(not(target_arch = "wasm32"))]
-fn ec_add_native(input: &[u8]) -> Vec<u8> {
-    // Parse points
-    let mut x1_bytes = [0u8; 32];
-    let mut y1_bytes = [0u8; 32];
-    let mut x2_bytes = [0u8; 32];
-    let mut y2_bytes = [0u8; 32];
-    x1_bytes.copy_from_slice(&input[0..32]);
-    y1_bytes.copy_from_slice(&input[32..64]);
-    x2_bytes.copy_from_slice(&input[64..96]);
-    y2_bytes.copy_from_slice(&input[96..128]);
-
-    let p1_x = U256::from_be_bytes(&x1_bytes);
-    let p1_y = U256::from_be_bytes(&y1_bytes);
-    let p2_x = U256::from_be_bytes(&x2_bytes);
-    let p2_y = U256::from_be_bytes(&y2_bytes);
-
-    // If either point is identity, return the other
-    if p1_x.is_zero() && p1_y.is_zero() {
-        let mut out = vec![0u8; 64];
-        out[0..32].copy_from_slice(&p2_x.to_be_bytes());
-        out[32..64].copy_from_slice(&p2_y.to_be_bytes());
-        return out;
-    }
-    if p2_x.is_zero() && p2_y.is_zero() {
-        let mut out = vec![0u8; 64];
-        out[0..32].copy_from_slice(&p1_x.to_be_bytes());
-        out[32..64].copy_from_slice(&p1_y.to_be_bytes());
-        return out;
-    }
-
-    // For now, return a placeholder. Real testing requires full BN254 arithmetic.
-    // Integration tests will use the actual Stylus devnode.
-    vec![0u8; 64]
-}
-
-/// Native EC mul for testing (placeholder)
-/// TODO: Replace with actual BN254 scalar multiplication for integration tests
-#[cfg(not(target_arch = "wasm32"))]
-fn ec_mul_native(input: &[u8]) -> Vec<u8> {
-    let mut x_bytes = [0u8; 32];
-    let mut y_bytes = [0u8; 32];
-    x_bytes.copy_from_slice(&input[0..32]);
-    y_bytes.copy_from_slice(&input[32..64]);
-
-    let p_x = U256::from_be_bytes(&x_bytes);
-    let p_y = U256::from_be_bytes(&y_bytes);
-
-    // If point is identity, return identity
-    if p_x.is_zero() && p_y.is_zero() {
-        return vec![0u8; 64];
-    }
-
-    // For now, return a placeholder
-    vec![0u8; 64]
 }

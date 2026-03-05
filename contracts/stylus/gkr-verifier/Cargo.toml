@@ -11,7 +11,6 @@ alloy-sol-types = { version = "0.8.20", optional = true }
 hex = "0.4.3"
 
 [dev-dependencies]
-tokio = { version = "1.12.0", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
@@ -21,7 +20,7 @@ stylus = ["dep:stylus-sdk", "dep:alloy-primitives", "dep:alloy-sol-types"]
 export-abi = ["stylus-sdk/export-abi"]
 
 [lib]
-crate-type = ["lib", "cdylib"]
+crate-type = ["lib"]
 
 [profile.release]
 codegen-units = 1

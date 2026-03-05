@@ -5,7 +5,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::ec::{ec_add, ec_mul, G1Point, PedersenGens, PODPProof};
-use crate::field::{Fr, Fq, U256, FR_MOD};
+use crate::field::{Fr, U256};
 use crate::gkr::{
     count_claims_for, resolve_point, DAGCircuitDescription, DAGInputLayerProof,
     GKRProof, PublicValueClaim, VerifyContext,
@@ -82,7 +82,7 @@ fn verify_public_input_claims(
     proof: &GKRProof,
     desc: &DAGCircuitDescription,
     gens: &PedersenGens,
-    ctx: &VerifyContext,
+    _ctx: &VerifyContext,
     claim_points: &[Vec<U256>],
     target_layer: usize,
     pub_claim_start_idx: usize,
@@ -156,7 +156,7 @@ fn verify_committed_input_batch_eval(
     sponge: &mut PoseidonSponge,
     gens: &PedersenGens,
 ) {
-    let num_claims = claim_points.len();
+    let _num_claims = claim_points.len();
     let num_rows = dag_proof.commitment_rows.len();
     let n = claim_points[0].len();
     let l_half_len = log2(if num_rows > 0 { num_rows } else { 1 });

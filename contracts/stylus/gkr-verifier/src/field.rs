@@ -380,9 +380,6 @@ fn reduce_512(val: &[u64; 8], modulus: &[u64; 4]) -> U256 {
     let mut rem = [0u64; 9]; // extra limb for safety
     rem[..8].copy_from_slice(val);
 
-    // Extended modulus for comparison
-    let mod_u256 = U256(*modulus);
-
     // Reduce: while rem >= modulus * 2^(64*i), subtract
     // Process from high limb down
     for shift in (0..5).rev() {
