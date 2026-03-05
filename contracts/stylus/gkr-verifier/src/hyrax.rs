@@ -125,12 +125,12 @@ fn verify_one_public_claim(
     claims: &[PublicValueClaim],
     gens: &PedersenGens,
 ) {
-    assert!(claim_idx < claims.len(), "not enough public value claims");
+    verify!(claim_idx < claims.len(), "not enough public value claims");
     let claim = &claims[claim_idx];
 
     // 1. Commitment consistency
-    assert_eq!(
-        claim.commitment, *atom_commitment,
+    verify!(
+        claim.commitment == *atom_commitment,
         "public claim commitment mismatch"
     );
 
@@ -138,11 +138,11 @@ fn verify_one_public_claim(
     let g_val = ec_mul(&gens.scalar_gen, &claim.value);
     let h_blind = ec_mul(&gens.blinding_gen, &claim.blinding);
     let expected = ec_add(&g_val, &h_blind);
-    assert_eq!(expected, claim.commitment, "Pedersen opening invalid");
+    verify!(expected == claim.commitment, "Pedersen opening invalid");
 
     // 3. MLE evaluation: MLE(pubData, point) == value
     let mle_val = evaluate_mle_from_data(public_inputs, claim_point);
-    assert_eq!(mle_val, claim.value, "public input MLE mismatch");
+    verify!(mle_val == claim.value, "public input MLE mismatch");
 }
 
 // ============================================================
@@ -169,9 +169,8 @@ fn verify_committed_input_batch_eval(
     let groups = group_claims_by_r_half(claim_points, &sorted_indices, log_n_cols);
 
     // Step 3: Verify each group
-    assert_eq!(
-        groups.len(),
-        dag_proof.podps.len(),
+    verify!(
+        groups.len() == dag_proof.podps.len(),
         "eval proof count mismatch"
     );
 
@@ -236,7 +235,7 @@ fn verify_one_eval_group(
     let com_y = dag_proof.com_evals[group_idx];
 
     // Verify PODP
-    assert!(
+    verify!(
         sumcheck::verify_podp(
             &dag_proof.podps[group_idx],
             &podp_challenge,
@@ -325,7 +324,7 @@ fn compute_rlc_tensor(
 /// Uses MSB-first convention: point[0] is the MSB of the data index.
 pub fn evaluate_mle_from_data(data: &[U256], point: &[U256]) -> U256 {
     let n = point.len();
-    assert!(data.len() <= (1 << n), "data too large");
+    verify!(data.len() <= (1 << n), "data too large");
 
     let mut result = Fr::ZERO;
     for w in 0..data.len() {
@@ -451,7 +450,7 @@ fn r_half_equals(a: &[U256], b: &[U256], log_n_cols: usize) -> bool {
 
 /// floor(log2(x)) for x > 0
 fn log2(x: usize) -> usize {
-    assert!(x > 0, "log2(0)");
+    verify!(x > 0, "log2(0)");
     let mut result = 0;
     let mut v = x;
     while v > 1 {

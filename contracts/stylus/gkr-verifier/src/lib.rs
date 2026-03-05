@@ -25,6 +25,21 @@
 // alloc is a subset of std and is always available.
 extern crate alloc;
 
+/// Assertion macro that strips error message strings from WASM builds.
+/// On native, behaves like `assert!` with the message; on WASM, uses
+/// `unreachable()` intrinsic to revert without embedding string data.
+#[cfg(target_arch = "wasm32")]
+macro_rules! verify {
+    ($cond:expr $(, $msg:expr)* $(,)?) => {
+        if !$cond { core::arch::wasm32::unreachable(); }
+    };
+}
+#[cfg(not(target_arch = "wasm32"))]
+macro_rules! verify {
+    ($cond:expr, $msg:expr $(,)?) => { assert!($cond, "{}", $msg); };
+    ($cond:expr $(,)?) => { assert!($cond); };
+}
+
 // ------------------------------------------------------------------
 // Module declarations
 // ------------------------------------------------------------------
@@ -119,7 +134,7 @@ fn decode_circuit_description(data: &[u8]) -> DAGCircuitDescription {
 fn read_usize_from(dec: &mut ProofDecoder) -> usize {
     let v = dec.read_u256_public();
     // Only use the lowest 64 bits; panic if larger.
-    assert!(
+    verify!(
         v.0[1] == 0 && v.0[2] == 0 && v.0[3] == 0,
         "value too large for usize"
     );
@@ -214,14 +229,14 @@ pub fn verify_dag_proof_inner(
     // ----------------------------------------------------------------
     // 1. Strip "REM1" 4-byte selector
     // ----------------------------------------------------------------
-    assert!(proof_data.len() >= 4, "proof data too short for selector");
-    assert!(&proof_data[0..4] == b"REM1", "invalid selector");
+    verify!(proof_data.len() >= 4, "proof data too short for selector");
+    verify!(&proof_data[0..4] == b"REM1", "invalid selector");
     let proof_bytes = &proof_data[4..];
 
     // ----------------------------------------------------------------
     // 2. Extract circuit hash (first 32 bytes of proof body)
     // ----------------------------------------------------------------
-    assert!(
+    verify!(
         proof_bytes.len() >= 32,
         "proof body too short for circuit hash"
     );

@@ -8,16 +8,16 @@ license = "Apache-2.0"
 stylus-sdk = { version = "0.9.2", optional = true }
 alloy-primitives = { version = "0.8.20", optional = true }
 alloy-sol-types = { version = "0.8.20", optional = true }
-ruint = { version = "=1.15.0" }
-hex = "0.4.3"
+ruint = { version = "=1.15.0", optional = true }
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+hex = "0.4.3"
 
 [features]
 default = ["stylus"]
-stylus = ["dep:stylus-sdk", "dep:alloy-primitives", "dep:alloy-sol-types"]
+stylus = ["dep:stylus-sdk", "dep:alloy-primitives", "dep:alloy-sol-types", "dep:ruint"]
 export-abi = ["stylus-sdk/export-abi"]
 
 [lib]

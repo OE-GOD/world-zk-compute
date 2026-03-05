@@ -142,7 +142,7 @@ fn process_one_layer(
 
     // Verify committed sumcheck
     let degree = if desc.layer_types[layer_idx] == 1 { 3 } else { 2 };
-    assert!(
+    verify!(
         sumcheck::verify(
             &lp.sumcheck_proof,
             &oracle_eval,
@@ -151,15 +151,13 @@ fn process_one_layer(
             gens,
             sponge,
         ),
-        "sumcheck failed at layer {}",
-        layer_idx
+        "sumcheck failed"
     );
 
     // Verify ProofOfProduct
-    assert!(
+    verify!(
         verify_products(lp, gens, sponge),
-        "PoP failed at layer {}",
-        layer_idx
+        "PoP failed"
     );
 
     bindings
@@ -320,7 +318,7 @@ fn verify_products(
 
     let mut commit_idx: usize = 0;
     for pop in &layer_proof.pops {
-        assert!(
+        verify!(
             commit_idx + 2 < layer_proof.commitments.len(),
             "not enough commitments for PoP"
         );

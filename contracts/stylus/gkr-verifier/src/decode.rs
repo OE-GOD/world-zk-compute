@@ -55,10 +55,9 @@ impl<'a> ProofDecoder<'a> {
     fn read_u256(&mut self) -> U256 {
         let start = self.offset;
         let end = start + 32;
-        assert!(
+        verify!(
             end <= self.data.len(),
-            "read_u256: out of bounds at offset {}",
-            start
+            "read_u256: out of bounds"
         );
         let mut bytes = [0u8; 32];
         bytes.copy_from_slice(&self.data[start..end]);
@@ -78,7 +77,7 @@ impl<'a> ProofDecoder<'a> {
     fn read_usize(&mut self) -> usize {
         let v = self.read_u256();
         // For length fields the value is always small; only limb 0 is nonzero.
-        assert!(
+        verify!(
             v.0[1] == 0 && v.0[2] == 0 && v.0[3] == 0,
             "read_usize: value too large for usize"
         );

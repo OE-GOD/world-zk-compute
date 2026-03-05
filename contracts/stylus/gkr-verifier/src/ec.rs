@@ -6,7 +6,8 @@ use alloc::vec::Vec;
 use crate::field::{Fr, U256};
 
 /// A G1 affine point on BN254
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug))]
 pub struct G1Point {
     pub x: U256,
     pub y: U256,
@@ -24,7 +25,7 @@ impl G1Point {
 
     /// Decode from 64 bytes (x: 32 BE bytes, y: 32 BE bytes)
     pub fn from_be_bytes(data: &[u8]) -> Self {
-        assert!(data.len() >= 64);
+        verify!(data.len() >= 64);
         let mut x_bytes = [0u8; 32];
         let mut y_bytes = [0u8; 32];
         x_bytes.copy_from_slice(&data[0..32]);
@@ -95,8 +96,8 @@ pub fn ec_add(p1: &G1Point, p2: &G1Point) -> G1Point {
 
     let output = call_precompile(0x06, &input, 64);
     G1Point {
-        x: U256::from_be_bytes(&output[0..32].try_into().unwrap()),
-        y: U256::from_be_bytes(&output[32..64].try_into().unwrap()),
+        x: U256::from_be_slice(&output[0..32]),
+        y: U256::from_be_slice(&output[32..64]),
     }
 }
 
@@ -115,14 +116,14 @@ pub fn ec_mul(p: &G1Point, s: &U256) -> G1Point {
 
     let output = call_precompile(0x07, &input, 64);
     G1Point {
-        x: U256::from_be_bytes(&output[0..32].try_into().unwrap()),
-        y: U256::from_be_bytes(&output[32..64].try_into().unwrap()),
+        x: U256::from_be_slice(&output[0..32]),
+        y: U256::from_be_slice(&output[32..64]),
     }
 }
 
 /// Multi-scalar multiplication: sum(s_i * P_i)
 pub fn multi_scalar_mul(points: &[G1Point], scalars: &[U256]) -> G1Point {
-    assert_eq!(points.len(), scalars.len());
+    verify!(points.len() == scalars.len());
     if points.is_empty() {
         return G1Point::INFINITY;
     }
@@ -138,7 +139,7 @@ pub fn multi_scalar_mul(points: &[G1Point], scalars: &[U256]) -> G1Point {
 /// MSM with truncated generators (use first n generators)
 pub fn msm_with_truncated_gens(all_gens: &[G1Point], scalars: &[U256]) -> G1Point {
     let n = scalars.len();
-    assert!(n <= all_gens.len());
+    verify!(n <= all_gens.len());
     multi_scalar_mul(&all_gens[..n], scalars)
 }
 
@@ -156,7 +157,7 @@ pub fn negate(p: &G1Point) -> G1Point {
 
 /// Inner product <a, b> mod Fr
 pub fn inner_product(a: &[U256], b: &[U256]) -> Fr {
-    assert_eq!(a.len(), b.len());
+    verify!(a.len() == b.len());
     let mut result = Fr::ZERO;
     for i in 0..a.len() {
         let ai = Fr::new(a[i]);
@@ -199,7 +200,7 @@ fn call_precompile(addr: u64, input: &[u8], output_len: usize) -> Vec<u8> {
 
     match result {
         Ok(data) => data,
-        Err(_) => panic!("precompile call failed"),
+        Err(_) => { verify!(false, "precompile call failed"); unreachable!() },
     }
 }
 
@@ -210,7 +211,7 @@ fn call_precompile(addr: u64, input: &[u8], _output_len: usize) -> Vec<u8> {
         0x02 => sha256_native(input).to_vec(),
         0x06 => ec_add_native(input),
         0x07 => ec_mul_native(input),
-        _ => panic!("unknown precompile"),
+        _ => { verify!(false, "unknown precompile"); unreachable!() },
     }
 }
 
@@ -408,7 +409,7 @@ impl JacPoint {
 #[cfg(not(all(target_arch = "wasm32", feature = "stylus")))]
 fn ec_add_native(input: &[u8]) -> Vec<u8> {
     use alloc::vec;
-    assert!(input.len() >= 128, "ecadd: need 128 bytes");
+    verify!(input.len() >= 128, "ecadd: need 128 bytes");
 
     let x1 = Fq::from_be_bytes(input[0..32].try_into().unwrap());
     let y1 = Fq::from_be_bytes(input[32..64].try_into().unwrap());
@@ -428,7 +429,7 @@ fn ec_add_native(input: &[u8]) -> Vec<u8> {
 #[cfg(not(all(target_arch = "wasm32", feature = "stylus")))]
 fn ec_mul_native(input: &[u8]) -> Vec<u8> {
     use alloc::vec;
-    assert!(input.len() >= 96, "ecmul: need 96 bytes");
+    verify!(input.len() >= 96, "ecmul: need 96 bytes");
 
     let px = Fq::from_be_bytes(input[0..32].try_into().unwrap());
     let py = Fq::from_be_bytes(input[32..64].try_into().unwrap());

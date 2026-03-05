@@ -26,7 +26,7 @@ pub fn verify(
     sponge: &mut PoseidonSponge,
 ) -> bool {
     let n = proof.messages.len();
-    assert!(bindings.len() == n, "bindings length mismatch");
+    verify!(bindings.len() == n, "bindings length mismatch");
 
     // Step 1: Squeeze rho challenges (n+1)
     let mut rhos = Vec::with_capacity(n + 1);
@@ -149,8 +149,8 @@ pub fn verify_podp(
     a_vector: &[U256],
     gens: &PedersenGens,
 ) -> bool {
-    assert_eq!(podp.z_vector.len(), a_vector.len());
-    assert!(podp.z_vector.len() <= gens.message_gens.len());
+    verify!(podp.z_vector.len() == a_vector.len());
+    verify!(podp.z_vector.len() <= gens.message_gens.len());
 
     // 1. Compute z_dot_a = <z_vector, a_vector> (mod Fr)
     let z_dot_a = crate::ec::inner_product(&podp.z_vector, a_vector);

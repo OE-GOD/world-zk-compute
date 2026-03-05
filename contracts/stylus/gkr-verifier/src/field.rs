@@ -1,9 +1,8 @@
 /// BN254 field arithmetic for Fq (base field) and Fr (scalar field).
 /// Uses simple [u64; 4] limb representation with direct modular arithmetic.
-/// No Montgomery form — keeps it simple and avoids conversion overhead.
+/// Fq/Fr share common implementations via free functions to minimize WASM code size.
 
 /// BN254 base field modulus Fq
-/// 21888242871839275222246405745257275088696311157297823662689037894645226208583
 pub const FQ_MOD: [u64; 4] = [
     0x3c208c16d87cfd47,
     0x97816a916871ca8d,
@@ -12,7 +11,6 @@ pub const FQ_MOD: [u64; 4] = [
 ];
 
 /// BN254 scalar field modulus Fr
-/// 21888242871839275222246405745257275088548364400416034343698204186575808495617
 pub const FR_MOD: [u64; 4] = [
     0x43e1f593f0000001,
     0x2833e84879b97091,
@@ -21,23 +19,36 @@ pub const FR_MOD: [u64; 4] = [
 ];
 
 /// A 256-bit unsigned integer stored as 4 little-endian u64 limbs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct U256(pub [u64; 4]);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl core::fmt::Debug for U256 {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "U256({:#x}, {:#x}, {:#x}, {:#x})", self.0[3], self.0[2], self.0[1], self.0[0])
+    }
+}
 
 impl U256 {
     pub const ZERO: U256 = U256([0, 0, 0, 0]);
     pub const ONE: U256 = U256([1, 0, 0, 0]);
 
-    /// Create from a single u64 value
     #[inline(always)]
     pub const fn from_u64(v: u64) -> Self {
         U256([v, 0, 0, 0])
     }
 
-    /// Create from big-endian bytes (32 bytes)
+    /// Like `from_be_bytes` but takes a slice (must be >= 32 bytes).
+    /// Avoids `try_into().unwrap()` which embeds panic strings in WASM.
+    #[inline]
+    pub fn from_be_slice(bytes: &[u8]) -> Self {
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&bytes[..32]);
+        Self::from_be_bytes(&arr)
+    }
+
     pub fn from_be_bytes(bytes: &[u8; 32]) -> Self {
         let mut limbs = [0u64; 4];
-        // bytes[0..8] = most significant
         limbs[3] = u64::from_be_bytes([
             bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
         ]);
@@ -53,7 +64,6 @@ impl U256 {
         U256(limbs)
     }
 
-    /// Convert to big-endian bytes (32 bytes)
     pub fn to_be_bytes(&self) -> [u8; 32] {
         let mut out = [0u8; 32];
         let b3 = self.0[3].to_be_bytes();
@@ -67,27 +77,20 @@ impl U256 {
         out
     }
 
-    /// Check if zero
     #[inline(always)]
     pub fn is_zero(&self) -> bool {
         self.0[0] == 0 && self.0[1] == 0 && self.0[2] == 0 && self.0[3] == 0
     }
 
-    /// Compare: returns true if self >= other
     #[inline]
     pub fn gte(&self, other: &U256) -> bool {
         for i in (0..4).rev() {
-            if self.0[i] > other.0[i] {
-                return true;
-            }
-            if self.0[i] < other.0[i] {
-                return false;
-            }
+            if self.0[i] > other.0[i] { return true; }
+            if self.0[i] < other.0[i] { return false; }
         }
-        true // equal
+        true
     }
 
-    /// Subtraction: self - other (assumes self >= other)
     #[inline]
     pub fn sub_no_mod(&self, other: &U256) -> U256 {
         let mut result = [0u64; 4];
@@ -101,7 +104,6 @@ impl U256 {
         U256(result)
     }
 
-    /// Addition without reduction
     #[inline]
     fn add_no_mod(&self, other: &U256) -> (U256, bool) {
         let mut result = [0u64; 4];
@@ -115,16 +117,81 @@ impl U256 {
     }
 }
 
-/// Field element with associated modulus
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// ============================================================
+// Shared field operations (compiled once, used by both Fq and Fr)
+// ============================================================
+
+#[inline(never)]
+fn field_add(a: &U256, b: &U256, modulus: &[u64; 4]) -> U256 {
+    let (sum, carry) = a.add_no_mod(b);
+    let m = U256(*modulus);
+    if carry || sum.gte(&m) { sum.sub_no_mod(&m) } else { sum }
+}
+
+#[inline(never)]
+fn field_sub(a: &U256, b: &U256, modulus: &[u64; 4]) -> U256 {
+    if a.gte(b) {
+        a.sub_no_mod(b)
+    } else {
+        let diff = b.sub_no_mod(a);
+        U256(*modulus).sub_no_mod(&diff)
+    }
+}
+
+#[inline(never)]
+fn field_neg(a: &U256, modulus: &[u64; 4]) -> U256 {
+    if a.is_zero() { *a } else { U256(*modulus).sub_no_mod(a) }
+}
+
+#[inline(never)]
+fn field_mul(a: &U256, b: &U256, modulus: &[u64; 4]) -> U256 {
+    let product = mul_wide(a, b);
+    reduce_512(&product, modulus)
+}
+
+#[inline(never)]
+fn field_pow(base: &U256, exp: &U256, modulus: &[u64; 4]) -> U256 {
+    let mut result = U256::ONE;
+    let mut b = *base;
+    for i in 0..4 {
+        let mut e = exp.0[i];
+        for _ in 0..64 {
+            if e & 1 == 1 {
+                result = field_mul(&result, &b, modulus);
+            }
+            b = field_mul(&b, &b, modulus);
+            e >>= 1;
+        }
+    }
+    result
+}
+
+#[inline(never)]
+fn field_inv(a: &U256, modulus: &[u64; 4]) -> U256 {
+    let mut exp = U256(*modulus);
+    exp.0[0] = exp.0[0].wrapping_sub(2);
+    field_pow(a, &exp, modulus)
+}
+
+fn field_from_be_bytes(bytes: &[u8; 32], modulus: &[u64; 4]) -> U256 {
+    let v = U256::from_be_bytes(bytes);
+    let m = U256(*modulus);
+    if v.gte(&m) { v.sub_no_mod(&m) } else { v }
+}
+
+// ============================================================
+// Fq (base field) — thin wrapper
+// ============================================================
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Fq(pub U256);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Fr(pub U256);
-
-// ============================================================
-// Fq operations (base field)
-// ============================================================
+#[cfg(not(target_arch = "wasm32"))]
+impl core::fmt::Debug for Fq {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Fq({:?})", self.0)
+    }
+}
 
 impl Fq {
     pub const ZERO: Fq = Fq(U256::ZERO);
@@ -132,107 +199,45 @@ impl Fq {
     pub const MODULUS: U256 = U256(FQ_MOD);
 
     #[inline(always)]
-    pub fn new(v: U256) -> Self {
-        Fq(v)
-    }
-
+    pub fn new(v: U256) -> Self { Fq(v) }
     #[inline(always)]
-    pub fn from_u64(v: u64) -> Self {
-        Fq(U256::from_u64(v))
-    }
-
-    pub fn from_be_bytes(bytes: &[u8; 32]) -> Self {
-        let v = U256::from_be_bytes(bytes);
-        // Reduce mod p
-        let modulus = U256(FQ_MOD);
-        if v.gte(&modulus) {
-            Fq(v.sub_no_mod(&modulus))
-        } else {
-            Fq(v)
-        }
-    }
+    pub fn from_u64(v: u64) -> Self { Fq(U256::from_u64(v)) }
+    pub fn from_be_bytes(bytes: &[u8; 32]) -> Self { Fq(field_from_be_bytes(bytes, &FQ_MOD)) }
 
     #[inline]
-    pub fn add(&self, other: &Fq) -> Fq {
-        let (sum, carry) = self.0.add_no_mod(&other.0);
-        let modulus = U256(FQ_MOD);
-        if carry || sum.gte(&modulus) {
-            Fq(sum.sub_no_mod(&modulus))
-        } else {
-            Fq(sum)
-        }
-    }
-
+    pub fn add(&self, other: &Fq) -> Fq { Fq(field_add(&self.0, &other.0, &FQ_MOD)) }
     #[inline]
-    pub fn sub(&self, other: &Fq) -> Fq {
-        if self.0.gte(&other.0) {
-            Fq(self.0.sub_no_mod(&other.0))
-        } else {
-            // self < other: result = modulus - (other - self)
-            let diff = other.0.sub_no_mod(&self.0);
-            Fq(U256(FQ_MOD).sub_no_mod(&diff))
-        }
-    }
-
+    pub fn sub(&self, other: &Fq) -> Fq { Fq(field_sub(&self.0, &other.0, &FQ_MOD)) }
     #[inline]
-    pub fn neg(&self) -> Fq {
-        if self.0.is_zero() {
-            *self
-        } else {
-            Fq(U256(FQ_MOD).sub_no_mod(&self.0))
-        }
-    }
-
-    /// Multiplication using schoolbook 512-bit multiply + Barrett-like reduction
-    pub fn mul(&self, other: &Fq) -> Fq {
-        let product = mul_wide(&self.0, &other.0);
-        Fq(reduce_512(&product, &FQ_MOD))
-    }
-
-    /// Squaring
+    pub fn neg(&self) -> Fq { Fq(field_neg(&self.0, &FQ_MOD)) }
     #[inline]
-    pub fn square(&self) -> Fq {
-        self.mul(self)
-    }
+    pub fn mul(&self, other: &Fq) -> Fq { Fq(field_mul(&self.0, &other.0, &FQ_MOD)) }
+    #[inline]
+    pub fn square(&self) -> Fq { self.mul(self) }
+    pub fn inv(&self) -> Fq { Fq(field_inv(&self.0, &FQ_MOD)) }
+    pub fn pow(&self, exp: &U256) -> Fq { Fq(field_pow(&self.0, exp, &FQ_MOD)) }
 
-    /// x^5 (used in Poseidon S-box)
     #[inline]
     pub fn pow5(&self) -> Fq {
         let x2 = self.square();
         let x4 = x2.square();
         x4.mul(self)
     }
-
-    /// Modular inverse via Fermat's little theorem: a^(p-2) mod p
-    pub fn inv(&self) -> Fq {
-        // p - 2
-        let mut exp = U256(FQ_MOD);
-        // Subtract 2
-        exp.0[0] = exp.0[0].wrapping_sub(2);
-        self.pow(&exp)
-    }
-
-    /// Modular exponentiation via square-and-multiply
-    pub fn pow(&self, exp: &U256) -> Fq {
-        let mut result = Fq::ONE;
-        let mut base = *self;
-        for i in 0..4 {
-            let mut e = exp.0[i];
-            for _ in 0..64 {
-                if e & 1 == 1 {
-                    result = result.mul(&base);
-                }
-                base = base.square();
-                e >>= 1;
-            }
-        }
-        result
-    }
 }
 
 // ============================================================
-// Fr operations (scalar field)
+// Fr (scalar field) — thin wrapper
 // ============================================================
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Fr(pub U256);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl core::fmt::Debug for Fr {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "Fr({:?})", self.0)
+    }
+}
 
 impl Fr {
     pub const ZERO: Fr = Fr(U256::ZERO);
@@ -240,104 +245,33 @@ impl Fr {
     pub const MODULUS: U256 = U256(FR_MOD);
 
     #[inline(always)]
-    pub fn new(v: U256) -> Self {
-        Fr(v)
-    }
-
+    pub fn new(v: U256) -> Self { Fr(v) }
     #[inline(always)]
-    pub fn from_u64(v: u64) -> Self {
-        Fr(U256::from_u64(v))
-    }
+    pub fn from_u64(v: u64) -> Self { Fr(U256::from_u64(v)) }
+    pub fn from_be_bytes(bytes: &[u8; 32]) -> Self { Fr(field_from_be_bytes(bytes, &FR_MOD)) }
 
-    pub fn from_be_bytes(bytes: &[u8; 32]) -> Self {
-        let v = U256::from_be_bytes(bytes);
-        let modulus = U256(FR_MOD);
-        if v.gte(&modulus) {
-            Fr(v.sub_no_mod(&modulus))
-        } else {
-            Fr(v)
-        }
-    }
-
-    /// Reduce an Fq value modulo Fr (for squeeze % FR_MODULUS conversion)
     pub fn from_fq(fq: &Fq) -> Fr {
         let modulus = U256(FR_MOD);
-        if fq.0.gte(&modulus) {
-            Fr(fq.0.sub_no_mod(&modulus))
-        } else {
-            Fr(fq.0)
-        }
+        if fq.0.gte(&modulus) { Fr(fq.0.sub_no_mod(&modulus)) } else { Fr(fq.0) }
     }
 
     #[inline]
-    pub fn add(&self, other: &Fr) -> Fr {
-        let (sum, carry) = self.0.add_no_mod(&other.0);
-        let modulus = U256(FR_MOD);
-        if carry || sum.gte(&modulus) {
-            Fr(sum.sub_no_mod(&modulus))
-        } else {
-            Fr(sum)
-        }
-    }
-
+    pub fn add(&self, other: &Fr) -> Fr { Fr(field_add(&self.0, &other.0, &FR_MOD)) }
     #[inline]
-    pub fn sub(&self, other: &Fr) -> Fr {
-        if self.0.gte(&other.0) {
-            Fr(self.0.sub_no_mod(&other.0))
-        } else {
-            let diff = other.0.sub_no_mod(&self.0);
-            Fr(U256(FR_MOD).sub_no_mod(&diff))
-        }
-    }
-
+    pub fn sub(&self, other: &Fr) -> Fr { Fr(field_sub(&self.0, &other.0, &FR_MOD)) }
     #[inline]
-    pub fn neg(&self) -> Fr {
-        if self.0.is_zero() {
-            *self
-        } else {
-            Fr(U256(FR_MOD).sub_no_mod(&self.0))
-        }
-    }
-
-    pub fn mul(&self, other: &Fr) -> Fr {
-        let product = mul_wide(&self.0, &other.0);
-        Fr(reduce_512(&product, &FR_MOD))
-    }
-
+    pub fn neg(&self) -> Fr { Fr(field_neg(&self.0, &FR_MOD)) }
+    pub fn mul(&self, other: &Fr) -> Fr { Fr(field_mul(&self.0, &other.0, &FR_MOD)) }
     #[inline]
-    pub fn square(&self) -> Fr {
-        self.mul(self)
-    }
-
-    /// Modular inverse via Fermat's little theorem
-    pub fn inv(&self) -> Fr {
-        let mut exp = U256(FR_MOD);
-        exp.0[0] = exp.0[0].wrapping_sub(2);
-        self.pow(&exp)
-    }
-
-    pub fn pow(&self, exp: &U256) -> Fr {
-        let mut result = Fr::ONE;
-        let mut base = *self;
-        for i in 0..4 {
-            let mut e = exp.0[i];
-            for _ in 0..64 {
-                if e & 1 == 1 {
-                    result = result.mul(&base);
-                }
-                base = base.square();
-                e >>= 1;
-            }
-        }
-        result
-    }
+    pub fn square(&self) -> Fr { self.mul(self) }
+    pub fn inv(&self) -> Fr { Fr(field_inv(&self.0, &FR_MOD)) }
+    pub fn pow(&self, exp: &U256) -> Fr { Fr(field_pow(&self.0, exp, &FR_MOD)) }
 }
 
 // ============================================================
 // Wide multiplication and reduction
 // ============================================================
 
-/// 256x256 -> 512 bit multiplication (schoolbook)
 fn mul_wide(a: &U256, b: &U256) -> [u64; 8] {
     let mut result = [0u64; 8];
     for i in 0..4 {
@@ -355,14 +289,10 @@ fn mul_wide(a: &U256, b: &U256) -> [u64; 8] {
 }
 
 /// Reduce a 512-bit value modulo a 256-bit modulus using Knuth's Algorithm D.
-/// Divides val (8 limbs, little-endian) by modulus (4 limbs) and returns remainder.
 fn reduce_512(val: &[u64; 8], modulus: &[u64; 4]) -> U256 {
     let n = 4usize;
-
-    // Step D1: Normalize — shift so MSB of divisor's top limb is set
     let s = modulus[n - 1].leading_zeros();
 
-    // Normalized divisor (shift left by s bits)
     let vn: [u64; 4] = if s > 0 {
         [
             modulus[0] << s,
@@ -374,7 +304,6 @@ fn reduce_512(val: &[u64; 8], modulus: &[u64; 4]) -> U256 {
         [modulus[0], modulus[1], modulus[2], modulus[3]]
     };
 
-    // Normalized dividend (shift left by s bits) — 9 limbs
     let mut un = [0u64; 9];
     if s > 0 {
         un[8] = val[7] >> (64 - s);
@@ -387,15 +316,11 @@ fn reduce_512(val: &[u64; 8], modulus: &[u64; 4]) -> U256 {
         un[8] = 0;
     }
 
-    // Steps D2–D7: Main loop — compute quotient digits from high to low
-    // m = 5 quotient limbs (9 dividend limbs - 4 divisor limbs)
     for j in (0..5).rev() {
-        // Step D3: Estimate quotient digit q_hat
         let dividend_top = ((un[j + n] as u128) << 64) | (un[j + n - 1] as u128);
         let mut q_hat = dividend_top / (vn[n - 1] as u128);
         let mut r_hat = dividend_top % (vn[n - 1] as u128);
 
-        // Knuth's refinement: correct q_hat using the next lower digit
         loop {
             if q_hat >= (1u128 << 64)
                 || q_hat * (vn[n - 2] as u128)
@@ -403,14 +328,11 @@ fn reduce_512(val: &[u64; 8], modulus: &[u64; 4]) -> U256 {
             {
                 q_hat -= 1;
                 r_hat += vn[n - 1] as u128;
-                if r_hat < (1u128 << 64) {
-                    continue;
-                }
+                if r_hat < (1u128 << 64) { continue; }
             }
             break;
         }
 
-        // Step D4: Multiply and subtract — un[j..j+n+1] -= q_hat * vn[0..n]
         let mut borrow: i128 = 0;
         for i in 0..n {
             let prod = q_hat * (vn[i] as u128);
@@ -421,7 +343,6 @@ fn reduce_512(val: &[u64; 8], modulus: &[u64; 4]) -> U256 {
         let t = (un[j + n] as i128) - borrow;
         un[j + n] = t as u64;
 
-        // Step D5/D6: Add back if q_hat was too large
         if t < 0 {
             let mut carry: u64 = 0;
             for i in 0..n {
@@ -433,7 +354,6 @@ fn reduce_512(val: &[u64; 8], modulus: &[u64; 4]) -> U256 {
         }
     }
 
-    // Step D8: Unnormalize remainder (shift right by s bits)
     if s > 0 {
         U256([
             (un[0] >> s) | (un[1] << (64 - s)),
@@ -470,8 +390,7 @@ mod tests {
     fn test_fq_sub_wrap() {
         let a = Fq::from_u64(10);
         let b = Fq::from_u64(20);
-        let c = a.sub(&b); // should wrap around
-        // c = Fq_MOD - 10
+        let c = a.sub(&b);
         let expected = Fq(U256(FQ_MOD)).sub(&Fq::from_u64(10));
         assert_eq!(c, expected);
     }
@@ -488,7 +407,7 @@ mod tests {
     fn test_fq_pow5() {
         let a = Fq::from_u64(3);
         let c = a.pow5();
-        assert_eq!(c, Fq::from_u64(243)); // 3^5
+        assert_eq!(c, Fq::from_u64(243));
     }
 
     #[test]
@@ -525,10 +444,9 @@ mod tests {
 
     #[test]
     fn test_fq_large_mul() {
-        // Test that multiplication works with large values near the modulus
-        let a = Fq(U256(FQ_MOD)).sub(&Fq::ONE); // p - 1
-        let b = Fq(U256(FQ_MOD)).sub(&Fq::ONE); // p - 1
-        let c = a.mul(&b); // (p-1)^2 mod p = 1
+        let a = Fq(U256(FQ_MOD)).sub(&Fq::ONE);
+        let b = Fq(U256(FQ_MOD)).sub(&Fq::ONE);
+        let c = a.mul(&b);
         assert_eq!(c, Fq::ONE);
     }
 
@@ -542,7 +460,6 @@ mod tests {
 
     #[test]
     fn test_fr_from_fq() {
-        // When Fq value is less than Fr modulus, it should pass through unchanged
         let fq = Fq::from_u64(42);
         let fr = Fr::from_fq(&fq);
         assert_eq!(fr, Fr::from_u64(42));

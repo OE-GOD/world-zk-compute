@@ -47,7 +47,7 @@ pub fn setup_transcript(
     sponge.absorb_u256(&pub_hash2.0);
 
     // 4. Absorb EC commitment points (pairs of coordinates)
-    assert!(
+    verify!(
         input_commit_coords.len() % 2 == 0,
         "input_commit_coords must have even length (x,y pairs)"
     );
@@ -89,7 +89,7 @@ fn hash_to_fq_pair(hash: &[u8; 32]) -> (Fq, Fq) {
 /// bytes[0] is the least significant byte; bytes[15] is the most significant.
 /// The result fits within 128 bits, so limbs[2] and limbs[3] are always zero.
 fn le_bytes_to_u256(bytes: &[u8]) -> U256 {
-    assert!(bytes.len() <= 16, "le_bytes_to_u256: max 16 bytes");
+    verify!(bytes.len() <= 16, "le_bytes_to_u256: max 16 bytes");
     // U256 limbs are little-endian: limb[0] is least significant.
     // bytes[0..8] -> limb[0] as LE u64
     // bytes[8..16] -> limb[1] as LE u64
