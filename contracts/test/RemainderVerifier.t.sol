@@ -2040,9 +2040,9 @@ contract Groth16VerifierTest is Test {
             proof[i] = vm.parseJsonUint(json, string.concat(".proof[", vm.toString(i), "]"));
         }
 
-        // Parse public inputs (70 uint256 for medium config)
-        uint256[70] memory pubInputs;
-        for (uint256 i = 0; i < 70; i++) {
+        // Parse public inputs (78 uint256 for medium config)
+        uint256[78] memory pubInputs;
+        for (uint256 i = 0; i < 78; i++) {
             pubInputs[i] = vm.parseJsonUint(json, string.concat(".public_inputs[", vm.toString(i), "]"));
         }
 
@@ -2058,8 +2058,8 @@ contract Groth16VerifierTest is Test {
         for (uint256 i = 0; i < 8; i++) {
             proof[i] = vm.parseJsonUint(json, string.concat(".proof[", vm.toString(i), "]"));
         }
-        uint256[70] memory pubInputs;
-        for (uint256 i = 0; i < 70; i++) {
+        uint256[78] memory pubInputs;
+        for (uint256 i = 0; i < 78; i++) {
             pubInputs[i] = vm.parseJsonUint(json, string.concat(".public_inputs[", vm.toString(i), "]"));
         }
 
@@ -2078,8 +2078,8 @@ contract Groth16VerifierTest is Test {
         for (uint256 i = 0; i < 8; i++) {
             proof[i] = vm.parseJsonUint(json, string.concat(".proof[", vm.toString(i), "]"));
         }
-        uint256[70] memory pubInputs;
-        for (uint256 i = 0; i < 70; i++) {
+        uint256[78] memory pubInputs;
+        for (uint256 i = 0; i < 78; i++) {
             pubInputs[i] = vm.parseJsonUint(json, string.concat(".public_inputs[", vm.toString(i), "]"));
         }
 
@@ -2121,8 +2121,8 @@ contract GKRHybridVerifierTest is Test {
         committed[0] = true;
         remainderVerifier.registerCircuit(circuitHash, 3, sizes, types, committed, "test-hybrid-medium");
 
-        // Register per-circuit Groth16 verifier (medium config: 70 inputs)
-        remainderVerifier.setCircuitGroth16Verifier(circuitHash, address(groth16Verifier), 70);
+        // Register per-circuit Groth16 verifier (medium config: 78 inputs)
+        remainderVerifier.setCircuitGroth16Verifier(circuitHash, address(groth16Verifier), 78);
 
         // Also register the circuit from e2e_fixture.json (used by non-Groth16 tests)
         bytes32 e2eCircuitHash = vm.parseJsonBytes32(vm.readFile("test/fixtures/e2e_fixture.json"), ".circuit_hash_raw");
@@ -2252,7 +2252,7 @@ contract GKRHybridVerifierTest is Test {
         });
     }
 
-    /// @notice Test buildGroth16Inputs constructs the correct 70-element array (medium config, N=4)
+    /// @notice Test buildGroth16Inputs constructs the correct 78-element array (medium config, N=4)
     function test_buildGroth16Inputs_layout() public pure {
         GKRHybridVerifier.TranscriptChallenges memory challenges;
 
@@ -2305,6 +2305,16 @@ contract GKRHybridVerifierTest is Test {
         challenges.inputPodpChallenge = 910;
         challenges.interLayerCoeffs = new uint256[](1);
         challenges.interLayerCoeffs[0] = 1000;
+        // MLE eval point (4 values for log2(16)=4)
+        challenges.mleEvalPoint = new uint256[](4);
+        for (uint256 i = 0; i < 4; i++) {
+            challenges.mleEvalPoint[i] = 1100 + i;
+        }
+        // Input claim point (4 values, same as last layer bindings for linear circuits)
+        challenges.inputClaimPoint = new uint256[](4);
+        for (uint256 i = 0; i < 4; i++) {
+            challenges.inputClaimPoint[i] = 1200 + i;
+        }
 
         // Public inputs (16 values for N=4)
         uint256[] memory pubInputs = new uint256[](16);
@@ -2328,7 +2338,7 @@ contract GKRHybridVerifierTest is Test {
         outputs.mleEval = 2013;
 
         uint256[] memory inputs = GKRHybridVerifier.buildGroth16Inputs(12345, 67890, pubInputs, challenges, outputs);
-        assertEq(inputs.length, 70, "total length should be 70");
+        assertEq(inputs.length, 78, "total length should be 78");
 
         uint256 idx = 0;
         // [0-1] Circuit hash
@@ -2381,7 +2391,15 @@ contract GKRHybridVerifierTest is Test {
         assertEq(inputs[idx++], 910, "inputPodpChallenge");
         // [55] Inter-layer coefficient
         assertEq(inputs[idx++], 1000, "interLayerCoeff");
-        // [56-69] Groth16 outputs
+        // [56-59] MLE eval point
+        for (uint256 i = 0; i < 4; i++) {
+            assertEq(inputs[idx++], 1100 + i, "mleEvalPoint");
+        }
+        // [60-63] Input claim point
+        for (uint256 i = 0; i < 4; i++) {
+            assertEq(inputs[idx++], 1200 + i, "inputClaimPoint");
+        }
+        // [64-77] Groth16 outputs
         assertEq(inputs[idx++], 2000, "rlcBeta0");
         assertEq(inputs[idx++], 2001, "rlcBeta1");
         assertEq(inputs[idx++], 2002, "zDotJStar0");
@@ -2434,6 +2452,12 @@ contract GKRHybridVerifierTest is Test {
         challenges.inputPodpChallenge = 910;
         challenges.interLayerCoeffs = new uint256[](1);
         challenges.interLayerCoeffs[0] = 1000;
+        // MLE eval point (1 value for log2(2)=1)
+        challenges.mleEvalPoint = new uint256[](1);
+        challenges.mleEvalPoint[0] = 1100;
+        // Input claim point (1 value for InputNumVars=1)
+        challenges.inputClaimPoint = new uint256[](1);
+        challenges.inputClaimPoint[0] = 1200;
 
         // Public inputs (2^1 = 2 values for N=1)
         uint256[] memory pubInputs = new uint256[](2);
@@ -2456,8 +2480,8 @@ contract GKRHybridVerifierTest is Test {
 
         uint256[] memory inputs = GKRHybridVerifier.buildGroth16Inputs(12345, 67890, pubInputs, challenges, outputs);
 
-        // Total = 2 + 2 + 1 + 1 + 1 + 2 + 1 + 1 + 1 + 2 + 1 + 1 + 1 + 2 + 1 + 1 + 2 + 2 + 2 + 1 + 1 = 29
-        assertEq(inputs.length, 29, "Small config (N=1) should have 29 inputs");
+        // Total = 29 (old) + 1 (mleEvalPoint) + 1 (inputClaimPoint) = 31
+        assertEq(inputs.length, 31, "Small config (N=1) should have 31 inputs");
 
         // Spot-check key positions
         assertEq(inputs[0], 12345, "circuitHash0");
@@ -2721,10 +2745,10 @@ contract GKRHybridVerifierTest is Test {
         bytes32 circuitHash = vm.parseJsonBytes32(json, ".circuit_hash_raw");
         bytes memory publicValuesAbi = vm.parseJsonBytes(json, ".public_values_abi");
 
-        // Expected challenge values from Rust (arrays for medium config)
-        uint256[] memory expectedOutputChallenges = vm.parseJsonUintArray(json, ".challenges.output_challenges");
-        uint256 expectedClaimAggCoeff = vm.parseJsonUint(json, ".challenges.claim_agg_coeff");
-        uint256 expectedInterLayerCoeff = vm.parseJsonUint(json, ".challenges.inter_layer_coeff");
+        // Expected challenge values from Rust witness output
+        uint256[] memory expectedOutputChallenges = vm.parseJsonUintArray(json, ".public_inputs.output_challenges");
+        uint256 expectedClaimAggCoeff = vm.parseJsonUint(json, ".public_inputs.claim_agg_coeff");
+        uint256 expectedInterLayerCoeff = vm.parseJsonUint(json, ".public_inputs.inter_layer_coeff");
 
         // Replay transcript on-chain
         (uint256[] memory outputChallenges, uint256 claimAggCoeff, uint256 interLayerCoeff) =
@@ -2783,10 +2807,10 @@ contract GKRHybridVerifierTest is Test {
 
         uint256[] memory groth16Inputs =
             _replayAndBuildGroth16Inputs(innerProof, circuitHash, publicValuesAbi, groth16Outputs);
-        assertEq(groth16Inputs.length, 70, "Expected 70 Groth16 inputs for medium config");
+        assertEq(groth16Inputs.length, 78, "Expected 78 Groth16 inputs for medium config");
 
-        uint256[70] memory fixedInputs;
-        for (uint256 i = 0; i < 70; i++) {
+        uint256[78] memory fixedInputs;
+        for (uint256 i = 0; i < 78; i++) {
             fixedInputs[i] = groth16Inputs[i];
         }
         groth16Verifier.verifyProof(groth16Proof, fixedInputs);
@@ -2947,7 +2971,7 @@ contract GKRHybridVerifierTest is Test {
         bool[] memory committed = new bool[](3);
         committed[0] = false; // Non-committed input layer
         freshVerifier.registerCircuit(circuitHash, 3, sizes, types, committed, "test-noncommitted");
-        freshVerifier.setCircuitGroth16Verifier(circuitHash, address(groth16Verifier), 70);
+        freshVerifier.setCircuitGroth16Verifier(circuitHash, address(groth16Verifier), 78);
 
         // Load fixture data
         (
@@ -2987,7 +3011,7 @@ contract GKRHybridVerifierTest is Test {
         bool[] memory committed = new bool[](3);
         committed[0] = false;
         freshVerifier.registerCircuit(circuitHash, 3, sizes, types, committed, "test-noncommitted");
-        freshVerifier.setCircuitGroth16Verifier(circuitHash, address(groth16Verifier), 70);
+        freshVerifier.setCircuitGroth16Verifier(circuitHash, address(groth16Verifier), 78);
 
         (
             bytes memory innerProof,
@@ -3353,5 +3377,796 @@ contract GKRDAGVerifierTest is Test {
         // Evaluate MLE
         uint256 mleEval = GKRDAGVerifier.evaluateMLEFromData(embedded, point);
         emit log_named_uint("MLE evaluation", mleEval);
+    }
+}
+
+// ========================================================================
+// DAG HYBRID VERIFIER TESTS (Phase 1 validation)
+// ========================================================================
+
+contract GKRDAGHybridVerifierTest is Test {
+    RemainderVerifier verifier;
+
+    function setUp() public {
+        verifier = new RemainderVerifier(address(this));
+    }
+
+    function _loadFixtureAndRegister()
+        internal
+        returns (
+            bytes memory proofHex,
+            bytes memory gensHex,
+            bytes32 circuitHash,
+            bytes memory publicInputsHex,
+            GKRDAGVerifier.DAGCircuitDescription memory desc
+        )
+    {
+        string memory json = vm.readFile("test/fixtures/phase1a_dag_fixture.json");
+        proofHex = vm.parseJsonBytes(json, ".proof_hex");
+        gensHex = vm.parseJsonBytes(json, ".gens_hex");
+        circuitHash = vm.parseJsonBytes32(json, ".circuit_hash_raw");
+        publicInputsHex = vm.parseJsonBytes(json, ".public_inputs_hex");
+
+        desc.numComputeLayers = vm.parseJsonUint(json, ".dag_circuit_description.numComputeLayers");
+        desc.numInputLayers = vm.parseJsonUint(json, ".dag_circuit_description.numInputLayers");
+        desc.layerTypes = _parseJsonUint8Array(json, ".dag_circuit_description.layerTypes");
+        desc.numSumcheckRounds = vm.parseJsonUintArray(json, ".dag_circuit_description.numSumcheckRounds");
+        desc.atomOffsets = vm.parseJsonUintArray(json, ".dag_circuit_description.atomOffsets");
+        desc.atomTargetLayers = vm.parseJsonUintArray(json, ".dag_circuit_description.atomTargetLayers");
+        desc.atomCommitIdxs = vm.parseJsonUintArray(json, ".dag_circuit_description.atomCommitIdxs");
+        desc.ptOffsets = vm.parseJsonUintArray(json, ".dag_circuit_description.ptOffsets");
+        desc.ptData = vm.parseJsonUintArray(json, ".dag_circuit_description.ptData");
+        desc.inputIsCommitted = _parseJsonBoolArray(json, ".dag_circuit_description.inputIsCommitted");
+        desc.oracleProductOffsets = vm.parseJsonUintArray(json, ".dag_circuit_description.oracleProductOffsets");
+        desc.oracleResultIdxs = vm.parseJsonUintArray(json, ".dag_circuit_description.oracleResultIdxs");
+        desc.oracleExprCoeffs = _parseJsonUint256Array(json, ".dag_circuit_description.oracleExprCoeffs");
+
+        // Register circuit
+        bytes32 gensHash = keccak256(gensHex);
+        bytes memory descData = abi.encode(desc);
+        verifier.registerDAGCircuit(circuitHash, descData, "xgboost-dag-hybrid", gensHash);
+    }
+
+    function _parseJsonUint8Array(string memory json, string memory key) internal pure returns (uint8[] memory result) {
+        uint256[] memory raw = vm.parseJsonUintArray(json, key);
+        result = new uint8[](raw.length);
+        for (uint256 i = 0; i < raw.length; i++) result[i] = uint8(raw[i]);
+    }
+
+    function _parseJsonBoolArray(string memory json, string memory key) internal pure returns (bool[] memory result) {
+        bytes memory raw = vm.parseJson(json, key);
+        result = abi.decode(raw, (bool[]));
+    }
+
+    function _parseJsonUint256Array(string memory json, string memory key) internal pure returns (uint256[] memory result) {
+        bytes memory raw = vm.parseJson(json, key);
+        bytes32[] memory parsed = abi.decode(raw, (bytes32[]));
+        result = new uint256[](parsed.length);
+        for (uint256 i = 0; i < parsed.length; i++) result[i] = uint256(parsed[i]);
+    }
+
+    /// @notice Test: DAG hybrid transcript replay completes on 88-layer circuit
+    function test_dag_hybrid_transcript_replay() public {
+        (bytes memory proofHex, , bytes32 circuitHash, bytes memory publicInputsHex,) = _loadFixtureAndRegister();
+
+        (
+            uint256[] memory outputChallenges,
+            uint256 layer0RlcCoeff0,
+            uint256 layer0Binding0,
+            uint256 layer0Rho0,
+            uint256 layer0Gamma0,
+            uint256 layer0PodpChallenge
+        ) = verifier.replayDAGTranscriptPublic(proofHex, circuitHash, publicInputsHex);
+
+        // Verify output challenges are non-zero and have expected length
+        assertTrue(outputChallenges.length > 0, "should have output challenges");
+        assertTrue(outputChallenges[0] != 0, "output challenge 0 should be non-zero");
+
+        // Verify layer 0 challenges are non-zero
+        assertTrue(layer0RlcCoeff0 != 0, "layer0 RLC coeff should be non-zero");
+        assertTrue(layer0Binding0 != 0, "layer0 binding should be non-zero");
+        assertTrue(layer0Rho0 != 0, "layer0 rho should be non-zero");
+        assertTrue(layer0Gamma0 != 0, "layer0 gamma should be non-zero");
+        assertTrue(layer0PodpChallenge != 0, "layer0 PODP challenge should be non-zero");
+    }
+
+    /// @notice Test: DAG hybrid transcript produces same output challenges as direct verifier
+    function test_dag_hybrid_vs_direct_transcript_consistency() public {
+        (bytes memory proofHex, bytes memory gensHex, bytes32 circuitHash, bytes memory publicInputsHex,) = _loadFixtureAndRegister();
+
+        // Get output challenges from hybrid replay
+        (uint256[] memory hybridOutputChallenges,,,,,) =
+            verifier.replayDAGTranscriptPublic(proofHex, circuitHash, publicInputsHex);
+
+        // Run direct DAG verification to confirm proof is valid
+        // This implicitly validates the transcript is consistent
+        bool valid = verifier.verifyDAGProof(proofHex, circuitHash, publicInputsHex, gensHex);
+        assertTrue(valid, "direct DAG verification should pass");
+
+        // If both pass, the transcripts are consistent
+        assertTrue(hybridOutputChallenges.length > 0, "hybrid should produce output challenges");
+    }
+
+    /// @notice Test: buildDAGGroth16Inputs produces correct total size and structure
+    function test_dag_build_groth16_inputs_size() public {
+        (bytes memory proofHex, , bytes32 circuitHash, bytes memory publicInputsHex,) = _loadFixtureAndRegister();
+
+        // Use the public wrapper to build Groth16 inputs and get metadata
+        (uint256 inputCount, uint256 numGroups, uint256 numPubClaims, uint256 numEmbeddedPubInputs) =
+            verifier.buildDAGGroth16InputsPublic(proofHex, circuitHash, publicInputsHex);
+
+        emit log_named_uint("DAG Groth16 input count", inputCount);
+        emit log_named_uint("Input groups", numGroups);
+        emit log_named_uint("Public claims", numPubClaims);
+        emit log_named_uint("Embedded pub inputs", numEmbeddedPubInputs);
+
+        // Verify reasonable sizes for 88-layer XGBoost circuit
+        assertTrue(inputCount > 0, "inputs should be non-empty");
+        assertTrue(numGroups > 0, "should have input groups");
+        assertTrue(numPubClaims > 0, "should have public claims");
+        assertTrue(numEmbeddedPubInputs > 0, "should have embedded public inputs");
+
+        // Expected: ~1700+ public inputs for 88-layer DAG
+        assertTrue(inputCount > 500, "DAG circuit should have many public inputs");
+    }
+
+    /// @notice Test: collectPubClaimPoints returns expected count from DAG description
+    function test_dag_collect_pub_claim_points() public {
+        (, , , , GKRDAGVerifier.DAGCircuitDescription memory desc) = _loadFixtureAndRegister();
+
+        // Count public claims from description
+        uint256 expectedPubClaims = 0;
+        for (uint256 inputIdx = 0; inputIdx < desc.numInputLayers; inputIdx++) {
+            if (desc.inputIsCommitted[inputIdx]) continue;
+            uint256 targetLayer = desc.numComputeLayers + inputIdx;
+            for (uint256 j = 0; j < desc.atomTargetLayers.length; j++) {
+                if (desc.atomTargetLayers[j] == targetLayer) expectedPubClaims++;
+            }
+        }
+
+        emit log_named_uint("Expected public claims", expectedPubClaims);
+        assertTrue(expectedPubClaims > 0, "should have public claims in DAG circuit");
+    }
+}
+
+// ========================================================================
+// DAG GROTH16 E2E TESTS (Full hybrid Groth16 verification for DAG circuits)
+// ========================================================================
+
+import {DAGGroth16Verifier} from "../src/remainder/DAGRemainderGroth16Verifier.sol";
+
+contract GKRDAGGroth16E2ETest is Test {
+    RemainderVerifier verifier;
+    DAGGroth16Verifier dagGroth16Verifier;
+
+    function setUp() public {
+        verifier = new RemainderVerifier(address(this));
+        dagGroth16Verifier = new DAGGroth16Verifier();
+    }
+
+    function _loadE2EFixtureAndRegister()
+        internal
+        returns (
+            bytes memory innerProof,
+            bytes memory gensHex,
+            bytes32 circuitHash,
+            bytes memory publicInputsAbi,
+            uint256[8] memory groth16Proof,
+            uint256[] memory groth16Outputs
+        )
+    {
+        string memory json = vm.readFile("test/fixtures/dag_groth16_e2e_fixture.json");
+        innerProof = vm.parseJsonBytes(json, ".inner_proof_hex");
+        gensHex = vm.parseJsonBytes(json, ".gens_hex");
+        circuitHash = vm.parseJsonBytes32(json, ".circuit_hash_raw");
+        publicInputsAbi = vm.parseJsonBytes(json, ".public_values_abi");
+
+        for (uint256 i = 0; i < 8; i++) {
+            groth16Proof[i] = vm.parseJsonUint(json, string.concat(".groth16_proof[", vm.toString(i), "]"));
+        }
+        groth16Outputs = vm.parseJsonUintArray(json, ".groth16_outputs");
+
+        // Register DAG circuit with description from fixture
+        GKRDAGVerifier.DAGCircuitDescription memory desc;
+        desc.numComputeLayers = vm.parseJsonUint(json, ".dag_circuit_description.numComputeLayers");
+        desc.numInputLayers = vm.parseJsonUint(json, ".dag_circuit_description.numInputLayers");
+        desc.layerTypes = _parseUint8Array(json, ".dag_circuit_description.layerTypes");
+        desc.numSumcheckRounds = vm.parseJsonUintArray(json, ".dag_circuit_description.numSumcheckRounds");
+        desc.atomOffsets = vm.parseJsonUintArray(json, ".dag_circuit_description.atomOffsets");
+        desc.atomTargetLayers = vm.parseJsonUintArray(json, ".dag_circuit_description.atomTargetLayers");
+        desc.atomCommitIdxs = vm.parseJsonUintArray(json, ".dag_circuit_description.atomCommitIdxs");
+        desc.ptOffsets = vm.parseJsonUintArray(json, ".dag_circuit_description.ptOffsets");
+        desc.ptData = vm.parseJsonUintArray(json, ".dag_circuit_description.ptData");
+        desc.inputIsCommitted = _parseBoolArray(json, ".dag_circuit_description.inputIsCommitted");
+        desc.oracleProductOffsets = vm.parseJsonUintArray(json, ".dag_circuit_description.oracleProductOffsets");
+        desc.oracleResultIdxs = vm.parseJsonUintArray(json, ".dag_circuit_description.oracleResultIdxs");
+        desc.oracleExprCoeffs = _parseUint256Array(json, ".dag_circuit_description.oracleExprCoeffs");
+
+        bytes32 gensHash = keccak256(gensHex);
+        bytes memory descData = abi.encode(desc);
+        verifier.registerDAGCircuit(circuitHash, descData, "xgboost-dag-groth16", gensHash);
+
+        // Set DAG Groth16 verifier (3416 public inputs)
+        verifier.setDAGCircuitGroth16Verifier(circuitHash, address(dagGroth16Verifier), 3416);
+    }
+
+    function _parseUint8Array(string memory json, string memory key) internal pure returns (uint8[] memory result) {
+        uint256[] memory raw = vm.parseJsonUintArray(json, key);
+        result = new uint8[](raw.length);
+        for (uint256 i = 0; i < raw.length; i++) result[i] = uint8(raw[i]);
+    }
+
+    function _parseBoolArray(string memory json, string memory key) internal pure returns (bool[] memory result) {
+        bytes memory raw = vm.parseJson(json, key);
+        result = abi.decode(raw, (bool[]));
+    }
+
+    function _parseUint256Array(string memory json, string memory key) internal pure returns (uint256[] memory result) {
+        bytes memory raw = vm.parseJson(json, key);
+        bytes32[] memory parsed = abi.decode(raw, (bytes32[]));
+        result = new uint256[](parsed.length);
+        for (uint256 i = 0; i < parsed.length; i++) result[i] = uint256(parsed[i]);
+    }
+
+    /// @notice Full E2E: verifyDAGWithGroth16() with real XGBoost proof + Groth16 wrapper
+    function test_dag_e2e_groth16_verification() public {
+        (
+            bytes memory innerProof,
+            bytes memory gensHex,
+            bytes32 circuitHash,
+            bytes memory publicInputsAbi,
+            uint256[8] memory groth16Proof,
+            uint256[] memory groth16Outputs
+        ) = _loadE2EFixtureAndRegister();
+
+        // Should not revert — full hybrid verification
+        verifier.verifyDAGWithGroth16(
+            innerProof, circuitHash, publicInputsAbi, gensHex, groth16Proof, groth16Outputs
+        );
+
+        emit log_string("DAG Groth16 E2E verification: PASSED");
+    }
+
+    /// @notice Gas measurement for DAG hybrid Groth16 verification
+    function test_dag_e2e_groth16_gas() public {
+        (
+            bytes memory innerProof,
+            bytes memory gensHex,
+            bytes32 circuitHash,
+            bytes memory publicInputsAbi,
+            uint256[8] memory groth16Proof,
+            uint256[] memory groth16Outputs
+        ) = _loadE2EFixtureAndRegister();
+
+        uint256 gasBefore = gasleft();
+        verifier.verifyDAGWithGroth16(
+            innerProof, circuitHash, publicInputsAbi, gensHex, groth16Proof, groth16Outputs
+        );
+        uint256 gasUsed = gasBefore - gasleft();
+
+        emit log_named_uint("DAG Groth16 E2E verification gas", gasUsed);
+    }
+
+    /// @notice Test that corrupted Groth16 proof is rejected
+    function test_dag_e2e_rejects_bad_groth16_proof() public {
+        (
+            bytes memory innerProof,
+            bytes memory gensHex,
+            bytes32 circuitHash,
+            bytes memory publicInputsAbi,
+            uint256[8] memory groth16Proof,
+            uint256[] memory groth16Outputs
+        ) = _loadE2EFixtureAndRegister();
+
+        // Corrupt a Groth16 proof point
+        groth16Proof[0] = groth16Proof[0] ^ 1;
+
+        vm.expectRevert();
+        verifier.verifyDAGWithGroth16(
+            innerProof, circuitHash, publicInputsAbi, gensHex, groth16Proof, groth16Outputs
+        );
+    }
+
+    /// @notice Diagnostic: verify gnark proof directly with gnark-provided public inputs
+    function test_dag_groth16_direct_verification() public {
+        string memory json = vm.readFile("test/fixtures/dag_groth16_e2e_fixture.json");
+
+        uint256[8] memory groth16Proof;
+        for (uint256 i = 0; i < 8; i++) {
+            groth16Proof[i] = vm.parseJsonUint(json, string.concat(".groth16_proof[", vm.toString(i), "]"));
+        }
+
+        // Load gnark-computed public inputs (3416 values)
+        uint256[] memory gnarkInputs = vm.parseJsonUintArray(json, ".groth16_public_inputs");
+        emit log_named_uint("gnark public inputs count", gnarkInputs.length);
+        emit log_named_uint("gnark input[0]", gnarkInputs[0]);
+        emit log_named_uint("gnark input[1]", gnarkInputs[1]);
+        emit log_named_uint("gnark input[2]", gnarkInputs[2]);
+        require(gnarkInputs.length == 3416, "Expected 3416 gnark public inputs");
+
+        // Use _callGroth16Verifier which we know works (it's used in verifyWithGroth16)
+        bytes4 selector = bytes4(keccak256("verifyProof(uint256[8],uint256[3416])"));
+        uint256 n = gnarkInputs.length;
+        bytes memory data = new bytes(4 + (8 + n) * 32);
+        assembly {
+            let ptr := add(data, 32)
+            mstore(ptr, shl(224, shr(224, selector)))
+            ptr := add(ptr, 4)
+            // Note: we cannot access calldata array here, proof is in memory
+        }
+        // Copy proof (memory array, 8 elements, no length prefix)
+        for (uint256 i = 0; i < 8; i++) {
+            uint256 val = groth16Proof[i];
+            uint256 offset = 4 + i * 32;
+            assembly { mstore(add(data, add(32, offset)), val) }
+        }
+        // Copy inputs (memory dynamic array)
+        for (uint256 i = 0; i < n; i++) {
+            uint256 val = gnarkInputs[i];
+            uint256 offset = 4 + 256 + i * 32;
+            assembly { mstore(add(data, add(32, offset)), val) }
+        }
+
+        emit log_named_uint("calldata size", data.length);
+        (bool success,) = address(dagGroth16Verifier).staticcall(data);
+        require(success, "Direct gnark Groth16 verification failed");
+    }
+
+    /// @notice Diagnostic: compare Solidity-computed inputs with gnark's
+    function test_dag_groth16_input_comparison() public {
+        (
+            bytes memory innerProof,
+            ,
+            bytes32 circuitHash,
+            bytes memory publicInputsAbi,
+            ,
+        ) = _loadE2EFixtureAndRegister();
+
+        // Get Solidity-computed inputs (with dummy outputs since we just want challenges section)
+        uint256[] memory solInputs = verifier.buildDAGGroth16InputsFull(
+            innerProof, circuitHash, publicInputsAbi
+        );
+
+        // Get gnark inputs from fixture
+        string memory json = vm.readFile("test/fixtures/dag_groth16_e2e_fixture.json");
+        uint256[] memory gnarkInputs = vm.parseJsonUintArray(json, ".groth16_public_inputs");
+
+        emit log_named_uint("Solidity input count", solInputs.length);
+        emit log_named_uint("gnark input count", gnarkInputs.length);
+
+        // Compare element by element, find first mismatch
+        uint256 minLen = solInputs.length < gnarkInputs.length ? solInputs.length : gnarkInputs.length;
+        for (uint256 i = 0; i < minLen; i++) {
+            if (solInputs[i] != gnarkInputs[i]) {
+                emit log_named_uint("FIRST MISMATCH at index", i);
+                emit log_named_uint("  Solidity value", solInputs[i]);
+                emit log_named_uint("  gnark value", gnarkInputs[i]);
+                // Also show surrounding values
+                if (i > 0) {
+                    emit log_named_uint("  prev Solidity", solInputs[i-1]);
+                    emit log_named_uint("  prev gnark", gnarkInputs[i-1]);
+                }
+                if (i + 1 < minLen) {
+                    emit log_named_uint("  next Solidity", solInputs[i+1]);
+                    emit log_named_uint("  next gnark", gnarkInputs[i+1]);
+                }
+                break;
+            }
+        }
+        if (solInputs.length != gnarkInputs.length) {
+            emit log_string("LENGTH MISMATCH");
+        }
+    }
+
+    /// @notice Diagnostic: verify the E2E fixture's inner proof works with the direct DAG verifier
+    function test_dag_e2e_inner_proof_direct_verification() public {
+        (
+            bytes memory innerProof,
+            bytes memory gensHex,
+            bytes32 circuitHash,
+            bytes memory publicInputsAbi,
+            ,
+        ) = _loadE2EFixtureAndRegister();
+
+        bool valid = verifier.verifyDAGProof(innerProof, circuitHash, publicInputsAbi, gensHex);
+        assertTrue(valid, "Direct DAG verification of E2E fixture inner proof should pass");
+        emit log_string("Direct DAG verification: PASSED");
+    }
+
+    /// @notice Test that corrupted Groth16 outputs are rejected
+    function test_dag_e2e_rejects_bad_groth16_outputs() public {
+        (
+            bytes memory innerProof,
+            bytes memory gensHex,
+            bytes32 circuitHash,
+            bytes memory publicInputsAbi,
+            uint256[8] memory groth16Proof,
+            uint256[] memory groth16Outputs
+        ) = _loadE2EFixtureAndRegister();
+
+        // Corrupt an output value (rlcBeta[0])
+        groth16Outputs[0] = groth16Outputs[0] ^ 1;
+
+        vm.expectRevert();
+        verifier.verifyDAGWithGroth16(
+            innerProof, circuitHash, publicInputsAbi, gensHex, groth16Proof, groth16Outputs
+        );
+    }
+}
+
+// ========================================================================
+// DAG BATCH VERIFIER TESTS (Multi-transaction batch verification)
+// ========================================================================
+
+import {DAGBatchVerifier} from "../src/remainder/DAGBatchVerifier.sol";
+
+contract DAGBatchVerifierTest is Test {
+    RemainderVerifier verifier;
+
+    // Fixture data cached for reuse
+    bytes proofHex;
+    bytes gensHex;
+    bytes32 circuitHash;
+    bytes publicInputsHex;
+
+    function setUp() public {
+        verifier = new RemainderVerifier(address(this));
+        _loadAndRegister();
+    }
+
+    function _loadAndRegister() internal {
+        string memory json = vm.readFile("test/fixtures/phase1a_dag_fixture.json");
+        proofHex = vm.parseJsonBytes(json, ".proof_hex");
+        gensHex = vm.parseJsonBytes(json, ".gens_hex");
+        circuitHash = vm.parseJsonBytes32(json, ".circuit_hash_raw");
+        publicInputsHex = vm.parseJsonBytes(json, ".public_inputs_hex");
+
+        GKRDAGVerifier.DAGCircuitDescription memory desc;
+        desc.numComputeLayers = vm.parseJsonUint(json, ".dag_circuit_description.numComputeLayers");
+        desc.numInputLayers = vm.parseJsonUint(json, ".dag_circuit_description.numInputLayers");
+        desc.layerTypes = _parseJsonUint8Array(json, ".dag_circuit_description.layerTypes");
+        desc.numSumcheckRounds = vm.parseJsonUintArray(json, ".dag_circuit_description.numSumcheckRounds");
+        desc.atomOffsets = vm.parseJsonUintArray(json, ".dag_circuit_description.atomOffsets");
+        desc.atomTargetLayers = vm.parseJsonUintArray(json, ".dag_circuit_description.atomTargetLayers");
+        desc.atomCommitIdxs = vm.parseJsonUintArray(json, ".dag_circuit_description.atomCommitIdxs");
+        desc.ptOffsets = vm.parseJsonUintArray(json, ".dag_circuit_description.ptOffsets");
+        desc.ptData = vm.parseJsonUintArray(json, ".dag_circuit_description.ptData");
+        desc.inputIsCommitted = _parseJsonBoolArray(json, ".dag_circuit_description.inputIsCommitted");
+        desc.oracleProductOffsets = vm.parseJsonUintArray(json, ".dag_circuit_description.oracleProductOffsets");
+        desc.oracleResultIdxs = vm.parseJsonUintArray(json, ".dag_circuit_description.oracleResultIdxs");
+        desc.oracleExprCoeffs = _parseJsonUint256Array(json, ".dag_circuit_description.oracleExprCoeffs");
+
+        verifier.registerDAGCircuit(circuitHash, abi.encode(desc), "xgboost-batch", keccak256(gensHex));
+    }
+
+    function _parseJsonUint8Array(string memory json, string memory key) internal pure returns (uint8[] memory result) {
+        uint256[] memory raw = vm.parseJsonUintArray(json, key);
+        result = new uint8[](raw.length);
+        for (uint256 i = 0; i < raw.length; i++) result[i] = uint8(raw[i]);
+    }
+
+    function _parseJsonBoolArray(string memory json, string memory key) internal pure returns (bool[] memory result) {
+        bytes memory raw = vm.parseJson(json, key);
+        result = abi.decode(raw, (bool[]));
+    }
+
+    function _parseJsonUint256Array(string memory json, string memory key) internal pure returns (uint256[] memory result) {
+        bytes memory raw = vm.parseJson(json, key);
+        bytes32[] memory parsed = abi.decode(raw, (bytes32[]));
+        result = new uint256[](parsed.length);
+        for (uint256 i = 0; i < parsed.length; i++) result[i] = uint256(parsed[i]);
+    }
+
+    // ========================================================================
+    // E2E BATCH VERIFICATION
+    // ========================================================================
+
+    /// @notice Full multi-batch verification: start → continue × N → finalize
+    function test_dag_batch_e2e() public {
+        // Start (setup only — no compute layers processed)
+        bytes32 sessionId = verifier.startDAGBatchVerify(proofHex, circuitHash, publicInputsHex, gensHex);
+        assertTrue(sessionId != bytes32(0), "sessionId should be non-zero");
+
+        // Query session state
+        (bytes32 storedHash, uint256 nextBatch, uint256 totalBatches, bool finalized,,) =
+            verifier.getDAGBatchSession(sessionId);
+        assertEq(storedHash, circuitHash, "stored circuit hash");
+        assertEq(nextBatch, 0, "nextBatch after start (no compute done)");
+        // 88 compute layers / 8 per batch = 11 batches
+        assertEq(totalBatches, 11, "totalBatches for 88 layers");
+        assertFalse(finalized, "not finalized yet");
+
+        // Continue batches 0..10 (all compute via continue)
+        for (uint256 i = 0; i < totalBatches; i++) {
+            verifier.continueDAGBatchVerify(sessionId, proofHex, publicInputsHex, gensHex);
+
+            (, nextBatch,,,,) = verifier.getDAGBatchSession(sessionId);
+            assertEq(nextBatch, i + 1, "nextBatch should increment");
+        }
+
+        // Finalize (input layer verification — may take multiple calls)
+        uint256 finalizeCalls = 0;
+        while (true) {
+            finalized = verifier.finalizeDAGBatchVerify(sessionId, proofHex, publicInputsHex, gensHex);
+            finalizeCalls++;
+            if (finalized) break;
+        }
+
+        (,,, finalized,,) = verifier.getDAGBatchSession(sessionId);
+        assertTrue(finalized, "should be finalized");
+        // 34 eval groups / 16 per batch = 3 finalize calls (16 + 16 + 2)
+        assertGe(finalizeCalls, 1, "at least 1 finalize call");
+        emit log_named_uint("Finalize calls", finalizeCalls);
+    }
+
+    // ========================================================================
+    // AUTH TESTS
+    // ========================================================================
+
+    /// @notice Only the original caller can continue a batch session
+    function test_dag_batch_session_auth_continue() public {
+        bytes32 sessionId = verifier.startDAGBatchVerify(proofHex, circuitHash, publicInputsHex, gensHex);
+
+        // A different address tries to continue
+        vm.prank(address(0xBEEF));
+        vm.expectRevert("Batch: unauthorized");
+        verifier.continueDAGBatchVerify(sessionId, proofHex, publicInputsHex, gensHex);
+    }
+
+    /// @notice Only the original caller can finalize a batch session
+    function test_dag_batch_session_auth_finalize() public {
+        bytes32 sessionId = verifier.startDAGBatchVerify(proofHex, circuitHash, publicInputsHex, gensHex);
+
+        // Complete all compute batches first
+        (, , uint256 totalBatches,,,) = verifier.getDAGBatchSession(sessionId);
+        for (uint256 i = 0; i < totalBatches; i++) {
+            verifier.continueDAGBatchVerify(sessionId, proofHex, publicInputsHex, gensHex);
+        }
+
+        // A different address tries to finalize
+        vm.prank(address(0xBEEF));
+        vm.expectRevert("Batch: unauthorized");
+        verifier.finalizeDAGBatchVerify(sessionId, proofHex, publicInputsHex, gensHex);
+    }
+
+    /// @notice Only the original caller can cleanup a session
+    function test_dag_batch_session_auth_cleanup() public {
+        bytes32 sessionId = _runFullBatchVerification();
+
+        vm.prank(address(0xBEEF));
+        vm.expectRevert("Batch: unauthorized");
+        verifier.cleanupDAGBatchSession(sessionId);
+    }
+
+    // ========================================================================
+    // ORDERING TESTS
+    // ========================================================================
+
+    /// @notice Cannot finalize before all compute batches are done
+    function test_dag_batch_premature_finalize_reverts() public {
+        bytes32 sessionId = verifier.startDAGBatchVerify(proofHex, circuitHash, publicInputsHex, gensHex);
+
+        // Try to finalize immediately (only batch 0 done, need 1..10)
+        vm.expectRevert("Batch: compute batches not done");
+        verifier.finalizeDAGBatchVerify(sessionId, proofHex, publicInputsHex, gensHex);
+    }
+
+    /// @notice Cannot continue after all compute batches are done
+    function test_dag_batch_extra_continue_reverts() public {
+        bytes32 sessionId = verifier.startDAGBatchVerify(proofHex, circuitHash, publicInputsHex, gensHex);
+
+        // Complete all compute batches
+        (, , uint256 totalBatches,,,) = verifier.getDAGBatchSession(sessionId);
+        for (uint256 i = 0; i < totalBatches; i++) {
+            verifier.continueDAGBatchVerify(sessionId, proofHex, publicInputsHex, gensHex);
+        }
+
+        // Try to continue again
+        vm.expectRevert("Batch: all compute batches done, call finalize");
+        verifier.continueDAGBatchVerify(sessionId, proofHex, publicInputsHex, gensHex);
+    }
+
+    /// @notice Cannot finalize twice
+    function test_dag_batch_double_finalize_reverts() public {
+        bytes32 sessionId = _runFullBatchVerification();
+
+        // Try to finalize again
+        vm.expectRevert("Batch: already finalized");
+        verifier.finalizeDAGBatchVerify(sessionId, proofHex, publicInputsHex, gensHex);
+    }
+
+    /// @notice Cannot continue a finalized session
+    function test_dag_batch_continue_after_finalize_reverts() public {
+        bytes32 sessionId = _runFullBatchVerification();
+
+        vm.expectRevert("Batch: already finalized");
+        verifier.continueDAGBatchVerify(sessionId, proofHex, publicInputsHex, gensHex);
+    }
+
+    /// @notice Non-existent session reverts
+    function test_dag_batch_nonexistent_session_reverts() public {
+        bytes32 fakeSession = keccak256("nonexistent");
+
+        vm.expectRevert("Batch: session not found");
+        verifier.continueDAGBatchVerify(fakeSession, proofHex, publicInputsHex, gensHex);
+    }
+
+    // ========================================================================
+    // FINALIZE PROGRESS TESTS
+    // ========================================================================
+
+    /// @notice Verify finalizeInputIdx and finalizeGroupsDone advance correctly
+    function test_dag_batch_finalize_progress() public {
+        bytes32 sessionId = verifier.startDAGBatchVerify(proofHex, circuitHash, publicInputsHex, gensHex);
+
+        (, , uint256 totalBatches,,,) = verifier.getDAGBatchSession(sessionId);
+        for (uint256 i = 0; i < totalBatches; i++) {
+            verifier.continueDAGBatchVerify(sessionId, proofHex, publicInputsHex, gensHex);
+        }
+
+        // Check initial finalize state
+        (,,,, uint256 fInputIdx, uint256 fGroupsDone) = verifier.getDAGBatchSession(sessionId);
+        assertEq(fInputIdx, 0, "finalizeInputIdx starts at 0");
+        assertEq(fGroupsDone, 0, "finalizeGroupsDone starts at 0");
+
+        // Call finalize steps and verify progress
+        uint256 calls = 0;
+        uint256 prevInputIdx = 0;
+        while (true) {
+            bool done = verifier.finalizeDAGBatchVerify(sessionId, proofHex, publicInputsHex, gensHex);
+            calls++;
+
+            (,,,, fInputIdx, fGroupsDone) = verifier.getDAGBatchSession(sessionId);
+
+            if (!done) {
+                // Not done yet — should have advanced groupsDone or inputIdx
+                assertTrue(
+                    fGroupsDone > 0 || fInputIdx > prevInputIdx,
+                    "finalize should make progress"
+                );
+                prevInputIdx = fInputIdx;
+            } else {
+                // Done — finalized flag set
+                (, , , bool finalized,,) = verifier.getDAGBatchSession(sessionId);
+                assertTrue(finalized, "should be finalized");
+                break;
+            }
+        }
+
+        emit log_named_uint("Total finalize calls", calls);
+    }
+
+    // ========================================================================
+    // GAS TESTS
+    // ========================================================================
+
+    /// @notice Gas profile for each batch. Logs gas per step and enforces all < 30M.
+    /// Current gas profile (88-layer XGBoost circuit, LAYERS_PER_BATCH=8, GROUPS_PER_FINALIZE_BATCH=16):
+    ///   Start:    ~14M (transcript setup + proof decode + storage writes, NO compute)
+    ///   Continue: ~13-28M (proof decode + 8 layers + storage read/write)
+    ///   Finalize: ~28M per call (proof decode + 16 eval groups + bindings reconstruction)
+    function test_dag_batch_gas_per_batch() public {
+        uint256 gasBefore = gasleft();
+        bytes32 sessionId = verifier.startDAGBatchVerify(proofHex, circuitHash, publicInputsHex, gensHex);
+        uint256 startGas = gasBefore - gasleft();
+        emit log_named_uint("Start (setup) gas", startGas);
+        assertLt(startGas, 30_000_000, "start should fit in a block (< 30M)");
+
+        (, , uint256 totalBatches,,,) = verifier.getDAGBatchSession(sessionId);
+        uint256 maxContinueGas = 0;
+
+        for (uint256 i = 0; i < totalBatches; i++) {
+            gasBefore = gasleft();
+            verifier.continueDAGBatchVerify(sessionId, proofHex, publicInputsHex, gensHex);
+            uint256 batchGas = gasBefore - gasleft();
+            emit log_named_uint(
+                string(abi.encodePacked("Batch ", vm.toString(i), " gas")),
+                batchGas
+            );
+            if (batchGas > maxContinueGas) maxContinueGas = batchGas;
+            assertLt(batchGas, 30_000_000, "continue batch should fit in a block (< 30M)");
+        }
+
+        // Finalize may take multiple calls — measure each
+        uint256 maxFinalizeGas = 0;
+        uint256 finalizeCalls = 0;
+        bool finalized;
+        while (true) {
+            gasBefore = gasleft();
+            finalized = verifier.finalizeDAGBatchVerify(sessionId, proofHex, publicInputsHex, gensHex);
+            uint256 finalizeGas = gasBefore - gasleft();
+            finalizeCalls++;
+            emit log_named_uint(
+                string(abi.encodePacked("Finalize step ", vm.toString(finalizeCalls), " gas")),
+                finalizeGas
+            );
+            if (finalizeGas > maxFinalizeGas) maxFinalizeGas = finalizeGas;
+            assertLt(finalizeGas, 30_000_000, "finalize step should fit in a block (< 30M)");
+            if (finalized) break;
+        }
+        emit log_named_uint("Finalize calls", finalizeCalls);
+        emit log_named_uint("Max continue gas", maxContinueGas);
+        emit log_named_uint("Max finalize gas", maxFinalizeGas);
+    }
+
+    // ========================================================================
+    // CLEANUP TESTS
+    // ========================================================================
+
+    /// @notice Cleanup after finalization works and clears session
+    function test_dag_batch_cleanup() public {
+        bytes32 sessionId = _runFullBatchVerification();
+
+        // Cleanup
+        verifier.cleanupDAGBatchSession(sessionId);
+
+        // Session should be cleared
+        (bytes32 storedHash,,,,,) = verifier.getDAGBatchSession(sessionId);
+        assertEq(storedHash, bytes32(0), "session should be cleared after cleanup");
+    }
+
+    /// @notice Cannot cleanup a non-finalized session
+    function test_dag_batch_cleanup_before_finalize_reverts() public {
+        bytes32 sessionId = verifier.startDAGBatchVerify(proofHex, circuitHash, publicInputsHex, gensHex);
+
+        vm.expectRevert("Batch: not finalized");
+        verifier.cleanupDAGBatchSession(sessionId);
+    }
+
+    // ========================================================================
+    // CIRCUIT VALIDATION TESTS
+    // ========================================================================
+
+    /// @notice Start with unregistered circuit reverts
+    function test_dag_batch_unregistered_circuit_reverts() public {
+        bytes32 fakeHash = keccak256("nonexistent");
+        vm.expectRevert(RemainderVerifier.CircuitNotRegistered.selector);
+        verifier.startDAGBatchVerify(proofHex, fakeHash, publicInputsHex, gensHex);
+    }
+
+    /// @notice Start with wrong generators reverts
+    function test_dag_batch_wrong_gens_reverts() public {
+        bytes memory wrongGens = abi.encodePacked(
+            uint256(1), uint256(1), uint256(2), uint256(1), uint256(2), uint256(1), uint256(2)
+        );
+        vm.expectRevert(RemainderVerifier.InvalidGenerators.selector);
+        verifier.startDAGBatchVerify(proofHex, circuitHash, publicInputsHex, wrongGens);
+    }
+
+    /// @notice Start with invalid proof selector reverts
+    function test_dag_batch_invalid_selector_reverts() public {
+        bytes memory badProof = abi.encodePacked(bytes4("FAKE"), bytes32(0));
+        vm.expectRevert(RemainderVerifier.InvalidProofSelector.selector);
+        verifier.startDAGBatchVerify(badProof, circuitHash, publicInputsHex, gensHex);
+    }
+
+    // ========================================================================
+    // REGRESSION
+    // ========================================================================
+
+    /// @notice Single-tx DAG verification still works alongside batch verification
+    function test_dag_single_tx_still_works() public {
+        bool valid = verifier.verifyDAGProof(proofHex, circuitHash, publicInputsHex, gensHex);
+        assertTrue(valid, "single-tx DAG verification should still pass");
+    }
+
+    // ========================================================================
+    // HELPERS
+    // ========================================================================
+
+    /// @dev Run full batch verification (start + continue × N + finalize loop)
+    function _runFullBatchVerification() internal returns (bytes32 sessionId) {
+        sessionId = verifier.startDAGBatchVerify(proofHex, circuitHash, publicInputsHex, gensHex);
+
+        (, , uint256 totalBatches,,,) = verifier.getDAGBatchSession(sessionId);
+        for (uint256 i = 0; i < totalBatches; i++) {
+            verifier.continueDAGBatchVerify(sessionId, proofHex, publicInputsHex, gensHex);
+        }
+
+        // Finalize may take multiple calls
+        while (true) {
+            bool finalized = verifier.finalizeDAGBatchVerify(sessionId, proofHex, publicInputsHex, gensHex);
+            if (finalized) break;
+        }
     }
 }

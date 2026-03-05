@@ -7,11 +7,12 @@ import (
 // CircuitConfig defines the circuit dimensions for an N-layer GKR circuit.
 // Supports per-layer num_vars (variable binding counts across layers).
 type CircuitConfig struct {
-	NumLayers    int   // number of computation layers
-	LayerNumVars []int // per-layer num_vars (binding count); len = NumLayers
-	LayerDegrees []int // degree of each layer; len = NumLayers
-	OutputNumVars int  // output challenge count (0 for scalar output)
-	PubInputCount int  // number of public input values (for MLE eval)
+	NumLayers     int   // number of computation layers
+	LayerNumVars  []int // per-layer num_vars (binding count); len = NumLayers
+	LayerDegrees  []int // degree of each layer; len = NumLayers
+	OutputNumVars int   // output challenge count (0 for scalar output)
+	PubInputCount int   // number of public input values (for MLE eval)
+	InputNumVars  int   // num_vars for committed input layer (determines Hyrax tensor split)
 }
 
 // HasPoP returns true if the given layer has a ProofOfProduct challenge (degree > 2).
@@ -19,21 +20,15 @@ func (c CircuitConfig) HasPoP(layerIdx int) bool {
 	return c.LayerDegrees[layerIdx] > 2
 }
 
-// LastLayerNumVars returns the num_vars of the last computation layer,
-// used for the Hyrax tensor split.
-func (c CircuitConfig) LastLayerNumVars() int {
-	return c.LayerNumVars[c.NumLayers-1]
-}
-
-// LeftDims returns floor(LastLayerNumVars/2) — the number of left-half bindings for
+// LeftDims returns floor(InputNumVars/2) — the number of left-half bindings for
 // the Hyrax input layer matrix split.
 func (c CircuitConfig) LeftDims() int {
-	return c.LastLayerNumVars() / 2
+	return c.InputNumVars / 2
 }
 
-// RightDims returns ceil(LastLayerNumVars/2) — the number of right-half bindings.
+// RightDims returns ceil(InputNumVars/2) — the number of right-half bindings.
 func (c CircuitConfig) RightDims() int {
-	return (c.LastLayerNumVars() + 1) / 2
+	return (c.InputNumVars + 1) / 2
 }
 
 // NumRTensorElems returns 2^RightDims — the size of the R-tensor and input PODP z_vector.
@@ -85,26 +80,28 @@ func (c CircuitConfig) ExpectedPublicInputCount() int {
 	if c.NumLayers > 1 {
 		total += c.NumLayers - 1
 	}
-	// mleEvalPoint(M) where M = log2(PubInputCount)
-	total += c.MleEvalNumVars()
-	// rlcBeta(L) + zDotJStar(L) + lTensor(2*2^floor(nv_last/2)) + zDotR(1) + mleEval(1)
+	// mleEvalPoint(M) + inputClaimPoint(InputNumVars)
+	total += c.MleEvalNumVars() + c.InputNumVars
+	// rlcBeta(L) + zDotJStar(L) + lTensor(2*2^floor(input_nv/2)) + zDotR(1) + mleEval(1)
 	total += c.NumLayers + c.NumLayers + c.NumLTensorElems() + 2
 	return total
 }
 
 // SmallConfig returns the config for the toy circuit (num_vars=1, 2 public inputs).
+// InputNumVars matches per-shred num_vars (shred selector is handled by RLC, not dimensions).
 func SmallConfig() CircuitConfig {
 	return CircuitConfig{
 		NumLayers: 2, LayerNumVars: []int{1, 1}, LayerDegrees: []int{2, 3},
-		OutputNumVars: 1, PubInputCount: 2,
+		OutputNumVars: 1, PubInputCount: 2, InputNumVars: 1,
 	}
 }
 
-// MediumConfig returns the config for medium XGBoost models (num_vars=4, 16 public inputs).
+// MediumConfig returns the config for medium circuits (num_vars=4, 16 public inputs).
+// InputNumVars matches per-shred num_vars (shred selector is handled by RLC, not dimensions).
 func MediumConfig() CircuitConfig {
 	return CircuitConfig{
 		NumLayers: 2, LayerNumVars: []int{4, 4}, LayerDegrees: []int{2, 3},
-		OutputNumVars: 4, PubInputCount: 16,
+		OutputNumVars: 4, PubInputCount: 16, InputNumVars: 4,
 	}
 }
 
@@ -148,8 +145,8 @@ type LayerPublic struct {
 //	circuitHash[2] | pubInputs[P] | outputChallenges[O] | claimAggCoeff |
 //	per-layer{ bindings[nv_i], rhos[nv_i+1], gammas[nv_i], podpChallenge, popChallenge? } |
 //	inputRLCCoeffs[2] | inputPODPChallenge | interLayerCoeffs[L-1] |
-//	mleEvalPoint[M] |
-//	rlcBeta[L] | zDotJStar[L] | lTensor[2*2^floor(nv_last/2)] | zDotR | mleEval
+//	mleEvalPoint[M] | inputClaimPoint[InputNumVars] |
+//	rlcBeta[L] | zDotJStar[L] | lTensor[2*2^floor(input_nv/2)] | zDotR | mleEval
 type RemainderWrapperCircuit struct {
 	// Config (not a circuit variable, used at compile time only)
 	Config CircuitConfig `gnark:"-"`
@@ -172,6 +169,9 @@ type RemainderWrapperCircuit struct {
 
 	// MLE evaluation point (log2(PubInputCount) values, from GKR claim propagation)
 	MleEvalPoint []frontend.Variable `gnark:",public"`
+
+	// Hyrax input claim point (InputNumVars values, for L/R tensor split)
+	InputClaimPoint []frontend.Variable `gnark:",public"`
 
 	// === Public outputs (gnark -> on-chain, used in EC equations) ===
 	RlcBeta   []frontend.Variable `gnark:",public"` // one per layer
@@ -212,12 +212,11 @@ func (c *RemainderWrapperCircuit) Define(api frontend.API) error {
 	}
 
 	// Input layer: Hyrax matrix split for L-tensor and R-tensor
-	// Uses LAST layer's bindings for L/R tensor split
-	lastLayer := numLayers - 1
+	// Uses InputClaimPoint for L/R tensor split (from GKR claim propagation)
 	leftDims := c.Config.LeftDims()
 
 	// L-tensor: for each shred, scale tensor(left_bindings) by the RLC coefficient
-	leftBindings := c.Layers[lastLayer].Bindings[:leftDims]
+	leftBindings := c.InputClaimPoint[:leftDims]
 	lPerShred := computeTensorProduct(api, leftBindings)
 	lPerShredLen := len(lPerShred)
 	for i := 0; i < lPerShredLen; i++ {
@@ -228,7 +227,7 @@ func (c *RemainderWrapperCircuit) Define(api frontend.API) error {
 	}
 
 	// R-tensor from right-half bindings -> 2^rightDims elements
-	rightBindings := c.Layers[lastLayer].Bindings[leftDims:]
+	rightBindings := c.InputClaimPoint[leftDims:]
 	rTensor := computeTensorProduct(api, rightBindings)
 	zDotR := innerProduct(api, c.InputPODP.ZVector, rTensor)
 	api.AssertIsEqual(zDotR, c.ZDotR)
@@ -276,6 +275,7 @@ func AllocateCircuit(config CircuitConfig) *RemainderWrapperCircuit {
 		Layers:           layers,
 		InterLayerCoeffs: interLayerCoeffs,
 		MleEvalPoint:     make([]frontend.Variable, config.MleEvalNumVars()),
+		InputClaimPoint:  make([]frontend.Variable, config.InputNumVars),
 		RlcBeta:          make([]frontend.Variable, nLayers),
 		ZDotJStar:        make([]frontend.Variable, nLayers),
 		LTensor:          make([]frontend.Variable, config.NumLTensorElems()),

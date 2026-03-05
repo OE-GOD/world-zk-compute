@@ -45,6 +45,8 @@ library GKRHybridVerifier {
         uint256[] interLayerCoeffs; // N-1 values (between layers)
         uint256[] inputRlcCoeffs; // 2 RLC coefficients
         uint256 inputPodpChallenge; // Input PODP challenge
+        uint256[] mleEvalPoint; // MLE evaluation point (from GKR claim propagation to input layer)
+        uint256[] inputClaimPoint; // Input layer claim point (for Hyrax L/R tensor split)
     }
 
     /// @notice Groth16 public outputs (computed off-chain, verified by Groth16)
@@ -129,6 +131,15 @@ library GKRHybridVerifier {
             }
         }
 
+        // MLE eval point: the public input layer is fed by the first compute layer (closest
+        // to output), so its claim point = layers[0].bindings. For a 2-layer circuit:
+        // output → layer[0](diff=product-expected) → layer[1](product=a*b) → committed input
+        // The public input 'expected' appears in layer[0], so its claim uses layer[0].bindings.
+        challenges.mleEvalPoint = challenges.layers[0].bindings;
+        // Input claim point: the committed input layer is fed by the last compute layer,
+        // so its PODP evaluation point = layers[numLayers-1].bindings.
+        challenges.inputClaimPoint = challenges.layers[numLayers - 1].bindings;
+
         // Step 4: Input layer — squeeze RLC coefficients
         challenges.inputRlcCoeffs = _squeezeMultiple(sponge, 2);
 
@@ -202,13 +213,13 @@ library GKRHybridVerifier {
         if (_hasNonCommittedInputLayer(circuit) && pubInputs.length > 0) {
             // Defense-in-depth: verify on-chain MLE evaluation matches Groth16's mleEval.
             // The gnark tensor product reverses bit ordering vs Solidity's evaluateMLEFromData,
-            // so we reverse the bindings array before evaluating.
-            uint256 bLen = challenges.layers[0].bindings.length;
-            uint256[] memory revBindings = new uint256[](bLen);
+            // so we reverse the mleEvalPoint array before evaluating.
+            uint256 bLen = challenges.mleEvalPoint.length;
+            uint256[] memory revPoint = new uint256[](bLen);
             for (uint256 i = 0; i < bLen; i++) {
-                revBindings[i] = challenges.layers[0].bindings[bLen - 1 - i];
+                revPoint[i] = challenges.mleEvalPoint[bLen - 1 - i];
             }
-            uint256 onChainMle = GKRVerifier.evaluateMLEFromData(pubInputs, revBindings);
+            uint256 onChainMle = GKRVerifier.evaluateMLEFromData(pubInputs, revPoint);
             require(outputs.mleEval == onChainMle, "Hybrid: mleEval mismatch");
 
             // Verify the MLE evaluation matches the final claim commitment
@@ -547,6 +558,8 @@ library GKRHybridVerifier {
         }
         total += 2 + 1; // inputRlcCoeffs + inputPodpChallenge
         total += challenges.interLayerCoeffs.length;
+        total += challenges.mleEvalPoint.length; // mleEvalPoint(M)
+        total += challenges.inputClaimPoint.length; // inputClaimPoint(InputNumVars)
         total += groth16Outputs.rlcBeta.length + groth16Outputs.zDotJStar.length
             + groth16Outputs.lTensor.length + 2; // +2 for zDotR + mleEval
 
@@ -595,6 +608,14 @@ library GKRHybridVerifier {
         // Inter-layer coefficients
         for (uint256 i = 0; i < challenges.interLayerCoeffs.length; i++) {
             inputs[idx++] = challenges.interLayerCoeffs[i];
+        }
+        // MLE evaluation point
+        for (uint256 i = 0; i < challenges.mleEvalPoint.length; i++) {
+            inputs[idx++] = challenges.mleEvalPoint[i];
+        }
+        // Input claim point (for Hyrax L/R tensor split)
+        for (uint256 i = 0; i < challenges.inputClaimPoint.length; i++) {
+            inputs[idx++] = challenges.inputClaimPoint[i];
         }
 
         // Groth16 outputs: rlcBeta (one per layer)

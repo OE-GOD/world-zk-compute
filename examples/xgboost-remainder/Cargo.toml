@@ -84,3 +84,7 @@ path = "src/bin/gen_transcript_trace.rs"
 name = "gen_groth16_witness"
 path = "src/bin/gen_groth16_witness.rs"
 
+[[bin]]
+name = "gen_dag_groth16_witness"
+path = "src/bin/gen_dag_groth16_witness.rs"
+

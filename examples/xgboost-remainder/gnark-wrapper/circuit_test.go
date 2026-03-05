@@ -122,6 +122,7 @@ func TestMediumCircuitRejectsInvalidWitness(t *testing.T) {
 func makeDummyAssignment(config CircuitConfig) *RemainderWrapperCircuit {
 	numPub := config.PubInputCount
 	nLayers := config.NumLayers
+	inputNumVars := config.InputNumVars
 	leftDims := config.LeftDims()
 	rightDims := config.RightDims()
 	numRTensor := 1 << rightDims
@@ -234,9 +235,14 @@ func makeDummyAssignment(config CircuitConfig) *RemainderWrapperCircuit {
 		zDotJStars[i] = nativeInnerProduct(layersData[i].zVector, jStar)
 	}
 
-	// L-tensor: uses LAST layer's bindings
-	lastBindings := layersData[nLayers-1].bindings
-	leftBindings := lastBindings[:leftDims]
+	// Input claim point: generate independent random values of correct length
+	inputClaimPoint := make([]*big.Int, inputNumVars)
+	for i := 0; i < inputNumVars; i++ {
+		inputClaimPoint[i] = big.NewInt(int64(31 + i*13))
+	}
+
+	// L-tensor: uses input claim point bindings
+	leftBindings := inputClaimPoint[:leftDims]
 	lPerShred := nativeComputeTensorProduct(leftBindings) // 2^leftDims elements
 	lTensor := make([]*big.Int, numLTensor)
 	lPerShredLen := len(lPerShred)
@@ -245,8 +251,8 @@ func makeDummyAssignment(config CircuitConfig) *RemainderWrapperCircuit {
 		lTensor[lPerShredLen+i] = mulMod(inputRLCCoeff1, lPerShred[i])
 	}
 
-	// R-tensor from right-half bindings of LAST layer
-	rightBindings := lastBindings[leftDims:]
+	// R-tensor from right-half bindings of input claim point
+	rightBindings := inputClaimPoint[leftDims:]
 	rTensor := nativeComputeTensorProduct(rightBindings)
 
 	// <input_z, R_tensor>
@@ -300,6 +306,11 @@ func makeDummyAssignment(config CircuitConfig) *RemainderWrapperCircuit {
 	// MLE eval point
 	for i := 0; i < mleNumVars; i++ {
 		assignment.MleEvalPoint[i] = mleEvalPoint[i]
+	}
+
+	// Input claim point
+	for i := 0; i < inputNumVars; i++ {
+		assignment.InputClaimPoint[i] = inputClaimPoint[i]
 	}
 
 	// Public outputs
@@ -444,6 +455,7 @@ func TestVariableNumVarsCircuitCompiles(t *testing.T) {
 		LayerDegrees:  []int{2, 2, 3},
 		OutputNumVars: 2,
 		PubInputCount: 4,
+		InputNumVars:  1,
 	}
 	circuit := AllocateCircuit(config)
 	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, circuit)
@@ -461,6 +473,7 @@ func TestVariableNumVarsCircuitProves(t *testing.T) {
 		LayerDegrees:  []int{2, 2, 3},
 		OutputNumVars: 2,
 		PubInputCount: 4,
+		InputNumVars:  1,
 	}
 	circuit := AllocateCircuit(config)
 	assignment := makeDummyAssignment(config)
@@ -482,6 +495,7 @@ func TestVariableNumVarsCircuitRejectsInvalidWitness(t *testing.T) {
 		LayerDegrees:  []int{2, 2, 3},
 		OutputNumVars: 2,
 		PubInputCount: 4,
+		InputNumVars:  1,
 	}
 	circuit := AllocateCircuit(config)
 	assignment := makeDummyAssignment(config)

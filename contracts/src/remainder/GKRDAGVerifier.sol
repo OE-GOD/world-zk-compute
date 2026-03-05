@@ -119,6 +119,111 @@ library GKRDAGVerifier {
         }
     }
 
+    /// @notice Verify a batch of compute layers (for multi-tx verification).
+    /// @dev Like verifyComputeLayers but processes only [startLayer, endLayer) and uses
+    ///      pre-populated bindings from prior batches.
+    /// @param proof Complete GKR proof (re-supplied via calldata each batch)
+    /// @param desc DAG circuit description
+    /// @param gens Pedersen generators
+    /// @param sponge Transcript state (loaded from storage for batches > 0)
+    /// @param allBindings Pre-populated bindings array (prior batch bindings already filled)
+    /// @param outputChallenges Output challenges (squeezed once in batch 0)
+    /// @param outputEval Output commitment point (from batch 0)
+    /// @param startLayer First compute layer to process (inclusive)
+    /// @param endLayer Last compute layer to process (exclusive)
+    function verifyComputeLayersBatch(
+        GKRVerifier.GKRProof memory proof,
+        DAGCircuitDescription memory desc,
+        HyraxVerifier.PedersenGens memory gens,
+        PoseidonSponge.Sponge memory sponge,
+        uint256[][] memory allBindings,
+        uint256[] memory outputChallenges,
+        HyraxVerifier.G1Point memory outputEval,
+        uint256 startLayer,
+        uint256 endLayer
+    ) internal view {
+        // Build a minimal VerifyContext for _processOneLayer
+        VerifyContext memory ctx;
+        ctx.proof = proof;
+        ctx.desc = desc;
+        ctx.gens = gens;
+        ctx.allBindings = allBindings;
+        ctx.outputChallenges = outputChallenges;
+        ctx.outputEval = outputEval;
+
+        for (uint256 i = startLayer; i < endLayer; i++) {
+            ctx.allBindings[i] = _processOneLayer(i, ctx, sponge);
+        }
+    }
+
+    /// @notice Collect claim points for atoms targeting a specific input layer.
+    /// @param targetLayer The target layer index (numComputeLayers + inputIdx)
+    /// @param desc DAG circuit description
+    /// @param allBindings All bindings from compute layer verification
+    /// @return claimPoints Array of resolved claim points
+    function collectClaimPoints(
+        uint256 targetLayer,
+        DAGCircuitDescription memory desc,
+        uint256[][] memory allBindings
+    ) internal pure returns (uint256[][] memory claimPoints) {
+        uint256 numClaims = _countClaimsFor(targetLayer, desc);
+        claimPoints = new uint256[][](numClaims);
+        uint256 cIdx = 0;
+
+        for (uint256 j = 0; j < desc.numComputeLayers; j++) {
+            uint256 atomStart = desc.atomOffsets[j];
+            uint256 atomEnd = desc.atomOffsets[j + 1];
+            for (uint256 a = atomStart; a < atomEnd; a++) {
+                if (desc.atomTargetLayers[a] == targetLayer) {
+                    claimPoints[cIdx] = _resolvePoint(a, allBindings[j], desc);
+                    cIdx++;
+                }
+            }
+        }
+    }
+
+    /// @notice Verify a batch of committed input eval groups [startGroup, endGroup).
+    /// @dev Sorts claims and groups them (deterministic — same result each call), then
+    ///      only verifies groups in the [startGroup, endGroup) range.
+    ///      Sponge must be positioned at the start of group `startGroup` on entry.
+    /// @param dagProof Input layer proof (commitment rows + PODP proofs)
+    /// @param claimPoints All claim points for this input layer
+    /// @param sponge Transcript sponge (threaded through groups sequentially)
+    /// @param gens Pedersen generators
+    /// @param startGroup First group to verify (inclusive)
+    /// @param endGroup Last group to verify (exclusive)
+    function verifyCommittedInputGroupsBatch(
+        DAGInputLayerProof memory dagProof,
+        uint256[][] memory claimPoints,
+        PoseidonSponge.Sponge memory sponge,
+        HyraxVerifier.PedersenGens memory gens,
+        uint256 startGroup,
+        uint256 endGroup
+    ) internal view {
+        uint256 numRows = dagProof.commitmentRows.length;
+        uint256 n = claimPoints[0].length;
+        uint256 lHalfLen = _log2(numRows > 0 ? numRows : 1);
+        uint256 logNCols = n - lHalfLen;
+
+        // Sort and group (deterministic, recomputed each call)
+        uint256[] memory sortedIndices = _sortClaimIndices(claimPoints);
+        uint256[][] memory groups = _groupClaimsByRHalf(claimPoints, sortedIndices, logNCols);
+
+        require(groups.length == dagProof.podps.length, "GKRDAGVerifier: eval proof count mismatch");
+        if (endGroup > groups.length) endGroup = groups.length;
+
+        EvalGroupCtx memory egCtx;
+        egCtx.dagProof = dagProof;
+        egCtx.claimPoints = claimPoints;
+        egCtx.lHalfLen = lHalfLen;
+        egCtx.logNCols = logNCols;
+        egCtx.gens = gens;
+
+        for (uint256 g = startGroup; g < endGroup; g++) {
+            _verifyOneEvalGroup(egCtx, g, groups[g], sponge);
+        }
+    }
+
     /// @notice Verify committed input layers using accumulated claims.
     /// @param ctx Verification context from compute layer verification
     /// @param sponge Transcript (continuing from compute layers)

@@ -36,6 +36,10 @@ func main() {
 		cmdProve()
 	case "prove-json":
 		cmdProveJSON()
+	case "prove-dag-json":
+		cmdDAGProveJSON()
+	case "dag-info":
+		cmdDAGInfo()
 	case "export-solidity":
 		cmdExportSolidity()
 	case "info":
@@ -54,6 +58,8 @@ func printUsage() {
 	fmt.Println("  setup           Generate proving key and verification key")
 	fmt.Println("  prove           Generate a Groth16 proof from witness JSON (stdin)")
 	fmt.Println("  prove-json      Like prove, but output JSON fixture for Solidity tests")
+	fmt.Println("  prove-dag-json  Generate Groth16 proof for DAG circuit from witness JSON (stdin)")
+	fmt.Println("  dag-info        Show DAG circuit info from witness JSON (stdin)")
 	fmt.Println("  export-solidity Export Solidity verifier contract")
 	fmt.Println("  info            Show circuit info (constraints, etc.)")
 	fmt.Println()
@@ -90,15 +96,20 @@ func configFromWitness(w *WitnessJSON) CircuitConfig {
 		if numLayers == 0 {
 			numLayers = len(w.Config.LayerNumVars)
 		}
-		// Infer layer degrees from witness data (z_vector_len / num_vars_i = degree+1)
-		layerDegrees := make([]int, numLayers)
-		for i := 0; i < numLayers; i++ {
-			nv := w.Config.LayerNumVars[i]
-			zLen := len(w.Witness.LayerPODPs[i].ZVector)
-			if nv > 0 {
-				layerDegrees[i] = zLen/nv - 1
-			} else {
-				layerDegrees[i] = 2 // default for zero-var layers
+		// Use explicit layer degrees from JSON if available; otherwise infer from z_vector
+		var layerDegrees []int
+		if len(w.Config.LayerDegrees) >= numLayers {
+			layerDegrees = w.Config.LayerDegrees[:numLayers]
+		} else {
+			layerDegrees = make([]int, numLayers)
+			for i := 0; i < numLayers; i++ {
+				nv := w.Config.LayerNumVars[i]
+				zLen := len(w.Witness.LayerPODPs[i].ZVector)
+				if nv > 0 {
+					layerDegrees[i] = zLen/nv - 1
+				} else {
+					layerDegrees[i] = 2
+				}
 			}
 		}
 		outputNumVars := w.Config.OutputNumVars
@@ -109,12 +120,18 @@ func configFromWitness(w *WitnessJSON) CircuitConfig {
 		if pubInputCount == 0 {
 			pubInputCount = len(w.PublicInputs.PublicValues)
 		}
+		inputNumVars := w.Config.InputNumVars
+		if inputNumVars == 0 {
+			// Default: use last layer's num_vars (backward compat for linear circuits)
+			inputNumVars = w.Config.LayerNumVars[numLayers-1]
+		}
 		return CircuitConfig{
 			NumLayers:     numLayers,
 			LayerNumVars:  w.Config.LayerNumVars[:numLayers],
 			LayerDegrees:  layerDegrees,
 			OutputNumVars: outputNumVars,
 			PubInputCount: pubInputCount,
+			InputNumVars:  inputNumVars,
 		}
 	}
 
@@ -142,6 +159,7 @@ func configFromWitness(w *WitnessJSON) CircuitConfig {
 		LayerDegrees:  layerDegrees,
 		OutputNumVars: nv,
 		PubInputCount: 1 << nv,
+		InputNumVars:  nv,
 	}
 }
 
@@ -158,12 +176,13 @@ func hasConfigJSON() bool {
 // WitnessJSON is the JSON format for the witness data from the Rust generator.
 type WitnessJSON struct {
 	Config struct {
-		NumVars         int   `json:"num_vars"`
-		NumLayers       int   `json:"num_layers,omitempty"`
-		LayerNumVars    []int `json:"layer_num_vars,omitempty"`    // per-layer num_vars
-		OutputNumVars   int   `json:"output_num_vars,omitempty"`   // output challenge count
-		PubInputCount   int   `json:"pub_input_count,omitempty"`   // public input count
-		MleEvalLayerIdx int   `json:"mle_eval_layer_idx,omitempty"` // deprecated: use mle_eval_point
+		NumVars       int   `json:"num_vars"`
+		NumLayers     int   `json:"num_layers,omitempty"`
+		LayerNumVars  []int `json:"layer_num_vars,omitempty"`  // per-layer num_vars
+		LayerDegrees  []int `json:"layer_degrees,omitempty"`   // per-layer degrees
+		OutputNumVars int   `json:"output_num_vars,omitempty"` // output challenge count
+		PubInputCount int   `json:"pub_input_count,omitempty"` // public input count
+		InputNumVars  int   `json:"input_num_vars,omitempty"`  // committed input layer num_vars
 	} `json:"config"`
 	PublicInputs struct {
 		CircuitHash      [2]string `json:"circuit_hash"`
@@ -182,6 +201,7 @@ type WitnessJSON struct {
 		InputRLCCoeffs     [2]string `json:"input_rlc_coeffs"`
 		InputPODPChallenge string    `json:"input_podp_challenge"`
 		MleEvalPoint       []string `json:"mle_eval_point,omitempty"`
+		InputClaimPoint    []string `json:"input_claim_point,omitempty"`
 	} `json:"public_inputs"`
 	PublicOutputs struct {
 		RlcBetas   []string `json:"rlc_betas"`
@@ -297,10 +317,22 @@ func buildAssignment(config CircuitConfig, w *WitnessJSON) *RemainderWrapperCirc
 		}
 	} else {
 		// Backward compat: use first layer's bindings (works for toy/medium circuits)
-		mleLayerIdx := w.Config.MleEvalLayerIdx
-		layer := w.PublicInputs.Layers[mleLayerIdx]
+		layer := w.PublicInputs.Layers[0]
 		for i := 0; i < mleNumVars; i++ {
 			assignment.MleEvalPoint[i] = parseBigInt(layer.Bindings[i])
+		}
+	}
+
+	// Input claim point: explicit from JSON, or fall back to last layer's bindings
+	if len(w.PublicInputs.InputClaimPoint) >= config.InputNumVars {
+		for i := 0; i < config.InputNumVars; i++ {
+			assignment.InputClaimPoint[i] = parseBigInt(w.PublicInputs.InputClaimPoint[i])
+		}
+	} else {
+		// Backward compat: use last layer's bindings (works for linear circuits)
+		lastLayer := w.PublicInputs.Layers[nLayers-1]
+		for i := 0; i < config.InputNumVars; i++ {
+			assignment.InputClaimPoint[i] = parseBigInt(lastLayer.Bindings[i])
 		}
 	}
 
@@ -512,19 +544,49 @@ func cmdProveJSON() {
 	}
 	fmt.Fprintf(os.Stderr, "Circuit compiled: %d constraints\n", ccs.GetNbConstraints())
 
-	// Load proving key
-	fmt.Fprintln(os.Stderr, "Loading proving key...")
-	pkFile, err := os.Open("proving_key.bin")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error opening pk: %v\n (run 'setup' first)\n", err)
-		os.Exit(1)
-	}
-	defer pkFile.Close()
-	pk := groth16.NewProvingKey(ecc.BN254)
-	_, err = pk.ReadFrom(pkFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error reading pk: %v\n", err)
-		os.Exit(1)
+	// Setup or load keys
+	var pk groth16.ProvingKey
+	var vk groth16.VerifyingKey
+	pkFile, pkErr := os.Open("proving_key.bin")
+	if pkErr != nil || hasConfigJSON() {
+		// Inline setup: generate fresh keys (needed for --config-json or first run)
+		if pkFile != nil {
+			pkFile.Close()
+		}
+		fmt.Fprintln(os.Stderr, "Running inline Groth16 setup...")
+		var setupErr error
+		pk, vk, setupErr = groth16.Setup(ccs)
+		if setupErr != nil {
+			fmt.Fprintf(os.Stderr, "setup error: %v\n", setupErr)
+			os.Exit(1)
+		}
+		// Export Solidity verifier when doing inline setup
+		solFile, solErr := os.Create("RemainderGroth16Verifier.sol")
+		if solErr == nil {
+			if exportErr := vk.ExportSolidity(solFile); exportErr == nil {
+				fmt.Fprintln(os.Stderr, "Solidity verifier exported to RemainderGroth16Verifier.sol")
+			}
+			solFile.Close()
+		}
+	} else {
+		defer pkFile.Close()
+		fmt.Fprintln(os.Stderr, "Loading proving key...")
+		pk = groth16.NewProvingKey(ecc.BN254)
+		if _, err := pk.ReadFrom(pkFile); err != nil {
+			fmt.Fprintf(os.Stderr, "error reading pk: %v\n", err)
+			os.Exit(1)
+		}
+		vkFile, err := os.Open("verification_key.bin")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error opening vk: %v\n", err)
+			os.Exit(1)
+		}
+		defer vkFile.Close()
+		vk = groth16.NewVerifyingKey(ecc.BN254)
+		if _, err := vk.ReadFrom(vkFile); err != nil {
+			fmt.Fprintf(os.Stderr, "error reading vk: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	// Create witness
@@ -545,18 +607,6 @@ func cmdProveJSON() {
 
 	// Verify locally
 	fmt.Fprintln(os.Stderr, "Verifying proof locally...")
-	vkFile, err := os.Open("verification_key.bin")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error opening vk: %v\n", err)
-		os.Exit(1)
-	}
-	defer vkFile.Close()
-	vk := groth16.NewVerifyingKey(ecc.BN254)
-	_, err = vk.ReadFrom(vkFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error reading vk: %v\n", err)
-		os.Exit(1)
-	}
 	publicWitness, _ := witness.Public()
 	if err := groth16.Verify(proof, vk, publicWitness); err != nil {
 		fmt.Fprintf(os.Stderr, "verification failed: %v\n", err)
@@ -617,11 +667,19 @@ func cmdProveJSON() {
 	if len(w.PublicInputs.MleEvalPoint) > 0 {
 		pubInputs = append(pubInputs, w.PublicInputs.MleEvalPoint...)
 	} else {
-		// Backward compat: use first layer's bindings
-		mleLayerIdx := w.Config.MleEvalLayerIdx
 		mleNumVars := config.MleEvalNumVars()
 		for i := 0; i < mleNumVars; i++ {
-			pubInputs = append(pubInputs, w.PublicInputs.Layers[mleLayerIdx].Bindings[i])
+			pubInputs = append(pubInputs, w.PublicInputs.Layers[0].Bindings[i])
+		}
+	}
+
+	// InputClaimPoint [InputNumVars]
+	if len(w.PublicInputs.InputClaimPoint) > 0 {
+		pubInputs = append(pubInputs, w.PublicInputs.InputClaimPoint...)
+	} else {
+		lastLayer := w.PublicInputs.Layers[nLayers-1]
+		for i := 0; i < config.InputNumVars; i++ {
+			pubInputs = append(pubInputs, lastLayer.Bindings[i])
 		}
 	}
 

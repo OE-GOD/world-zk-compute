@@ -15,7 +15,7 @@
 use anyhow::Result;
 use ff::PrimeField;
 use frontend::layouter::builder::{Circuit, CircuitBuilder, LayerVisibility};
-use hyrax::gkr::layer::HyraxClaim;
+use hyrax::gkr::layer::{get_claims_from_product, HyraxClaim};
 use hyrax::gkr::verify_hyrax_proof;
 use hyrax::primitives::proof_of_sumcheck::ProofOfSumcheck;
 use hyrax::utils::vandermonde::VandermondeInverse;
@@ -212,6 +212,9 @@ fn setup_xgboost_circuit() -> CircuitSetup {
     }
 }
 
+// NOTE: DAG circuit witness generation is in gen_dag_groth16_witness.rs
+// The generate_dag_witness stub was removed because it had unresolvable type errors.
+
 fn main() -> Result<()> {
     let circuit_type = parse_arg("--circuit").unwrap_or_else(|| "toy".to_string());
 
@@ -278,7 +281,15 @@ fn main() -> Result<()> {
     eprintln!("Proof verified in Rust!");
 
     // ================================================================
+    // DAG circuits (xgboost) use gen_dag_groth16_witness binary
+    // ================================================================
+    if circuit_type == "xgboost" {
+        anyhow::bail!("XGBoost/DAG witness generation moved to gen_dag_groth16_witness binary");
+    }
+
+    // ================================================================
     // Replay ECTranscript to extract all challenges as Fr values.
+    // (Linear topology for toy circuits)
     // ================================================================
 
     let verifiable_ref = verifiable.get_gkr_circuit_description_ref();
@@ -331,6 +342,8 @@ fn main() -> Result<()> {
         bindings: Vec<Fr>,
         rhos: Vec<Fr>,
         gammas: Vec<Fr>,
+        podp_challenge: Fr,
+        pop_challenge: Option<Fr>,
         podp_z_vector: Vec<Fr>,
         podp_z_delta: Fr,
         podp_z_beta: Fr,
@@ -446,7 +459,7 @@ fn main() -> Result<()> {
             "Commitment to inner product of random vector and public vector",
             podp_commit_d_dot_a,
         );
-        let _podp_c = t.get_scalar_field_challenge("challenge c");
+        let podp_c = t.get_scalar_field_challenge("challenge c");
         t.append_scalar_field_elems("Blinded private vector", &podp_z_vector);
         t.append_scalar_field_elem(
             "Blinding factor for blinded vector commitment",
@@ -462,6 +475,7 @@ fn main() -> Result<()> {
             .flatten()
             .collect();
         let mut pop_data: Vec<serde_json::Value> = Vec::new();
+        let mut pop_challenge: Option<Fr> = None;
         for (_triple, pop) in product_triples
             .iter()
             .zip(layer_proof.proofs_of_product.iter())
@@ -469,7 +483,8 @@ fn main() -> Result<()> {
             t.append_ec_point("Commitment to random values 1", pop.alpha);
             t.append_ec_point("Commitment to random values 2", pop.beta);
             t.append_ec_point("Commitment to random values 3", pop.delta);
-            let _pop_c = t.get_scalar_field_challenge("PoP c");
+            let pop_c = t.get_scalar_field_challenge("PoP c");
+            pop_challenge = Some(pop_c);
             t.append_scalar_field_elem("Blinded response 1", pop.z1);
             t.append_scalar_field_elem("Blinded response 2", pop.z2);
             t.append_scalar_field_elem("Blinded response 3", pop.z3);
@@ -511,6 +526,8 @@ fn main() -> Result<()> {
             bindings,
             rhos,
             gammas,
+            podp_challenge: podp_c,
+            pop_challenge,
             podp_z_vector,
             podp_z_delta,
             podp_z_beta,
@@ -553,7 +570,7 @@ fn main() -> Result<()> {
         "Commitment to inner product of random vector and public vector",
         input_podp_commit_d_dot_a,
     );
-    let _input_podp_c = t.get_scalar_field_challenge("challenge c");
+    let input_podp_c = t.get_scalar_field_challenge("challenge c");
     t.append_scalar_field_elems("Blinded private vector", &input_podp_z_vector);
     t.append_scalar_field_elem(
         "Blinding factor for blinded vector commitment",
@@ -647,13 +664,18 @@ fn main() -> Result<()> {
         eprintln!("  inter_layer_coeff[{}]: {}", i, fr_to_hex(c));
     }
 
-    // Hyrax input layer matrix split: uses LAST layer's bindings
-    let last_layer = &layer_extracts[num_layers - 1];
-    let last_nv = layer_num_vars[num_layers - 1];
-    let left_dims = last_nv / 2;
+    // Input claim point: the Hyrax PODP evaluation uses the per-shred dimensions.
+    // For linear circuits, this equals the last compute layer's bindings.
+    // Note: the total input layer claim may include a shred selector bit,
+    // but the L/R tensor split and PODP use only the per-shred evaluation point.
+    let input_claim_point: Vec<Fr> = layer_extracts[num_layers - 1].bindings.clone();
+    let input_num_vars = input_claim_point.len();
+    let left_dims = input_num_vars / 2;
+    eprintln!("input_claim_point (len={}): {:?}", input_num_vars,
+        input_claim_point.iter().map(|p| fr_to_hex(p)).collect::<Vec<_>>());
 
     // L-tensor: for each shred, scale tensor(left_bindings) by the RLC coefficient
-    let left_bindings = &last_layer.bindings[..left_dims];
+    let left_bindings = &input_claim_point[..left_dims];
     let l_per_shred = compute_tensor_product_fr(left_bindings); // 2^left_dims elements
     let mut l_tensor: Vec<Fr> = Vec::new();
     for coeff in &[input_rlc_0, input_rlc_1] {
@@ -663,7 +685,7 @@ fn main() -> Result<()> {
     }
 
     // R-tensor: tensor(right_bindings) -> 2^right_dims elements
-    let right_bindings = &last_layer.bindings[left_dims..];
+    let right_bindings = &input_claim_point[left_dims..];
     let r_tensor = compute_tensor_product_fr(right_bindings);
 
     // z_dot_r = <input_z, R_tensor>
@@ -771,11 +793,11 @@ fn main() -> Result<()> {
                 "bindings": le.bindings.iter().map(|b| fr_to_hex(b)).collect::<Vec<_>>(),
                 "rhos": le.rhos.iter().map(|r| fr_to_hex(r)).collect::<Vec<_>>(),
                 "gammas": le.gammas.iter().map(|g| fr_to_hex(g)).collect::<Vec<_>>(),
-                "podp_challenge": "0x0",
+                "podp_challenge": fr_to_hex(&le.podp_challenge),
             });
             // Include pop_challenge for layers that have PoP data (degree > 2)
-            if !le.pop_data.is_empty() {
-                layer["pop_challenge"] = json!("0x0");
+            if let Some(ref pop_c) = le.pop_challenge {
+                layer["pop_challenge"] = json!(fr_to_hex(pop_c));
             }
             layer
         })
@@ -814,6 +836,7 @@ fn main() -> Result<()> {
             "output_num_vars": output_challenges.len(),
             "pub_input_count": pub_values.len(),
             "mle_eval_num_vars": mle_eval_point.len(),
+            "input_num_vars": input_num_vars,
         },
         "public_inputs": {
             "circuit_hash": [circuit_hash_0, circuit_hash_1],
@@ -825,8 +848,9 @@ fn main() -> Result<()> {
             "inter_layer_coeff": if num_layers >= 2 { fr_to_hex(&layer_extracts[1].random_coeff) } else { "0x0".to_string() },
             "layers": layers,
             "input_rlc_coeffs": [fr_to_hex(&input_rlc_0), fr_to_hex(&input_rlc_1)],
-            "input_podp_challenge": "0x0",
+            "input_podp_challenge": fr_to_hex(&input_podp_c),
             "mle_eval_point": mle_eval_point.iter().map(|p| fr_to_hex(p)).collect::<Vec<_>>(),
+            "input_claim_point": input_claim_point.iter().map(|p| fr_to_hex(p)).collect::<Vec<_>>(),
         },
         "public_outputs": {
             "rlc_betas": rlc_betas.iter().map(|v| fr_to_hex(v)).collect::<Vec<_>>(),
