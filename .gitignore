@@ -52,3 +52,34 @@ cache/
 
 # Forge broadcast artifacts
 contracts/broadcast/
+
+# Gnark/Groth16 build artifacts
+*.bin
+!programs/*.bin
+
+# Debug/intermediate artifacts
+**/*_stderr*.txt
+**/*_fixture*.json
+!contracts/test/fixtures/*.json
+
+# Generated Solidity verifiers (kept in contracts/src/)
+examples/**/*Verifier.sol
+
+# Gnark wrapper generated files
+examples/xgboost-remainder/gnark-wrapper/DAGRemainderGroth16Verifier.sol
+examples/xgboost-remainder/gnark-wrapper/prove_stderr.txt
+examples/xgboost-remainder/gnark-wrapper/dag_prove_stderr.txt
+examples/xgboost-remainder/gnark-wrapper/dag_groth16_fixture.json
+
+# Intermediate witness/proof files
+examples/xgboost-remainder/dag_witness*.json
+examples/xgboost-remainder/gnark_groth16_*.json
+examples/xgboost-remainder/contracts_fixture.json
+examples/xgboost-remainder/dag_groth16_*.json
+examples/xgboost-remainder/groth16_fixture_new.json
+
+# Stylus (WIP)
+contracts/stylus/
+
+# Claude Code
+.claude/
