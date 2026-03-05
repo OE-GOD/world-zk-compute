@@ -354,76 +354,96 @@ fn mul_wide(a: &U256, b: &U256) -> [u64; 8] {
     result
 }
 
-/// Reduce a 512-bit value modulo a 256-bit modulus using repeated subtraction
-/// of shifted modulus. This is a simple approach suitable for WASM.
+/// Reduce a 512-bit value modulo a 256-bit modulus using Knuth's Algorithm D.
+/// Divides val (8 limbs, little-endian) by modulus (4 limbs) and returns remainder.
 fn reduce_512(val: &[u64; 8], modulus: &[u64; 4]) -> U256 {
-    // We do division by trial subtraction.
-    // For our use case, a*b where a,b < p, the quotient fits in 256 bits.
-    // Use the standard approach: iterate from MSB down, trial subtract.
+    let n = 4usize;
 
-    // Simple approach: convert to double-width and do modular reduction
-    // by dividing the 512-bit number by the 256-bit modulus.
+    // Step D1: Normalize — shift so MSB of divisor's top limb is set
+    let s = modulus[n - 1].leading_zeros();
 
-    // We use a limb-by-limb long division approach.
-    // But a simpler approach for 256-bit moduli: use the fact that
-    // the result fits in 256 bits after reduction.
+    // Normalized divisor (shift left by s bits)
+    let vn: [u64; 4] = if s > 0 {
+        [
+            modulus[0] << s,
+            (modulus[1] << s) | (modulus[0] >> (64 - s)),
+            (modulus[2] << s) | (modulus[1] >> (64 - s)),
+            (modulus[3] << s) | (modulus[2] >> (64 - s)),
+        ]
+    } else {
+        [modulus[0], modulus[1], modulus[2], modulus[3]]
+    };
 
-    // Barrett reduction approximation:
-    // q_hat = val / modulus (approx)
-    // r = val - q_hat * modulus
-    // Adjust r if needed
+    // Normalized dividend (shift left by s bits) — 9 limbs
+    let mut un = [0u64; 9];
+    if s > 0 {
+        un[8] = val[7] >> (64 - s);
+        for i in (1..8).rev() {
+            un[i] = (val[i] << s) | (val[i - 1] >> (64 - s));
+        }
+        un[0] = val[0] << s;
+    } else {
+        un[..8].copy_from_slice(val);
+        un[8] = 0;
+    }
 
-    // For simplicity, use iterative subtraction with shifts.
-    // Since we're in WASM, this is efficient enough for our needs.
+    // Steps D2–D7: Main loop — compute quotient digits from high to low
+    // m = 5 quotient limbs (9 dividend limbs - 4 divisor limbs)
+    for j in (0..5).rev() {
+        // Step D3: Estimate quotient digit q_hat
+        let dividend_top = ((un[j + n] as u128) << 64) | (un[j + n - 1] as u128);
+        let mut q_hat = dividend_top / (vn[n - 1] as u128);
+        let mut r_hat = dividend_top % (vn[n - 1] as u128);
 
-    // Copy to mutable working space
-    let mut rem = [0u64; 9]; // extra limb for safety
-    rem[..8].copy_from_slice(val);
-
-    // Reduce: while rem >= modulus * 2^(64*i), subtract
-    // Process from high limb down
-    for shift in (0..5).rev() {
-        // Shifted modulus occupies limbs [shift..shift+4]
+        // Knuth's refinement: correct q_hat using the next lower digit
         loop {
-            // Check if rem[shift..shift+5] >= modulus shifted
-            let mut can_sub = false;
-            // Compare rem[shift+4] (high limb of shifted region) first
-            if shift + 4 < 9 && rem[shift + 4] > 0 {
-                can_sub = true;
-            } else if shift + 4 < 9 && rem[shift + 4] == 0 {
-                // Compare lower limbs
-                let mut ge = true;
-                for k in (0..4).rev() {
-                    if rem[shift + k] > modulus[k] {
-                        break;
-                    }
-                    if rem[shift + k] < modulus[k] {
-                        ge = false;
-                        break;
-                    }
+            if q_hat >= (1u128 << 64)
+                || q_hat * (vn[n - 2] as u128)
+                    > ((r_hat << 64) | (un[j + n - 2] as u128))
+            {
+                q_hat -= 1;
+                r_hat += vn[n - 1] as u128;
+                if r_hat < (1u128 << 64) {
+                    continue;
                 }
-                can_sub = ge;
             }
+            break;
+        }
 
-            if !can_sub {
-                break;
-            }
+        // Step D4: Multiply and subtract — un[j..j+n+1] -= q_hat * vn[0..n]
+        let mut borrow: i128 = 0;
+        for i in 0..n {
+            let prod = q_hat * (vn[i] as u128);
+            let t = (un[j + i] as i128) - borrow - ((prod as u64) as i128);
+            un[j + i] = t as u64;
+            borrow = ((prod >> 64) as i128) - (t >> 64);
+        }
+        let t = (un[j + n] as i128) - borrow;
+        un[j + n] = t as u64;
 
-            // Subtract modulus from rem[shift..]
-            let mut borrow: u64 = 0;
-            for k in 0..4 {
-                let (diff, b1) = rem[shift + k].overflowing_sub(modulus[k]);
-                let (diff2, b2) = diff.overflowing_sub(borrow);
-                rem[shift + k] = diff2;
-                borrow = (b1 as u64) + (b2 as u64);
+        // Step D5/D6: Add back if q_hat was too large
+        if t < 0 {
+            let mut carry: u64 = 0;
+            for i in 0..n {
+                let sum = (un[j + i] as u128) + (vn[i] as u128) + (carry as u128);
+                un[j + i] = sum as u64;
+                carry = (sum >> 64) as u64;
             }
-            if shift + 4 < 9 {
-                rem[shift + 4] = rem[shift + 4].wrapping_sub(borrow);
-            }
+            un[j + n] = un[j + n].wrapping_add(carry);
         }
     }
 
-    U256([rem[0], rem[1], rem[2], rem[3]])
+    // Step D8: Unnormalize remainder (shift right by s bits)
+    if s > 0 {
+        U256([
+            (un[0] >> s) | (un[1] << (64 - s)),
+            (un[1] >> s) | (un[2] << (64 - s)),
+            (un[2] >> s) | (un[3] << (64 - s)),
+            un[3] >> s,
+        ])
+    } else {
+        U256([un[0], un[1], un[2], un[3]])
+    }
 }
 
 #[cfg(test)]

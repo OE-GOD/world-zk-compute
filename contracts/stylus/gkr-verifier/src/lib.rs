@@ -42,6 +42,7 @@ pub mod decode;
 // Imports
 // ------------------------------------------------------------------
 
+use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::field::{Fq, U256};
@@ -527,5 +528,107 @@ mod tests {
             oracle_result_idxs: Vec::new(),
             oracle_expr_coeffs: Vec::new(),
         }
+    }
+
+    // --------------------------------------------------------
+    // Integration test: real proof fixture
+    // --------------------------------------------------------
+
+    /// Encode the `dag_circuit_description` JSON object into the flat binary format
+    /// expected by `decode_circuit_description`.
+    fn encode_circuit_desc_from_json(desc: &serde_json::Value) -> Vec<u8> {
+        let mut buf = Vec::new();
+
+        // Helper: push hex string as raw 32-byte value
+        fn push_hex(buf: &mut Vec<u8>, hex_str: &str) {
+            let stripped = hex_str.strip_prefix("0x").unwrap_or(hex_str);
+            let decoded = hex::decode(stripped).expect("invalid hex in oracleExprCoeffs");
+            assert_eq!(decoded.len(), 32, "oracleExprCoeff must be 32 bytes");
+            buf.extend_from_slice(&decoded);
+        }
+
+        // num_compute_layers, num_input_layers
+        push_usize(&mut buf, desc["numComputeLayers"].as_u64().unwrap() as usize);
+        push_usize(&mut buf, desc["numInputLayers"].as_u64().unwrap() as usize);
+
+        // Length-prefixed integer arrays
+        for key in &[
+            "layerTypes",
+            "numSumcheckRounds",
+            "atomOffsets",
+            "atomTargetLayers",
+            "atomCommitIdxs",
+            "ptOffsets",
+            "ptData",
+        ] {
+            let arr = desc[key].as_array().unwrap();
+            push_usize(&mut buf, arr.len());
+            for v in arr {
+                push_usize(&mut buf, v.as_u64().unwrap() as usize);
+            }
+        }
+
+        // inputIsCommitted (booleans → 0 or 1)
+        let bools = desc["inputIsCommitted"].as_array().unwrap();
+        push_usize(&mut buf, bools.len());
+        for v in bools {
+            push_usize(&mut buf, if v.as_bool().unwrap() { 1 } else { 0 });
+        }
+
+        // More integer arrays
+        for key in &["oracleProductOffsets", "oracleResultIdxs"] {
+            let arr = desc[key].as_array().unwrap();
+            push_usize(&mut buf, arr.len());
+            for v in arr {
+                push_usize(&mut buf, v.as_u64().unwrap() as usize);
+            }
+        }
+
+        // oracleExprCoeffs (hex strings → raw U256 bytes)
+        let coeffs = desc["oracleExprCoeffs"].as_array().unwrap();
+        push_usize(&mut buf, coeffs.len());
+        for v in coeffs {
+            push_hex(&mut buf, v.as_str().unwrap());
+        }
+
+        buf
+    }
+
+    /// End-to-end integration test using the real 88-layer XGBoost DAG proof fixture.
+    /// This exercises the complete verification pipeline: proof decoding, transcript
+    /// setup, compute layer verification, and input layer verification.
+    #[test]
+    #[ignore] // Takes ~30s due to EC scalar multiplications in pure Rust
+    fn test_verify_dag_proof_e2e() {
+        let fixture_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/test/fixtures/phase1a_dag_fixture.json"
+        );
+        let fixture_str = std::fs::read_to_string(fixture_path)
+            .expect("failed to read phase1a_dag_fixture.json");
+        let fixture: serde_json::Value =
+            serde_json::from_str(&fixture_str).expect("failed to parse fixture JSON");
+
+        // 1. proof_data: direct hex decode (already has REM1 selector)
+        let proof_hex = fixture["proof_hex"].as_str().unwrap();
+        let proof_data = hex::decode(&proof_hex[2..]).expect("invalid proof_hex");
+        assert_eq!(&proof_data[0..4], b"REM1", "fixture must start with REM1");
+
+        // 2. public_inputs: unused by verifier, but decode anyway
+        let pub_hex = fixture["public_inputs_hex"].as_str().unwrap();
+        let public_inputs = hex::decode(&pub_hex[2..]).unwrap_or_default();
+
+        // 3. gens_data: direct hex decode
+        let gens_hex = fixture["gens_hex"].as_str().unwrap();
+        let gens_data = hex::decode(&gens_hex[2..]).expect("invalid gens_hex");
+
+        // 4. circuit_desc_data: encode from JSON structure
+        let circuit_desc_data =
+            encode_circuit_desc_from_json(&fixture["dag_circuit_description"]);
+
+        // Run the full verification pipeline
+        let result =
+            verify_dag_proof_inner(&proof_data, &public_inputs, &gens_data, &circuit_desc_data);
+        assert!(result, "DAG proof verification should succeed");
     }
 }
