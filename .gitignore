@@ -78,5 +78,11 @@ examples/xgboost-remainder/contracts_fixture.json
 examples/xgboost-remainder/dag_groth16_*.json
 examples/xgboost-remainder/groth16_fixture_new.json
 
+# Stylus build artifacts
+contracts/stylus/gkr-verifier/calldata.hex
+
+# Local devnode
+.nitro-devnode/
+
 # Claude Code
 .claude/
