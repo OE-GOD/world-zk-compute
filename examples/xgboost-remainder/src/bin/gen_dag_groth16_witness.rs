@@ -29,8 +29,8 @@ use shared_types::pedersen::PedersenCommitter;
 use shared_types::transcript::ec_transcript::{ECTranscript, ECTranscriptTrait};
 use shared_types::transcript::poseidon_sponge::PoseidonSponge;
 use shared_types::{
-    perform_function_under_prover_config,
-    perform_function_under_verifier_config, Bn256Point, Fq, Fr,
+    perform_function_under_prover_config, perform_function_under_verifier_config, Bn256Point, Fq,
+    Fr,
 };
 use std::collections::HashMap;
 
@@ -104,7 +104,10 @@ fn parse_arg(name: &str) -> Option<String> {
 
 fn parse_arg_usize(name: &str, default: usize) -> usize {
     parse_arg(name)
-        .map(|s| s.parse().unwrap_or_else(|_| panic!("invalid {} value", name)))
+        .map(|s| {
+            s.parse()
+                .unwrap_or_else(|_| panic!("invalid {} value", name))
+        })
         .unwrap_or(default)
 }
 
@@ -134,10 +137,10 @@ struct InputGroupExtract {
     podp_z_vector: Vec<Fr>,
     podp_z_delta: Fr,
     podp_z_beta: Fr,
-    _claim_point: Vec<Fr>,      // resolved claim point for this group's first claim
-    l_half_bindings: Vec<Fr>,   // L-half of the claim point
-    r_half_bindings: Vec<Fr>,   // R-half of the claim point
-    num_rows: usize,            // number of commitment rows
+    _claim_point: Vec<Fr>, // resolved claim point for this group's first claim
+    l_half_bindings: Vec<Fr>, // L-half of the claim point
+    r_half_bindings: Vec<Fr>, // R-half of the claim point
+    num_rows: usize,       // number of commitment rows
 }
 
 // ============================================================================
@@ -186,10 +189,7 @@ fn parse_template_entry(entry: &str) -> u64 {
 }
 
 // Resolve a point from template + source bindings (mirroring Solidity _resolvePoint)
-fn resolve_point_from_template(
-    template: &[u64],
-    source_bindings: &[Fr],
-) -> Vec<Fr> {
+fn resolve_point_from_template(template: &[u64], source_bindings: &[Fr]) -> Vec<Fr> {
     template
         .iter()
         .map(|&entry| {
@@ -365,8 +365,10 @@ fn main() -> Result<()> {
         layer_id_to_idx.insert(il.layer_id, num_compute + j);
     }
 
-    let private_input_ids: std::collections::HashSet<_> =
-        verifiable.get_private_input_layer_ids().into_iter().collect();
+    let private_input_ids: std::collections::HashSet<_> = verifiable
+        .get_private_input_layer_ids()
+        .into_iter()
+        .collect();
 
     eprintln!(
         "Circuit: {} compute layers, {} input layers",
@@ -395,10 +397,7 @@ fn main() -> Result<()> {
             );
         });
         proof.hyrax_input_proofs.iter().for_each(|ip| {
-            t.append_input_ec_points(
-                "Hyrax input layer commitment",
-                ip.input_commitment.clone(),
-            );
+            t.append_input_ec_points("Hyrax input layer commitment", ip.input_commitment.clone());
         });
         for fs_desc in &desc.fiat_shamir_challenges {
             let num_evals = 1 << fs_desc.num_bits;
@@ -457,7 +456,10 @@ fn main() -> Result<()> {
     eprintln!(
         "output_challenges (len={}): {:?}",
         output_challenges.len(),
-        output_challenges.iter().map(|c| fr_to_hex(c)).collect::<Vec<_>>()
+        output_challenges
+            .iter()
+            .map(|c| fr_to_hex(c))
+            .collect::<Vec<_>>()
     );
 
     // === Per-layer transcript replay ===
@@ -469,8 +471,7 @@ fn main() -> Result<()> {
     let mut all_oracle_result_idxs: Vec<Vec<usize>> = Vec::new();
     let mut all_oracle_expr_coeffs: Vec<Vec<Fr>> = Vec::new();
 
-    for (proof_idx, (layer_id, layer_proof)) in
-        proof.circuit_proof.layer_proofs.iter().enumerate()
+    for (proof_idx, (layer_id, layer_proof)) in proof.circuit_proof.layer_proofs.iter().enumerate()
     {
         let layer_desc = desc
             .intermediate_layers
@@ -483,15 +484,18 @@ fn main() -> Result<()> {
 
         eprintln!(
             "  Layer {} (id={:?}, rounds={}, degree={}, claims={})",
-            proof_idx, layer_id, num_rounds, degree, layer_claims_vec.len()
+            proof_idx,
+            layer_id,
+            num_rounds,
+            degree,
+            layer_claims_vec.len()
         );
 
         // RLC coefficients
         let random_coefficients = match global_claim_agg_strategy() {
-            ClaimAggregationStrategy::RLC => t.get_scalar_field_challenges(
-                "RLC Claim Agg Coefficients",
-                layer_claims_vec.len(),
-            ),
+            ClaimAggregationStrategy::RLC => {
+                t.get_scalar_field_challenges("RLC Claim Agg Coefficients", layer_claims_vec.len())
+            }
             _ => vec![Fr::one()],
         };
 
@@ -518,36 +522,31 @@ fn main() -> Result<()> {
         );
 
         // Squeeze rhos and gammas
-        let rhos =
-            t.get_scalar_field_challenges("Proof of sumcheck RLC coefficients for batching rows", n + 1);
-        let gammas =
-            t.get_scalar_field_challenges("Proof of sumcheck RLC coefficients for batching columns", n);
+        let rhos = t.get_scalar_field_challenges(
+            "Proof of sumcheck RLC coefficients for batching rows",
+            n + 1,
+        );
+        let gammas = t.get_scalar_field_challenges(
+            "Proof of sumcheck RLC coefficients for batching columns",
+            n,
+        );
 
         // Compute j_star
-        let j_star = ProofOfSumcheck::<Bn256Point>::calculate_j_star(
-            &bindings,
-            &rhos,
-            &gammas,
-            degree,
-        );
+        let j_star =
+            ProofOfSumcheck::<Bn256Point>::calculate_j_star(&bindings, &rhos, &gammas, degree);
 
         // Build PSL for claim propagation
-        let claim_points: Vec<Vec<Fr>> =
-            layer_claims_vec.iter().map(|c| c.point.clone()).collect();
+        let claim_points: Vec<Vec<Fr>> = layer_claims_vec.iter().map(|c| c.point.clone()).collect();
         let claim_points_refs: Vec<&[Fr]> = claim_points.iter().map(|v| v.as_slice()).collect();
-        let psl_desc = layer_desc.get_post_sumcheck_layer(
-            &bindings,
-            &claim_points_refs,
-            &random_coefficients,
-        );
+        let psl_desc =
+            layer_desc.get_post_sumcheck_layer(&bindings, &claim_points_refs, &random_coefficients);
         let psl: PostSumcheckLayer<Fr, Bn256Point> =
             new_with_values(&psl_desc, &layer_proof.commitments);
 
         // PODP — extract private fields via JSON serialization
         let podp_json = serde_json::to_value(&layer_proof.proof_of_sumcheck.podp).unwrap();
         let podp_commit_d: Bn256Point = parse_point_from_json(&podp_json["commit_d"]);
-        let podp_commit_d_dot_a: Bn256Point =
-            parse_point_from_json(&podp_json["commit_d_dot_a"]);
+        let podp_commit_d_dot_a: Bn256Point = parse_point_from_json(&podp_json["commit_d_dot_a"]);
         let podp_z_vector: Vec<Fr> = podp_json["z_vector"]
             .as_array()
             .unwrap()
@@ -603,10 +602,9 @@ fn main() -> Result<()> {
         }
 
         // Extract oracle eval formula
-        let rlc_beta_for_oracle: Fr = claim_points
-            .iter()
-            .zip(random_coefficients.iter())
-            .fold(Fr::zero(), |acc, (cp, rc)| {
+        let rlc_beta_for_oracle: Fr = claim_points.iter().zip(random_coefficients.iter()).fold(
+            Fr::zero(),
+            |acc, (cp, rc)| {
                 let beta = bindings
                     .iter()
                     .zip(cp.iter())
@@ -615,7 +613,8 @@ fn main() -> Result<()> {
                         b * term
                     });
                 acc + beta * rc
-            });
+            },
+        );
         let rlc_beta_inv =
             Option::<Fr>::from(rlc_beta_for_oracle.invert()).expect("rlcBeta should be non-zero");
         let mut oracle_result_idxs: Vec<usize> = Vec::new();
@@ -659,9 +658,11 @@ fn main() -> Result<()> {
             atom_targets.push(target_idx);
 
             // Compute point template
-            let template_strs =
-                resolve_point_template(&claim.point, &bindings, &claim_points);
-            let template: Vec<u64> = template_strs.iter().map(|s| parse_template_entry(s)).collect();
+            let template_strs = resolve_point_template(&claim.point, &bindings, &claim_points);
+            let template: Vec<u64> = template_strs
+                .iter()
+                .map(|s| parse_template_entry(s))
+                .collect();
             point_templates.push(template);
 
             // Forward claim to target layer
@@ -709,7 +710,9 @@ fn main() -> Result<()> {
         let claims = claim_tracker.remove(&il.layer_id).unwrap_or_default();
         eprintln!(
             "  Input layer {} (committed={}, claims={})",
-            j, is_committed, claims.len()
+            j,
+            is_committed,
+            claims.len()
         );
 
         if is_committed {
@@ -737,22 +740,24 @@ fn main() -> Result<()> {
             let l_half_len = (num_rows as f64).log2() as usize;
             let log_n_cols = n - l_half_len;
 
-            let groups = group_claims_by_r_half(&resolved_claim_points, &sorted_indices, log_n_cols);
+            let groups =
+                group_claims_by_r_half(&resolved_claim_points, &sorted_indices, log_n_cols);
             eprintln!(
                 "    Input layer {}: {} groups, numRows={}, lHalfLen={}, logNCols={}",
-                j, groups.len(), num_rows, l_half_len, log_n_cols
+                j,
+                groups.len(),
+                num_rows,
+                l_half_len,
+                log_n_cols
             );
 
             // Process each group
-            let input_eval_json =
-                serde_json::to_value(&input_proof.evaluation_proofs).unwrap();
+            let input_eval_json = serde_json::to_value(&input_proof.evaluation_proofs).unwrap();
 
             for (g, group) in groups.iter().enumerate() {
                 // Squeeze RLC coefficients
-                let group_rlc_coeffs = t.get_scalar_field_challenges(
-                    "Input claim RLC coefficients",
-                    group.len(),
-                );
+                let group_rlc_coeffs =
+                    t.get_scalar_field_challenges("Input claim RLC coefficients", group.len());
 
                 // Absorb comEval
                 let com_eval = input_proof.evaluation_proofs[g].commitment_to_evaluation;
@@ -785,10 +790,7 @@ fn main() -> Result<()> {
                     "Blinding factor for blinded vector commitment",
                     z_delta,
                 );
-                t.append_scalar_field_elem(
-                    "Blinding factor for blinded inner product",
-                    z_beta,
-                );
+                t.append_scalar_field_elem("Blinding factor for blinded inner product", z_beta);
 
                 // Extract L-half and R-half bindings from the first claim's point
                 let first_claim_point = &resolved_claim_points[group[0]];
@@ -844,14 +846,13 @@ fn main() -> Result<()> {
 
     for (i, le) in layer_extracts.iter().enumerate() {
         // rlcBeta = SUM_k( beta(bindings, claimPoint_k) * rlcCoeff_k )
-        let rlc_beta: Fr = le
-            .claim_points
-            .iter()
-            .zip(le.rlc_coefficients.iter())
-            .fold(Fr::zero(), |acc, (cp, rc)| {
+        let rlc_beta: Fr = le.claim_points.iter().zip(le.rlc_coefficients.iter()).fold(
+            Fr::zero(),
+            |acc, (cp, rc)| {
                 let beta = compute_beta_fr(&le.bindings, cp);
                 acc + beta * rc
-            });
+            },
+        );
         rlc_betas.push(rlc_beta);
 
         // zDotJStar = <z_vector, j_star>
@@ -982,7 +983,11 @@ fn main() -> Result<()> {
                 .iter()
                 .find(|l| l.layer_id() == *layer_id)
                 .unwrap();
-            if ld.max_degree() == 3 { 1 } else { 0 }
+            if ld.max_degree() == 3 {
+                1
+            } else {
+                0
+            }
         })
         .collect();
     let num_rounds: Vec<usize> = proof
@@ -1244,8 +1249,7 @@ mod tests {
         let verifier_config = GKRCircuitVerifierConfig::new_from_prover_config(&config, false);
 
         let mut provable = prover_circuit.gen_hyrax_provable_circuit().unwrap();
-        let committer =
-            PedersenCommitter::new(512, "xgboost-remainder Pedersen committer", None);
+        let committer = PedersenCommitter::new(512, "xgboost-remainder Pedersen committer", None);
         let mut rng = thread_rng();
         let mut vander = VandermondeInverse::new();
         let mut transcript: ECTranscript<Bn256Point, PoseidonSponge<Fq>> =
@@ -1289,8 +1293,10 @@ mod tests {
 
         let desc = verifiable.get_gkr_circuit_description_ref();
         let num_compute = desc.intermediate_layers.len();
-        let private_input_ids: std::collections::HashSet<_> =
-            verifiable.get_private_input_layer_ids().into_iter().collect();
+        let private_input_ids: std::collections::HashSet<_> = verifiable
+            .get_private_input_layer_ids()
+            .into_iter()
+            .collect();
 
         // Build layer ID → proof-order index mapping
         let mut layer_id_to_idx: HashMap<LayerId, usize> = HashMap::new();
@@ -1331,8 +1337,7 @@ mod tests {
         }
 
         // Output layer
-        let mut claim_tracker: HashMap<LayerId, Vec<HyraxClaim<Fr, Bn256Point>>> =
-            HashMap::new();
+        let mut claim_tracker: HashMap<LayerId, Vec<HyraxClaim<Fr, Bn256Point>>> = HashMap::new();
         for (_, _, olp) in &proof.circuit_proof.output_layer_proofs {
             let claim = hyrax::gkr::output_layer::HyraxOutputLayerProof::verify(
                 olp,
@@ -1362,10 +1367,9 @@ mod tests {
             let degree = layer_desc.max_degree();
 
             let random_coefficients = match global_claim_agg_strategy() {
-                ClaimAggregationStrategy::RLC => t.get_scalar_field_challenges(
-                    "RLC Claim Agg Coefficients",
-                    layer_claims.len(),
-                ),
+                ClaimAggregationStrategy::RLC => {
+                    t.get_scalar_field_challenges("RLC Claim Agg Coefficients", layer_claims.len())
+                }
                 _ => vec![Fr::one()],
             };
 
@@ -1389,15 +1393,12 @@ mod tests {
             let rhos = t.get_scalar_field_challenges("rhos", n + 1);
             let gammas = t.get_scalar_field_challenges("gammas", n);
 
-            let j_star = ProofOfSumcheck::<Bn256Point>::calculate_j_star(
-                &bindings, &rhos, &gammas, degree,
-            );
+            let j_star =
+                ProofOfSumcheck::<Bn256Point>::calculate_j_star(&bindings, &rhos, &gammas, degree);
 
             // Build PSL
-            let claim_points: Vec<Vec<Fr>> =
-                layer_claims.iter().map(|c| c.point.clone()).collect();
-            let claim_points_refs: Vec<&[Fr]> =
-                claim_points.iter().map(|v| v.as_slice()).collect();
+            let claim_points: Vec<Vec<Fr>> = layer_claims.iter().map(|c| c.point.clone()).collect();
+            let claim_points_refs: Vec<&[Fr]> = claim_points.iter().map(|v| v.as_slice()).collect();
             let psl_desc = layer_desc.get_post_sumcheck_layer(
                 &bindings,
                 &claim_points_refs,
@@ -1407,8 +1408,7 @@ mod tests {
                 new_with_values(&psl_desc, &layer_proof.commitments);
 
             // PODP transcript
-            let podp_json =
-                serde_json::to_value(&layer_proof.proof_of_sumcheck.podp).unwrap();
+            let podp_json = serde_json::to_value(&layer_proof.proof_of_sumcheck.podp).unwrap();
             let podp_commit_d: Bn256Point = parse_point_from_json(&podp_json["commit_d"]);
             let podp_commit_d_dot_a: Bn256Point =
                 parse_point_from_json(&podp_json["commit_d_dot_a"]);
@@ -1451,13 +1451,13 @@ mod tests {
             }
 
             // Compute rlcBeta
-            let rlc_beta: Fr = claim_points
-                .iter()
-                .zip(random_coefficients.iter())
-                .fold(Fr::zero(), |acc, (cp, rc)| {
+            let rlc_beta: Fr = claim_points.iter().zip(random_coefficients.iter()).fold(
+                Fr::zero(),
+                |acc, (cp, rc)| {
                     let beta = compute_beta_fr(&bindings, cp);
                     acc + beta * rc
-                });
+                },
+            );
             all_rlc_betas.push(rlc_beta);
 
             // Compute zDotJStar
@@ -1478,10 +1478,11 @@ mod tests {
             for claim in &new_claims {
                 let target_idx = *layer_id_to_idx.get(&claim.to_layer_id).unwrap();
                 atom_targets.push(target_idx);
-                let template_strs =
-                    resolve_point_template(&claim.point, &bindings, &claim_points);
-                let template: Vec<u64> =
-                    template_strs.iter().map(|s| parse_template_entry(s)).collect();
+                let template_strs = resolve_point_template(&claim.point, &bindings, &claim_points);
+                let template: Vec<u64> = template_strs
+                    .iter()
+                    .map(|s| parse_template_entry(s))
+                    .collect();
                 point_templates_layer.push(template);
                 claim_tracker
                     .entry(claim.to_layer_id)
@@ -1540,11 +1541,9 @@ mod tests {
                     group_claims_by_r_half(&resolved_claim_points, &sorted_indices, log_n_cols);
 
                 // Replay transcript per group
-                let input_eval_json =
-                    serde_json::to_value(&input_proof.evaluation_proofs).unwrap();
+                let input_eval_json = serde_json::to_value(&input_proof.evaluation_proofs).unwrap();
                 for (g, group) in groups.iter().enumerate() {
-                    let _group_rlc =
-                        t.get_scalar_field_challenges("rlc", group.len());
+                    let _group_rlc = t.get_scalar_field_challenges("rlc", group.len());
                     let com_eval = input_proof.evaluation_proofs[g].commitment_to_evaluation;
                     t.append_ec_point("comEval", com_eval);
 

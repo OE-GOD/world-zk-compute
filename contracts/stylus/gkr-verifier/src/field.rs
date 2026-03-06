@@ -25,7 +25,11 @@ pub struct U256(pub [u64; 4]);
 #[cfg(not(target_arch = "wasm32"))]
 impl core::fmt::Debug for U256 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "U256({:#x}, {:#x}, {:#x}, {:#x})", self.0[3], self.0[2], self.0[1], self.0[0])
+        write!(
+            f,
+            "U256({:#x}, {:#x}, {:#x}, {:#x})",
+            self.0[3], self.0[2], self.0[1], self.0[0]
+        )
     }
 }
 
@@ -85,8 +89,12 @@ impl U256 {
     #[inline]
     pub fn gte(&self, other: &U256) -> bool {
         for i in (0..4).rev() {
-            if self.0[i] > other.0[i] { return true; }
-            if self.0[i] < other.0[i] { return false; }
+            if self.0[i] > other.0[i] {
+                return true;
+            }
+            if self.0[i] < other.0[i] {
+                return false;
+            }
         }
         true
     }
@@ -125,7 +133,11 @@ impl U256 {
 fn field_add(a: &U256, b: &U256, modulus: &[u64; 4]) -> U256 {
     let (sum, carry) = a.add_no_mod(b);
     let m = U256(*modulus);
-    if carry || sum.gte(&m) { sum.sub_no_mod(&m) } else { sum }
+    if carry || sum.gte(&m) {
+        sum.sub_no_mod(&m)
+    } else {
+        sum
+    }
 }
 
 #[inline(never)]
@@ -140,7 +152,11 @@ fn field_sub(a: &U256, b: &U256, modulus: &[u64; 4]) -> U256 {
 
 #[inline(never)]
 fn field_neg(a: &U256, modulus: &[u64; 4]) -> U256 {
-    if a.is_zero() { *a } else { U256(*modulus).sub_no_mod(a) }
+    if a.is_zero() {
+        *a
+    } else {
+        U256(*modulus).sub_no_mod(a)
+    }
 }
 
 #[inline(never)]
@@ -176,7 +192,11 @@ fn field_inv(a: &U256, modulus: &[u64; 4]) -> U256 {
 fn field_from_be_bytes(bytes: &[u8; 32], modulus: &[u64; 4]) -> U256 {
     let v = U256::from_be_bytes(bytes);
     let m = U256(*modulus);
-    if v.gte(&m) { v.sub_no_mod(&m) } else { v }
+    if v.gte(&m) {
+        v.sub_no_mod(&m)
+    } else {
+        v
+    }
 }
 
 // ============================================================
@@ -199,23 +219,43 @@ impl Fq {
     pub const MODULUS: U256 = U256(FQ_MOD);
 
     #[inline(always)]
-    pub fn new(v: U256) -> Self { Fq(v) }
+    pub fn new(v: U256) -> Self {
+        Fq(v)
+    }
     #[inline(always)]
-    pub fn from_u64(v: u64) -> Self { Fq(U256::from_u64(v)) }
-    pub fn from_be_bytes(bytes: &[u8; 32]) -> Self { Fq(field_from_be_bytes(bytes, &FQ_MOD)) }
+    pub fn from_u64(v: u64) -> Self {
+        Fq(U256::from_u64(v))
+    }
+    pub fn from_be_bytes(bytes: &[u8; 32]) -> Self {
+        Fq(field_from_be_bytes(bytes, &FQ_MOD))
+    }
 
     #[inline]
-    pub fn add(&self, other: &Fq) -> Fq { Fq(field_add(&self.0, &other.0, &FQ_MOD)) }
+    pub fn add(&self, other: &Fq) -> Fq {
+        Fq(field_add(&self.0, &other.0, &FQ_MOD))
+    }
     #[inline]
-    pub fn sub(&self, other: &Fq) -> Fq { Fq(field_sub(&self.0, &other.0, &FQ_MOD)) }
+    pub fn sub(&self, other: &Fq) -> Fq {
+        Fq(field_sub(&self.0, &other.0, &FQ_MOD))
+    }
     #[inline]
-    pub fn neg(&self) -> Fq { Fq(field_neg(&self.0, &FQ_MOD)) }
+    pub fn neg(&self) -> Fq {
+        Fq(field_neg(&self.0, &FQ_MOD))
+    }
     #[inline]
-    pub fn mul(&self, other: &Fq) -> Fq { Fq(field_mul(&self.0, &other.0, &FQ_MOD)) }
+    pub fn mul(&self, other: &Fq) -> Fq {
+        Fq(field_mul(&self.0, &other.0, &FQ_MOD))
+    }
     #[inline]
-    pub fn square(&self) -> Fq { self.mul(self) }
-    pub fn inv(&self) -> Fq { Fq(field_inv(&self.0, &FQ_MOD)) }
-    pub fn pow(&self, exp: &U256) -> Fq { Fq(field_pow(&self.0, exp, &FQ_MOD)) }
+    pub fn square(&self) -> Fq {
+        self.mul(self)
+    }
+    pub fn inv(&self) -> Fq {
+        Fq(field_inv(&self.0, &FQ_MOD))
+    }
+    pub fn pow(&self, exp: &U256) -> Fq {
+        Fq(field_pow(&self.0, exp, &FQ_MOD))
+    }
 
     #[inline]
     pub fn pow5(&self) -> Fq {
@@ -245,27 +285,51 @@ impl Fr {
     pub const MODULUS: U256 = U256(FR_MOD);
 
     #[inline(always)]
-    pub fn new(v: U256) -> Self { Fr(v) }
+    pub fn new(v: U256) -> Self {
+        Fr(v)
+    }
     #[inline(always)]
-    pub fn from_u64(v: u64) -> Self { Fr(U256::from_u64(v)) }
-    pub fn from_be_bytes(bytes: &[u8; 32]) -> Self { Fr(field_from_be_bytes(bytes, &FR_MOD)) }
+    pub fn from_u64(v: u64) -> Self {
+        Fr(U256::from_u64(v))
+    }
+    pub fn from_be_bytes(bytes: &[u8; 32]) -> Self {
+        Fr(field_from_be_bytes(bytes, &FR_MOD))
+    }
 
     pub fn from_fq(fq: &Fq) -> Fr {
         let modulus = U256(FR_MOD);
-        if fq.0.gte(&modulus) { Fr(fq.0.sub_no_mod(&modulus)) } else { Fr(fq.0) }
+        if fq.0.gte(&modulus) {
+            Fr(fq.0.sub_no_mod(&modulus))
+        } else {
+            Fr(fq.0)
+        }
     }
 
     #[inline]
-    pub fn add(&self, other: &Fr) -> Fr { Fr(field_add(&self.0, &other.0, &FR_MOD)) }
+    pub fn add(&self, other: &Fr) -> Fr {
+        Fr(field_add(&self.0, &other.0, &FR_MOD))
+    }
     #[inline]
-    pub fn sub(&self, other: &Fr) -> Fr { Fr(field_sub(&self.0, &other.0, &FR_MOD)) }
+    pub fn sub(&self, other: &Fr) -> Fr {
+        Fr(field_sub(&self.0, &other.0, &FR_MOD))
+    }
     #[inline]
-    pub fn neg(&self) -> Fr { Fr(field_neg(&self.0, &FR_MOD)) }
-    pub fn mul(&self, other: &Fr) -> Fr { Fr(field_mul(&self.0, &other.0, &FR_MOD)) }
+    pub fn neg(&self) -> Fr {
+        Fr(field_neg(&self.0, &FR_MOD))
+    }
+    pub fn mul(&self, other: &Fr) -> Fr {
+        Fr(field_mul(&self.0, &other.0, &FR_MOD))
+    }
     #[inline]
-    pub fn square(&self) -> Fr { self.mul(self) }
-    pub fn inv(&self) -> Fr { Fr(field_inv(&self.0, &FR_MOD)) }
-    pub fn pow(&self, exp: &U256) -> Fr { Fr(field_pow(&self.0, exp, &FR_MOD)) }
+    pub fn square(&self) -> Fr {
+        self.mul(self)
+    }
+    pub fn inv(&self) -> Fr {
+        Fr(field_inv(&self.0, &FR_MOD))
+    }
+    pub fn pow(&self, exp: &U256) -> Fr {
+        Fr(field_pow(&self.0, exp, &FR_MOD))
+    }
 }
 
 // ============================================================
@@ -277,9 +341,8 @@ fn mul_wide(a: &U256, b: &U256) -> [u64; 8] {
     for i in 0..4 {
         let mut carry: u64 = 0;
         for j in 0..4 {
-            let product = (a.0[i] as u128) * (b.0[j] as u128)
-                + (result[i + j] as u128)
-                + (carry as u128);
+            let product =
+                (a.0[i] as u128) * (b.0[j] as u128) + (result[i + j] as u128) + (carry as u128);
             result[i + j] = product as u64;
             carry = (product >> 64) as u64;
         }
@@ -323,12 +386,13 @@ fn reduce_512(val: &[u64; 8], modulus: &[u64; 4]) -> U256 {
 
         loop {
             if q_hat >= (1u128 << 64)
-                || q_hat * (vn[n - 2] as u128)
-                    > ((r_hat << 64) | (un[j + n - 2] as u128))
+                || q_hat * (vn[n - 2] as u128) > ((r_hat << 64) | (un[j + n - 2] as u128))
             {
                 q_hat -= 1;
                 r_hat += vn[n - 1] as u128;
-                if r_hat < (1u128 << 64) { continue; }
+                if r_hat < (1u128 << 64) {
+                    continue;
+                }
             }
             break;
         }

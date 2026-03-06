@@ -1,10 +1,9 @@
 /// DAG GKR compute layer verification.
 /// Ported from GKRDAGVerifier.sol
-
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::ec::{ec_add, ec_mul, G1Point, PedersenGens, PODPProof, ProofOfProduct};
+use crate::ec::{ec_add, ec_mul, G1Point, PODPProof, PedersenGens, ProofOfProduct};
 use crate::field::{Fr, U256};
 use crate::poseidon::PoseidonSponge;
 use crate::sumcheck::{self, CommittedSumcheckProof};
@@ -20,7 +19,7 @@ const FIXED_REF_BASE: u64 = 20000;
 pub struct DAGCircuitDescription {
     pub num_compute_layers: usize,
     pub num_input_layers: usize,
-    pub layer_types: Vec<u8>,           // 0=subtract/identity, 1=multiply
+    pub layer_types: Vec<u8>, // 0=subtract/identity, 1=multiply
     pub num_sumcheck_rounds: Vec<usize>,
     pub atom_offsets: Vec<usize>,       // Length num_compute_layers+1
     pub atom_target_layers: Vec<usize>, // Flat
@@ -133,15 +132,18 @@ fn process_one_layer(
     absorb_commitments(&lp.commitments, sponge);
 
     // Compute RLC eval and beta
-    let (_rlc_eval, rlc_beta) = compute_rlc_eval_and_beta(
-        layer_idx, proof, desc, ctx, &bindings, &rlc_coeffs,
-    );
+    let (_rlc_eval, rlc_beta) =
+        compute_rlc_eval_and_beta(layer_idx, proof, desc, ctx, &bindings, &rlc_coeffs);
 
     // Compute oracle eval
     let oracle_eval = compute_oracle_eval(&lp.commitments, layer_idx, &rlc_beta, desc);
 
     // Verify committed sumcheck
-    let degree = if desc.layer_types[layer_idx] == 1 { 3 } else { 2 };
+    let degree = if desc.layer_types[layer_idx] == 1 {
+        3
+    } else {
+        2
+    };
     verify!(
         sumcheck::verify(
             &lp.sumcheck_proof,
@@ -155,10 +157,7 @@ fn process_one_layer(
     );
 
     // Verify ProofOfProduct
-    verify!(
-        verify_products(lp, gens, sponge),
-        "PoP failed"
-    );
+    verify!(verify_products(lp, gens, sponge), "PoP failed");
 
     bindings
 }
@@ -232,10 +231,7 @@ fn compute_rlc_eval_and_beta(
             let atom_point = resolve_point(a, &ctx.all_bindings[j], desc);
             let beta = compute_beta(bindings, &atom_point);
 
-            rlc_eval = ec_add(
-                &rlc_eval,
-                &ec_mul(&atom_eval, &rlc_coeffs[coeff_idx]),
-            );
+            rlc_eval = ec_add(&rlc_eval, &ec_mul(&atom_eval, &rlc_coeffs[coeff_idx]));
             rlc_beta = rlc_beta.add(&Fr::new(beta).mul(&Fr::new(rlc_coeffs[coeff_idx])));
             coeff_idx += 1;
         }

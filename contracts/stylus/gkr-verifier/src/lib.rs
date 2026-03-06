@@ -31,27 +31,33 @@ extern crate alloc;
 #[cfg(target_arch = "wasm32")]
 macro_rules! verify {
     ($cond:expr $(, $msg:expr)* $(,)?) => {
-        if !$cond { core::arch::wasm32::unreachable(); }
+        if !$cond {
+            core::arch::wasm32::unreachable();
+        }
     };
 }
 #[cfg(not(target_arch = "wasm32"))]
 macro_rules! verify {
-    ($cond:expr, $msg:expr $(,)?) => { assert!($cond, "{}", $msg); };
-    ($cond:expr $(,)?) => { assert!($cond); };
+    ($cond:expr, $msg:expr $(,)?) => {
+        assert!($cond, "{}", $msg);
+    };
+    ($cond:expr $(,)?) => {
+        assert!($cond);
+    };
 }
 
 // ------------------------------------------------------------------
 // Module declarations
 // ------------------------------------------------------------------
 
-pub mod field;
-pub mod poseidon;
-pub mod ec;
-pub mod transcript;
-pub mod gkr;
-pub mod sumcheck;
-pub mod hyrax;
 pub mod decode;
+pub mod ec;
+pub mod field;
+pub mod gkr;
+pub mod hyrax;
+pub mod poseidon;
+pub mod sumcheck;
+pub mod transcript;
 
 // ------------------------------------------------------------------
 // Imports
@@ -61,9 +67,9 @@ pub mod decode;
 use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::decode::ProofDecoder;
 use crate::field::{Fq, U256};
 use crate::gkr::DAGCircuitDescription;
-use crate::decode::ProofDecoder;
 
 // ------------------------------------------------------------------
 // Stylus SDK imports
@@ -283,21 +289,13 @@ pub fn verify_dag_proof_inner(
     // ----------------------------------------------------------------
     // 8. Setup Fiat-Shamir transcript
     // ----------------------------------------------------------------
-    let mut sponge = transcript::setup_transcript(
-        &circuit_hash,
-        &embedded_fqs,
-        &input_commit_coords,
-    );
+    let mut sponge =
+        transcript::setup_transcript(&circuit_hash, &embedded_fqs, &input_commit_coords);
 
     // ----------------------------------------------------------------
     // 9. Verify compute layers
     // ----------------------------------------------------------------
-    let ctx = gkr::verify_compute_layers(
-        &gkr_proof,
-        &desc,
-        &gens,
-        &mut sponge,
-    );
+    let ctx = gkr::verify_compute_layers(&gkr_proof, &desc, &gens, &mut sponge);
 
     // ----------------------------------------------------------------
     // 10. Verify input layers
@@ -352,12 +350,7 @@ impl GKRVerifier {
         gens_data: Bytes,
         circuit_desc_data: Bytes,
     ) -> bool {
-        verify_dag_proof_inner(
-            &proof_data,
-            &public_inputs,
-            &gens_data,
-            &circuit_desc_data,
-        )
+        verify_dag_proof_inner(&proof_data, &public_inputs, &gens_data, &circuit_desc_data)
     }
 }
 
@@ -368,9 +361,9 @@ impl GKRVerifier {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec;
     use crate::field::U256;
     use crate::gkr::DAGCircuitDescription;
+    use alloc::vec;
 
     /// Proof data shorter than 4 bytes must be rejected.
     #[test]
@@ -567,7 +560,10 @@ mod tests {
         }
 
         // num_compute_layers, num_input_layers
-        push_usize(&mut buf, desc["numComputeLayers"].as_u64().unwrap() as usize);
+        push_usize(
+            &mut buf,
+            desc["numComputeLayers"].as_u64().unwrap() as usize,
+        );
         push_usize(&mut buf, desc["numInputLayers"].as_u64().unwrap() as usize);
 
         // Length-prefixed integer arrays
@@ -623,8 +619,8 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../../../contracts/test/fixtures/phase1a_dag_fixture.json"
         );
-        let fixture_str = std::fs::read_to_string(fixture_path)
-            .expect("failed to read phase1a_dag_fixture.json");
+        let fixture_str =
+            std::fs::read_to_string(fixture_path).expect("failed to read phase1a_dag_fixture.json");
         let fixture: serde_json::Value =
             serde_json::from_str(&fixture_str).expect("failed to parse fixture JSON");
 
@@ -642,8 +638,7 @@ mod tests {
         let gens_data = hex::decode(&gens_hex[2..]).expect("invalid gens_hex");
 
         // 4. circuit_desc_data: encode from JSON structure
-        let circuit_desc_data =
-            encode_circuit_desc_from_json(&fixture["dag_circuit_description"]);
+        let circuit_desc_data = encode_circuit_desc_from_json(&fixture["dag_circuit_description"]);
 
         // Run the full verification pipeline
         let result =

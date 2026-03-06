@@ -1,10 +1,11 @@
 /// Committed sumcheck verification.
 /// Ported from CommittedSumcheckVerifier.sol
-
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::ec::{ec_add, ec_mul, multi_scalar_mul, msm_with_truncated_gens, G1Point, PedersenGens, PODPProof};
+use crate::ec::{
+    ec_add, ec_mul, msm_with_truncated_gens, multi_scalar_mul, G1Point, PODPProof, PedersenGens,
+};
 use crate::field::{Fr, U256};
 use crate::poseidon::PoseidonSponge;
 
@@ -91,12 +92,7 @@ pub fn compute_j_star(
 }
 
 /// Compute dot_product = sum * rho0 + oracle_eval * (-rhoN)
-fn compute_dot_product(
-    sum: &G1Point,
-    oracle_eval: &G1Point,
-    rho0: &U256,
-    rho_n: &U256,
-) -> G1Point {
+fn compute_dot_product(sum: &G1Point, oracle_eval: &G1Point, rho0: &U256, rho_n: &U256) -> G1Point {
     // sum * rho0
     let term1 = ec_mul(sum, rho0);
     // oracle_eval * (-rhoN) = oracle_eval * (FR_MOD - rhoN)
@@ -214,21 +210,30 @@ pub fn verify_proof_of_product(
 
     // Check 1: alpha + c * com_x == z1 * g + z2 * h
     let lhs1 = ec_add(&pop.alpha, &ec_mul(com_x, &c));
-    let rhs1 = ec_add(&ec_mul(&gens.scalar_gen, &pop.z1), &ec_mul(&gens.blinding_gen, &pop.z2));
+    let rhs1 = ec_add(
+        &ec_mul(&gens.scalar_gen, &pop.z1),
+        &ec_mul(&gens.blinding_gen, &pop.z2),
+    );
     if lhs1 != rhs1 {
         return false;
     }
 
     // Check 2: beta + c * com_y == z3 * g + z4 * h
     let lhs2 = ec_add(&pop.beta, &ec_mul(com_y, &c));
-    let rhs2 = ec_add(&ec_mul(&gens.scalar_gen, &pop.z3), &ec_mul(&gens.blinding_gen, &pop.z4));
+    let rhs2 = ec_add(
+        &ec_mul(&gens.scalar_gen, &pop.z3),
+        &ec_mul(&gens.blinding_gen, &pop.z4),
+    );
     if lhs2 != rhs2 {
         return false;
     }
 
     // Check 3: delta + c * com_z == z3 * com_x + z5 * h
     let lhs3 = ec_add(&pop.delta, &ec_mul(com_z, &c));
-    let rhs3 = ec_add(&ec_mul(com_x, &pop.z3), &ec_mul(&gens.blinding_gen, &pop.z5));
+    let rhs3 = ec_add(
+        &ec_mul(com_x, &pop.z3),
+        &ec_mul(&gens.blinding_gen, &pop.z5),
+    );
     if lhs3 != rhs3 {
         return false;
     }

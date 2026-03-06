@@ -1,14 +1,13 @@
 /// Input layer verification (Hyrax PODP + public input MLE).
 /// Ported from GKRDAGVerifier.sol input layer functions.
-
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::ec::{ec_add, ec_mul, G1Point, PedersenGens, PODPProof};
+use crate::ec::{ec_add, ec_mul, G1Point, PODPProof, PedersenGens};
 use crate::field::{Fr, U256};
 use crate::gkr::{
-    count_claims_for, resolve_point, DAGCircuitDescription, DAGInputLayerProof,
-    GKRProof, PublicValueClaim, VerifyContext,
+    count_claims_for, resolve_point, DAGCircuitDescription, DAGInputLayerProof, GKRProof,
+    PublicValueClaim, VerifyContext,
 };
 use crate::poseidon::PoseidonSponge;
 use crate::sumcheck;
@@ -410,8 +409,11 @@ fn group_claims_by_r_half(
         for g in 0..i {
             if temp_group_sizes[g] > 0 {
                 let first_in_group = temp_groups[g][0];
-                if r_half_equals(&claim_points[first_in_group], &claim_points[claim_idx], log_n_cols)
-                {
+                if r_half_equals(
+                    &claim_points[first_in_group],
+                    &claim_points[claim_idx],
+                    log_n_cols,
+                ) {
                     temp_groups[g].push(claim_idx);
                     temp_group_sizes[g] += 1;
                     break;

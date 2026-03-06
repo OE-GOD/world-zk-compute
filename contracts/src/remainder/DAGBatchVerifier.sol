@@ -29,10 +29,10 @@ library DAGBatchVerifier {
     /// @notice Session state persisted across batch transactions
     struct DAGBatchSession {
         bytes32 circuitHash;
-        address verifier;           // msg.sender for auth
-        uint256 nextBatchIdx;       // Next expected batch index
-        uint256 totalBatches;       // Total number of compute batches (not counting finalize)
-        uint256 numComputeLayers;   // From circuit description
+        address verifier; // msg.sender for auth
+        uint256 nextBatchIdx; // Next expected batch index
+        uint256 totalBatches; // Total number of compute batches (not counting finalize)
+        uint256 numComputeLayers; // From circuit description
         bool finalized;
         // Sponge state (4 values)
         uint256 spongeState0;
@@ -43,8 +43,8 @@ library DAGBatchVerifier {
         uint256 outputEvalX;
         uint256 outputEvalY;
         // Finalize progress (for multi-tx finalize)
-        uint256 finalizeInputIdx;       // Current input layer index during finalize
-        uint256 finalizeGroupsDone;     // Eval groups verified so far in current committed input
+        uint256 finalizeInputIdx; // Current input layer index during finalize
+        uint256 finalizeGroupsDone; // Eval groups verified so far in current committed input
     }
 
     /// @notice Cross-batch data persisted in storage between transactions
@@ -72,40 +72,40 @@ library DAGBatchVerifier {
     function storeSession(bytes32 sessionId, DAGBatchSession memory session) internal {
         bytes32 base = _sessionSlot(sessionId);
         assembly {
-            sstore(base, mload(session))                              // circuitHash
-            sstore(add(base, 1), mload(add(session, 0x20)))           // verifier
-            sstore(add(base, 2), mload(add(session, 0x40)))           // nextBatchIdx
-            sstore(add(base, 3), mload(add(session, 0x60)))           // totalBatches
-            sstore(add(base, 4), mload(add(session, 0x80)))           // numComputeLayers
-            sstore(add(base, 5), mload(add(session, 0xa0)))           // finalized
-            sstore(add(base, 6), mload(add(session, 0xc0)))           // spongeState0
-            sstore(add(base, 7), mload(add(session, 0xe0)))           // spongeState1
-            sstore(add(base, 8), mload(add(session, 0x100)))          // spongeState2
-            sstore(add(base, 9), mload(add(session, 0x120)))          // spongeAbsorbing
-            sstore(add(base, 10), mload(add(session, 0x140)))         // outputEvalX
-            sstore(add(base, 11), mload(add(session, 0x160)))         // outputEvalY
-            sstore(add(base, 12), mload(add(session, 0x180)))         // finalizeInputIdx
-            sstore(add(base, 13), mload(add(session, 0x1a0)))         // finalizeGroupsDone
+            sstore(base, mload(session)) // circuitHash
+            sstore(add(base, 1), mload(add(session, 0x20))) // verifier
+            sstore(add(base, 2), mload(add(session, 0x40))) // nextBatchIdx
+            sstore(add(base, 3), mload(add(session, 0x60))) // totalBatches
+            sstore(add(base, 4), mload(add(session, 0x80))) // numComputeLayers
+            sstore(add(base, 5), mload(add(session, 0xa0))) // finalized
+            sstore(add(base, 6), mload(add(session, 0xc0))) // spongeState0
+            sstore(add(base, 7), mload(add(session, 0xe0))) // spongeState1
+            sstore(add(base, 8), mload(add(session, 0x100))) // spongeState2
+            sstore(add(base, 9), mload(add(session, 0x120))) // spongeAbsorbing
+            sstore(add(base, 10), mload(add(session, 0x140))) // outputEvalX
+            sstore(add(base, 11), mload(add(session, 0x160))) // outputEvalY
+            sstore(add(base, 12), mload(add(session, 0x180))) // finalizeInputIdx
+            sstore(add(base, 13), mload(add(session, 0x1a0))) // finalizeGroupsDone
         }
     }
 
     function loadSession(bytes32 sessionId) internal view returns (DAGBatchSession memory session) {
         bytes32 base = _sessionSlot(sessionId);
         assembly {
-            mstore(session, sload(base))                              // circuitHash
-            mstore(add(session, 0x20), sload(add(base, 1)))           // verifier
-            mstore(add(session, 0x40), sload(add(base, 2)))           // nextBatchIdx
-            mstore(add(session, 0x60), sload(add(base, 3)))           // totalBatches
-            mstore(add(session, 0x80), sload(add(base, 4)))           // numComputeLayers
-            mstore(add(session, 0xa0), sload(add(base, 5)))           // finalized
-            mstore(add(session, 0xc0), sload(add(base, 6)))           // spongeState0
-            mstore(add(session, 0xe0), sload(add(base, 7)))           // spongeState1
-            mstore(add(session, 0x100), sload(add(base, 8)))          // spongeState2
-            mstore(add(session, 0x120), sload(add(base, 9)))          // spongeAbsorbing
-            mstore(add(session, 0x140), sload(add(base, 10)))         // outputEvalX
-            mstore(add(session, 0x160), sload(add(base, 11)))         // outputEvalY
-            mstore(add(session, 0x180), sload(add(base, 12)))         // finalizeInputIdx
-            mstore(add(session, 0x1a0), sload(add(base, 13)))         // finalizeGroupsDone
+            mstore(session, sload(base)) // circuitHash
+            mstore(add(session, 0x20), sload(add(base, 1))) // verifier
+            mstore(add(session, 0x40), sload(add(base, 2))) // nextBatchIdx
+            mstore(add(session, 0x60), sload(add(base, 3))) // totalBatches
+            mstore(add(session, 0x80), sload(add(base, 4))) // numComputeLayers
+            mstore(add(session, 0xa0), sload(add(base, 5))) // finalized
+            mstore(add(session, 0xc0), sload(add(base, 6))) // spongeState0
+            mstore(add(session, 0xe0), sload(add(base, 7))) // spongeState1
+            mstore(add(session, 0x100), sload(add(base, 8))) // spongeState2
+            mstore(add(session, 0x120), sload(add(base, 9))) // spongeAbsorbing
+            mstore(add(session, 0x140), sload(add(base, 10))) // outputEvalX
+            mstore(add(session, 0x160), sload(add(base, 11))) // outputEvalY
+            mstore(add(session, 0x180), sload(add(base, 12))) // finalizeInputIdx
+            mstore(add(session, 0x1a0), sload(add(base, 13))) // finalizeGroupsDone
         }
     }
 
@@ -113,7 +113,11 @@ library DAGBatchVerifier {
     // SPONGE STATE HELPERS
     // ========================================================================
 
-    function spongeFromSession(DAGBatchSession memory session) internal pure returns (PoseidonSponge.Sponge memory sponge) {
+    function spongeFromSession(DAGBatchSession memory session)
+        internal
+        pure
+        returns (PoseidonSponge.Sponge memory sponge)
+    {
         sponge.state[0] = session.spongeState0;
         sponge.state[1] = session.spongeState1;
         sponge.state[2] = session.spongeState2;
@@ -243,10 +247,11 @@ library DAGBatchVerifier {
     // ========================================================================
 
     /// @notice Reconstruct allBindings from cross-batch data
-    function reconstructBindings(
-        CrossBatchData memory data,
-        uint256 numComputeLayers
-    ) internal pure returns (uint256[][] memory allBindings) {
+    function reconstructBindings(CrossBatchData memory data, uint256 numComputeLayers)
+        internal
+        pure
+        returns (uint256[][] memory allBindings)
+    {
         allBindings = new uint256[][](numComputeLayers);
         if (data.bindingsOffsets.length == 0) return allBindings;
         uint256 numProcessed = data.bindingsOffsets.length - 1;
@@ -264,11 +269,10 @@ library DAGBatchVerifier {
     }
 
     /// @notice Update cross-batch data with bindings from layers [0, endLayer)
-    function updateBindings(
-        CrossBatchData memory data,
-        uint256[][] memory allBindings,
-        uint256 endLayer
-    ) internal pure {
+    function updateBindings(CrossBatchData memory data, uint256[][] memory allBindings, uint256 endLayer)
+        internal
+        pure
+    {
         uint256 totalLen = 0;
         for (uint256 i = 0; i < endLayer; i++) {
             totalLen += allBindings[i].length;

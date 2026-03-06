@@ -99,8 +99,7 @@ pub fn prepare_circuit_inputs(model: &XgboostModel, features: &[f64]) -> Circuit
     }
 
     // Expected sum (public)
-    let expected_sum =
-        model::compute_leaf_sum(model, features) - model::quantize(model.base_score);
+    let expected_sum = model::compute_leaf_sum(model, features) - model::quantize(model.base_score);
 
     // Comparison tables (public)
     let (thresholds_raw, feature_indices_raw, is_real_raw) =
@@ -161,8 +160,7 @@ fn prove_and_verify(inputs: &CircuitInputs) -> Result<()> {
     prover_circuit.set_input("thresholds", inputs.thresholds_padded.clone().into());
     prover_circuit.set_input("is_real", inputs.is_real_padded.clone().into());
 
-    let hyrax_prover_config =
-        GKRCircuitProverConfig::hyrax_compatible_runtime_optimized_default();
+    let hyrax_prover_config = GKRCircuitProverConfig::hyrax_compatible_runtime_optimized_default();
     let hyrax_verifier_config =
         GKRCircuitVerifierConfig::new_from_prover_config(&hyrax_prover_config, false);
 
@@ -250,8 +248,7 @@ pub fn build_and_prove(
     prover_circuit.set_input("is_real", inputs.is_real_padded.into());
 
     // === Generate Hyrax proof (zero-knowledge) ===
-    let hyrax_prover_config =
-        GKRCircuitProverConfig::hyrax_compatible_runtime_optimized_default();
+    let hyrax_prover_config = GKRCircuitProverConfig::hyrax_compatible_runtime_optimized_default();
     let hyrax_verifier_config =
         GKRCircuitVerifierConfig::new_from_prover_config(&hyrax_prover_config, false);
 
@@ -333,10 +330,7 @@ pub fn build_and_prove(
 /// Leaf ordering is big-endian: leaf index = b_0 * 2^(d-1) + b_1 * 2^(d-2) + ... + b_{d-1}.
 /// The fold processes b_0 first (root decision), splitting each tree's leaves into
 /// first-half (left subtree) and second-half (right subtree).
-pub fn build_tree_inference_circuit(
-    num_trees_padded: usize,
-    max_depth: usize,
-) -> Circuit<Fr> {
+pub fn build_tree_inference_circuit(num_trees_padded: usize, max_depth: usize) -> Circuit<Fr> {
     assert!(num_trees_padded.is_power_of_two());
     assert!(max_depth > 0);
 
@@ -431,8 +425,7 @@ pub fn build_tree_inference_circuit(
     let output_nv = model::next_log2(pb_count + 1);
 
     // Route sum residual to position 0
-    let sum_routed =
-        builder.add_identity_gate_node(&sum_residual, vec![(0, 0)], output_nv, None);
+    let sum_routed = builder.add_identity_gate_node(&sum_residual, vec![(0, 0)], output_nv, None);
 
     // Route binary check values to positions 1..bc_count+1
     let mut bc_gates = Vec::new();
@@ -445,7 +438,9 @@ pub fn build_tree_inference_circuit(
     let output = builder.add_sector(sum_routed.expr() + bc_routed.expr());
 
     builder.set_output(&output);
-    builder.build().expect("Failed to build tree inference circuit")
+    builder
+        .build()
+        .expect("Failed to build tree inference circuit")
 }
 
 /// Fold a table of VT * 2^d entries down to VT entries using path bits.
@@ -497,11 +492,7 @@ fn fold_table_with_bits(
 }
 
 /// Sum VT values down to 1 using pairwise tree reduction.
-fn aggregate_sum(
-    builder: &mut CircuitBuilder<Fr>,
-    values: &NodeRef<Fr>,
-    nv: usize,
-) -> NodeRef<Fr> {
+fn aggregate_sum(builder: &mut CircuitBuilder<Fr>, values: &NodeRef<Fr>, nv: usize) -> NodeRef<Fr> {
     let mut agg = values.clone();
     for level in (0..nv).rev() {
         let half_n = 1usize << level;
@@ -584,8 +575,14 @@ pub fn build_full_inference_circuit(
     let path_bc = builder.add_sector(b_sq.expr() - path_bits.expr());
 
     // Leaf fold: T_pad trees, direct bit mapping
-    let leaf_selected =
-        fold_table_with_bits(&mut builder, &leaf_values, &path_bits, num_trees_padded, max_depth, &|v| v);
+    let leaf_selected = fold_table_with_bits(
+        &mut builder,
+        &leaf_values,
+        &path_bits,
+        num_trees_padded,
+        max_depth,
+        &|v| v,
+    );
 
     // Aggregation
     let leaf_sum = aggregate_sum(&mut builder, &leaf_selected, tree_nv);
@@ -610,13 +607,28 @@ pub fn build_full_inference_circuit(
     let vt_bit_map = |v: usize| -> usize { v % num_trees_padded };
 
     let selected_thresh = fold_table_with_bits(
-        &mut builder, &thresh_table, &path_bits, vt_padded, max_depth, &vt_bit_map,
+        &mut builder,
+        &thresh_table,
+        &path_bits,
+        vt_padded,
+        max_depth,
+        &vt_bit_map,
     );
     let selected_feat = fold_table_with_bits(
-        &mut builder, &feature_table, &path_bits, vt_padded, max_depth, &vt_bit_map,
+        &mut builder,
+        &feature_table,
+        &path_bits,
+        vt_padded,
+        max_depth,
+        &vt_bit_map,
     );
     let selected_is_real = fold_table_with_bits(
-        &mut builder, &is_real_table, &path_bits, vt_padded, max_depth, &vt_bit_map,
+        &mut builder,
+        &is_real_table,
+        &path_bits,
+        vt_padded,
+        max_depth,
+        &vt_bit_map,
     );
 
     // --- Decomp binary check: bit^2 - bit ---
@@ -672,8 +684,7 @@ pub fn build_full_inference_circuit(
         };
         sign_pb_gates.push((v as u32, src as u32));
     }
-    let sign_path_bits =
-        builder.add_identity_gate_node(&path_bits, sign_pb_gates, vt_nv, None);
+    let sign_path_bits = builder.add_identity_gate_node(&path_bits, sign_pb_gates, vt_nv, None);
 
     let sign_diff = builder.add_sector(top_bit.expr() - sign_path_bits.expr());
     let masked_sign = builder.add_sector(sign_diff.expr() * selected_is_real.expr());
@@ -730,12 +741,13 @@ pub fn build_full_inference_circuit(
     let ms_r = builder.add_identity_gate_node(&masked_sign, ms_gates, output_nv, None);
 
     // Combine all (disjoint positions, no cancellation)
-    let combined = builder.add_sector(
-        sum_r.expr() + pbc_r.expr() + dbc_r.expr() + mr_r.expr() + ms_r.expr(),
-    );
+    let combined =
+        builder.add_sector(sum_r.expr() + pbc_r.expr() + dbc_r.expr() + mr_r.expr() + ms_r.expr());
 
     builder.set_output(&combined);
-    builder.build().expect("Failed to build full inference circuit")
+    builder
+        .build()
+        .expect("Failed to build full inference circuit")
 }
 
 /// Circuit description encodes the model structure (deterministic, for hashing).
@@ -877,7 +889,11 @@ mod tests {
         let predicted = model::predict(&model, &features);
         assert_eq!(predicted, 0); // score = -1.0 → class 0
         let result = build_and_prove(&model, &features, predicted);
-        assert!(result.is_ok(), "Single tree depth 1 failed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Single tree depth 1 failed: {:?}",
+            result.err()
+        );
     }
 
     /// Test with features going right at all decisions.
@@ -1016,8 +1032,7 @@ mod tests {
             .gen_hyrax_provable_circuit()
             .expect("gen_hyrax_provable_circuit");
 
-        let committer =
-            PedersenCommitter::new(512, "xgboost-remainder Pedersen committer", None);
+        let committer = PedersenCommitter::new(512, "xgboost-remainder Pedersen committer", None);
         let mut rng = thread_rng();
         let mut vander = VandermondeInverse::new();
         let mut transcript: ECTranscript<Bn256Point, PoseidonSponge<Fq>> =
@@ -1032,9 +1047,10 @@ mod tests {
             &mut transcript
         );
 
-        let verifiable: hyrax::verifiable_circuit::HyraxVerifiableCircuit<Bn256Point> = verifier_circuit
-            .gen_hyrax_verifiable_circuit()
-            .expect("gen_hyrax_verifiable_circuit");
+        let verifiable: hyrax::verifiable_circuit::HyraxVerifiableCircuit<Bn256Point> =
+            verifier_circuit
+                .gen_hyrax_verifiable_circuit()
+                .expect("gen_hyrax_verifiable_circuit");
         let desc = verifiable.get_gkr_circuit_description_ref();
 
         eprintln!("\n=== Phase 1a Circuit Structure ===");
@@ -1044,7 +1060,8 @@ mod tests {
         use remainder::layer::LayerDescription;
 
         // Build layer index map: LayerId → proof order index
-        let mut layer_id_to_proof_idx: std::collections::HashMap<remainder::layer::LayerId, usize> = std::collections::HashMap::new();
+        let mut layer_id_to_proof_idx: std::collections::HashMap<remainder::layer::LayerId, usize> =
+            std::collections::HashMap::new();
         for (i, (layer_id, _)) in proof.circuit_proof.layer_proofs.iter().enumerate() {
             layer_id_to_proof_idx.insert(*layer_id, i);
         }
@@ -1074,7 +1091,12 @@ mod tests {
 
         eprintln!("\n=== FS Challenges ===");
         for (i, fs) in desc.fiat_shamir_challenges.iter().enumerate() {
-            eprintln!("  FS {:2}: layer_id={:?}, num_bits={}", i, fs.layer_id(), fs.num_bits);
+            eprintln!(
+                "  FS {:2}: layer_id={:?}, num_bits={}",
+                i,
+                fs.layer_id(),
+                fs.num_bits
+            );
         }
 
         eprintln!("\n=== Proof Structure ===");
@@ -1148,8 +1170,7 @@ mod tests {
             .gen_hyrax_provable_circuit()
             .expect("gen_hyrax_provable_circuit");
 
-        let committer =
-            PedersenCommitter::new(512, "xgboost-remainder Pedersen committer", None);
+        let committer = PedersenCommitter::new(512, "xgboost-remainder Pedersen committer", None);
         let mut rng = thread_rng();
         let mut vander = VandermondeInverse::new();
         let mut transcript: ECTranscript<Bn256Point, PoseidonSponge<Fq>> =
@@ -1165,15 +1186,19 @@ mod tests {
         );
 
         // Inspect the verifiable circuit description
-        let verifiable: hyrax::verifiable_circuit::HyraxVerifiableCircuit<Bn256Point> = verifier_circuit
-            .gen_hyrax_verifiable_circuit()
-            .expect("gen_hyrax_verifiable_circuit");
+        let verifiable: hyrax::verifiable_circuit::HyraxVerifiableCircuit<Bn256Point> =
+            verifier_circuit
+                .gen_hyrax_verifiable_circuit()
+                .expect("gen_hyrax_verifiable_circuit");
         let desc = verifiable.get_gkr_circuit_description_ref();
 
         eprintln!("\n=== Phase 1b Circuit Structure ===");
         eprintln!("Output layers: {}", desc.output_layers.len());
         eprintln!("Intermediate layers: {}", desc.intermediate_layers.len());
-        eprintln!("Fiat-Shamir challenges: {}", desc.fiat_shamir_challenges.len());
+        eprintln!(
+            "Fiat-Shamir challenges: {}",
+            desc.fiat_shamir_challenges.len()
+        );
 
         for (i, layer) in desc.intermediate_layers.iter().enumerate() {
             use remainder::layer::LayerDescription;
@@ -1188,7 +1213,10 @@ mod tests {
 
         eprintln!("\n=== Proof Structure ===");
         eprintln!("Layer proofs: {}", proof.circuit_proof.layer_proofs.len());
-        eprintln!("Output layer proofs: {}", proof.circuit_proof.output_layer_proofs.len());
+        eprintln!(
+            "Output layer proofs: {}",
+            proof.circuit_proof.output_layer_proofs.len()
+        );
         eprintln!("Hyrax input proofs: {}", proof.hyrax_input_proofs.len());
         eprintln!("Public inputs: {}", proof.public_inputs.len());
 
@@ -1255,7 +1283,11 @@ mod tests {
     // ========== Scale tests ==========
 
     /// Helper: generate a model, run prove_and_verify, return elapsed time.
-    fn scale_prove_verify(num_trees: usize, depth: usize, num_features: usize) -> std::time::Duration {
+    fn scale_prove_verify(
+        num_trees: usize,
+        depth: usize,
+        num_features: usize,
+    ) -> std::time::Duration {
         let model = model::generate_model(num_trees, depth, num_features);
         let features = model::generate_features(num_features, 42);
 
@@ -1372,7 +1404,9 @@ mod tests {
                     break;
                 }
             }
-            if found { continue; }
+            if found {
+                continue;
+            }
             // Check claim point coordinates
             for (ci, cp) in claim_points.iter().enumerate() {
                 for (cj, cv) in cp.iter().enumerate() {
@@ -1382,9 +1416,13 @@ mod tests {
                         break;
                     }
                 }
-                if found { break; }
+                if found {
+                    break;
+                }
             }
-            if found { continue; }
+            if found {
+                continue;
+            }
             // Fixed values
             if *val == Fr::zero() {
                 template.push("F0".to_string());
@@ -1421,13 +1459,13 @@ mod tests {
     #[ignore] // Only run explicitly (takes ~2s, writes file)
     fn gen_phase1a_fixture() {
         use hyrax::gkr::layer::{get_claims_from_product, HyraxClaim};
-        use remainder::layer::LayerDescription;
         use remainder::layer::product::{new_with_values, PostSumcheckLayer};
+        use remainder::layer::LayerDescription;
+        use serde_json::json;
         use shared_types::config::{
             global_config::global_claim_agg_strategy, ClaimAggregationStrategy,
         };
         use shared_types::transcript::ec_transcript::ECTranscriptTrait;
-        use serde_json::json;
 
         let mdl = model::sample_model();
         let features = vec![0.6, 0.2, 0.8, 0.5, 0.3];
@@ -1463,16 +1501,27 @@ mod tests {
         eprintln!("Generating Phase 1a proof...");
         let (proof, proof_config) = perform_function_under_prover_config!(
             |w, x, y, z| provable.prove(w, x, y, z),
-            &config, &committer, &mut rng, &mut vander, &mut transcript
+            &config,
+            &committer,
+            &mut rng,
+            &mut vander,
+            &mut transcript
         );
 
         // Verify in Rust
         let verifiable = verifier_circuit.gen_hyrax_verifiable_circuit().unwrap();
-        let verifier_committer = PedersenCommitter::new(512, "xgboost-remainder Pedersen committer", None);
+        let verifier_committer =
+            PedersenCommitter::new(512, "xgboost-remainder Pedersen committer", None);
         let mut vtx: ECTranscript<Bn256Point, PoseidonSponge<Fq>> =
             ECTranscript::new("xgboost-remainder verifier transcript");
         perform_function_under_verifier_config!(
-            verify_hyrax_proof, &verifier_config, &proof, &verifiable, &verifier_committer, &mut vtx, &proof_config
+            verify_hyrax_proof,
+            &verifier_config,
+            &proof,
+            &verifiable,
+            &verifier_committer,
+            &mut vtx,
+            &proof_config
         );
         eprintln!("Proof verified in Rust!");
 
@@ -1480,7 +1529,12 @@ mod tests {
         eprintln!("FS challenges count: {}", desc.fiat_shamir_challenges.len());
         for (i, fs) in desc.fiat_shamir_challenges.iter().enumerate() {
             use remainder::layer::LayerDescription;
-            eprintln!("  FS {}: layer_id={:?}, num_bits={}", i, fs.layer_id(), fs.num_bits);
+            eprintln!(
+                "  FS {}: layer_id={:?}, num_bits={}",
+                i,
+                fs.layer_id(),
+                fs.num_bits
+            );
         }
 
         // Build layer ID → proof-order index mapping
@@ -1501,24 +1555,38 @@ mod tests {
         {
             use remainder::prover::helpers::get_circuit_description_hash_as_field_elems;
             use shared_types::config::global_config::global_verifier_circuit_description_hash_type;
-            let hash_elems = get_circuit_description_hash_as_field_elems(desc, global_verifier_circuit_description_hash_type());
+            let hash_elems = get_circuit_description_hash_as_field_elems(
+                desc,
+                global_verifier_circuit_description_hash_type(),
+            );
             custom_transcript.append_scalar_field_elems("Circuit description hash", &hash_elems);
             proof.public_inputs.iter().for_each(|(_, mle)| {
-                custom_transcript.append_input_scalar_field_elems("Public input", &mle.as_ref().unwrap().f.iter().collect::<Vec<_>>());
+                custom_transcript.append_input_scalar_field_elems(
+                    "Public input",
+                    &mle.as_ref().unwrap().f.iter().collect::<Vec<_>>(),
+                );
             });
             proof.hyrax_input_proofs.iter().for_each(|ip| {
-                custom_transcript.append_input_ec_points("Hyrax input commitment", ip.input_commitment.clone());
+                custom_transcript
+                    .append_input_ec_points("Hyrax input commitment", ip.input_commitment.clone());
             });
             for fs_desc in &desc.fiat_shamir_challenges {
-                custom_transcript.get_scalar_field_challenges("Verifier challenges", 1 << fs_desc.num_bits);
+                custom_transcript
+                    .get_scalar_field_challenges("Verifier challenges", 1 << fs_desc.num_bits);
             }
         }
 
         // Output layer
-        let mut claim_tracker: std::collections::HashMap<remainder::layer::LayerId, Vec<HyraxClaim<Fr, Bn256Point>>> =
-            std::collections::HashMap::new();
+        let mut claim_tracker: std::collections::HashMap<
+            remainder::layer::LayerId,
+            Vec<HyraxClaim<Fr, Bn256Point>>,
+        > = std::collections::HashMap::new();
         for (_, _, olp) in &proof.circuit_proof.output_layer_proofs {
-            let claim = hyrax::gkr::output_layer::HyraxOutputLayerProof::verify(olp, &desc.output_layers[0], &mut custom_transcript);
+            let claim = hyrax::gkr::output_layer::HyraxOutputLayerProof::verify(
+                olp,
+                &desc.output_layers[0],
+                &mut custom_transcript,
+            );
             claim_tracker.insert(claim.to_layer_id, vec![claim]);
         }
 
@@ -1531,18 +1599,32 @@ mod tests {
         let mut all_oracle_expr_coeffs: Vec<Vec<String>> = Vec::new();
         let mut all_atom_commit_idxs: Vec<Vec<usize>> = Vec::new();
 
-        for (proof_idx, (layer_id, layer_proof)) in proof.circuit_proof.layer_proofs.iter().enumerate() {
-            let layer_desc = desc.intermediate_layers.iter().find(|ld| ld.layer_id() == *layer_id).unwrap();
+        for (proof_idx, (layer_id, layer_proof)) in
+            proof.circuit_proof.layer_proofs.iter().enumerate()
+        {
+            let layer_desc = desc
+                .intermediate_layers
+                .iter()
+                .find(|ld| ld.layer_id() == *layer_id)
+                .unwrap();
             let layer_claims = claim_tracker.remove(layer_id).unwrap_or_default();
             let num_rounds = layer_desc.sumcheck_round_indices().len();
             let degree = layer_desc.max_degree();
             let layer_type: u8 = if degree == 3 { 1 } else { 0 };
 
-            eprintln!("  Layer {} (id={:?}, type={}, rounds={}, claims={})", proof_idx, layer_id, layer_type, num_rounds, layer_claims.len());
+            eprintln!(
+                "  Layer {} (id={:?}, type={}, rounds={}, claims={})",
+                proof_idx,
+                layer_id,
+                layer_type,
+                num_rounds,
+                layer_claims.len()
+            );
 
             // RLC coefficients
             let random_coefficients = match global_claim_agg_strategy() {
-                ClaimAggregationStrategy::RLC => custom_transcript.get_scalar_field_challenges("RLC Claim Agg Coefficients", layer_claims.len()),
+                ClaimAggregationStrategy::RLC => custom_transcript
+                    .get_scalar_field_challenges("RLC Claim Agg Coefficients", layer_claims.len()),
                 _ => vec![Fr::one()],
             };
 
@@ -1565,31 +1647,61 @@ mod tests {
             // Build PSL
             let claim_points: Vec<Vec<Fr>> = layer_claims.iter().map(|c| c.point.clone()).collect();
             let claim_points_refs: Vec<&[Fr]> = claim_points.iter().map(|v| v.as_slice()).collect();
-            let psl_desc = layer_desc.get_post_sumcheck_layer(&bindings, &claim_points_refs, &random_coefficients);
-            let psl: PostSumcheckLayer<Fr, Bn256Point> = new_with_values(&psl_desc, &layer_proof.commitments);
+            let psl_desc = layer_desc.get_post_sumcheck_layer(
+                &bindings,
+                &claim_points_refs,
+                &random_coefficients,
+            );
+            let psl: PostSumcheckLayer<Fr, Bn256Point> =
+                new_with_values(&psl_desc, &layer_proof.commitments);
 
             // Verify
-            let rlc_eval = layer_claims.iter().zip(random_coefficients.iter())
-                .fold(Bn256Point::zero(), |acc, (elem, rc)| acc + elem.evaluation * *rc);
-            layer_proof.proof_of_sumcheck.verify(&rlc_eval, degree, &psl, &bindings, &verifier_committer, &mut custom_transcript);
+            let rlc_eval = layer_claims
+                .iter()
+                .zip(random_coefficients.iter())
+                .fold(Bn256Point::zero(), |acc, (elem, rc)| {
+                    acc + elem.evaluation * *rc
+                });
+            layer_proof.proof_of_sumcheck.verify(
+                &rlc_eval,
+                degree,
+                &psl,
+                &bindings,
+                &verifier_committer,
+                &mut custom_transcript,
+            );
 
-            let product_triples: Vec<_> = psl.0.iter().filter_map(|p| p.get_product_triples()).flatten().collect();
-            for ((x, y, z), pop) in product_triples.iter().zip(layer_proof.proofs_of_product.iter()) {
+            let product_triples: Vec<_> = psl
+                .0
+                .iter()
+                .filter_map(|p| p.get_product_triples())
+                .flatten()
+                .collect();
+            for ((x, y, z), pop) in product_triples
+                .iter()
+                .zip(layer_proof.proofs_of_product.iter())
+            {
                 pop.verify(*x, *y, *z, &verifier_committer, &mut custom_transcript);
             }
 
             // Extract oracle eval formula: for each product, (result_commit_idx, expr_coeff)
             // product.coefficient = rlcBeta * expr_coeff
             // Compute rlcBeta to extract expr_coeff
-            let rlc_beta: Fr = claim_points.iter().zip(random_coefficients.iter())
-                .fold(Fr::zero(), |acc, (cp, rc)| {
-                    let beta = bindings.iter().zip(cp.iter()).fold(Fr::one(), |b, (ri, ci)| {
-                        let term = *ri * *ci + (Fr::one() - *ri) * (Fr::one() - *ci);
-                        b * term
-                    });
+            let rlc_beta: Fr = claim_points.iter().zip(random_coefficients.iter()).fold(
+                Fr::zero(),
+                |acc, (cp, rc)| {
+                    let beta = bindings
+                        .iter()
+                        .zip(cp.iter())
+                        .fold(Fr::one(), |b, (ri, ci)| {
+                            let term = *ri * *ci + (Fr::one() - *ri) * (Fr::one() - *ci);
+                            b * term
+                        });
                     acc + beta * rc
-                });
-            let rlc_beta_inv = Option::<Fr>::from(rlc_beta.invert()).expect("rlcBeta should be non-zero");
+                },
+            );
+            let rlc_beta_inv =
+                Option::<Fr>::from(rlc_beta.invert()).expect("rlcBeta should be non-zero");
             let mut oracle_result_idxs: Vec<usize> = Vec::new();
             let mut oracle_expr_coeffs: Vec<Fr> = Vec::new();
             let mut flat_commit_idx = 0usize;
@@ -1616,13 +1728,19 @@ mod tests {
             }
 
             // Extract claims (atom routing)
-            let new_claims: Vec<HyraxClaim<Fr, Bn256Point>> = psl.0.iter().flat_map(|p| get_claims_from_product(p)).collect();
+            let new_claims: Vec<HyraxClaim<Fr, Bn256Point>> = psl
+                .0
+                .iter()
+                .flat_map(|p| get_claims_from_product(p))
+                .collect();
             let mut atom_targets = Vec::new();
             let mut point_templates = Vec::new();
             let mut claim_data_atoms = Vec::new();
 
             for claim in &new_claims {
-                let target_idx = *layer_id_to_idx.get(&claim.to_layer_id).expect("target not found");
+                let target_idx = *layer_id_to_idx
+                    .get(&claim.to_layer_id)
+                    .expect("target not found");
                 atom_targets.push(target_idx);
                 let template = compute_point_template(&claim.point, &bindings, &claim_points);
                 point_templates.push(template.clone());
@@ -1632,7 +1750,10 @@ mod tests {
                     "point": claim.point.iter().map(fr_to_hex).collect::<Vec<_>>(),
                     "point_template": template,
                 }));
-                claim_tracker.entry(claim.to_layer_id).or_insert_with(Vec::new).push(claim.clone());
+                claim_tracker
+                    .entry(claim.to_layer_id)
+                    .or_insert_with(Vec::new)
+                    .push(claim.clone());
             }
 
             all_atom_targets.push(atom_targets);
@@ -1654,28 +1775,40 @@ mod tests {
         }
 
         // Input layer claim data
-        let private_input_ids: std::collections::HashSet<_> =
-            verifiable.get_private_input_layer_ids().into_iter().collect();
+        let private_input_ids: std::collections::HashSet<_> = verifiable
+            .get_private_input_layer_ids()
+            .into_iter()
+            .collect();
         let mut input_layers_data = Vec::new();
         for (j, il) in desc.input_layers.iter().enumerate() {
             let claims = claim_tracker.remove(&il.layer_id).unwrap_or_default();
             let is_committed = private_input_ids.contains(&il.layer_id);
-            let claim_points_hex: Vec<Vec<String>> = claims.iter()
-                .map(|c| c.point.iter().map(fr_to_hex).collect()).collect();
+            let claim_points_hex: Vec<Vec<String>> = claims
+                .iter()
+                .map(|c| c.point.iter().map(fr_to_hex).collect())
+                .collect();
             input_layers_data.push(json!({
                 "input_idx": j,
                 "is_committed": is_committed,
                 "num_claims": claims.len(),
                 "claim_points": claim_points_hex,
             }));
-            eprintln!("  Input {}: committed={}, claims={}", j, is_committed, claims.len());
+            eprintln!(
+                "  Input {}: committed={}, claims={}",
+                j,
+                is_committed,
+                claims.len()
+            );
         }
 
         // === ABI-encode ===
         let circuit_hash_raw: [u8; 32] = {
             use remainder::prover::helpers::get_circuit_description_hash_as_field_elems;
             use shared_types::config::global_config::global_verifier_circuit_description_hash_type;
-            let hash_elems = get_circuit_description_hash_as_field_elems(desc, global_verifier_circuit_description_hash_type());
+            let hash_elems = get_circuit_description_hash_as_field_elems(
+                desc,
+                global_verifier_circuit_description_hash_type(),
+            );
             let repr1 = hash_elems[0].to_repr();
             let repr2 = hash_elems[1].to_repr();
             let mut hash = [0u8; 32];
@@ -1690,7 +1823,11 @@ mod tests {
         // Public inputs bytes — all public shreds: leaf_values, expected_sum, thresholds, is_real
         let mut pub_input_bytes = Vec::new();
         let encode_i64_as_fr = |v: i64| -> [u8; 32] {
-            let fr_val = if v >= 0 { Fr::from(v as u64) } else { -Fr::from((-v) as u64) };
+            let fr_val = if v >= 0 {
+                Fr::from(v as u64)
+            } else {
+                -Fr::from((-v) as u64)
+            };
             let repr = <Fr as PrimeField>::to_repr(&fr_val);
             let mut be = [0u8; 32];
             be.copy_from_slice(repr.as_ref());
@@ -1730,15 +1867,24 @@ mod tests {
         atom_offsets.push(atom_offset);
         pt_offsets.push(pt_offset);
 
-        let layer_types_ordered: Vec<u8> = dag_layers.iter().map(|l| l["layer_type"].as_u64().unwrap() as u8).collect();
-        let num_rounds_ordered: Vec<usize> = dag_layers.iter().map(|l| l["num_rounds"].as_u64().unwrap() as usize).collect();
+        let layer_types_ordered: Vec<u8> = dag_layers
+            .iter()
+            .map(|l| l["layer_type"].as_u64().unwrap() as u8)
+            .collect();
+        let num_rounds_ordered: Vec<usize> = dag_layers
+            .iter()
+            .map(|l| l["num_rounds"].as_u64().unwrap() as usize)
+            .collect();
 
         // Flatten oracle eval formula data
         let mut oracle_product_offsets: Vec<usize> = Vec::new();
         let mut flat_oracle_result_idxs: Vec<usize> = Vec::new();
         let mut flat_oracle_expr_coeffs: Vec<String> = Vec::new();
         let mut oracle_offset = 0usize;
-        for (result_idxs, coeffs) in all_oracle_result_idxs.iter().zip(all_oracle_expr_coeffs.iter()) {
+        for (result_idxs, coeffs) in all_oracle_result_idxs
+            .iter()
+            .zip(all_oracle_expr_coeffs.iter())
+        {
             oracle_product_offsets.push(oracle_offset);
             for (idx, coeff) in result_idxs.iter().zip(coeffs.iter()) {
                 flat_oracle_result_idxs.push(*idx);
@@ -1749,7 +1895,8 @@ mod tests {
         oracle_product_offsets.push(oracle_offset);
 
         // Flatten atom-to-commitment index mapping
-        let flat_atom_commit_idxs: Vec<usize> = all_atom_commit_idxs.into_iter().flatten().collect();
+        let flat_atom_commit_idxs: Vec<usize> =
+            all_atom_commit_idxs.into_iter().flatten().collect();
 
         // Flatten incoming claims per layer (inverse of atom routing)
         let total_layers = num_compute + desc.input_layers.len();
@@ -1804,10 +1951,16 @@ mod tests {
 
         // Write to fixture file
         let fixture_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent().unwrap()
-            .parent().unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
             .join("contracts/test/fixtures/phase1a_dag_fixture.json");
-        std::fs::write(&fixture_path, serde_json::to_string_pretty(&fixture).unwrap()).unwrap();
+        std::fs::write(
+            &fixture_path,
+            serde_json::to_string_pretty(&fixture).unwrap(),
+        )
+        .unwrap();
         eprintln!("Fixture written to: {}", fixture_path.display());
     }
 }

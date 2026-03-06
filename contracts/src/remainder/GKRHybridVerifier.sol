@@ -106,8 +106,7 @@ library GKRHybridVerifier {
             challenges.layers[i].gammas = _squeezeMultiple(sponge, n);
 
             // PODP transcript
-            challenges.layers[i].podpChallenge =
-                _absorbPODPAndSqueeze(proof.layerProofs[i].sumcheckProof.podp, sponge);
+            challenges.layers[i].podpChallenge = _absorbPODPAndSqueeze(proof.layerProofs[i].sumcheckProof.podp, sponge);
 
             // PoP transcript (if layer has product triples)
             for (uint256 p = 0; p < proof.layerProofs[i].pops.length; p++) {
@@ -232,11 +231,7 @@ library GKRHybridVerifier {
     }
 
     /// @notice Check if the circuit has any non-committed input layer
-    function _hasNonCommittedInputLayer(GKRVerifier.CircuitDescription memory circuit)
-        private
-        pure
-        returns (bool)
-    {
+    function _hasNonCommittedInputLayer(GKRVerifier.CircuitDescription memory circuit) private pure returns (bool) {
         for (uint256 i = 0; i < circuit.numLayers; i++) {
             if (circuit.layerTypes[i] == 3 && !circuit.isCommitted[i]) {
                 return true;
@@ -553,15 +548,14 @@ library GKRHybridVerifier {
         uint256 total = 2 + pubInputs.length + challenges.outputChallenges.length + 1;
         for (uint256 i = 0; i < challenges.layers.length; i++) {
             total += challenges.layers[i].bindings.length + challenges.layers[i].rhos.length
-                + challenges.layers[i].gammas.length + 1; // +1 for podpChallenge
+            + challenges.layers[i].gammas.length + 1; // +1 for podpChallenge
             if (challenges.layers[i].popChallenge != 0) total += 1;
         }
         total += 2 + 1; // inputRlcCoeffs + inputPodpChallenge
         total += challenges.interLayerCoeffs.length;
         total += challenges.mleEvalPoint.length; // mleEvalPoint(M)
         total += challenges.inputClaimPoint.length; // inputClaimPoint(InputNumVars)
-        total += groth16Outputs.rlcBeta.length + groth16Outputs.zDotJStar.length
-            + groth16Outputs.lTensor.length + 2; // +2 for zDotR + mleEval
+        total += groth16Outputs.rlcBeta.length + groth16Outputs.zDotJStar.length + groth16Outputs.lTensor.length + 2; // +2 for zDotR + mleEval
 
         inputs = new uint256[](total);
         uint256 idx = 0;

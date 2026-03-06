@@ -10,8 +10,8 @@ use frontend::layouter::builder::{Circuit, CircuitBuilder, LayerVisibility};
 use hyrax::gkr::verify_hyrax_proof;
 use hyrax::utils::vandermonde::VandermondeInverse;
 use rand::thread_rng;
-use sha2::{Digest, Sha256};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use shared_types::config::{GKRCircuitProverConfig, GKRCircuitVerifierConfig};
 use shared_types::pedersen::PedersenCommitter;
 use shared_types::transcript::ec_transcript::ECTranscript;
@@ -108,22 +108,45 @@ fn main() -> Result<()> {
 
     // ABI-encode
     let abi_bytes = abi_encode::encode_hyrax_proof(&proof, &circuit_hash)?;
-    eprintln!("ABI-encoded proof: {} bytes ({} uint256 slots)", abi_bytes.len(), (abi_bytes.len() - 4) / 32);
+    eprintln!(
+        "ABI-encoded proof: {} bytes ({} uint256 slots)",
+        abi_bytes.len(),
+        (abi_bytes.len() - 4) / 32
+    );
 
     // ABI-encode Pedersen generators
     let gens_bytes = abi_encode::encode_pedersen_gens(&committer)?;
-    eprintln!("ABI-encoded generators: {} bytes ({} uint256 slots)", gens_bytes.len(), gens_bytes.len() / 32);
+    eprintln!(
+        "ABI-encoded generators: {} bytes ({} uint256 slots)",
+        gens_bytes.len(),
+        gens_bytes.len() / 32
+    );
 
     // Also serialize the proof JSON for debugging
     let proof_json = serde_json::to_value(&proof)?;
 
     // Count proof elements for the Solidity decoder
     let circuit_proof = &proof_json["circuit_proof"];
-    let num_layer_proofs = circuit_proof["layer_proofs"].as_array().map(|a| a.len()).unwrap_or(0);
-    let num_output_proofs = circuit_proof["output_layer_proofs"].as_array().map(|a| a.len()).unwrap_or(0);
-    let num_fs_claims = circuit_proof["fiat_shamir_claims"].as_array().map(|a| a.len()).unwrap_or(0);
-    let num_pub_claims = proof_json["claims_on_public_values"].as_array().map(|a| a.len()).unwrap_or(0);
-    let num_input_proofs = proof_json["hyrax_input_proofs"].as_array().map(|a| a.len()).unwrap_or(0);
+    let num_layer_proofs = circuit_proof["layer_proofs"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let num_output_proofs = circuit_proof["output_layer_proofs"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let num_fs_claims = circuit_proof["fiat_shamir_claims"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let num_pub_claims = proof_json["claims_on_public_values"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let num_input_proofs = proof_json["hyrax_input_proofs"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
 
     let output = json!({
         "proof_hex": format!("0x{}", hex::encode(&abi_bytes)),

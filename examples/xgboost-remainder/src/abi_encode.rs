@@ -136,9 +136,7 @@ pub fn encode_hyrax_proof(
 ///
 /// Format: numGens (uint256) | G1[numGens] (message gens) | G1 (scalarGen) | G1 (blindingGen)
 /// Each G1 point is 64 bytes (x, y) in big-endian.
-pub fn encode_pedersen_gens(
-    committer: &PedersenCommitter<Bn256Point>,
-) -> Result<Vec<u8>> {
+pub fn encode_pedersen_gens(committer: &PedersenCommitter<Bn256Point>) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
 
     let num_gens = committer.generators.len();
@@ -367,8 +365,8 @@ fn encode_point_from_json(buf: &mut Vec<u8>, val: &Value) -> Result<()> {
     let s = val
         .as_str()
         .ok_or_else(|| anyhow!("expected hex string for EC point, got: {:?}", val))?;
-    let bytes = hex::decode(s.trim_start_matches("0x"))
-        .map_err(|e| anyhow!("invalid point hex: {}", e))?;
+    let bytes =
+        hex::decode(s.trim_start_matches("0x")).map_err(|e| anyhow!("invalid point hex: {}", e))?;
 
     let (x_be, y_be) = decompress_point(&bytes)?;
     buf.extend_from_slice(&x_be);
@@ -420,7 +418,8 @@ mod tests {
     fn test_encode_fr_from_json() {
         // Fr element representing 6 in LE hex:
         // 0600000000000000000000000000000000000000000000000000000000000000
-        let val = serde_json::json!("0600000000000000000000000000000000000000000000000000000000000000");
+        let val =
+            serde_json::json!("0600000000000000000000000000000000000000000000000000000000000000");
         let mut buf = Vec::new();
         encode_fr_from_json(&mut buf, &val).unwrap();
         assert_eq!(buf.len(), 32);

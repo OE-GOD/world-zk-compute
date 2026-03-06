@@ -50,7 +50,11 @@ fn main() {
         .gen_hyrax_provable_circuit()
         .expect("Failed to gen Hyrax-provable circuit");
 
-    let committer = PedersenCommitter::new(512, "dump-proof-json Pedersen committer seed string for generating bases", None);
+    let committer = PedersenCommitter::new(
+        512,
+        "dump-proof-json Pedersen committer seed string for generating bases",
+        None,
+    );
     let mut rng = thread_rng();
     let mut vander = VandermondeInverse::new();
     let mut transcript: ECTranscript<Bn256Point, PoseidonSponge<Fq>> =
@@ -70,7 +74,11 @@ fn main() {
     let verifiable = verifier_circuit
         .gen_hyrax_verifiable_circuit()
         .expect("Failed to gen Hyrax-verifiable circuit");
-    let verifier_committer = PedersenCommitter::new(512, "dump-proof-json Pedersen committer seed string for generating bases", None);
+    let verifier_committer = PedersenCommitter::new(
+        512,
+        "dump-proof-json Pedersen committer seed string for generating bases",
+        None,
+    );
     let mut verifier_transcript: ECTranscript<Bn256Point, PoseidonSponge<Fq>> =
         ECTranscript::new("dump-proof transcript");
     perform_function_under_verifier_config!(

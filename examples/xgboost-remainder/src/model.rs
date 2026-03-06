@@ -98,15 +98,15 @@ struct XgbTree {
 
 /// Load an XGBoost model from a JSON file (saved with `xgb.save_model("model.json")`).
 pub fn load_xgboost_json(path: &Path) -> Result<XgboostModel, String> {
-    let data = std::fs::read_to_string(path)
-        .map_err(|e| format!("Failed to read model file: {}", e))?;
+    let data =
+        std::fs::read_to_string(path).map_err(|e| format!("Failed to read model file: {}", e))?;
     parse_xgboost_json(&data)
 }
 
 /// Parse an XGBoost model from a JSON string.
 pub fn parse_xgboost_json(json_str: &str) -> Result<XgboostModel, String> {
-    let raw: XgbJsonModel =
-        serde_json::from_str(json_str).map_err(|e| format!("Failed to parse XGBoost JSON: {}", e))?;
+    let raw: XgbJsonModel = serde_json::from_str(json_str)
+        .map_err(|e| format!("Failed to parse XGBoost JSON: {}", e))?;
 
     let num_features: usize = raw
         .learner
@@ -146,11 +146,31 @@ pub fn parse_xgboost_json(json_str: &str) -> Result<XgboostModel, String> {
         for i in 0..num_nodes {
             let is_leaf = xgb_tree.left_children[i] == -1;
             nodes.push(TreeNode {
-                feature_index: if is_leaf { -1 } else { xgb_tree.split_indices[i] },
-                threshold: if is_leaf { 0.0 } else { xgb_tree.split_conditions[i] },
-                left_child: if is_leaf { 0 } else { xgb_tree.left_children[i] as usize },
-                right_child: if is_leaf { 0 } else { xgb_tree.right_children[i] as usize },
-                leaf_value: if is_leaf { xgb_tree.base_weights[i] } else { 0.0 },
+                feature_index: if is_leaf {
+                    -1
+                } else {
+                    xgb_tree.split_indices[i]
+                },
+                threshold: if is_leaf {
+                    0.0
+                } else {
+                    xgb_tree.split_conditions[i]
+                },
+                left_child: if is_leaf {
+                    0
+                } else {
+                    xgb_tree.left_children[i] as usize
+                },
+                right_child: if is_leaf {
+                    0
+                } else {
+                    xgb_tree.right_children[i] as usize
+                },
+                leaf_value: if is_leaf {
+                    xgb_tree.base_weights[i]
+                } else {
+                    0.0
+                },
                 is_leaf,
             });
         }
@@ -234,10 +254,7 @@ pub fn traverse_tree(tree: &DecisionTree, features: &[f64]) -> f64 {
 
 /// Collect all decision path information for circuit building.
 /// Returns (node_indices, comparisons) for each tree.
-pub fn trace_inference(
-    model: &XgboostModel,
-    features: &[f64],
-) -> Vec<Vec<(usize, bool)>> {
+pub fn trace_inference(model: &XgboostModel, features: &[f64]) -> Vec<Vec<(usize, bool)>> {
     let mut paths = Vec::new();
 
     for tree in &model.trees {
@@ -327,7 +344,14 @@ pub fn tree_leaf_values(tree: &DecisionTree, target_depth: usize) -> Vec<i64> {
         }
         let half = 1usize << (target_depth - depth - 1);
         // Left child: path bit = 0 (lower half of indices)
-        fill_leaves(nodes, node.left_child, depth + 1, target_depth, path_index, leaves);
+        fill_leaves(
+            nodes,
+            node.left_child,
+            depth + 1,
+            target_depth,
+            path_index,
+            leaves,
+        );
         // Right child: path bit = 1 (upper half of indices)
         fill_leaves(
             nodes,
@@ -453,7 +477,11 @@ pub fn compute_comparison_tables(
                         break;
                     }
                     let bit = (j >> (max_depth - 1 - b)) & 1 == 1;
-                    node_idx = if bit { node.right_child } else { node.left_child };
+                    node_idx = if bit {
+                        node.right_child
+                    } else {
+                        node.left_child
+                    };
                 }
 
                 if !reached_leaf {
@@ -565,7 +593,10 @@ pub fn generate_perfect_tree(depth: usize, num_features: usize, seed: u64) -> De
 
     // Leaf nodes (indices num_internal..total_nodes)
     for i in 0..num_leaves {
-        let hash = seed.wrapping_mul(17).wrapping_add(i as u64).wrapping_add(1000);
+        let hash = seed
+            .wrapping_mul(17)
+            .wrapping_add(i as u64)
+            .wrapping_add(1000);
         let leaf_value = -1.0 + 2.0 * ((hash % 200) as f64 / 200.0);
         nodes.push(TreeNode {
             feature_index: -1,
@@ -581,11 +612,7 @@ pub fn generate_perfect_tree(depth: usize, num_features: usize, seed: u64) -> De
 }
 
 /// Generate a complete XGBoost model with `num_trees` perfect trees of given depth.
-pub fn generate_model(
-    num_trees: usize,
-    depth: usize,
-    num_features: usize,
-) -> XgboostModel {
+pub fn generate_model(num_trees: usize, depth: usize, num_features: usize) -> XgboostModel {
     let trees: Vec<DecisionTree> = (0..num_trees)
         .map(|t| generate_perfect_tree(depth, num_features, (t + 1) as u64 * 137))
         .collect();
@@ -810,7 +837,10 @@ mod tests {
                 reconstructed += 1 << bit_i;
             }
         }
-        assert_eq!(reconstructed, shifted0, "reconstruction check for tree 0, depth 0");
+        assert_eq!(
+            reconstructed, shifted0,
+            "reconstruction check for tree 0, depth 0"
+        );
 
         // Verify sign bit matches path direction
         // feature[0]=0.6 >= threshold=0.5, so goes right, path_bit=true, top_bit should be 1
@@ -841,7 +871,10 @@ mod tests {
         }
         assert_eq!(reconstructed, shifted);
         // Top bit should be 0 (went left, diff < 0)
-        assert!(!decomp_bits[pos * decomp_k + decomp_k - 1], "sign bit should be 0 for left");
+        assert!(
+            !decomp_bits[pos * decomp_k + decomp_k - 1],
+            "sign bit should be 0 for left"
+        );
     }
 
     #[test]
@@ -1032,10 +1065,10 @@ mod tests {
         let (path_bits, _) = compute_path_bits(&model, &features);
         assert_eq!(path_bits.len(), 2); // 2 trees
         assert_eq!(path_bits[0].len(), 2); // max_depth=2
-        // Tree 0: feature[2]=3.0 >= 2.45 → right (true), then feature[3]=1.0 < 1.75 → left (false)
+                                           // Tree 0: feature[2]=3.0 >= 2.45 → right (true), then feature[3]=1.0 < 1.75 → left (false)
         assert!(path_bits[0][0]); // right at root
         assert!(!path_bits[0][1]); // left at depth 1
-        // Tree 1: feature[1]=2.0 < 3.0 → left (false), then leaf (padded false)
+                                   // Tree 1: feature[1]=2.0 < 3.0 → left (false), then leaf (padded false)
         assert!(!path_bits[1][0]); // left at root
         assert!(!path_bits[1][1]); // padded
 

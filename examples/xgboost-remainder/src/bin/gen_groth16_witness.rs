@@ -121,7 +121,10 @@ fn parse_arg(name: &str) -> Option<String> {
 
 fn parse_arg_usize(name: &str, default: usize) -> usize {
     parse_arg(name)
-        .map(|s| s.parse().unwrap_or_else(|_| panic!("invalid {} value", name)))
+        .map(|s| {
+            s.parse()
+                .unwrap_or_else(|_| panic!("invalid {} value", name))
+        })
         .unwrap_or(default)
 }
 
@@ -146,7 +149,11 @@ fn setup_toy_circuit() -> CircuitSetup {
 
     let a_vals: Vec<u64> = (1..=size as u64).map(|i| i * 3).collect();
     let b_vals: Vec<u64> = (1..=size as u64).map(|i| i * 2).collect();
-    let expected_vals: Vec<u64> = a_vals.iter().zip(b_vals.iter()).map(|(a, b)| a * b).collect();
+    let expected_vals: Vec<u64> = a_vals
+        .iter()
+        .zip(b_vals.iter())
+        .map(|(a, b)| a * b)
+        .collect();
 
     prover_circuit.set_input("a", a_vals.into());
     prover_circuit.set_input("b", b_vals.into());
@@ -230,7 +237,8 @@ fn main() -> Result<()> {
     let config = GKRCircuitProverConfig::hyrax_compatible_runtime_optimized_default();
     let verifier_config = GKRCircuitVerifierConfig::new_from_prover_config(&config, false);
 
-    let mut provable = setup.prover_circuit
+    let mut provable = setup
+        .prover_circuit
         .gen_hyrax_provable_circuit()
         .expect("gen_hyrax_provable_circuit");
 
@@ -263,7 +271,8 @@ fn main() -> Result<()> {
     let pub_values = &setup.pub_values;
 
     // Verify proof (full verification, ensures proof is valid)
-    let verifiable = setup.verifier_circuit
+    let verifiable = setup
+        .verifier_circuit
         .gen_hyrax_verifiable_circuit()
         .expect("gen_hyrax_verifiable_circuit");
     let verifier_committer = PedersenCommitter::new(512, setup.pedersen_seed, None);
@@ -312,10 +321,7 @@ fn main() -> Result<()> {
             );
         });
         proof.hyrax_input_proofs.iter().for_each(|ip| {
-            t.append_input_ec_points(
-                "Hyrax input layer commitment",
-                ip.input_commitment.clone(),
-            );
+            t.append_input_ec_points("Hyrax input layer commitment", ip.input_commitment.clone());
         });
         for fs_desc in &verifiable_ref.fiat_shamir_challenges {
             let num_evals = 1 << fs_desc.num_bits;
@@ -356,8 +362,7 @@ fn main() -> Result<()> {
     let mut layer_num_vars: Vec<usize> = Vec::new();
     let mut layer_degrees: Vec<usize> = Vec::new();
 
-    for (layer_idx, (_layer_id, layer_proof)) in
-        proof.circuit_proof.layer_proofs.iter().enumerate()
+    for (layer_idx, (_layer_id, layer_proof)) in proof.circuit_proof.layer_proofs.iter().enumerate()
     {
         let layer_desc = verifiable_ref
             .intermediate_layers
@@ -368,10 +373,9 @@ fn main() -> Result<()> {
 
         // RLC coefficients (from transcript squeeze)
         let random_coefficients = match global_claim_agg_strategy() {
-            ClaimAggregationStrategy::RLC => t.get_scalar_field_challenges(
-                "RLC Claim Agg Coefficients",
-                layer_claims_vec.len(),
-            ),
+            ClaimAggregationStrategy::RLC => {
+                t.get_scalar_field_challenges("RLC Claim Agg Coefficients", layer_claims_vec.len())
+            }
             _ => vec![Fr::one()],
         };
         let random_coeff = random_coefficients[0];
@@ -428,22 +432,17 @@ fn main() -> Result<()> {
         );
 
         // Build PostSumcheckLayer for claim tracking
-        let claim_points: Vec<Vec<Fr>> =
-            layer_claims_vec.iter().map(|c| c.point.clone()).collect();
+        let claim_points: Vec<Vec<Fr>> = layer_claims_vec.iter().map(|c| c.point.clone()).collect();
         let claim_points_refs: Vec<&[Fr]> = claim_points.iter().map(|v| v.as_slice()).collect();
-        let psl_desc = layer_desc.get_post_sumcheck_layer(
-            &bindings,
-            &claim_points_refs,
-            &random_coefficients,
-        );
+        let psl_desc =
+            layer_desc.get_post_sumcheck_layer(&bindings, &claim_points_refs, &random_coefficients);
         let psl: PostSumcheckLayer<Fr, Bn256Point> =
             new_with_values(&psl_desc, &layer_proof.commitments);
 
         // PODP — extract private fields via JSON serialization
         let podp_json = serde_json::to_value(&layer_proof.proof_of_sumcheck.podp).unwrap();
         let podp_commit_d: Bn256Point = parse_point_from_json(&podp_json["commit_d"]);
-        let podp_commit_d_dot_a: Bn256Point =
-            parse_point_from_json(&podp_json["commit_d_dot_a"]);
+        let podp_commit_d_dot_a: Bn256Point = parse_point_from_json(&podp_json["commit_d_dot_a"]);
         let podp_z_vector: Vec<Fr> = podp_json["z_vector"]
             .as_array()
             .unwrap()
@@ -539,8 +538,7 @@ fn main() -> Result<()> {
 
     // === Input layer ===
     // Squeeze input RLC coefficients (2 claims -> 2 squeezes)
-    let input_rlc_coeffs =
-        t.get_scalar_field_challenges("Input claim RLC coefficients", 2);
+    let input_rlc_coeffs = t.get_scalar_field_challenges("Input claim RLC coefficients", 2);
     let input_rlc_0 = input_rlc_coeffs[0];
     let input_rlc_1 = input_rlc_coeffs[1];
 
@@ -576,7 +574,10 @@ fn main() -> Result<()> {
         "Blinding factor for blinded vector commitment",
         input_podp_z_delta,
     );
-    t.append_scalar_field_elem("Blinding factor for blinded inner product", input_podp_z_beta);
+    t.append_scalar_field_elem(
+        "Blinding factor for blinded inner product",
+        input_podp_z_beta,
+    );
 
     eprintln!("Transcript replay complete.");
 
@@ -626,9 +627,15 @@ fn main() -> Result<()> {
 
     eprintln!(
         "output_challenges: {:?}",
-        output_challenges.iter().map(|c| fr_to_hex(c)).collect::<Vec<_>>()
+        output_challenges
+            .iter()
+            .map(|c| fr_to_hex(c))
+            .collect::<Vec<_>>()
     );
-    eprintln!("claim_agg_coeff: {}", fr_to_hex(&layer_extracts[0].random_coeff));
+    eprintln!(
+        "claim_agg_coeff: {}",
+        fr_to_hex(&layer_extracts[0].random_coeff)
+    );
 
     // Per-layer: rlc_beta and z_dot_jstar
     let mut rlc_betas: Vec<Fr> = Vec::new();
@@ -652,7 +659,12 @@ fn main() -> Result<()> {
             .fold(Fr::zero(), |acc, (a, b)| acc + *a * *b);
         z_dot_jstars.push(z_dot_jstar);
 
-        eprintln!("  layer {}: rlc_beta={}, z_dot_jstar={}", i, fr_to_hex(&rlc_beta), fr_to_hex(&z_dot_jstar));
+        eprintln!(
+            "  layer {}: rlc_beta={}, z_dot_jstar={}",
+            i,
+            fr_to_hex(&rlc_beta),
+            fr_to_hex(&z_dot_jstar)
+        );
     }
 
     // Inter-layer coefficients (L-1 values: layer_extracts[1..].random_coeff)
@@ -671,8 +683,14 @@ fn main() -> Result<()> {
     let input_claim_point: Vec<Fr> = layer_extracts[num_layers - 1].bindings.clone();
     let input_num_vars = input_claim_point.len();
     let left_dims = input_num_vars / 2;
-    eprintln!("input_claim_point (len={}): {:?}", input_num_vars,
-        input_claim_point.iter().map(|p| fr_to_hex(p)).collect::<Vec<_>>());
+    eprintln!(
+        "input_claim_point (len={}): {:?}",
+        input_num_vars,
+        input_claim_point
+            .iter()
+            .map(|p| fr_to_hex(p))
+            .collect::<Vec<_>>()
+    );
 
     // L-tensor: for each shred, scale tensor(left_bindings) by the RLC coefficient
     let left_bindings = &input_claim_point[..left_dims];
@@ -715,8 +733,14 @@ fn main() -> Result<()> {
         // Fallback: use first layer's bindings (for toy circuits where they match)
         found_point.unwrap_or_else(|| layer_extracts[0].bindings.clone())
     };
-    eprintln!("mle_eval_point (len={}): {:?}", mle_eval_point.len(),
-        mle_eval_point.iter().map(|p| fr_to_hex(p)).collect::<Vec<_>>());
+    eprintln!(
+        "mle_eval_point (len={}): {:?}",
+        mle_eval_point.len(),
+        mle_eval_point
+            .iter()
+            .map(|p| fr_to_hex(p))
+            .collect::<Vec<_>>()
+    );
     let mle_eval = evaluate_mle_fr(pub_values, &mle_eval_point);
 
     eprintln!("z_dot_r: {}", fr_to_hex(&z_dot_r));
@@ -774,12 +798,14 @@ fn main() -> Result<()> {
     // ================================================================
     let circuit_hash_0_fr = {
         let mut repr = <Fr as PrimeField>::Repr::default();
-        repr.as_mut().copy_from_slice(hash_elems[0].to_repr().as_ref());
+        repr.as_mut()
+            .copy_from_slice(hash_elems[0].to_repr().as_ref());
         Fr::from_repr(repr).unwrap()
     };
     let circuit_hash_1_fr = {
         let mut repr = <Fr as PrimeField>::Repr::default();
-        repr.as_mut().copy_from_slice(hash_elems[1].to_repr().as_ref());
+        repr.as_mut()
+            .copy_from_slice(hash_elems[1].to_repr().as_ref());
         Fr::from_repr(repr).unwrap()
     };
     let circuit_hash_0 = fr_to_hex(&circuit_hash_0_fr);

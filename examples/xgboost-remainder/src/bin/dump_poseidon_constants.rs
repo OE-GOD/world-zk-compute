@@ -322,7 +322,12 @@ fn main() {
     println!("// ═══ Full MDS Matrix (3x3, Cauchy) ═══");
     for i in 0..3 {
         for j in 0..3 {
-            println!("uint256 constant MDS_{}_{} = {};", i, j, fq_to_hex(&mds[i][j]));
+            println!(
+                "uint256 constant MDS_{}_{} = {};",
+                i,
+                j,
+                fq_to_hex(&mds[i][j])
+            );
         }
     }
     println!();
@@ -330,12 +335,20 @@ fn main() {
     println!("// ═══ Pre-sparse MDS Matrix (3x3) ═══");
     for i in 0..3 {
         for j in 0..3 {
-            println!("uint256 constant PRE_SPARSE_{}_{} = {};", i, j, fq_to_hex(&pre_sparse_mds[i][j]));
+            println!(
+                "uint256 constant PRE_SPARSE_{}_{} = {};",
+                i,
+                j,
+                fq_to_hex(&pre_sparse_mds[i][j])
+            );
         }
     }
     println!();
 
-    println!("// ═══ Start constants (first half full rounds: {} sets) ═══", constants_start.len());
+    println!(
+        "// ═══ Start constants (first half full rounds: {} sets) ═══",
+        constants_start.len()
+    );
     for (r, rc) in constants_start.iter().enumerate() {
         for (i, c) in rc.iter().enumerate() {
             println!("uint256 constant S_{}_{}  = {};", r, i, fq_to_hex(c));
@@ -343,13 +356,19 @@ fn main() {
     }
     println!();
 
-    println!("// ═══ Partial round constants ({} constants) ═══", constants_partial.len());
+    println!(
+        "// ═══ Partial round constants ({} constants) ═══",
+        constants_partial.len()
+    );
     for (r, c) in constants_partial.iter().enumerate() {
         println!("uint256 constant P_{}  = {};", r, fq_to_hex(c));
     }
     println!();
 
-    println!("// ═══ End constants (second half full rounds: {} sets) ═══", constants_end.len());
+    println!(
+        "// ═══ End constants (second half full rounds: {} sets) ═══",
+        constants_end.len()
+    );
     for (r, rc) in constants_end.iter().enumerate() {
         for (i, c) in rc.iter().enumerate() {
             println!("uint256 constant E_{}_{}  = {};", r, i, fq_to_hex(c));
@@ -357,7 +376,10 @@ fn main() {
     }
     println!();
 
-    println!("// ═══ Sparse matrices ({} matrices: row[3] + col_hat[2]) ═══", sparse_matrices.len());
+    println!(
+        "// ═══ Sparse matrices ({} matrices: row[3] + col_hat[2]) ═══",
+        sparse_matrices.len()
+    );
     for (r, (row, col_hat)) in sparse_matrices.iter().enumerate() {
         for (i, v) in row.iter().enumerate() {
             println!("uint256 constant SM_{}_R{} = {};", r, i, fq_to_hex(v));
@@ -393,22 +415,45 @@ fn main() {
     // Raw round constants (first few, for cross-validation)
     println!("// First 3 raw (unoptimized) round constants for cross-validation:");
     for i in 0..3 {
-        println!("// RC[{}] = [{}, {}, {}]", i,
+        println!(
+            "// RC[{}] = [{}, {}, {}]",
+            i,
             fq_to_hex(&raw_constants[i][0]),
             fq_to_hex(&raw_constants[i][1]),
-            fq_to_hex(&raw_constants[i][2]));
+            fq_to_hex(&raw_constants[i][2])
+        );
     }
     println!();
 
     // Summary
-    let total = constants_start.len() * 3 + constants_partial.len() + constants_end.len() * 3
-        + 9 + 9 + sparse_matrices.len() * 5;
-    println!("// Total constants: {} field elements ({} bytes)", total, total * 32);
-    println!("// Start:   {} x 3 = {}", constants_start.len(), constants_start.len() * 3);
+    let total = constants_start.len() * 3
+        + constants_partial.len()
+        + constants_end.len() * 3
+        + 9
+        + 9
+        + sparse_matrices.len() * 5;
+    println!(
+        "// Total constants: {} field elements ({} bytes)",
+        total,
+        total * 32
+    );
+    println!(
+        "// Start:   {} x 3 = {}",
+        constants_start.len(),
+        constants_start.len() * 3
+    );
     println!("// Partial: {}", constants_partial.len());
-    println!("// End:     {} x 3 = {}", constants_end.len(), constants_end.len() * 3);
+    println!(
+        "// End:     {} x 3 = {}",
+        constants_end.len(),
+        constants_end.len() * 3
+    );
     println!("// MDS:     9 + 9 (full + pre-sparse)");
-    println!("// Sparse:  {} x 5 = {}", sparse_matrices.len(), sparse_matrices.len() * 5);
+    println!(
+        "// Sparse:  {} x 5 = {}",
+        sparse_matrices.len(),
+        sparse_matrices.len() * 5
+    );
 }
 
 /// Factorize MDS matrix into M' (dense) and M'' (sparse).

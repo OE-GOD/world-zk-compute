@@ -31,7 +31,10 @@ fn encode_circuit_desc_from_json(desc: &serde_json::Value) -> Vec<u8> {
     }
 
     // num_compute_layers, num_input_layers
-    push_usize(&mut buf, desc["numComputeLayers"].as_u64().unwrap() as usize);
+    push_usize(
+        &mut buf,
+        desc["numComputeLayers"].as_u64().unwrap() as usize,
+    );
     push_usize(&mut buf, desc["numInputLayers"].as_u64().unwrap() as usize);
 
     // Length-prefixed integer arrays
@@ -93,15 +96,19 @@ fn test_e2e_dag_verify_xgboost() {
         env!("CARGO_MANIFEST_DIR"),
         "/../../../contracts/test/fixtures/phase1a_dag_fixture.json"
     );
-    let fixture_str = std::fs::read_to_string(fixture_path)
-        .expect("failed to read phase1a_dag_fixture.json");
+    let fixture_str =
+        std::fs::read_to_string(fixture_path).expect("failed to read phase1a_dag_fixture.json");
     let fixture: serde_json::Value =
         serde_json::from_str(&fixture_str).expect("failed to parse fixture JSON");
 
     // 1. proof_data: hex decode (already has REM1 selector prefix)
     let proof_hex = fixture["proof_hex"].as_str().unwrap();
     let proof_data = hex::decode(&proof_hex[2..]).expect("invalid proof_hex");
-    assert_eq!(&proof_data[0..4], b"REM1", "fixture must start with REM1 selector");
+    assert_eq!(
+        &proof_data[0..4],
+        b"REM1",
+        "fixture must start with REM1 selector"
+    );
 
     // 2. public_inputs: decode (unused by verifier but passed through)
     let pub_hex = fixture["public_inputs_hex"].as_str().unwrap();
@@ -131,8 +138,8 @@ fn test_e2e_fixture_sanity_checks() {
         env!("CARGO_MANIFEST_DIR"),
         "/../../../contracts/test/fixtures/phase1a_dag_fixture.json"
     );
-    let fixture_str = std::fs::read_to_string(fixture_path)
-        .expect("failed to read phase1a_dag_fixture.json");
+    let fixture_str =
+        std::fs::read_to_string(fixture_path).expect("failed to read phase1a_dag_fixture.json");
     let fixture: serde_json::Value =
         serde_json::from_str(&fixture_str).expect("failed to parse fixture JSON");
 
@@ -159,7 +166,10 @@ fn test_e2e_fixture_sanity_checks() {
     // Gens should decode properly
     let gens_hex = fixture["gens_hex"].as_str().unwrap();
     let gens_data = hex::decode(&gens_hex[2..]).unwrap();
-    assert!(gens_data.len() > 64, "gens should contain at least one generator");
+    assert!(
+        gens_data.len() > 64,
+        "gens should contain at least one generator"
+    );
 
     // Circuit desc should encode without errors
     let encoded = encode_circuit_desc_from_json(desc);

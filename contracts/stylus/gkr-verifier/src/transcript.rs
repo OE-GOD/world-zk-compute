@@ -7,7 +7,6 @@
 ///   3. SHA-256 hash chain of public inputs (absorbed as Fq pair)
 ///   4. EC commitment coordinates (absorbed as Fq pairs)
 ///   5. SHA-256 hash chain of EC commitment coordinates (absorbed as Fq pair)
-
 use alloc::vec::Vec;
 
 use crate::ec::sha256;
@@ -261,7 +260,12 @@ mod tests {
     #[test]
     fn test_u256_to_le_is_be_reversed() {
         // LE bytes should be the byte-reversal of BE bytes
-        let val = U256([0x0102030405060708, 0x090A0B0C0D0E0F10, 0x1112131415161718, 0x191A1B1C1D1E1F20]);
+        let val = U256([
+            0x0102030405060708,
+            0x090A0B0C0D0E0F10,
+            0x1112131415161718,
+            0x191A1B1C1D1E1F20,
+        ]);
         let le = u256_to_le_bytes(&val);
         let be = val.to_be_bytes();
 
@@ -325,8 +329,10 @@ mod tests {
         let circuit_hash = [0x42u8; 32];
         let pub_inputs = [Fq::from_u64(100), Fq::from_u64(200)];
         let ec_coords = [
-            U256::from_u64(1), U256::from_u64(2), // point 1 (x, y)
-            U256::from_u64(3), U256::from_u64(4), // point 2 (x, y)
+            U256::from_u64(1),
+            U256::from_u64(2), // point 1 (x, y)
+            U256::from_u64(3),
+            U256::from_u64(4), // point 2 (x, y)
         ];
         let sponge = setup_transcript(&circuit_hash, &pub_inputs, &ec_coords);
         let _ = sponge;

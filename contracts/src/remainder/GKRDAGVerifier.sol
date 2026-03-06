@@ -5,6 +5,7 @@ import {PoseidonSponge} from "./PoseidonSponge.sol";
 import {HyraxVerifier} from "./HyraxVerifier.sol";
 import {CommittedSumcheckVerifier} from "./CommittedSumcheckVerifier.sol";
 import {GKRVerifier} from "./GKRVerifier.sol";
+
 /// @title GKRDAGVerifier
 /// @notice Verifies GKR proofs for arbitrary DAG circuits with multi-claim RLC aggregation.
 /// @dev Generalizes GKRVerifier to handle:
@@ -35,25 +36,25 @@ library GKRDAGVerifier {
     struct DAGCircuitDescription {
         uint256 numComputeLayers;
         uint256 numInputLayers;
-        uint8[] layerTypes;          // Per compute layer: 0=subtract/identity, 1=multiply
+        uint8[] layerTypes; // Per compute layer: 0=subtract/identity, 1=multiply
         uint256[] numSumcheckRounds; // Per compute layer
-        uint256[] atomOffsets;       // Length numComputeLayers+1: atomOffsets[i]..atomOffsets[i+1] = atoms for layer i
-        uint256[] atomTargetLayers;  // Flat: target layer index for each atom
-        uint256[] atomCommitIdxs;    // Flat: commitment index within source layer for each atom
-        uint256[] ptOffsets;         // Length totalAtoms+1: ptOffsets[k]..ptOffsets[k+1] = template for atom k
-        uint256[] ptData;            // Flat: point template entries
-        bool[] inputIsCommitted;     // Per input layer
+        uint256[] atomOffsets; // Length numComputeLayers+1: atomOffsets[i]..atomOffsets[i+1] = atoms for layer i
+        uint256[] atomTargetLayers; // Flat: target layer index for each atom
+        uint256[] atomCommitIdxs; // Flat: commitment index within source layer for each atom
+        uint256[] ptOffsets; // Length totalAtoms+1: ptOffsets[k]..ptOffsets[k+1] = template for atom k
+        uint256[] ptData; // Flat: point template entries
+        bool[] inputIsCommitted; // Per input layer
         // Oracle expression: oracleEval = rlcBeta * SUM(exprCoeffs[j] * commitments[resultIdxs[j]])
         uint256[] oracleProductOffsets; // Length numComputeLayers+1: product range per layer
-        uint256[] oracleResultIdxs;    // Flat: which commitment index to use per product
-        uint256[] oracleExprCoeffs;    // Flat: circuit-level coefficient per product (Fr)
+        uint256[] oracleResultIdxs; // Flat: which commitment index to use per product
+        uint256[] oracleExprCoeffs; // Flat: circuit-level coefficient per product (Fr)
     }
 
     /// @notice Per-input-layer proof with multiple eval proofs (one per claim group).
     struct DAGInputLayerProof {
         HyraxVerifier.G1Point[] commitmentRows; // Shared Hyrax commitment rows
-        HyraxVerifier.PODPProof[] podps;         // One PODP per eval proof
-        HyraxVerifier.G1Point[] comEvals;        // One comEval per eval proof
+        HyraxVerifier.PODPProof[] podps; // One PODP per eval proof
+        HyraxVerifier.G1Point[] comEvals; // One comEval per eval proof
     }
 
     /// @notice A claim on a public value: Pedersen opening (value, blinding, commitment).
@@ -161,11 +162,11 @@ library GKRDAGVerifier {
     /// @param desc DAG circuit description
     /// @param allBindings All bindings from compute layer verification
     /// @return claimPoints Array of resolved claim points
-    function collectClaimPoints(
-        uint256 targetLayer,
-        DAGCircuitDescription memory desc,
-        uint256[][] memory allBindings
-    ) internal pure returns (uint256[][] memory claimPoints) {
+    function collectClaimPoints(uint256 targetLayer, DAGCircuitDescription memory desc, uint256[][] memory allBindings)
+        internal
+        pure
+        returns (uint256[][] memory claimPoints)
+    {
         uint256 numClaims = _countClaimsFor(targetLayer, desc);
         claimPoints = new uint256[][](numClaims);
         uint256 cIdx = 0;
@@ -227,10 +228,7 @@ library GKRDAGVerifier {
     /// @notice Verify committed input layers using accumulated claims.
     /// @param ctx Verification context from compute layer verification
     /// @param sponge Transcript (continuing from compute layers)
-    function verifyInputLayers(
-        VerifyContext memory ctx,
-        PoseidonSponge.Sponge memory sponge
-    ) internal view {
+    function verifyInputLayers(VerifyContext memory ctx, PoseidonSponge.Sponge memory sponge) internal view {
         uint256 dagInputIdx = 0;
         uint256 pubClaimIdx = 0;
 
@@ -256,9 +254,7 @@ library GKRDAGVerifier {
 
             if (ctx.desc.inputIsCommitted[inputIdx]) {
                 // Committed input: sort claims, group by R-half, verify per-group eval proofs
-                _verifyCommittedInputBatchEval(
-                    ctx.dagInputProofs[dagInputIdx], claimPoints, sponge, ctx.gens
-                );
+                _verifyCommittedInputBatchEval(ctx.dagInputProofs[dagInputIdx], claimPoints, sponge, ctx.gens);
                 dagInputIdx++;
             } else {
                 // Public input: verify Pedersen openings and MLE evaluations
@@ -293,7 +289,8 @@ library GKRDAGVerifier {
                 if (ctx.desc.atomTargetLayers[a] != targetLayer) continue;
 
                 _verifyOnePublicClaim(
-                    ctx, claimPoints[cIdx],
+                    ctx,
+                    claimPoints[cIdx],
                     ctx.proof.layerProofs[j].commitments[ctx.desc.atomCommitIdxs[a]],
                     nextPubClaimIdx
                 );
@@ -315,8 +312,7 @@ library GKRDAGVerifier {
 
         // 1. Commitment consistency: claim commitment matches atom commitment
         require(
-            HyraxVerifier.isEqual(claim.commitment, atomCommitment),
-            "GKRDAGVerifier: public claim commitment mismatch"
+            HyraxVerifier.isEqual(claim.commitment, atomCommitment), "GKRDAGVerifier: public claim commitment mismatch"
         );
 
         // 2. Pedersen opening: g*value + h*blinding == commitment
@@ -324,10 +320,7 @@ library GKRDAGVerifier {
             HyraxVerifier.scalarMul(ctx.gens.scalarGen, claim.value),
             HyraxVerifier.scalarMul(ctx.gens.blindingGen, claim.blinding)
         );
-        require(
-            HyraxVerifier.isEqual(expected, claim.commitment),
-            "GKRDAGVerifier: Pedersen opening invalid"
-        );
+        require(HyraxVerifier.isEqual(expected, claim.commitment), "GKRDAGVerifier: Pedersen opening invalid");
 
         // 3. MLE evaluation: MLE(pubData, point) == value
         require(
@@ -341,11 +334,11 @@ library GKRDAGVerifier {
     // ========================================================================
 
     /// @notice Process one compute layer: RLC aggregation + committed sumcheck + PoP
-    function _processOneLayer(
-        uint256 layerIdx,
-        VerifyContext memory ctx,
-        PoseidonSponge.Sponge memory sponge
-    ) private view returns (uint256[] memory bindings) {
+    function _processOneLayer(uint256 layerIdx, VerifyContext memory ctx, PoseidonSponge.Sponge memory sponge)
+        private
+        view
+        returns (uint256[] memory bindings)
+    {
         // Count claims for this layer
         uint256 numClaims = _countClaimsFor(layerIdx, ctx.desc);
         if (layerIdx == 0) numClaims++; // Output claim targets layer 0
@@ -364,19 +357,18 @@ library GKRDAGVerifier {
         _absorbCommitments(lp.commitments, sponge);
 
         // Compute RLC eval and beta from all incoming claims
-        (HyraxVerifier.G1Point memory rlcEval, uint256 rlcBeta) = _computeRlcEvalAndBeta(
-            layerIdx, ctx, bindings, rlcCoeffs
-        );
+        (HyraxVerifier.G1Point memory rlcEval, uint256 rlcBeta) =
+            _computeRlcEvalAndBeta(layerIdx, ctx, bindings, rlcCoeffs);
 
         // Verify sumcheck and PoP
         _verifySumcheckAndPoP(layerIdx, lp, ctx.desc, ctx.gens, sponge, bindings, rlcBeta);
     }
 
     /// @notice Absorb post-sumcheck commitments into transcript.
-    function _absorbCommitments(
-        HyraxVerifier.G1Point[] memory commitments,
-        PoseidonSponge.Sponge memory sponge
-    ) private pure {
+    function _absorbCommitments(HyraxVerifier.G1Point[] memory commitments, PoseidonSponge.Sponge memory sponge)
+        private
+        pure
+    {
         for (uint256 j = 0; j < commitments.length; j++) {
             PoseidonSponge.absorb(sponge, commitments[j].x);
             PoseidonSponge.absorb(sponge, commitments[j].y);
@@ -394,9 +386,7 @@ library GKRDAGVerifier {
         uint256 rlcBeta
     ) private view {
         // Compute oracle eval using general expression
-        HyraxVerifier.G1Point memory oracleEval = _computeOracleEval(
-            lp.commitments, layerIdx, rlcBeta, desc
-        );
+        HyraxVerifier.G1Point memory oracleEval = _computeOracleEval(lp.commitments, layerIdx, rlcBeta, desc);
 
         // Verify committed sumcheck
         uint256 degree = (desc.layerTypes[layerIdx] == 1) ? 3 : 2;
@@ -446,9 +436,7 @@ library GKRDAGVerifier {
                 uint256[] memory atomPoint = _resolvePoint(a, ctx.allBindings[j], ctx.desc);
                 uint256 beta = _computeBeta(bindings, atomPoint);
 
-                rlcEval = HyraxVerifier.ecAdd(
-                    rlcEval, HyraxVerifier.scalarMul(atomEval, rlcCoeffs[coeffIdx])
-                );
+                rlcEval = HyraxVerifier.ecAdd(rlcEval, HyraxVerifier.scalarMul(atomEval, rlcCoeffs[coeffIdx]));
                 rlcBeta = addmod(rlcBeta, mulmod(beta, rlcCoeffs[coeffIdx], FR_MODULUS), FR_MODULUS);
                 coeffIdx++;
             }
@@ -461,11 +449,11 @@ library GKRDAGVerifier {
 
     /// @notice Resolve an atom's claim point from its template and source bindings.
     /// @dev Template entries: <1000 = binding ref, >=20000 = fixed value (entry-20000).
-    function _resolvePoint(
-        uint256 globalAtomIdx,
-        uint256[] memory sourceBindings,
-        DAGCircuitDescription memory desc
-    ) internal pure returns (uint256[] memory point) {
+    function _resolvePoint(uint256 globalAtomIdx, uint256[] memory sourceBindings, DAGCircuitDescription memory desc)
+        internal
+        pure
+        returns (uint256[] memory point)
+    {
         uint256 start = desc.ptOffsets[globalAtomIdx];
         uint256 end = desc.ptOffsets[globalAtomIdx + 1];
         uint256 len = end - start;
@@ -487,11 +475,7 @@ library GKRDAGVerifier {
     // ========================================================================
 
     /// @notice Compute beta(bindings, point) = prod_i(r_i*c_i + (1-r_i)*(1-c_i))
-    function _computeBeta(uint256[] memory bindings, uint256[] memory point)
-        internal
-        pure
-        returns (uint256 beta)
-    {
+    function _computeBeta(uint256[] memory bindings, uint256[] memory point) internal pure returns (uint256 beta) {
         uint256 n = bindings.length < point.length ? bindings.length : point.length;
         beta = 1;
         for (uint256 i = 0; i < n; i++) {
@@ -563,10 +547,7 @@ library GKRDAGVerifier {
 
         uint256 commitIdx = 0;
         for (uint256 i = 0; i < layerProof.pops.length; i++) {
-            require(
-                commitIdx + 2 < layerProof.commitments.length,
-                "GKRDAGVerifier: not enough commitments for PoP"
-            );
+            require(commitIdx + 2 < layerProof.commitments.length, "GKRDAGVerifier: not enough commitments for PoP");
 
             bool popValid = HyraxVerifier.verifyProofOfProduct(
                 layerProof.pops[i],
@@ -716,7 +697,9 @@ library GKRDAGVerifier {
     function _sortClaimIndices(uint256[][] memory claimPoints) private pure returns (uint256[] memory indices) {
         uint256 n = claimPoints.length;
         indices = new uint256[](n);
-        for (uint256 i = 0; i < n; i++) indices[i] = i;
+        for (uint256 i = 0; i < n; i++) {
+            indices[i] = i;
+        }
 
         // Insertion sort (adequate for n <= ~50)
         for (uint256 i = 1; i < n; i++) {
@@ -746,11 +729,11 @@ library GKRDAGVerifier {
     /// @dev The Rust function always creates a new singleton group for each claim,
     ///      AND if a matching existing group is found, also adds the claim there.
     ///      Result: numGroups == numClaims always.
-    function _groupClaimsByRHalf(
-        uint256[][] memory claimPoints,
-        uint256[] memory sortedIndices,
-        uint256 logNCols
-    ) private pure returns (uint256[][] memory groups) {
+    function _groupClaimsByRHalf(uint256[][] memory claimPoints, uint256[] memory sortedIndices, uint256 logNCols)
+        private
+        pure
+        returns (uint256[][] memory groups)
+    {
         uint256 numClaims = sortedIndices.length;
         // Each claim creates exactly one group (Rust behavior)
         groups = new uint256[][](numClaims);
@@ -774,7 +757,9 @@ library GKRDAGVerifier {
                         // Grow group array if needed
                         if (sz >= tempGroups[g].length) {
                             uint256[] memory newArr = new uint256[](sz + 4);
-                            for (uint256 k = 0; k < sz; k++) newArr[k] = tempGroups[g][k];
+                            for (uint256 k = 0; k < sz; k++) {
+                                newArr[k] = tempGroups[g][k];
+                            }
                             tempGroups[g] = newArr;
                         }
                         tempGroups[g][sz] = claimIdx;
@@ -801,9 +786,7 @@ library GKRDAGVerifier {
     }
 
     /// @notice Check if two claim points share the same R-half (last logNCols coordinates).
-    function _rHalfEquals(uint256[] memory a, uint256[] memory b, uint256 logNCols)
-        private pure returns (bool)
-    {
+    function _rHalfEquals(uint256[] memory a, uint256[] memory b, uint256 logNCols) private pure returns (bool) {
         uint256 n = a.length;
         uint256 startR = n - logNCols;
         for (uint256 i = startR; i < n; i++) {
@@ -813,11 +796,11 @@ library GKRDAGVerifier {
     }
 
     /// @notice Compute RLC of tensor products for L-halves of claim points.
-    function _computeRlcTensor(
-        uint256[][] memory claimPoints,
-        uint256 lHalfLen,
-        uint256[] memory rlcCoeffs
-    ) private pure returns (uint256[] memory result) {
+    function _computeRlcTensor(uint256[][] memory claimPoints, uint256 lHalfLen, uint256[] memory rlcCoeffs)
+        private
+        pure
+        returns (uint256[] memory result)
+    {
         uint256 tensorLen = 1 << lHalfLen;
         result = new uint256[](tensorLen);
 

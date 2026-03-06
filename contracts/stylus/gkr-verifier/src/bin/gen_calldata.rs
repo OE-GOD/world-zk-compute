@@ -35,7 +35,10 @@ fn encode_circuit_desc_from_json(desc: &serde_json::Value) -> Vec<u8> {
     }
 
     // num_compute_layers, num_input_layers
-    push_usize(&mut buf, desc["numComputeLayers"].as_u64().unwrap() as usize);
+    push_usize(
+        &mut buf,
+        desc["numComputeLayers"].as_u64().unwrap() as usize,
+    );
     push_usize(&mut buf, desc["numInputLayers"].as_u64().unwrap() as usize);
 
     // Length-prefixed integer arrays
@@ -99,8 +102,7 @@ fn abi_encode_bytes(data: &[u8]) -> Vec<u8> {
 fn main() {
     // Find fixture path relative to cargo manifest dir or via env var
     let fixture_path = env::var("FIXTURE_PATH").unwrap_or_else(|_| {
-        let manifest_dir = env::var("CARGO_MANIFEST_DIR")
-            .unwrap_or_else(|_| ".".to_string());
+        let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
         format!(
             "{}/../.././../contracts/test/fixtures/phase1a_dag_fixture.json",
             manifest_dir
@@ -110,8 +112,7 @@ fn main() {
     // Canonicalize to handle the relative path properly
     let fixture_path = if fixture_path.contains("..") {
         // Build the correct path from the manifest dir
-        let manifest_dir = env::var("CARGO_MANIFEST_DIR")
-            .unwrap_or_else(|_| ".".to_string());
+        let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
         format!(
             "{}/../../../contracts/test/fixtures/phase1a_dag_fixture.json",
             manifest_dir
@@ -210,16 +211,22 @@ fn main() {
     calldata.extend_from_slice(&encoded_desc);
 
     let total_size = calldata.len();
-    eprintln!("Total calldata:    {} bytes ({:.1} KB)", total_size, total_size as f64 / 1024.0);
-    eprintln!("Calldata gas (16/byte): ~{:.1}M", (total_size as f64 * 16.0) / 1_000_000.0);
+    eprintln!(
+        "Total calldata:    {} bytes ({:.1} KB)",
+        total_size,
+        total_size as f64 / 1024.0
+    );
+    eprintln!(
+        "Calldata gas (16/byte): ~{:.1}M",
+        (total_size as f64 * 16.0) / 1_000_000.0
+    );
 
     // Output the full calldata as hex to stdout
     println!("0x{}", hex::encode(&calldata));
 
     // Also write to a file for the benchmark script
     let output_path = env::var("CALLDATA_OUTPUT").unwrap_or_else(|_| {
-        let manifest_dir = env::var("CARGO_MANIFEST_DIR")
-            .unwrap_or_else(|_| ".".to_string());
+        let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
         format!("{}/calldata.hex", manifest_dir)
     });
     fs::write(&output_path, format!("0x{}", hex::encode(&calldata)))

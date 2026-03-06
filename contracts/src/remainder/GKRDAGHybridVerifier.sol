@@ -27,20 +27,20 @@ library GKRDAGHybridVerifier {
 
     /// @notice Per-compute-layer challenges derived from transcript replay
     struct DAGLayerChallenges {
-        uint256[] rlcCoeffs;       // numClaims per layer (variable)
-        uint256[] bindings;        // numSumcheckRounds per layer
-        uint256[] rhos;            // numSumcheckRounds+1
-        uint256[] gammas;          // numSumcheckRounds
+        uint256[] rlcCoeffs; // numClaims per layer (variable)
+        uint256[] bindings; // numSumcheckRounds per layer
+        uint256[] rhos; // numSumcheckRounds+1
+        uint256[] gammas; // numSumcheckRounds
         uint256 podpChallenge;
-        uint256[] popChallenges;   // One per PoP entry (empty if no PoPs)
+        uint256[] popChallenges; // One per PoP entry (empty if no PoPs)
     }
 
     /// @notice Per-input-group challenges (for committed input layers)
     struct DAGInputGroupChallenges {
         uint256[] rlcCoeffs;
         uint256 podpChallenge;
-        uint256[] lBindings;    // L-half of claim point (row selection)
-        uint256[] rBindings;    // R-half of claim point (column selection)
+        uint256[] lBindings; // L-half of claim point (row selection)
+        uint256[] rBindings; // R-half of claim point (column selection)
     }
 
     /// @notice All challenges from DAG transcript replay
@@ -53,12 +53,12 @@ library GKRDAGHybridVerifier {
 
     /// @notice Groth16 outputs for DAG circuit verification
     struct DAGGroth16Outputs {
-        uint256[] rlcBeta;          // One per compute layer (88)
-        uint256[] zDotJStar;        // One per compute layer (88)
-        uint256[] lTensorFlat;      // Flattened across all input groups
-        uint256[] lTensorOffsets;   // Start index per input group (length = numInputGroups+1)
-        uint256[] zDotR;            // One per input group
-        uint256[] mleEval;          // One per public value claim
+        uint256[] rlcBeta; // One per compute layer (88)
+        uint256[] zDotJStar; // One per compute layer (88)
+        uint256[] lTensorFlat; // Flattened across all input groups
+        uint256[] lTensorOffsets; // Start index per input group (length = numInputGroups+1)
+        uint256[] zDotR; // One per input group
+        uint256[] mleEval; // One per public value claim
     }
 
     // ========================================================================
@@ -213,7 +213,6 @@ library GKRDAGHybridVerifier {
             }
             // Public (non-committed) input layers don't have transcript elements
         }
-
     }
 
     /// @notice Full transcript replay including input layer PODP/comEval absorptions.
@@ -280,9 +279,8 @@ library GKRDAGHybridVerifier {
         for (uint256 inputIdx = 0; inputIdx < desc.numInputLayers; inputIdx++) {
             if (!desc.inputIsCommitted[inputIdx]) continue;
 
-            uint256 numProcessed = _replayOneInputLayer(
-                ctx, inputIdx, dagInputIdx, groupIdx, allGroupChallenges, sponge
-            );
+            uint256 numProcessed =
+                _replayOneInputLayer(ctx, inputIdx, dagInputIdx, groupIdx, allGroupChallenges, sponge);
 
             groupIdx += numProcessed;
             dagInputIdx++;
@@ -359,10 +357,11 @@ library GKRDAGHybridVerifier {
     }
 
     /// @notice Sort claims and group by R-half (helper to reduce stack depth).
-    function _sortAndGroupClaims(
-        uint256[][] memory claimPoints,
-        GKRDAGVerifier.DAGInputLayerProof memory dagProof
-    ) private pure returns (uint256[][] memory groups) {
+    function _sortAndGroupClaims(uint256[][] memory claimPoints, GKRDAGVerifier.DAGInputLayerProof memory dagProof)
+        private
+        pure
+        returns (uint256[][] memory groups)
+    {
         uint256[] memory sortedIndices = _sortClaimIndices(claimPoints);
         uint256 numRows = dagProof.commitmentRows.length;
         uint256 n = claimPoints[0].length;
@@ -389,8 +388,7 @@ library GKRDAGHybridVerifier {
         // Verify compute layers
         for (uint256 i = 0; i < desc.numComputeLayers; i++) {
             _verifyComputeLayerEC(
-                i, proof.layerProofs[i], challenges.layers[i], outputs.rlcBeta[i],
-                outputs.zDotJStar[i], desc, gens
+                i, proof.layerProofs[i], challenges.layers[i], outputs.rlcBeta[i], outputs.zDotJStar[i], desc, gens
             );
         }
 
@@ -417,12 +415,8 @@ library GKRDAGHybridVerifier {
         if (n == 0) return; // Zero-round layer: no sumcheck to verify
 
         // Compute alpha and oracleEval
-        HyraxVerifier.G1Point memory alpha = HyraxVerifier.multiScalarMul(
-            lp.sumcheckProof.messages, layerCh.gammas
-        );
-        HyraxVerifier.G1Point memory oracleEval = _computeOracleEval(
-            lp.commitments, layerIdx, rlcBeta, desc
-        );
+        HyraxVerifier.G1Point memory alpha = HyraxVerifier.multiScalarMul(lp.sumcheckProof.messages, layerCh.gammas);
+        HyraxVerifier.G1Point memory oracleEval = _computeOracleEval(lp.commitments, layerIdx, rlcBeta, desc);
 
         // Compute dotProduct = sum * rhos[0] + oracleEval * (-rhos[n])
         HyraxVerifier.G1Point memory dotProduct = HyraxVerifier.ecAdd(
@@ -449,9 +443,8 @@ library GKRDAGHybridVerifier {
         HyraxVerifier.PedersenGens memory gens
     ) private view {
         // Eq1: c * alpha + commitD == MSM(gens, z_vector) + z_delta * h
-        HyraxVerifier.G1Point memory lhs1 = HyraxVerifier.ecAdd(
-            HyraxVerifier.scalarMul(alpha, podpChallenge), podp.commitD
-        );
+        HyraxVerifier.G1Point memory lhs1 =
+            HyraxVerifier.ecAdd(HyraxVerifier.scalarMul(alpha, podpChallenge), podp.commitD);
         HyraxVerifier.G1Point memory comZ = HyraxVerifier.ecAdd(
             _msmWithTruncatedGens(gens.messageGens, podp.zVector),
             HyraxVerifier.scalarMul(gens.blindingGen, podp.zDelta)
@@ -459,12 +452,10 @@ library GKRDAGHybridVerifier {
         require(HyraxVerifier.isEqual(lhs1, comZ), "DAGHybrid: PODP Eq1 failed");
 
         // Eq2: c * dotProduct + commitDDotA == zDotJStar * g_scalar + z_beta * h
-        HyraxVerifier.G1Point memory lhs2 = HyraxVerifier.ecAdd(
-            HyraxVerifier.scalarMul(dotProduct, podpChallenge), podp.commitDDotA
-        );
+        HyraxVerifier.G1Point memory lhs2 =
+            HyraxVerifier.ecAdd(HyraxVerifier.scalarMul(dotProduct, podpChallenge), podp.commitDDotA);
         HyraxVerifier.G1Point memory comZDotA = HyraxVerifier.ecAdd(
-            HyraxVerifier.scalarMul(gens.scalarGen, zDotJStar),
-            HyraxVerifier.scalarMul(gens.blindingGen, podp.zBeta)
+            HyraxVerifier.scalarMul(gens.scalarGen, zDotJStar), HyraxVerifier.scalarMul(gens.blindingGen, podp.zBeta)
         );
         require(HyraxVerifier.isEqual(lhs2, comZDotA), "DAGHybrid: PODP Eq2 failed");
     }
@@ -500,9 +491,7 @@ library GKRDAGHybridVerifier {
             uint256 numGroups = dagInputProofs[dagInputIdx].podps.length;
 
             for (uint256 g = 0; g < numGroups; g++) {
-                _verifyOneInputGroupEC(
-                    dagInputProofs[dagInputIdx], g, groupIdx, ecCtx
-                );
+                _verifyOneInputGroupEC(dagInputProofs[dagInputIdx], g, groupIdx, ecCtx);
                 groupIdx++;
             }
 
@@ -538,9 +527,12 @@ library GKRDAGHybridVerifier {
 
         // Reuse the PODP check pattern
         _verifyInputPODPChecks(
-            dagProof.podps[evalIdx], comX, comY,
+            dagProof.podps[evalIdx],
+            comX,
+            comY,
             ecCtx.challenges.inputGroups[groupIdx].podpChallenge,
-            ecCtx.outputs.zDotR[groupIdx], ecCtx.gens
+            ecCtx.outputs.zDotR[groupIdx],
+            ecCtx.gens
         );
     }
 
@@ -571,9 +563,8 @@ library GKRDAGHybridVerifier {
         HyraxVerifier.PedersenGens memory gens
     ) private view {
         // Eq1: c * comX + commitD == MSM(gens, z_vector) + z_delta * h
-        HyraxVerifier.G1Point memory lhs1 = HyraxVerifier.ecAdd(
-            HyraxVerifier.scalarMul(comX, podpChallenge), podp.commitD
-        );
+        HyraxVerifier.G1Point memory lhs1 =
+            HyraxVerifier.ecAdd(HyraxVerifier.scalarMul(comX, podpChallenge), podp.commitD);
         HyraxVerifier.G1Point memory comZ = HyraxVerifier.ecAdd(
             _msmWithTruncatedGens(gens.messageGens, podp.zVector),
             HyraxVerifier.scalarMul(gens.blindingGen, podp.zDelta)
@@ -581,12 +572,10 @@ library GKRDAGHybridVerifier {
         require(HyraxVerifier.isEqual(lhs1, comZ), "DAGHybrid: Input PODP Eq1 failed");
 
         // Eq2: c * comY + commitDDotA == zDotR * g_scalar + z_beta * h
-        HyraxVerifier.G1Point memory lhs2 = HyraxVerifier.ecAdd(
-            HyraxVerifier.scalarMul(comY, podpChallenge), podp.commitDDotA
-        );
+        HyraxVerifier.G1Point memory lhs2 =
+            HyraxVerifier.ecAdd(HyraxVerifier.scalarMul(comY, podpChallenge), podp.commitDDotA);
         HyraxVerifier.G1Point memory comZDotA = HyraxVerifier.ecAdd(
-            HyraxVerifier.scalarMul(gens.scalarGen, zDotR),
-            HyraxVerifier.scalarMul(gens.blindingGen, podp.zBeta)
+            HyraxVerifier.scalarMul(gens.scalarGen, zDotR), HyraxVerifier.scalarMul(gens.blindingGen, podp.zBeta)
         );
         require(HyraxVerifier.isEqual(lhs2, comZDotA), "DAGHybrid: Input PODP Eq2 failed");
     }
@@ -632,11 +621,11 @@ library GKRDAGHybridVerifier {
     }
 
     /// @notice Verify public claims for a single non-committed input layer.
-    function _verifyPublicClaimsForLayer(
-        PubClaimCtx memory ctx,
-        uint256 targetLayer,
-        uint256 startClaimIdx
-    ) private view returns (uint256 nextClaimIdx) {
+    function _verifyPublicClaimsForLayer(PubClaimCtx memory ctx, uint256 targetLayer, uint256 startClaimIdx)
+        private
+        view
+        returns (uint256 nextClaimIdx)
+    {
         nextClaimIdx = startClaimIdx;
 
         for (uint256 j = 0; j < ctx.desc.numComputeLayers; j++) {
@@ -652,21 +641,16 @@ library GKRDAGHybridVerifier {
     }
 
     /// @notice Verify a single public value claim.
-    function _verifyOnePublicClaimEC(
-        PubClaimCtx memory ctx,
-        uint256 sourceLayer,
-        uint256 atomIdx,
-        uint256 claimIdx
-    ) private view {
+    function _verifyOnePublicClaimEC(PubClaimCtx memory ctx, uint256 sourceLayer, uint256 atomIdx, uint256 claimIdx)
+        private
+        view
+    {
         GKRDAGVerifier.PublicValueClaim memory claim = ctx.claims[claimIdx];
 
         // 1. Commitment consistency
         uint256 commitIdx = ctx.desc.atomCommitIdxs[atomIdx];
         require(
-            HyraxVerifier.isEqual(
-                claim.commitment,
-                ctx.proof.layerProofs[sourceLayer].commitments[commitIdx]
-            ),
+            HyraxVerifier.isEqual(claim.commitment, ctx.proof.layerProofs[sourceLayer].commitments[commitIdx]),
             "DAGHybrid: public claim commitment mismatch"
         );
 
@@ -749,12 +733,22 @@ library GKRDAGHybridVerifier {
         // Per-layer challenges
         for (uint256 layer = 0; layer < challenges.layers.length; layer++) {
             DAGLayerChallenges memory lc = challenges.layers[layer];
-            for (uint256 i = 0; i < lc.rlcCoeffs.length; i++) inputs[idx++] = lc.rlcCoeffs[i];
-            for (uint256 i = 0; i < lc.bindings.length; i++) inputs[idx++] = lc.bindings[i];
-            for (uint256 i = 0; i < lc.rhos.length; i++) inputs[idx++] = lc.rhos[i];
-            for (uint256 i = 0; i < lc.gammas.length; i++) inputs[idx++] = lc.gammas[i];
+            for (uint256 i = 0; i < lc.rlcCoeffs.length; i++) {
+                inputs[idx++] = lc.rlcCoeffs[i];
+            }
+            for (uint256 i = 0; i < lc.bindings.length; i++) {
+                inputs[idx++] = lc.bindings[i];
+            }
+            for (uint256 i = 0; i < lc.rhos.length; i++) {
+                inputs[idx++] = lc.rhos[i];
+            }
+            for (uint256 i = 0; i < lc.gammas.length; i++) {
+                inputs[idx++] = lc.gammas[i];
+            }
             inputs[idx++] = lc.podpChallenge;
-            for (uint256 i = 0; i < lc.popChallenges.length; i++) inputs[idx++] = lc.popChallenges[i];
+            for (uint256 i = 0; i < lc.popChallenges.length; i++) {
+                inputs[idx++] = lc.popChallenges[i];
+            }
         }
 
         // Per-input-group challenges + L/R bindings
@@ -784,18 +778,29 @@ library GKRDAGHybridVerifier {
         }
 
         // Groth16 outputs
-        for (uint256 i = 0; i < outputs.rlcBeta.length; i++) inputs[idx++] = outputs.rlcBeta[i];
-        for (uint256 i = 0; i < outputs.zDotJStar.length; i++) inputs[idx++] = outputs.zDotJStar[i];
-        for (uint256 i = 0; i < outputs.lTensorFlat.length; i++) inputs[idx++] = outputs.lTensorFlat[i];
-        for (uint256 i = 0; i < outputs.zDotR.length; i++) inputs[idx++] = outputs.zDotR[i];
-        for (uint256 i = 0; i < outputs.mleEval.length; i++) inputs[idx++] = outputs.mleEval[i];
+        for (uint256 i = 0; i < outputs.rlcBeta.length; i++) {
+            inputs[idx++] = outputs.rlcBeta[i];
+        }
+        for (uint256 i = 0; i < outputs.zDotJStar.length; i++) {
+            inputs[idx++] = outputs.zDotJStar[i];
+        }
+        for (uint256 i = 0; i < outputs.lTensorFlat.length; i++) {
+            inputs[idx++] = outputs.lTensorFlat[i];
+        }
+        for (uint256 i = 0; i < outputs.zDotR.length; i++) {
+            inputs[idx++] = outputs.zDotR[i];
+        }
+        for (uint256 i = 0; i < outputs.mleEval.length; i++) {
+            inputs[idx++] = outputs.mleEval[i];
+        }
     }
 
     /// @notice Collect all public claim points from non-committed input layers.
-    function collectPubClaimPoints(
-        GKRDAGVerifier.DAGCircuitDescription memory desc,
-        uint256[][] memory allBindings
-    ) internal pure returns (uint256[][] memory pubClaimPoints) {
+    function collectPubClaimPoints(GKRDAGVerifier.DAGCircuitDescription memory desc, uint256[][] memory allBindings)
+        internal
+        pure
+        returns (uint256[][] memory pubClaimPoints)
+    {
         // Count total public claims
         uint256 count = 0;
         for (uint256 inputIdx = 0; inputIdx < desc.numInputLayers; inputIdx++) {
@@ -1062,7 +1067,9 @@ library GKRDAGHybridVerifier {
     function _sortClaimIndices(uint256[][] memory claimPoints) private pure returns (uint256[] memory indices) {
         uint256 n = claimPoints.length;
         indices = new uint256[](n);
-        for (uint256 i = 0; i < n; i++) indices[i] = i;
+        for (uint256 i = 0; i < n; i++) {
+            indices[i] = i;
+        }
 
         for (uint256 i = 1; i < n; i++) {
             uint256 key = indices[i];
@@ -1089,11 +1096,11 @@ library GKRDAGHybridVerifier {
     /// @notice Group sorted claims by shared R-half, matching Remainder_CE prover.
     /// @dev The prover always creates a singleton group for each claim, AND adds
     ///      the claim to any earlier matching group. Result: numGroups == numClaims.
-    function _groupClaimsByRHalf(
-        uint256[][] memory claimPoints,
-        uint256[] memory sortedIndices,
-        uint256 logNCols
-    ) private pure returns (uint256[][] memory groups) {
+    function _groupClaimsByRHalf(uint256[][] memory claimPoints, uint256[] memory sortedIndices, uint256 logNCols)
+        private
+        pure
+        returns (uint256[][] memory groups)
+    {
         uint256 numClaims = sortedIndices.length;
         groups = new uint256[][](numClaims);
 
@@ -1111,7 +1118,9 @@ library GKRDAGHybridVerifier {
                         uint256 sz = tempGroupSizes[g];
                         if (sz >= tempGroups[g].length) {
                             uint256[] memory newArr = new uint256[](sz + 4);
-                            for (uint256 k = 0; k < sz; k++) newArr[k] = tempGroups[g][k];
+                            for (uint256 k = 0; k < sz; k++) {
+                                newArr[k] = tempGroups[g][k];
+                            }
                             tempGroups[g] = newArr;
                         }
                         tempGroups[g][sz] = claimIdx;
@@ -1136,9 +1145,7 @@ library GKRDAGHybridVerifier {
         }
     }
 
-    function _rHalfEquals(uint256[] memory a, uint256[] memory b, uint256 logNCols)
-        private pure returns (bool)
-    {
+    function _rHalfEquals(uint256[] memory a, uint256[] memory b, uint256 logNCols) private pure returns (bool) {
         uint256 n = a.length;
         uint256 startR = n - logNCols;
         for (uint256 i = startR; i < n; i++) {

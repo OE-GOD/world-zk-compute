@@ -3,7 +3,6 @@
 ///
 /// The proof is a flat byte array where every field occupies 32 bytes (big-endian U256).
 /// Variable-length sections are length-prefixed: a U256 count followed by that many items.
-
 use alloc::vec::Vec;
 
 use crate::ec::{G1Point, PODPProof, PedersenGens, ProofOfProduct};
@@ -55,10 +54,7 @@ impl<'a> ProofDecoder<'a> {
     fn read_u256(&mut self) -> U256 {
         let start = self.offset;
         let end = start + 32;
-        verify!(
-            end <= self.data.len(),
-            "read_u256: out of bounds"
-        );
+        verify!(end <= self.data.len(), "read_u256: out of bounds");
         let mut bytes = [0u8; 32];
         bytes.copy_from_slice(&self.data[start..end]);
         self.offset = end;

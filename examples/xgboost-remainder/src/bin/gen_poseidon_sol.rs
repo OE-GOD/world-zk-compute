@@ -124,8 +124,12 @@ fn main() {
     // Generate MDS matrix
     let mut xs = [Fq::ZERO; 3];
     let mut ys = [Fq::ZERO; 3];
-    for x in xs.iter_mut() { *x = grain.next_field_element_no_rejection(); }
-    for y in ys.iter_mut() { *y = grain.next_field_element_no_rejection(); }
+    for x in xs.iter_mut() {
+        *x = grain.next_field_element_no_rejection();
+    }
+    for y in ys.iter_mut() {
+        *y = grain.next_field_element_no_rejection();
+    }
 
     let mut mds = [[Fq::ZERO; 3]; 3];
     for i in 0..3 {
@@ -158,7 +162,8 @@ fn main() {
     };
 
     // Now emit the Solidity file
-    println!(r#"// SPDX-License-Identifier: Apache-2.0
+    println!(
+        r#"// SPDX-License-Identifier: Apache-2.0
 pragma solidity ^0.8.20;
 
 /// @title PoseidonSponge
@@ -227,7 +232,8 @@ library PoseidonSponge {{
     function permute(uint256[3] memory state) internal pure {{
         uint256 t0; uint256 t1; uint256 t2;
         uint256 new0; uint256 new1; uint256 new2;
-"#);
+"#
+    );
 
     // Emit all 65 rounds inline
     let r_f_half = r_f / 2;
@@ -246,9 +252,18 @@ library PoseidonSponge {{
         println!("        // Round {}", round);
 
         // AddConstants
-        println!("        state[0] = addmod(state[0], {}, FQ_MOD);", fq_to_hex(&rc[0]));
-        println!("        state[1] = addmod(state[1], {}, FQ_MOD);", fq_to_hex(&rc[1]));
-        println!("        state[2] = addmod(state[2], {}, FQ_MOD);", fq_to_hex(&rc[2]));
+        println!(
+            "        state[0] = addmod(state[0], {}, FQ_MOD);",
+            fq_to_hex(&rc[0])
+        );
+        println!(
+            "        state[1] = addmod(state[1], {}, FQ_MOD);",
+            fq_to_hex(&rc[1])
+        );
+        println!(
+            "        state[2] = addmod(state[2], {}, FQ_MOD);",
+            fq_to_hex(&rc[2])
+        );
 
         // S-box
         if is_full {
@@ -268,19 +283,31 @@ library PoseidonSponge {{
         // MDS multiply
         for i in 0..3 {
             let var = ["new0", "new1", "new2"][i];
-            println!("        {var} = mulmod(state[0], {}, FQ_MOD);", fq_to_hex(&mds[i][0]));
-            println!("        {var} = addmod({var}, mulmod(state[1], {}, FQ_MOD), FQ_MOD);", fq_to_hex(&mds[i][1]));
-            println!("        {var} = addmod({var}, mulmod(state[2], {}, FQ_MOD), FQ_MOD);", fq_to_hex(&mds[i][2]));
+            println!(
+                "        {var} = mulmod(state[0], {}, FQ_MOD);",
+                fq_to_hex(&mds[i][0])
+            );
+            println!(
+                "        {var} = addmod({var}, mulmod(state[1], {}, FQ_MOD), FQ_MOD);",
+                fq_to_hex(&mds[i][1])
+            );
+            println!(
+                "        {var} = addmod({var}, mulmod(state[2], {}, FQ_MOD), FQ_MOD);",
+                fq_to_hex(&mds[i][2])
+            );
         }
         println!("        state[0] = new0; state[1] = new1; state[2] = new2;");
     }
 
     // Close permute function and library
-    println!(r#"    }}
-"#);
+    println!(
+        r#"    }}
+"#
+    );
 
     // Emit test vectors as view functions
-    println!(r#"    /// @notice Validate Poseidon implementation against known test vectors.
+    println!(
+        r#"    /// @notice Validate Poseidon implementation against known test vectors.
     /// @return true if all test vectors pass
     function selfTest() internal pure returns (bool) {{
         Sponge memory s;

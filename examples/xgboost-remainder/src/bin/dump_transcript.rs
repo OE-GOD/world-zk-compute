@@ -13,7 +13,10 @@ use shared_types::{perform_function_under_prover_config, Fr};
 /// Our own prove function that captures the Transcript<Fr>.
 fn prove_and_capture_transcript(
     provable: &remainder::provable_circuit::ProvableCircuit<Fr>,
-) -> (shared_types::config::ProofConfig, shared_types::transcript::Transcript<Fr>) {
+) -> (
+    shared_types::config::ProofConfig,
+    shared_types::transcript::Transcript<Fr>,
+) {
     let config = GKRCircuitProverConfig::runtime_optimized_default();
 
     let (proof_config, transcript) = perform_function_under_prover_config!(
@@ -105,10 +108,6 @@ fn main() {
     let verifiable = verifier_circuit
         .gen_verifiable_circuit()
         .expect("Failed to generate verifiable circuit");
-    verify_circuit_with_proof_config::<Fr, PoseidonSponge<Fr>>(
-        &verifiable,
-        &proof_config,
-        reader,
-    );
+    verify_circuit_with_proof_config::<Fr, PoseidonSponge<Fr>>(&verifiable, &proof_config, reader);
     println!("Proof verified successfully!");
 }

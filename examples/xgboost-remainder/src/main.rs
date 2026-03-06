@@ -67,9 +67,7 @@ pub struct ProofOutput {
 
 fn main() -> Result<()> {
     // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_max_level(Level::INFO)
-        .init();
+    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
     let cli = Cli::parse();
 

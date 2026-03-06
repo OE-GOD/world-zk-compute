@@ -113,14 +113,20 @@ contract DeployRemainder is Script {
     }
 
     function _envBoolOr(string memory key, bool defaultVal) private view returns (bool) {
-        try vm.envBool(key) returns (bool val) { return val; }
-        catch { return defaultVal; }
+        try vm.envBool(key) returns (bool val) {
+            return val;
+        }
+            catch {
+            return defaultVal;
+        }
     }
 
     function _parseUint8Array(string memory json, string memory key) private pure returns (uint8[] memory result) {
         uint256[] memory raw = vm.parseJsonUintArray(json, key);
         result = new uint8[](raw.length);
-        for (uint256 i = 0; i < raw.length; i++) result[i] = uint8(raw[i]);
+        for (uint256 i = 0; i < raw.length; i++) {
+            result[i] = uint8(raw[i]);
+        }
     }
 
     function _parseBoolArray(string memory json, string memory key) private pure returns (bool[] memory result) {
@@ -132,6 +138,8 @@ contract DeployRemainder is Script {
         bytes memory raw = vm.parseJson(json, key);
         bytes32[] memory parsed = abi.decode(raw, (bytes32[]));
         result = new uint256[](parsed.length);
-        for (uint256 i = 0; i < parsed.length; i++) result[i] = uint256(parsed[i]);
+        for (uint256 i = 0; i < parsed.length; i++) {
+            result[i] = uint256(parsed[i]);
+        }
     }
 }

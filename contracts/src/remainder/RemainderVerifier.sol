@@ -587,11 +587,7 @@ contract RemainderVerifier {
     }
 
     /// @notice Decode public inputs from separate calldata bytes.
-    function _decodePublicInputs(bytes calldata publicInputBytes)
-        private
-        pure
-        returns (uint256[] memory pubInputs)
-    {
+    function _decodePublicInputs(bytes calldata publicInputBytes) private pure returns (uint256[] memory pubInputs) {
         uint256 numPubInputs = publicInputBytes.length / 32;
         pubInputs = new uint256[](numPubInputs);
         for (uint256 i = 0; i < numPubInputs; i++) {
@@ -1006,12 +1002,10 @@ contract RemainderVerifier {
     ///         uint256[] ptOffsets, uint256[] ptData, bool[] inputIsCommitted)
     /// @param name Human-readable name
     /// @param gensHash keccak256 of expected generators (0 = skip)
-    function registerDAGCircuit(
-        bytes32 circuitHash,
-        bytes calldata descData,
-        string calldata name,
-        bytes32 gensHash
-    ) external onlyAdmin {
+    function registerDAGCircuit(bytes32 circuitHash, bytes calldata descData, string calldata name, bytes32 gensHash)
+        external
+        onlyAdmin
+    {
         require(dagCircuits[circuitHash].circuitHash == bytes32(0), "DAG circuit already registered");
 
         GKRDAGVerifier.DAGCircuitDescription memory desc = abi.decode(descData, (GKRDAGVerifier.DAGCircuitDescription));
@@ -1019,11 +1013,7 @@ contract RemainderVerifier {
         require(desc.atomOffsets.length == desc.numComputeLayers + 1, "atomOffsets length mismatch");
 
         dagCircuits[circuitHash] = DAGCircuitConfig({
-            circuitHash: circuitHash,
-            description: desc,
-            active: true,
-            name: name,
-            gensHash: gensHash
+            circuitHash: circuitHash, description: desc, active: true, name: name, gensHash: gensHash
         });
 
         circuitHashes.push(circuitHash);
@@ -1049,8 +1039,7 @@ contract RemainderVerifier {
         }
 
         (
-            GKRVerifier.GKRProof memory gkrProof,
-            ,
+            GKRVerifier.GKRProof memory gkrProof,,
             GKRDAGVerifier.DAGInputLayerProof[] memory dagInputProofs,
             GKRDAGVerifier.PublicValueClaim[] memory publicValueClaims
         ) = decodeProofForDAG(proof[4:], publicInputs);
@@ -1066,8 +1055,9 @@ contract RemainderVerifier {
         PoseidonSponge.Sponge memory sponge = _setupTranscript(circuitHash, embeddedPubInputs, gkrProof);
 
         // Verify compute layers (use embeddedPubInputs for MLE evaluation of public input layer)
-        GKRDAGVerifier.VerifyContext memory ctx =
-            GKRDAGVerifier.verifyComputeLayers(gkrProof, config.description, gens, sponge, embeddedPubInputs, dagInputProofs, publicValueClaims);
+        GKRDAGVerifier.VerifyContext memory ctx = GKRDAGVerifier.verifyComputeLayers(
+            gkrProof, config.description, gens, sponge, embeddedPubInputs, dagInputProofs, publicValueClaims
+        );
 
         // Verify input layers (committed + public)
         GKRDAGVerifier.verifyInputLayers(ctx, sponge);
@@ -1095,8 +1085,7 @@ contract RemainderVerifier {
 
         // Decode proof for DAG
         (
-            GKRVerifier.GKRProof memory gkrProof,
-            ,
+            GKRVerifier.GKRProof memory gkrProof,,
             GKRDAGVerifier.DAGInputLayerProof[] memory dagInputProofs,
             GKRDAGVerifier.PublicValueClaim[] memory publicValueClaims
         ) = decodeProofForDAG(innerProof[4:], publicInputs);
@@ -1114,9 +1103,8 @@ contract RemainderVerifier {
         GKRDAGHybridVerifier.DAGTranscriptChallenges memory challenges;
         {
             PoseidonSponge.Sponge memory sponge = _setupTranscript(circuitHash, embeddedPubInputs, gkrProof);
-            challenges = GKRDAGHybridVerifier.replayDAGTranscriptFull(
-                gkrProof, config.description, dagInputProofs, sponge
-            );
+            challenges =
+                GKRDAGHybridVerifier.replayDAGTranscriptFull(gkrProof, config.description, dagInputProofs, sponge);
         }
 
         // Parse Groth16 outputs
@@ -1129,8 +1117,14 @@ contract RemainderVerifier {
         // Verify EC equations
         HyraxVerifier.PedersenGens memory gens = decodePedersenGens(gensData);
         bool ecValid = GKRDAGHybridVerifier.verifyDAGECChecks(
-            gkrProof, challenges, outputs, gens, config.description,
-            dagInputProofs, publicValueClaims, embeddedPubInputs
+            gkrProof,
+            challenges,
+            outputs,
+            gens,
+            config.description,
+            dagInputProofs,
+            publicValueClaims,
+            embeddedPubInputs
         );
         if (!ecValid) revert ProofVerificationFailed();
     }
@@ -1205,18 +1199,28 @@ contract RemainderVerifier {
         outputs.rlcBeta = new uint256[](N);
         outputs.zDotJStar = new uint256[](N);
         uint256 idx = 0;
-        for (uint256 i = 0; i < N; i++) outputs.rlcBeta[i] = groth16Outputs[idx++];
-        for (uint256 i = 0; i < N; i++) outputs.zDotJStar[i] = groth16Outputs[idx++];
+        for (uint256 i = 0; i < N; i++) {
+            outputs.rlcBeta[i] = groth16Outputs[idx++];
+        }
+        for (uint256 i = 0; i < N; i++) {
+            outputs.zDotJStar[i] = groth16Outputs[idx++];
+        }
 
         outputs.lTensorFlat = new uint256[](lTensorLen);
-        for (uint256 i = 0; i < lTensorLen; i++) outputs.lTensorFlat[i] = groth16Outputs[idx++];
+        for (uint256 i = 0; i < lTensorLen; i++) {
+            outputs.lTensorFlat[i] = groth16Outputs[idx++];
+        }
         outputs.lTensorOffsets = _computeLTensorOffsets(challenges, G, lTensorLen);
 
         outputs.zDotR = new uint256[](G);
-        for (uint256 i = 0; i < G; i++) outputs.zDotR[i] = groth16Outputs[idx++];
+        for (uint256 i = 0; i < G; i++) {
+            outputs.zDotR[i] = groth16Outputs[idx++];
+        }
 
         outputs.mleEval = new uint256[](P);
-        for (uint256 i = 0; i < P; i++) outputs.mleEval[i] = groth16Outputs[idx++];
+        for (uint256 i = 0; i < P; i++) {
+            outputs.mleEval[i] = groth16Outputs[idx++];
+        }
     }
 
     /// @dev Build Groth16 inputs and verify via staticcall for DAG circuit
@@ -1230,9 +1234,7 @@ contract RemainderVerifier {
     ) private view {
         (uint256 circuitHashFr0, uint256 circuitHashFr1) = _hashToFqPair(circuitHash);
 
-        uint256[][] memory pubClaimPoints = GKRDAGHybridVerifier.collectPubClaimPoints(
-            desc, challenges.allBindings
-        );
+        uint256[][] memory pubClaimPoints = GKRDAGHybridVerifier.collectPubClaimPoints(desc, challenges.allBindings);
 
         uint256[] memory groth16Inputs = GKRDAGHybridVerifier.buildDAGGroth16Inputs(
             circuitHashFr0, circuitHashFr1, challenges, pubClaimPoints, embeddedPubInputs, outputs
@@ -1256,11 +1258,7 @@ contract RemainderVerifier {
     }
 
     /// @notice Public wrapper for DAG transcript replay (for testing)
-    function replayDAGTranscriptPublic(
-        bytes calldata proof,
-        bytes32 circuitHash,
-        bytes calldata publicInputs
-    )
+    function replayDAGTranscriptPublic(bytes calldata proof, bytes32 circuitHash, bytes calldata publicInputs)
         external
         view
         returns (
@@ -1275,11 +1273,8 @@ contract RemainderVerifier {
         DAGCircuitConfig storage config = dagCircuits[circuitHash];
         require(config.circuitHash != bytes32(0), "DAG circuit not registered");
 
-        (
-            GKRVerifier.GKRProof memory gkrProof,
-            ,
-            GKRDAGVerifier.DAGInputLayerProof[] memory dagInputProofs,
-        ) = decodeProofForDAG(proof[4:], publicInputs);
+        (GKRVerifier.GKRProof memory gkrProof,, GKRDAGVerifier.DAGInputLayerProof[] memory dagInputProofs,) =
+            decodeProofForDAG(proof[4:], publicInputs);
 
         gkrProof.inputProofs = new HyraxVerifier.EvalProof[](dagInputProofs.length);
         for (uint256 i = 0; i < dagInputProofs.length; i++) {
@@ -1309,20 +1304,19 @@ contract RemainderVerifier {
     }
 
     /// @notice Public wrapper for DAG Groth16 input building (for testing)
-    function buildDAGGroth16InputsPublic(
-        bytes calldata proof,
-        bytes32 circuitHash,
-        bytes calldata publicInputs
-    ) external view returns (uint256 inputCount, uint256 numGroups, uint256 numPubClaims, uint256 numEmbeddedPubInputs) {
+    function buildDAGGroth16InputsPublic(bytes calldata proof, bytes32 circuitHash, bytes calldata publicInputs)
+        external
+        view
+        returns (uint256 inputCount, uint256 numGroups, uint256 numPubClaims, uint256 numEmbeddedPubInputs)
+    {
         DAGCircuitConfig storage config = dagCircuits[circuitHash];
         require(config.circuitHash != bytes32(0), "DAG circuit not registered");
 
         (GKRDAGHybridVerifier.DAGTranscriptChallenges memory challenges, uint256[] memory embeddedPubInputs) =
             _replayDAGTranscriptForTest(proof, circuitHash, publicInputs, config);
 
-        uint256[][] memory pubClaimPoints = GKRDAGHybridVerifier.collectPubClaimPoints(
-            config.description, challenges.allBindings
-        );
+        uint256[][] memory pubClaimPoints =
+            GKRDAGHybridVerifier.collectPubClaimPoints(config.description, challenges.allBindings);
 
         inputCount = _buildDAGGroth16InputsForTest(circuitHash, challenges, pubClaimPoints, embeddedPubInputs, config);
         numGroups = challenges.inputGroups.length;
@@ -1336,11 +1330,8 @@ contract RemainderVerifier {
         bytes calldata publicInputs,
         DAGCircuitConfig storage config
     ) private view returns (GKRDAGHybridVerifier.DAGTranscriptChallenges memory, uint256[] memory) {
-        (
-            GKRVerifier.GKRProof memory gkrProof,
-            ,
-            GKRDAGVerifier.DAGInputLayerProof[] memory dagInputProofs,
-        ) = decodeProofForDAG(proof[4:], publicInputs);
+        (GKRVerifier.GKRProof memory gkrProof,, GKRDAGVerifier.DAGInputLayerProof[] memory dagInputProofs,) =
+            decodeProofForDAG(proof[4:], publicInputs);
 
         gkrProof.inputProofs = new HyraxVerifier.EvalProof[](dagInputProofs.length);
         for (uint256 i = 0; i < dagInputProofs.length; i++) {
@@ -1385,20 +1376,19 @@ contract RemainderVerifier {
     }
 
     /// @notice Build and return the full DAG Groth16 inputs array (for testing/debugging)
-    function buildDAGGroth16InputsFull(
-        bytes calldata proof,
-        bytes32 circuitHash,
-        bytes calldata publicInputs
-    ) external view returns (uint256[] memory groth16Inputs) {
+    function buildDAGGroth16InputsFull(bytes calldata proof, bytes32 circuitHash, bytes calldata publicInputs)
+        external
+        view
+        returns (uint256[] memory groth16Inputs)
+    {
         DAGCircuitConfig storage config = dagCircuits[circuitHash];
         require(config.circuitHash != bytes32(0), "DAG circuit not registered");
 
         (GKRDAGHybridVerifier.DAGTranscriptChallenges memory challenges, uint256[] memory embeddedPubInputs) =
             _replayDAGTranscriptForTest(proof, circuitHash, publicInputs, config);
 
-        uint256[][] memory pubClaimPoints = GKRDAGHybridVerifier.collectPubClaimPoints(
-            config.description, challenges.allBindings
-        );
+        uint256[][] memory pubClaimPoints =
+            GKRDAGHybridVerifier.collectPubClaimPoints(config.description, challenges.allBindings);
 
         (uint256 circuitHashFr0, uint256 circuitHashFr1) = _hashToFqPair(circuitHash);
 
@@ -1461,9 +1451,8 @@ contract RemainderVerifier {
         bytes calldata publicInputs
     ) internal returns (uint256 totalBatches) {
         GKRVerifier.GKRProof memory gkrProof = _decodeBatchProof(proof, publicInputs);
-        PoseidonSponge.Sponge memory sponge = _setupTranscript(
-            circuitHash, _decodeEmbeddedPublicInputs(proof[4:]), gkrProof
-        );
+        PoseidonSponge.Sponge memory sponge =
+            _setupTranscript(circuitHash, _decodeEmbeddedPublicInputs(proof[4:]), gkrProof);
         uint256 numComputeLayers = desc.numComputeLayers;
         totalBatches = DAGBatchVerifier.computeNumComputeBatches(numComputeLayers);
 
@@ -1620,19 +1609,28 @@ contract RemainderVerifier {
         uint256[] memory outputChallenges,
         HyraxVerifier.G1Point memory outputEval
     ) private view {
-        (uint256 startLayer, uint256 endLayer) = DAGBatchVerifier.batchLayerRange(bvCtx.batchIdx, bvCtx.numComputeLayers);
+        (uint256 startLayer, uint256 endLayer) =
+            DAGBatchVerifier.batchLayerRange(bvCtx.batchIdx, bvCtx.numComputeLayers);
         GKRDAGVerifier.verifyComputeLayersBatch(
-            gkrProof, dagCircuits[bvCtx.circuitHash].description,
-            gens, sponge, allBindings, outputChallenges,
-            outputEval, startLayer, endLayer
+            gkrProof,
+            dagCircuits[bvCtx.circuitHash].description,
+            gens,
+            sponge,
+            allBindings,
+            outputChallenges,
+            outputEval,
+            startLayer,
+            endLayer
         );
     }
 
     function _decodeBatchProof(bytes calldata proof, bytes calldata publicInputs)
-        private view returns (GKRVerifier.GKRProof memory gkrProof)
+        private
+        view
+        returns (GKRVerifier.GKRProof memory gkrProof)
     {
         GKRDAGVerifier.DAGInputLayerProof[] memory dip;
-        (gkrProof,,dip,) = decodeProofForDAG(proof[4:], publicInputs);
+        (gkrProof,, dip,) = decodeProofForDAG(proof[4:], publicInputs);
         gkrProof.inputProofs = new HyraxVerifier.EvalProof[](dip.length);
         for (uint256 i = 0; i < dip.length; i++) {
             gkrProof.inputProofs[i].commitmentRows = dip[i].commitmentRows;
@@ -1718,8 +1716,7 @@ contract RemainderVerifier {
 
         {
             (
-                GKRVerifier.GKRProof memory gkrProof,
-                ,
+                GKRVerifier.GKRProof memory gkrProof,,
                 GKRDAGVerifier.DAGInputLayerProof[] memory dagInputProofs,
                 GKRDAGVerifier.PublicValueClaim[] memory publicValueClaims
             ) = decodeProofForDAG(proof[4:], publicInputs);
@@ -1759,7 +1756,8 @@ contract RemainderVerifier {
                     return; // Groups remain, need another finalize call
                 }
             } else {
-                uint256[][] memory claimPoints = GKRDAGVerifier.collectClaimPoints(targetLayer, ctx.desc, ctx.allBindings);
+                uint256[][] memory claimPoints =
+                    GKRDAGVerifier.collectClaimPoints(targetLayer, ctx.desc, ctx.allBindings);
                 fCtx.pubClaimIdx = _verifyPublicInputClaimsFromCtx(ctx, claimPoints, targetLayer, fCtx.pubClaimIdx);
                 fCtx.inputIdx++;
             }
@@ -1841,7 +1839,8 @@ contract RemainderVerifier {
 
                 // Verify Pedersen opening + MLE + commitment match
                 GKRDAGVerifier.PublicValueClaim memory claim = ctx.publicValueClaims[nextPubClaimIdx];
-                HyraxVerifier.G1Point memory atomCommitment = ctx.proof.layerProofs[j].commitments[ctx.desc.atomCommitIdxs[a]];
+                HyraxVerifier.G1Point memory atomCommitment =
+                    ctx.proof.layerProofs[j].commitments[ctx.desc.atomCommitIdxs[a]];
 
                 require(
                     HyraxVerifier.isEqual(claim.commitment, atomCommitment),
@@ -1851,10 +1850,7 @@ contract RemainderVerifier {
                     HyraxVerifier.scalarMul(ctx.gens.scalarGen, claim.value),
                     HyraxVerifier.scalarMul(ctx.gens.blindingGen, claim.blinding)
                 );
-                require(
-                    HyraxVerifier.isEqual(expected, claim.commitment),
-                    "Batch finalize: Pedersen opening invalid"
-                );
+                require(HyraxVerifier.isEqual(expected, claim.commitment), "Batch finalize: Pedersen opening invalid");
                 require(
                     GKRDAGVerifier.evaluateMLEFromData(ctx.publicInputs, claimPoints[cIdx]) == claim.value,
                     "Batch finalize: public input MLE mismatch"
@@ -1913,11 +1909,7 @@ contract RemainderVerifier {
     }
 
     /// @notice Public wrapper for _decodeEmbeddedPublicInputs (for testing)
-    function decodeEmbeddedPublicInputsExternal(bytes calldata proofData)
-        external
-        pure
-        returns (uint256[] memory)
-    {
+    function decodeEmbeddedPublicInputsExternal(bytes calldata proofData) external pure returns (uint256[] memory) {
         return _decodeEmbeddedPublicInputs(proofData);
     }
 

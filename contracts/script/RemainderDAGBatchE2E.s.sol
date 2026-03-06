@@ -49,11 +49,10 @@ contract RemainderDAGBatchE2E is Script {
         f.publicInputsAbi = vm.parseJsonBytes(json, ".public_values_abi");
     }
 
-    function _deploy(
-        uint256 deployerKey,
-        Fixture memory f,
-        GKRDAGVerifier.DAGCircuitDescription memory desc
-    ) private returns (RemainderVerifier verifier) {
+    function _deploy(uint256 deployerKey, Fixture memory f, GKRDAGVerifier.DAGCircuitDescription memory desc)
+        private
+        returns (RemainderVerifier verifier)
+    {
         verifier = new RemainderVerifier(vm.addr(deployerKey));
         console.log("RemainderVerifier:", address(verifier));
 
@@ -62,11 +61,7 @@ contract RemainderDAGBatchE2E is Script {
         console.log("Circuit registered");
     }
 
-    function _runBatchVerify(
-        RemainderVerifier verifier,
-        Fixture memory f,
-        uint256 numComputeLayers
-    ) private {
+    function _runBatchVerify(RemainderVerifier verifier, Fixture memory f, uint256 numComputeLayers) private {
         uint256 gasBefore = gasleft();
         bytes32 sessionId = verifier.startDAGBatchVerify(f.innerProof, f.circuitHash, f.publicInputsAbi, f.gensHex);
         console.log("Start gas:", gasBefore - gasleft());
@@ -112,7 +107,9 @@ contract RemainderDAGBatchE2E is Script {
     function _parseUint8Array(string memory json, string memory key) private pure returns (uint8[] memory result) {
         uint256[] memory raw = vm.parseJsonUintArray(json, key);
         result = new uint8[](raw.length);
-        for (uint256 i = 0; i < raw.length; i++) result[i] = uint8(raw[i]);
+        for (uint256 i = 0; i < raw.length; i++) {
+            result[i] = uint8(raw[i]);
+        }
     }
 
     function _parseBoolArray(string memory json, string memory key) private pure returns (bool[] memory result) {
@@ -124,6 +121,8 @@ contract RemainderDAGBatchE2E is Script {
         bytes memory raw = vm.parseJson(json, key);
         bytes32[] memory parsed = abi.decode(raw, (bytes32[]));
         result = new uint256[](parsed.length);
-        for (uint256 i = 0; i < parsed.length; i++) result[i] = uint256(parsed[i]);
+        for (uint256 i = 0; i < parsed.length; i++) {
+            result[i] = uint256(parsed[i]);
+        }
     }
 }
