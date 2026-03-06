@@ -17,13 +17,14 @@
     "src"
   ],
   "scripts": {
-    "build": "tsup",
+    "build": "tsup src/index.ts --format cjs,esm --dts",
     "dev": "tsup --watch",
     "lint": "eslint src --ext .ts",
     "test": "vitest",
     "test:coverage": "vitest --coverage",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "batch-verify": "tsx src/batch-verifier.ts"
   },
   "keywords": [
     "zk",
@@ -46,13 +47,17 @@
   },
   "homepage": "https://github.com/OE-GOD/world-zk-compute#readme",
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=18.3.0"
+  },
+  "dependencies": {
+    "viem": "^2.0.0"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
     "eslint": "^8.55.0",
     "tsup": "^8.0.0",
     "typescript": "^5.3.0",
+    "tsx": "^4.0.0",
     "vitest": "^1.0.0"
   }
 }
