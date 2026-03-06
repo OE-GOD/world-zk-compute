@@ -57,6 +57,7 @@ pub mod decode;
 // Imports
 // ------------------------------------------------------------------
 
+#[allow(unused_imports)]
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -70,6 +71,9 @@ use crate::decode::ProofDecoder;
 
 #[cfg(feature = "stylus")]
 use stylus_sdk::prelude::*;
+
+#[cfg(feature = "stylus")]
+use stylus_sdk::abi::Bytes;
 
 // ------------------------------------------------------------------
 // Circuit description decoder
@@ -343,10 +347,10 @@ impl GKRVerifier {
     /// `true` if verification passes; reverts otherwise.
     pub fn verify_dag_proof(
         &self,
-        proof_data: Vec<u8>,
-        public_inputs: Vec<u8>,
-        gens_data: Vec<u8>,
-        circuit_desc_data: Vec<u8>,
+        proof_data: Bytes,
+        public_inputs: Bytes,
+        gens_data: Bytes,
+        circuit_desc_data: Bytes,
     ) -> bool {
         verify_dag_proof_inner(
             &proof_data,
@@ -613,7 +617,7 @@ mod tests {
     /// This exercises the complete verification pipeline: proof decoding, transcript
     /// setup, compute layer verification, and input layer verification.
     #[test]
-    #[ignore] // Takes ~30s due to EC scalar multiplications in pure Rust
+    #[ignore] // Takes ~10s in release mode due to EC scalar multiplications
     fn test_verify_dag_proof_e2e() {
         let fixture_path = concat!(
             env!("CARGO_MANIFEST_DIR"),
