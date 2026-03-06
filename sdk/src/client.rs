@@ -13,11 +13,7 @@ pub struct Client {
 
 impl Client {
     /// Create a new client from RPC URL, hex-encoded private key, and contract address.
-    pub fn new(
-        rpc_url: &str,
-        private_key: &str,
-        contract_address: &str,
-    ) -> anyhow::Result<Self> {
+    pub fn new(rpc_url: &str, private_key: &str, contract_address: &str) -> anyhow::Result<Self> {
         let signer: PrivateKeySigner = private_key.parse()?;
         let signer_address = signer.address();
         let wallet = EthereumWallet::from(signer);

@@ -1,4 +1,4 @@
-use alloy::primitives::{Address, B256, Bytes, U256};
+use alloy::primitives::{Address, Bytes, B256, U256};
 use alloy::providers::ProviderBuilder;
 use alloy::sol_types::SolType;
 use sha2::{Digest, Sha256};
@@ -104,11 +104,7 @@ impl DAGVerifier {
         let contract = RemainderVerifier::new(self.client.contract_address(), provider);
 
         let receipt = contract
-            .setDAGCircuitGroth16Verifier(
-                circuit_hash,
-                verifier_address,
-                U256::from(input_count),
-            )
+            .setDAGCircuitGroth16Verifier(circuit_hash, verifier_address, U256::from(input_count))
             .send()
             .await?
             .get_receipt()
@@ -163,11 +159,7 @@ impl DAGVerifier {
     /// Run multi-tx batch verification: start → continue×N → finalize×M → cleanup.
     ///
     /// Calls `on_progress` at each step. Returns the session ID on success.
-    pub async fn verify_batch<F>(
-        &self,
-        proof: &ProofData,
-        on_progress: F,
-    ) -> anyhow::Result<B256>
+    pub async fn verify_batch<F>(&self, proof: &ProofData, on_progress: F) -> anyhow::Result<B256>
     where
         F: Fn(BatchProgress),
     {

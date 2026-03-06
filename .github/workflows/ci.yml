@@ -186,6 +186,77 @@ jobs:
           cd examples/xgboost-remainder/gnark-wrapper
           go test -v -timeout 300s ./...
 
+  rust-sdk:
+    name: Rust SDK Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy, rustfmt
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            sdk/target
+          key: ${{ runner.os }}-cargo-sdk-${{ hashFiles('sdk/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-sdk-
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path sdk/Cargo.toml --check
+
+      - name: Run Clippy
+        run: cargo clippy --manifest-path sdk/Cargo.toml -- -D warnings
+
+      - name: Run tests
+        run: cargo test --manifest-path sdk/Cargo.toml
+
+  typescript-sdk:
+    name: TypeScript SDK Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: sdk/typescript/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          cd sdk/typescript
+          npm ci
+
+      - name: Type check
+        run: |
+          cd sdk/typescript
+          npx tsc --noEmit
+
+      - name: Run tests
+        run: |
+          cd sdk/typescript
+          npx vitest run
+
+      - name: Build
+        run: |
+          cd sdk/typescript
+          npm run build
+
   python-sdk:
     name: Python SDK Tests
     runs-on: ubuntu-latest

@@ -57,12 +57,7 @@ pub fn print_all_deps() {
     println!("# Ed25519 (~100x faster)");
     println!(
         "{}",
-        cargo_dep(
-            "curve25519-dalek",
-            CURVE25519_GIT,
-            CURVE25519_TAG,
-            &[]
-        )
+        cargo_dep("curve25519-dalek", CURVE25519_GIT, CURVE25519_TAG, &[])
     );
     println!();
     println!("# BLS12-381");

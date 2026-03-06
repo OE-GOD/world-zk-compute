@@ -96,15 +96,35 @@ impl DAGCircuitDescriptionJson {
             numComputeLayers: U256::from(self.num_compute_layers),
             numInputLayers: U256::from(self.num_input_layers),
             layerTypes: self.layer_types.clone(),
-            numSumcheckRounds: self.num_sumcheck_rounds.iter().map(|&v| U256::from(v)).collect(),
+            numSumcheckRounds: self
+                .num_sumcheck_rounds
+                .iter()
+                .map(|&v| U256::from(v))
+                .collect(),
             atomOffsets: self.atom_offsets.iter().map(|&v| U256::from(v)).collect(),
-            atomTargetLayers: self.atom_target_layers.iter().map(|&v| U256::from(v)).collect(),
-            atomCommitIdxs: self.atom_commit_idxs.iter().map(|&v| U256::from(v)).collect(),
+            atomTargetLayers: self
+                .atom_target_layers
+                .iter()
+                .map(|&v| U256::from(v))
+                .collect(),
+            atomCommitIdxs: self
+                .atom_commit_idxs
+                .iter()
+                .map(|&v| U256::from(v))
+                .collect(),
             ptOffsets: self.pt_offsets.iter().map(|&v| U256::from(v)).collect(),
             ptData: self.pt_data.iter().map(|&v| U256::from(v)).collect(),
             inputIsCommitted: self.input_is_committed.clone(),
-            oracleProductOffsets: self.oracle_product_offsets.iter().map(|&v| U256::from(v)).collect(),
-            oracleResultIdxs: self.oracle_result_idxs.iter().map(|&v| U256::from(v)).collect(),
+            oracleProductOffsets: self
+                .oracle_product_offsets
+                .iter()
+                .map(|&v| U256::from(v))
+                .collect(),
+            oracleResultIdxs: self
+                .oracle_result_idxs
+                .iter()
+                .map(|&v| U256::from(v))
+                .collect(),
             oracleExprCoeffs: oracle_expr_coeffs?,
         })
     }
@@ -131,7 +151,10 @@ mod tests {
         assert_eq!(fixture.dag_circuit_description.num_compute_layers, 88);
         assert_eq!(fixture.dag_circuit_description.num_input_layers, 2);
         assert_eq!(fixture.dag_circuit_description.layer_types.len(), 88);
-        assert_eq!(fixture.dag_circuit_description.oracle_expr_coeffs.len(), 134);
+        assert_eq!(
+            fixture.dag_circuit_description.oracle_expr_coeffs.len(),
+            134
+        );
     }
 
     #[test]
