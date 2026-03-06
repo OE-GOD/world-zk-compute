@@ -81,3 +81,137 @@ jobs:
 
       - name: Run Rust tests
         run: cargo test --manifest-path prover/Cargo.toml
+
+  remainder:
+    name: Remainder (XGBoost Circuit) Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy, rustfmt
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            examples/xgboost-remainder/target
+          key: ${{ runner.os }}-cargo-remainder-${{ hashFiles('examples/xgboost-remainder/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-remainder-
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path examples/xgboost-remainder/Cargo.toml --check
+
+      - name: Run Clippy
+        run: cargo clippy --manifest-path examples/xgboost-remainder/Cargo.toml -- -W warnings
+
+      - name: Run tests
+        run: cargo test --manifest-path examples/xgboost-remainder/Cargo.toml
+
+  stylus:
+    name: Stylus GKR Verifier Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy, rustfmt
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contracts/stylus/gkr-verifier/target
+          key: ${{ runner.os }}-cargo-stylus-${{ hashFiles('contracts/stylus/gkr-verifier/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-stylus-
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path contracts/stylus/gkr-verifier/Cargo.toml --check
+
+      - name: Run Clippy (native)
+        run: cargo clippy --manifest-path contracts/stylus/gkr-verifier/Cargo.toml --no-default-features -- -W warnings
+
+      - name: Run tests (native)
+        run: cargo test --manifest-path contracts/stylus/gkr-verifier/Cargo.toml --no-default-features
+
+      - name: Build WASM
+        run: cargo build --manifest-path contracts/stylus/gkr-verifier/Cargo.toml --release --target wasm32-unknown-unknown --lib
+
+      - name: Check WASM size
+        run: |
+          WASM=contracts/stylus/gkr-verifier/target/wasm32-unknown-unknown/release/gkr_verifier.wasm
+          RAW_SIZE=$(stat -c%s "$WASM")
+          echo "Raw WASM size: $RAW_SIZE bytes ($(echo "scale=1; $RAW_SIZE / 1024" | bc) KB)"
+          # Warn if raw size exceeds 128KB (brotli typically compresses ~2.5x)
+          if [ "$RAW_SIZE" -gt 131072 ]; then
+            echo "::warning::WASM binary is large ($RAW_SIZE bytes). Brotli-compressed size may exceed 24KB Stylus limit."
+          fi
+
+  gnark:
+    name: gnark Groth16 Wrapper Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache-dependency-path: examples/xgboost-remainder/gnark-wrapper/go.sum
+
+      - name: Run Go tests
+        run: |
+          cd examples/xgboost-remainder/gnark-wrapper
+          go test -v -timeout 300s ./...
+
+  python-sdk:
+    name: Python SDK Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          cd sdk/python
+          pip install -e ".[dev]"
+
+      - name: Run linter
+        continue-on-error: true
+        run: |
+          cd sdk/python
+          ruff check .
+
+      - name: Run tests
+        run: |
+          cd sdk/python
+          pytest -v
