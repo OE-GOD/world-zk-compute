@@ -57,6 +57,8 @@ pub mod gkr;
 pub mod hyrax;
 pub mod poseidon;
 pub mod sumcheck;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod test_utils;
 pub mod transcript;
 
 // ------------------------------------------------------------------
@@ -395,15 +397,7 @@ mod tests {
     // Circuit description decoder tests
     // --------------------------------------------------------
 
-    /// Helper: encode a U256 as 32 big-endian bytes and append.
-    fn push_u256(buf: &mut Vec<u8>, val: U256) {
-        buf.extend_from_slice(&val.to_be_bytes());
-    }
-
-    /// Helper: encode a usize as a U256 and append.
-    fn push_usize(buf: &mut Vec<u8>, val: usize) {
-        push_u256(buf, U256::from_u64(val as u64));
-    }
+    use crate::test_utils::{encode_circuit_desc_from_json, push_u256, push_usize};
 
     /// Build a minimal encoded circuit description (0 compute layers, 0 input layers,
     /// all arrays empty except offsets which need at least one sentinel).
@@ -545,69 +539,6 @@ mod tests {
     // --------------------------------------------------------
     // Integration test: real proof fixture
     // --------------------------------------------------------
-
-    /// Encode the `dag_circuit_description` JSON object into the flat binary format
-    /// expected by `decode_circuit_description`.
-    fn encode_circuit_desc_from_json(desc: &serde_json::Value) -> Vec<u8> {
-        let mut buf = Vec::new();
-
-        // Helper: push hex string as raw 32-byte value
-        fn push_hex(buf: &mut Vec<u8>, hex_str: &str) {
-            let stripped = hex_str.strip_prefix("0x").unwrap_or(hex_str);
-            let decoded = hex::decode(stripped).expect("invalid hex in oracleExprCoeffs");
-            assert_eq!(decoded.len(), 32, "oracleExprCoeff must be 32 bytes");
-            buf.extend_from_slice(&decoded);
-        }
-
-        // num_compute_layers, num_input_layers
-        push_usize(
-            &mut buf,
-            desc["numComputeLayers"].as_u64().unwrap() as usize,
-        );
-        push_usize(&mut buf, desc["numInputLayers"].as_u64().unwrap() as usize);
-
-        // Length-prefixed integer arrays
-        for key in &[
-            "layerTypes",
-            "numSumcheckRounds",
-            "atomOffsets",
-            "atomTargetLayers",
-            "atomCommitIdxs",
-            "ptOffsets",
-            "ptData",
-        ] {
-            let arr = desc[key].as_array().unwrap();
-            push_usize(&mut buf, arr.len());
-            for v in arr {
-                push_usize(&mut buf, v.as_u64().unwrap() as usize);
-            }
-        }
-
-        // inputIsCommitted (booleans → 0 or 1)
-        let bools = desc["inputIsCommitted"].as_array().unwrap();
-        push_usize(&mut buf, bools.len());
-        for v in bools {
-            push_usize(&mut buf, if v.as_bool().unwrap() { 1 } else { 0 });
-        }
-
-        // More integer arrays
-        for key in &["oracleProductOffsets", "oracleResultIdxs"] {
-            let arr = desc[key].as_array().unwrap();
-            push_usize(&mut buf, arr.len());
-            for v in arr {
-                push_usize(&mut buf, v.as_u64().unwrap() as usize);
-            }
-        }
-
-        // oracleExprCoeffs (hex strings → raw U256 bytes)
-        let coeffs = desc["oracleExprCoeffs"].as_array().unwrap();
-        push_usize(&mut buf, coeffs.len());
-        for v in coeffs {
-            push_hex(&mut buf, v.as_str().unwrap());
-        }
-
-        buf
-    }
 
     /// End-to-end integration test using the real 88-layer XGBoost DAG proof fixture.
     /// This exercises the complete verification pipeline: proof decoding, transcript
