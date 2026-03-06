@@ -34,7 +34,7 @@ trap cleanup EXIT
 
 # ── Step 1: Start Anvil ──────────────────────────────────────────────────────
 log "Step 1: Starting Anvil on port $ANVIL_PORT..."
-anvil --port "$ANVIL_PORT" --silent --disable-code-size-limit &
+anvil --port "$ANVIL_PORT" --silent --disable-code-size-limit --gas-limit 500000000 &
 ANVIL_PID=$!
 sleep 2
 
