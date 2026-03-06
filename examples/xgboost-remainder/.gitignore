@@ -1,0 +1,17 @@
+# Build artifacts
+target/
+
+# Intermediate witness/proof files
+*.stderr.txt
+*_stderr*.txt
+dag_witness*.json
+dag_groth16*.json
+contracts_fixture.json
+gnark_groth16*.json
+groth16_fixture*.json
+xgboost_witness*.txt
+
+# gnark-wrapper generated files
+gnark-wrapper/*Verifier.sol
+gnark-wrapper/*.txt
+gnark-wrapper/*.json
