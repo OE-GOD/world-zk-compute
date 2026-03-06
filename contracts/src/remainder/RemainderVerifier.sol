@@ -77,6 +77,9 @@ contract RemainderVerifier {
     /// @notice Per-DAG-circuit Groth16 function selectors
     mapping(bytes32 => bytes4) public dagCircuitGroth16Selectors;
 
+    /// @notice Per-DAG-circuit Stylus verifier addresses
+    mapping(bytes32 => address) public dagCircuitStylusVerifiers;
+
     // ========================================================================
     // EVENTS
     // ========================================================================
@@ -1255,6 +1258,189 @@ contract RemainderVerifier {
         require(dagCircuits[circuitHash].circuitHash != bytes32(0), "DAG circuit not registered");
         dagCircuitGroth16Verifiers[circuitHash] = verifier;
         dagCircuitGroth16Selectors[circuitHash] = _computeGroth16Selector(groth16InputCount);
+    }
+
+    // ========================================================================
+    // STYLUS DAG VERIFICATION
+    // ========================================================================
+
+    /// @notice Set a per-DAG-circuit Stylus verifier address
+    function setDAGStylusVerifier(bytes32 circuitHash, address stylusVerifier) external onlyAdmin {
+        require(dagCircuits[circuitHash].circuitHash != bytes32(0), "DAG circuit not registered");
+        dagCircuitStylusVerifiers[circuitHash] = stylusVerifier;
+    }
+
+    /// @notice Verify a DAG proof via Stylus verifier (delegated verification)
+    /// @param proof Proof blob (starts with "REM1" selector)
+    /// @param circuitHash SHA-256 of circuit description
+    /// @param publicInputs Public input values
+    /// @param gensData Pedersen generators
+    /// @return valid Whether the proof is valid
+    function verifyDAGProofStylus(
+        bytes calldata proof,
+        bytes32 circuitHash,
+        bytes calldata publicInputs,
+        bytes calldata gensData
+    ) external view returns (bool valid) {
+        DAGCircuitConfig storage config = dagCircuits[circuitHash];
+        if (config.circuitHash == bytes32(0)) revert CircuitNotRegistered();
+        if (!config.active) revert CircuitNotActive();
+
+        if (proof.length < 4) revert InvalidProofLength();
+        if (bytes4(proof[:4]) != bytes4("REM1")) revert InvalidProofSelector();
+
+        if (config.gensHash != bytes32(0) && gensData.length > 0) {
+            if (keccak256(gensData) != config.gensHash) revert InvalidGenerators();
+        }
+
+        address stylusVerifier = dagCircuitStylusVerifiers[circuitHash];
+        require(stylusVerifier != address(0), "Stylus verifier not configured");
+
+        // Encode circuit description into flat binary format expected by Stylus
+        bytes memory circuitDescData = _encodeFlatCircuitDesc(config.description);
+
+        valid = _callStylusVerifier(stylusVerifier, proof, publicInputs, gensData, circuitDescData);
+    }
+
+    /// @dev Call the Stylus verifier via staticcall
+    /// Stylus SDK converts verify_dag_proof → verifyDagProof (camelCase)
+    function _callStylusVerifier(
+        address stylusVerifier,
+        bytes calldata proof,
+        bytes calldata publicInputs,
+        bytes calldata gensData,
+        bytes memory circuitDescData
+    ) private view returns (bool) {
+        bytes memory callData = abi.encodeWithSelector(
+            // keccak256("verifyDagProof(bytes,bytes,bytes,bytes)")[:4]
+            bytes4(keccak256("verifyDagProof(bytes,bytes,bytes,bytes)")),
+            proof,
+            publicInputs,
+            gensData,
+            circuitDescData
+        );
+
+        (bool success, bytes memory result) = stylusVerifier.staticcall(callData);
+
+        if (!success) {
+            // Propagate revert reason
+            if (result.length > 0) {
+                assembly {
+                    revert(add(result, 32), mload(result))
+                }
+            }
+            revert("Stylus verifier call failed");
+        }
+
+        return abi.decode(result, (bool));
+    }
+
+    /// @dev Encode DAGCircuitDescription into flat binary format matching gen_calldata.rs
+    /// Format: numComputeLayers(32B) + numInputLayers(32B) + 11 length-prefixed arrays
+    /// Each array: count(32B) + count elements(32B each)
+    function _encodeFlatCircuitDesc(GKRDAGVerifier.DAGCircuitDescription storage desc)
+        private
+        view
+        returns (bytes memory)
+    {
+        // Pre-compute total word count:
+        // 2 (numComputeLayers + numInputLayers) + 11 length words + sum of all array lengths
+        uint256 totalWords = 2 + 11 + desc.layerTypes.length + desc.numSumcheckRounds.length
+            + desc.atomOffsets.length + desc.atomTargetLayers.length + desc.atomCommitIdxs.length
+            + desc.ptOffsets.length + desc.ptData.length + desc.inputIsCommitted.length
+            + desc.oracleProductOffsets.length + desc.oracleResultIdxs.length + desc.oracleExprCoeffs.length;
+
+        bytes memory buf = new bytes(totalWords * 32);
+        uint256 pos = 0;
+
+        // Write scalar fields
+        uint256 ncl = desc.numComputeLayers;
+        uint256 nil = desc.numInputLayers;
+        assembly {
+            let ptr := add(buf, 32)
+            mstore(add(ptr, pos), ncl)
+            pos := add(pos, 32)
+            mstore(add(ptr, pos), nil)
+            pos := add(pos, 32)
+        }
+
+        // Encode each array in order
+        pos = _encodeFlatUint8Array(buf, pos, desc.layerTypes);
+        pos = _encodeFlatUint256Array(buf, pos, desc.numSumcheckRounds);
+        pos = _encodeFlatUint256Array(buf, pos, desc.atomOffsets);
+        pos = _encodeFlatUint256Array(buf, pos, desc.atomTargetLayers);
+        pos = _encodeFlatUint256Array(buf, pos, desc.atomCommitIdxs);
+        pos = _encodeFlatUint256Array(buf, pos, desc.ptOffsets);
+        pos = _encodeFlatUint256Array(buf, pos, desc.ptData);
+        pos = _encodeFlatBoolArray(buf, pos, desc.inputIsCommitted);
+        pos = _encodeFlatUint256Array(buf, pos, desc.oracleProductOffsets);
+        pos = _encodeFlatUint256Array(buf, pos, desc.oracleResultIdxs);
+        pos = _encodeFlatUint256Array(buf, pos, desc.oracleExprCoeffs);
+
+        return buf;
+    }
+
+    /// @dev Encode a uint8[] storage array as length-prefixed 32-byte words
+    function _encodeFlatUint8Array(bytes memory buf, uint256 pos, uint8[] storage arr)
+        private
+        view
+        returns (uint256)
+    {
+        uint256 len = arr.length;
+        assembly {
+            mstore(add(add(buf, 32), pos), len)
+        }
+        pos += 32;
+        for (uint256 i = 0; i < len; i++) {
+            uint256 val = uint256(arr[i]);
+            assembly {
+                mstore(add(add(buf, 32), pos), val)
+            }
+            pos += 32;
+        }
+        return pos;
+    }
+
+    /// @dev Encode a bool[] storage array as length-prefixed 32-byte words (0 or 1)
+    function _encodeFlatBoolArray(bytes memory buf, uint256 pos, bool[] storage arr)
+        private
+        view
+        returns (uint256)
+    {
+        uint256 len = arr.length;
+        assembly {
+            mstore(add(add(buf, 32), pos), len)
+        }
+        pos += 32;
+        for (uint256 i = 0; i < len; i++) {
+            uint256 val = arr[i] ? 1 : 0;
+            assembly {
+                mstore(add(add(buf, 32), pos), val)
+            }
+            pos += 32;
+        }
+        return pos;
+    }
+
+    /// @dev Encode a uint256[] storage array as length-prefixed 32-byte words
+    function _encodeFlatUint256Array(bytes memory buf, uint256 pos, uint256[] storage arr)
+        private
+        view
+        returns (uint256)
+    {
+        uint256 len = arr.length;
+        assembly {
+            mstore(add(add(buf, 32), pos), len)
+        }
+        pos += 32;
+        for (uint256 i = 0; i < len; i++) {
+            uint256 val = arr[i];
+            assembly {
+                mstore(add(add(buf, 32), pos), val)
+            }
+            pos += 32;
+        }
+        return pos;
     }
 
     /// @notice Public wrapper for DAG transcript replay (for testing)
