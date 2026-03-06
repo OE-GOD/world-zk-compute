@@ -419,4 +419,89 @@ mod tests {
         ]));
         assert_eq!(MDS[0][0], expected);
     }
+
+    // ============================================================
+    // Cross-check tests: compare Rust outputs to Solidity PoseidonSponge.sol
+    // Reference values obtained from PoseidonCrossCheckTest.t.sol
+    // ============================================================
+
+    #[test]
+    fn test_cross_squeeze_no_absorb() {
+        let mut s = PoseidonSponge::init();
+        let result = s.squeeze();
+        let expected = Fq(U256([0x78532d0508f5d439, 0xe11c70de9b5978ae, 0xdb0810e362cfd943, 0x140230d79a04f0bb]));
+        assert_eq!(result, expected, "squeeze_no_absorb mismatch with Solidity");
+    }
+
+    #[test]
+    fn test_cross_absorb_1_squeeze() {
+        let mut s = PoseidonSponge::init();
+        s.absorb(&Fq::from_u64(1));
+        let result = s.squeeze();
+        let expected = Fq(U256([0xd28fee1a8ebdd9dd, 0x6e1f08976f455c78, 0xa0565c77d56d22b0, 0x11b59b2a25b09e83]));
+        assert_eq!(result, expected, "absorb(1)+squeeze mismatch with Solidity");
+    }
+
+    #[test]
+    fn test_cross_absorb_42_squeeze() {
+        let mut s = PoseidonSponge::init();
+        s.absorb(&Fq::from_u64(42));
+        let result = s.squeeze();
+        let expected = Fq(U256([0x830c63e4318c8f38, 0x9f26c1c9f4bccc65, 0x20a1fc2e0bbbce8d, 0x2294045aa6c16b19]));
+        assert_eq!(result, expected, "absorb(42)+squeeze mismatch with Solidity");
+    }
+
+    #[test]
+    fn test_cross_absorb_1_2_squeeze() {
+        let mut s = PoseidonSponge::init();
+        s.absorb(&Fq::from_u64(1));
+        s.absorb(&Fq::from_u64(2));
+        let result = s.squeeze();
+        let expected = Fq(U256([0xddf98e89273d4d80, 0x5e761689eef69952, 0x6d2e8b47816ae6f2, 0x2f09cecd4c83e5fb]));
+        assert_eq!(result, expected, "absorb(1,2)+squeeze mismatch with Solidity");
+    }
+
+    #[test]
+    fn test_cross_absorb_1_2_3_squeeze() {
+        let mut s = PoseidonSponge::init();
+        s.absorb(&Fq::from_u64(1));
+        s.absorb(&Fq::from_u64(2));
+        s.absorb(&Fq::from_u64(3));
+        let result = s.squeeze();
+        let expected = Fq(U256([0x6e832396d96c3206, 0x2f79a152b259cb83, 0xfd9fe08c6dfb1a3a, 0x15fbbb5538ed972f]));
+        assert_eq!(result, expected, "absorb(1,2,3)+squeeze mismatch with Solidity");
+    }
+
+    #[test]
+    fn test_cross_absorb_large_squeeze() {
+        let mut s = PoseidonSponge::init();
+        // Fq modulus - 1
+        let large = Fq(U256([0x3c208c16d87cfd46, 0x97816a916871ca8d, 0xb85045b68181585d, 0x30644e72e131a029]));
+        s.absorb(&large);
+        let result = s.squeeze();
+        let expected = Fq(U256([0x9d4c47dc93844892, 0xf95fd3e58a654fcf, 0xd2d4100f78cdf4af, 0x2e6a55fb23f60b6a]));
+        assert_eq!(result, expected, "absorb(large)+squeeze mismatch with Solidity");
+    }
+
+    #[test]
+    fn test_cross_absorb_pair_squeeze() {
+        let mut s = PoseidonSponge::init();
+        s.absorb(&Fq::from_u64(100));
+        s.absorb(&Fq::from_u64(200));
+        let result = s.squeeze();
+        let expected = Fq(U256([0x189d7c1b13523cf2, 0xf67e12b4cbfd1e67, 0xac5e44a991b2d9e5, 0x0c981642bd2f9e41]));
+        assert_eq!(result, expected, "absorb_pair(100,200)+squeeze mismatch with Solidity");
+    }
+
+    #[test]
+    fn test_cross_double_squeeze() {
+        let mut s = PoseidonSponge::init();
+        s.absorb(&Fq::from_u64(99));
+        let r1 = s.squeeze();
+        let r2 = s.squeeze();
+        let expected1 = Fq(U256([0x2ab0a6f647c2d87c, 0x318b5171cbee83c2, 0x5b7bf67706ef11bd, 0x12c2ed9eacfae74b]));
+        let expected2 = Fq(U256([0x58b457c19d51aeb9, 0x913a5408ceb7e9e3, 0x69a9b23b09987ab6, 0x2d09ccf58cfb749f]));
+        assert_eq!(r1, expected1, "double_squeeze r1 mismatch with Solidity");
+        assert_eq!(r2, expected2, "double_squeeze r2 mismatch with Solidity");
+    }
 }
