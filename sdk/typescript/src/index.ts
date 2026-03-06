@@ -22,6 +22,7 @@
  */
 
 export { Client } from './client';
+export { BatchVerifier } from './batch-verifier';
 
 export {
   WorldZKError,
@@ -42,6 +43,9 @@ export {
   ProofType,
   HealthStatus,
   ErrorCode,
+} from './types';
+
+export type {
   // Interfaces
   ClientOptions,
   Pagination,
@@ -69,3 +73,15 @@ export {
   VerifyProofResponse,
   WaitOptions,
 } from './types';
+
+export {
+  type Hex as BatchHex,
+  type BatchVerifierConfig,
+  type BatchVerifyInput,
+  type BatchVerifyResult,
+  type BatchSession,
+  type StepResult,
+  type ProgressEvent,
+  type ProgressCallback,
+  type BatchVerifyOptions,
+} from './batch-verifier-types';

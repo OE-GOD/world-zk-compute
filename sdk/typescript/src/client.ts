@@ -3,14 +3,13 @@
  */
 
 import { ApiError, NetworkError, TimeoutError } from './errors';
-import {
+import type {
   ApiErrorResponse,
   ClaimResponse,
   ClientOptions,
   CreateRequestParams,
   ExecutionRequest,
   HealthResponse,
-  HealthStatus,
   ListProgramsParams,
   ListProversParams,
   ListRequestsParams,
@@ -19,18 +18,17 @@ import {
   Program,
   ProofResult,
   ProofSubmissionResponse,
-  ProofType,
   Prover,
-  ProverStats,
   RegisterProverParams,
-  Reputation,
-  ReputationTier,
-  RequestStatus,
   StatusResponse,
   SubmitProofParams,
-  VerifyProofParams,
-  VerifyProofResponse,
   WaitOptions,
+} from './types';
+import {
+  HealthStatus,
+  ProofType,
+  ReputationTier,
+  RequestStatus,
 } from './types';
 
 const DEFAULT_BASE_URL = 'https://api.worldzk.compute/v1';
@@ -41,7 +39,7 @@ const DEFAULT_MAX_RETRIES = 3;
  * Utility to hash input data
  */
 async function hashInput(data: Uint8Array): Promise<string> {
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', new Uint8Array(data));
   const hashArray = Array.from(new Uint8Array(hashBuffer));
   return '0x' + hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
 }
@@ -59,7 +57,8 @@ function toBase64(data: Uint8Array): string {
 /**
  * Convert base64 to Uint8Array
  */
-function fromBase64(data: string): Uint8Array {
+/** @internal */
+export function fromBase64(data: string): Uint8Array {
   if (typeof Buffer !== 'undefined') {
     return new Uint8Array(Buffer.from(data, 'base64'));
   }
