@@ -167,9 +167,29 @@ if [ "$SKIP_DEPLOY" = false ]; then
 
     cd "$VERIFIER_DIR"
 
+    # Build WASM
+    echo "  Building WASM..."
+    cargo build --release --lib --target wasm32-unknown-unknown 2>&1
+
+    WASM_RAW="target/wasm32-unknown-unknown/release/gkr_verifier.wasm"
+    WASM_OPT="target/wasm32-unknown-unknown/release/gkr_verifier_opt.wasm"
+
+    # Optimize with wasm-opt if available (reduces Brotli size by ~1KB)
+    if command -v wasm-opt &>/dev/null; then
+        echo "  Running wasm-opt..."
+        wasm-opt -Oz --enable-bulk-memory "$WASM_RAW" -o "$WASM_OPT" 2>&1
+        WASM_FILE="$WASM_OPT"
+    else
+        echo "  wasm-opt not found, using unoptimized WASM"
+        WASM_FILE="$WASM_RAW"
+    fi
+
+    RAW_SIZE=$(wc -c < "$WASM_FILE" | tr -d ' ')
+    echo "  WASM size: ${RAW_SIZE} bytes"
+
     # Check the contract against the devnode
     echo "  Running cargo stylus check..."
-    if ! cargo stylus check --endpoint "$RPC_URL" --no-verify 2>&1; then
+    if ! cargo stylus check --endpoint "$RPC_URL" --no-verify --wasm-file "$WASM_FILE" 2>&1; then
         echo "  ERROR: Contract check failed"
         exit 1
     fi
@@ -181,6 +201,7 @@ if [ "$SKIP_DEPLOY" = false ]; then
         --endpoint "$RPC_URL" \
         --private-key "$DEV_PRIVATE_KEY" \
         --no-verify \
+        --wasm-file "$WASM_FILE" \
         2>&1)
 
     echo "$DEPLOY_OUTPUT"
