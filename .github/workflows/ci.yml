@@ -257,6 +257,93 @@ jobs:
           cd sdk/typescript
           npm run build
 
+  sdk-e2e:
+    name: SDK E2E (Batch Verification)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: sdk/typescript/package-lock.json
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Cache Rust SDK build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            sdk/target
+          key: ${{ runner.os }}-cargo-sdk-e2e-${{ hashFiles('sdk/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-sdk-e2e-
+
+      - name: Install forge dependencies
+        run: |
+          cd contracts
+          forge install foundry-rs/forge-std --no-git
+          forge install risc0/risc0-ethereum --no-git
+
+      - name: Start Anvil and deploy contracts
+        run: |
+          # Start Anvil
+          anvil --port 8545 --silent --disable-code-size-limit --gas-limit 500000000 &
+          ANVIL_PID=$!
+          sleep 2
+
+          # Verify Anvil is up
+          curl -sf http://127.0.0.1:8545 -X POST -H "Content-Type: application/json" \
+            --data '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' > /dev/null
+
+          # Deploy RemainderVerifier + register DAG circuit
+          cd contracts
+          DEPLOYER_KEY="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" \
+            forge script script/DeployRemainderDAG.s.sol:DeployRemainderDAG \
+            --rpc-url http://127.0.0.1:8545 --broadcast --disable-code-size-limit
+
+          # Extract deployed contract address
+          CONTRACT_ADDRESS=$(python3 -c "
+          import json, sys
+          data = json.load(open('broadcast/DeployRemainderDAG.s.sol/31337/run-latest.json'))
+          for tx in data['transactions']:
+              if tx.get('transactionType') == 'CREATE':
+                  print(tx['contractAddress']); sys.exit(0)
+          sys.exit(1)
+          ")
+
+          echo "Deployed contract at: $CONTRACT_ADDRESS"
+          echo "CONTRACT_ADDRESS=$CONTRACT_ADDRESS" >> $GITHUB_ENV
+
+      - name: TypeScript SDK E2E
+        run: |
+          cd sdk/typescript
+          npm ci
+          npx tsx src/batch-verifier.ts \
+            --rpc-url http://127.0.0.1:8545 \
+            --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
+            --contract $CONTRACT_ADDRESS \
+            --fixture ../../contracts/test/fixtures/phase1a_dag_fixture.json
+
+      - name: Rust SDK E2E
+        run: |
+          cd sdk
+          RPC_URL=http://127.0.0.1:8545 CONTRACT_ADDRESS=$CONTRACT_ADDRESS \
+            cargo test --test e2e_batch_verify -- --ignored --nocapture
+
   python-sdk:
     name: Python SDK Tests
     runs-on: ubuntu-latest
