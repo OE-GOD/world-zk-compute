@@ -44,6 +44,18 @@ from .errors import (
 )
 from .xgboost import XGBoostConverter, XGBoostModel, ModelParseError
 
+try:
+    from .verifier import (
+        BatchVerifier,
+        BatchVerifyInput,
+        BatchVerifyResult,
+        BatchSession,
+        StepResult,
+        ProgressEvent,
+    )
+except ImportError:
+    pass  # web3 not installed
+
 __version__ = "1.0.0"
 __all__ = [
     # Client
@@ -73,4 +85,11 @@ __all__ = [
     "XGBoostConverter",
     "XGBoostModel",
     "ModelParseError",
+    # Batch Verifier (requires web3 optional dependency)
+    "BatchVerifier",
+    "BatchVerifyInput",
+    "BatchVerifyResult",
+    "BatchSession",
+    "StepResult",
+    "ProgressEvent",
 ]
