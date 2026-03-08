@@ -5,7 +5,7 @@
 //! `verifyDagProof(bytes,bytes,bytes,bytes)`.
 //!
 //! Run with:
-//!   cargo run --no-default-features --target aarch64-apple-darwin --bin gen_calldata
+//!   cargo run --no-default-features --target aarch64-apple-darwin --example gen_calldata
 
 use std::env;
 use std::fs;

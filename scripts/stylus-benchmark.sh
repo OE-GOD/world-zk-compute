@@ -174,13 +174,13 @@ if [ "$SKIP_DEPLOY" = false ]; then
     WASM_RAW="target/wasm32-unknown-unknown/release/gkr_verifier.wasm"
     WASM_OPT="target/wasm32-unknown-unknown/release/gkr_verifier_opt.wasm"
 
-    # Optimize with wasm-opt if available (reduces Brotli size by ~1KB)
+    # Strip debug sections with wasm-opt (required to fit under 24KB Brotli limit)
     if command -v wasm-opt &>/dev/null; then
-        echo "  Running wasm-opt..."
-        wasm-opt -Oz --enable-bulk-memory "$WASM_RAW" -o "$WASM_OPT" 2>&1
+        echo "  Stripping WASM debug sections..."
+        wasm-opt --strip-debug --strip-producers --enable-bulk-memory "$WASM_RAW" -o "$WASM_OPT" 2>&1
         WASM_FILE="$WASM_OPT"
     else
-        echo "  wasm-opt not found, using unoptimized WASM"
+        echo "  WARNING: wasm-opt not found, WASM may exceed 24KB Brotli limit"
         WASM_FILE="$WASM_RAW"
     fi
 
@@ -241,12 +241,12 @@ CALLDATA_FILE="$VERIFIER_DIR/calldata.hex"
 # Build and run the calldata generator
 cargo run --release --no-default-features \
     --target aarch64-apple-darwin \
-    --bin gen_calldata 2>&1 | grep -v "^0x" >&2 || true
+    --example gen_calldata 2>&1 | grep -v "^0x" >&2 || true
 
 # Run again to capture just the hex output
 CALLDATA=$(cargo run --release --no-default-features \
     --target aarch64-apple-darwin \
-    --bin gen_calldata 2>/dev/null)
+    --example gen_calldata 2>/dev/null)
 
 if [ -z "$CALLDATA" ]; then
     # Fall back to file
