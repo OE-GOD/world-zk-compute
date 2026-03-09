@@ -1,0 +1,14 @@
+{
+  "network": "arbitrum-sepolia",
+  "chainId": 421614,
+  "contracts": {
+    "RemainderVerifier": "",
+    "TEEMLVerifier": ""
+  },
+  "dagCircuit": {
+    "registered": false,
+    "circuitHash": ""
+  },
+  "deployer": "",
+  "deployedAt": ""
+}
