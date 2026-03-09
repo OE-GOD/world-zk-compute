@@ -115,8 +115,7 @@ contract DeployRemainder is Script {
     function _envBoolOr(string memory key, bool defaultVal) private view returns (bool) {
         try vm.envBool(key) returns (bool val) {
             return val;
-        }
-            catch {
+        } catch {
             return defaultVal;
         }
     }

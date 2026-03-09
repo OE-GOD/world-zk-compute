@@ -1345,10 +1345,10 @@ contract RemainderVerifier {
     {
         // Pre-compute total word count:
         // 2 (numComputeLayers + numInputLayers) + 11 length words + sum of all array lengths
-        uint256 totalWords = 2 + 11 + desc.layerTypes.length + desc.numSumcheckRounds.length
-            + desc.atomOffsets.length + desc.atomTargetLayers.length + desc.atomCommitIdxs.length
-            + desc.ptOffsets.length + desc.ptData.length + desc.inputIsCommitted.length
-            + desc.oracleProductOffsets.length + desc.oracleResultIdxs.length + desc.oracleExprCoeffs.length;
+        uint256 totalWords = 2 + 11 + desc.layerTypes.length + desc.numSumcheckRounds.length + desc.atomOffsets.length
+            + desc.atomTargetLayers.length + desc.atomCommitIdxs.length + desc.ptOffsets.length + desc.ptData.length
+            + desc.inputIsCommitted.length + desc.oracleProductOffsets.length + desc.oracleResultIdxs.length
+            + desc.oracleExprCoeffs.length;
 
         bytes memory buf = new bytes(totalWords * 32);
         uint256 pos = 0;
@@ -1381,11 +1381,7 @@ contract RemainderVerifier {
     }
 
     /// @dev Encode a uint8[] storage array as length-prefixed 32-byte words
-    function _encodeFlatUint8Array(bytes memory buf, uint256 pos, uint8[] storage arr)
-        private
-        view
-        returns (uint256)
-    {
+    function _encodeFlatUint8Array(bytes memory buf, uint256 pos, uint8[] storage arr) private view returns (uint256) {
         uint256 len = arr.length;
         assembly {
             mstore(add(add(buf, 32), pos), len)
@@ -1402,11 +1398,7 @@ contract RemainderVerifier {
     }
 
     /// @dev Encode a bool[] storage array as length-prefixed 32-byte words (0 or 1)
-    function _encodeFlatBoolArray(bytes memory buf, uint256 pos, bool[] storage arr)
-        private
-        view
-        returns (uint256)
-    {
+    function _encodeFlatBoolArray(bytes memory buf, uint256 pos, bool[] storage arr) private view returns (uint256) {
         uint256 len = arr.length;
         assembly {
             mstore(add(add(buf, 32), pos), len)
