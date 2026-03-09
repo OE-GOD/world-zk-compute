@@ -126,6 +126,64 @@ sol! {
     }
 }
 
+sol! {
+    #[sol(rpc)]
+    contract TEEMLVerifier {
+        struct EnclaveInfo {
+            bool registered;
+            bool active;
+            bytes32 enclaveImageHash;
+            uint256 registeredAt;
+        }
+
+        struct MLResult {
+            address enclave;
+            address submitter;
+            bytes32 modelHash;
+            bytes32 inputHash;
+            bytes32 resultHash;
+            bytes result;
+            uint256 submittedAt;
+            uint256 challengeDeadline;
+            uint256 disputeDeadline;
+            uint256 challengeBond;
+            uint256 proverStakeAmount;
+            bool finalized;
+            bool challenged;
+            address challenger;
+        }
+
+        event EnclaveRegistered(address indexed enclaveKey, bytes32 enclaveImageHash);
+        event EnclaveRevoked(address indexed enclaveKey);
+        event ResultSubmitted(bytes32 indexed resultId, bytes32 modelHash, bytes32 inputHash);
+        event ResultChallenged(bytes32 indexed resultId, address challenger);
+        event DisputeResolved(bytes32 indexed resultId, bool proverWon);
+        event ResultFinalized(bytes32 indexed resultId);
+
+        function registerEnclave(address enclaveKey, bytes32 enclaveImageHash) external;
+        function revokeEnclave(address enclaveKey) external;
+        function setRemainderVerifier(address _verifier) external;
+        function setChallengeBondAmount(uint256 _amount) external;
+        function setProverStake(uint256 _amount) external;
+
+        function submitResult(bytes32 modelHash, bytes32 inputHash, bytes calldata result, bytes calldata attestation) external payable returns (bytes32 resultId);
+        function challenge(bytes32 resultId) external payable;
+        function resolveDispute(bytes32 resultId, bytes calldata proof, bytes32 circuitHash, bytes calldata publicInputs, bytes calldata gensData) external;
+        function resolveDisputeByTimeout(bytes32 resultId) external;
+        function finalize(bytes32 resultId) external;
+
+        function getResult(bytes32 resultId) external view returns (MLResult memory);
+        function isResultValid(bytes32 resultId) external view returns (bool);
+
+        function admin() external view returns (address);
+        function remainderVerifier() external view returns (address);
+        function challengeBondAmount() external view returns (uint256);
+        function proverStake() external view returns (uint256);
+        function disputeResolved(bytes32 resultId) external view returns (bool);
+        function disputeProverWon(bytes32 resultId) external view returns (bool);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::RemainderVerifier::DAGCircuitDescription;

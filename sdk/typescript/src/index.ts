@@ -23,6 +23,9 @@
 
 export { Client } from './client';
 export { BatchVerifier } from './batch-verifier';
+export { TEEVerifier } from './tee-verifier';
+export type { TEEVerifierConfig } from './tee-verifier';
+export { teeMLVerifierAbi } from './tee-verifier-abi';
 
 export {
   WorldZKError,

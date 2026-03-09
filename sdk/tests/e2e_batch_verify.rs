@@ -33,7 +33,9 @@ async fn test_batch_verify_e2e() {
         fixture_path
     );
     let fixture = DAGFixture::load(&fixture_path).expect("Failed to load fixture");
-    let proof = fixture.to_proof_data().expect("Failed to convert proof data");
+    let proof = fixture
+        .to_proof_data()
+        .expect("Failed to convert proof data");
 
     // Create client + verifier
     let client =

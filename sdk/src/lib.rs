@@ -31,8 +31,10 @@ pub mod abi;
 pub mod client;
 pub mod fixture;
 pub mod precompiles;
+pub mod tee;
 pub mod verifier;
 
 pub use client::Client;
 pub use fixture::{DAGFixture, ProofData};
+pub use tee::TEEVerifier;
 pub use verifier::{BatchProgress, BatchSession, DAGVerifier};

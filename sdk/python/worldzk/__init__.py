@@ -53,6 +53,7 @@ try:
         StepResult,
         ProgressEvent,
     )
+    from .tee_verifier import TEEVerifier, MLResult
 except ImportError:
     pass  # web3 not installed
 
@@ -92,4 +93,7 @@ __all__ = [
     "BatchSession",
     "StepResult",
     "ProgressEvent",
+    # TEE Verifier (requires web3 optional dependency)
+    "TEEVerifier",
+    "MLResult",
 ]

@@ -1,0 +1,199 @@
+export const teeMLVerifierAbi = [
+  // Admin
+  {
+    type: 'function',
+    name: 'registerEnclave',
+    inputs: [
+      { name: 'enclaveKey', type: 'address' },
+      { name: 'enclaveImageHash', type: 'bytes32' },
+    ],
+    outputs: [],
+    stateMutability: 'nonpayable',
+  },
+  {
+    type: 'function',
+    name: 'revokeEnclave',
+    inputs: [{ name: 'enclaveKey', type: 'address' }],
+    outputs: [],
+    stateMutability: 'nonpayable',
+  },
+  {
+    type: 'function',
+    name: 'setRemainderVerifier',
+    inputs: [{ name: '_verifier', type: 'address' }],
+    outputs: [],
+    stateMutability: 'nonpayable',
+  },
+  {
+    type: 'function',
+    name: 'setChallengeBondAmount',
+    inputs: [{ name: '_amount', type: 'uint256' }],
+    outputs: [],
+    stateMutability: 'nonpayable',
+  },
+  {
+    type: 'function',
+    name: 'setProverStake',
+    inputs: [{ name: '_amount', type: 'uint256' }],
+    outputs: [],
+    stateMutability: 'nonpayable',
+  },
+  // Submit
+  {
+    type: 'function',
+    name: 'submitResult',
+    inputs: [
+      { name: 'modelHash', type: 'bytes32' },
+      { name: 'inputHash', type: 'bytes32' },
+      { name: 'result', type: 'bytes' },
+      { name: 'attestation', type: 'bytes' },
+    ],
+    outputs: [{ name: 'resultId', type: 'bytes32' }],
+    stateMutability: 'payable',
+  },
+  // Challenge
+  {
+    type: 'function',
+    name: 'challenge',
+    inputs: [{ name: 'resultId', type: 'bytes32' }],
+    outputs: [],
+    stateMutability: 'payable',
+  },
+  // Dispute
+  {
+    type: 'function',
+    name: 'resolveDispute',
+    inputs: [
+      { name: 'resultId', type: 'bytes32' },
+      { name: 'proof', type: 'bytes' },
+      { name: 'circuitHash', type: 'bytes32' },
+      { name: 'publicInputs', type: 'bytes' },
+      { name: 'gensData', type: 'bytes' },
+    ],
+    outputs: [],
+    stateMutability: 'nonpayable',
+  },
+  {
+    type: 'function',
+    name: 'resolveDisputeByTimeout',
+    inputs: [{ name: 'resultId', type: 'bytes32' }],
+    outputs: [],
+    stateMutability: 'nonpayable',
+  },
+  // Finalize
+  {
+    type: 'function',
+    name: 'finalize',
+    inputs: [{ name: 'resultId', type: 'bytes32' }],
+    outputs: [],
+    stateMutability: 'nonpayable',
+  },
+  // Query
+  {
+    type: 'function',
+    name: 'getResult',
+    inputs: [{ name: 'resultId', type: 'bytes32' }],
+    outputs: [
+      {
+        name: '',
+        type: 'tuple',
+        components: [
+          { name: 'enclave', type: 'address' },
+          { name: 'submitter', type: 'address' },
+          { name: 'modelHash', type: 'bytes32' },
+          { name: 'inputHash', type: 'bytes32' },
+          { name: 'resultHash', type: 'bytes32' },
+          { name: 'result', type: 'bytes' },
+          { name: 'submittedAt', type: 'uint256' },
+          { name: 'challengeDeadline', type: 'uint256' },
+          { name: 'disputeDeadline', type: 'uint256' },
+          { name: 'challengeBond', type: 'uint256' },
+          { name: 'proverStakeAmount', type: 'uint256' },
+          { name: 'finalized', type: 'bool' },
+          { name: 'challenged', type: 'bool' },
+          { name: 'challenger', type: 'address' },
+        ],
+      },
+    ],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
+    name: 'isResultValid',
+    inputs: [{ name: 'resultId', type: 'bytes32' }],
+    outputs: [{ name: '', type: 'bool' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
+    name: 'admin',
+    inputs: [],
+    outputs: [{ name: '', type: 'address' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
+    name: 'remainderVerifier',
+    inputs: [],
+    outputs: [{ name: '', type: 'address' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
+    name: 'challengeBondAmount',
+    inputs: [],
+    outputs: [{ name: '', type: 'uint256' }],
+    stateMutability: 'view',
+  },
+  {
+    type: 'function',
+    name: 'proverStake',
+    inputs: [],
+    outputs: [{ name: '', type: 'uint256' }],
+    stateMutability: 'view',
+  },
+  // Events
+  {
+    type: 'event',
+    name: 'EnclaveRegistered',
+    inputs: [
+      { name: 'enclaveKey', type: 'address', indexed: true },
+      { name: 'enclaveImageHash', type: 'bytes32', indexed: false },
+    ],
+  },
+  {
+    type: 'event',
+    name: 'EnclaveRevoked',
+    inputs: [{ name: 'enclaveKey', type: 'address', indexed: true }],
+  },
+  {
+    type: 'event',
+    name: 'ResultSubmitted',
+    inputs: [
+      { name: 'resultId', type: 'bytes32', indexed: true },
+      { name: 'modelHash', type: 'bytes32', indexed: false },
+      { name: 'inputHash', type: 'bytes32', indexed: false },
+    ],
+  },
+  {
+    type: 'event',
+    name: 'ResultChallenged',
+    inputs: [
+      { name: 'resultId', type: 'bytes32', indexed: true },
+      { name: 'challenger', type: 'address', indexed: false },
+    ],
+  },
+  {
+    type: 'event',
+    name: 'DisputeResolved',
+    inputs: [
+      { name: 'resultId', type: 'bytes32', indexed: true },
+      { name: 'proverWon', type: 'bool', indexed: false },
+    ],
+  },
+  {
+    type: 'event',
+    name: 'ResultFinalized',
+    inputs: [{ name: 'resultId', type: 'bytes32', indexed: true }],
+  },
+] as const;
