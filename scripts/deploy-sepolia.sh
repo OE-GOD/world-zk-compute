@@ -13,6 +13,11 @@
 # Usage:
 #   DEPLOYER_PRIVATE_KEY=0x... bash scripts/deploy-sepolia.sh
 #   DEPLOYER_PRIVATE_KEY=0x... ARBITRUM_SEPOLIA_RPC=http://127.0.0.1:8545 bash scripts/deploy-sepolia.sh
+#
+# Local Anvil note:
+#   Contract deployment + DAG registration needs >30M gas (RemainderVerifier is large).
+#   Start Anvil with a high block gas limit:
+#     anvil --gas-limit 500000000
 
 set -euo pipefail
 
@@ -39,13 +44,6 @@ FORGE_ARGS=(
     --code-size-limit 200000
     -vvv
 )
-
-# DAG circuit registration needs ~80M gas (exceeds Anvil default 30M block limit).
-# Arbitrum Sepolia supports this natively. For local Anvil, set a high gas limit.
-if [[ "$ARBITRUM_SEPOLIA_RPC" == *"127.0.0.1"* ]] || [[ "$ARBITRUM_SEPOLIA_RPC" == *"localhost"* ]]; then
-    FORGE_ARGS+=(--gas-limit 500000000)
-    echo "(Local RPC detected — using elevated gas limit for DAG registration)"
-fi
 
 # Add verification flags if API key is set
 if [ -n "${ARBISCAN_API_KEY:-}" ]; then
