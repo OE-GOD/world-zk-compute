@@ -140,6 +140,7 @@ pub fn prepare_circuit_inputs(model: &XgboostModel, features: &[f64]) -> Circuit
 
 /// Build the circuit, set inputs, generate and verify a Hyrax proof.
 /// Returns Ok on successful verification, Err on failure.
+#[cfg(test)]
 fn prove_and_verify(inputs: &CircuitInputs) -> Result<()> {
     let base_circuit = build_full_inference_circuit(
         inputs.num_trees_padded,
@@ -353,7 +354,12 @@ impl CachedProver {
     /// - Pre-computes prover/verifier configs
     pub fn new(model: XgboostModel) -> Self {
         // Compute model-dependent parameters
-        let max_depth = model.trees.iter().map(|t| model::tree_depth(t)).max().unwrap_or(0);
+        let max_depth = model
+            .trees
+            .iter()
+            .map(model::tree_depth)
+            .max()
+            .unwrap_or(0);
         let num_trees_padded = model.trees.len().next_power_of_two();
         let num_features_padded = model.num_features.next_power_of_two();
         let decomp_k = model::DEFAULT_DECOMP_K;
@@ -422,7 +428,11 @@ impl CachedProver {
     ///
     /// Reuses the cached circuit and generators — only witness-dependent
     /// computation is done per call.
-    pub fn prove(&self, features: &[f64], predicted_class: u32) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    pub fn prove(
+        &self,
+        features: &[f64],
+        predicted_class: u32,
+    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
         let inputs = prepare_circuit_inputs(&self.model, features);
 
         // Clone the cached base circuit for this request
@@ -766,8 +776,7 @@ pub fn build_full_inference_circuit(
     let num_positions = 1usize << max_depth;
     let ft_total = vt_padded * num_positions;
     let mut feat_route_gates = Vec::new();
-    for idx in 0..ft_total {
-        let src = feature_indices_padded[idx];
+    for (idx, &src) in feature_indices_padded.iter().enumerate().take(ft_total) {
         feat_route_gates.push((idx as u32, src as u32));
     }
     let feature_table =
@@ -820,8 +829,7 @@ pub fn build_full_inference_circuit(
         let bit_routed =
             builder.add_identity_gate_node(&decomp_bits_input, route_gates, vt_nv, None);
         let scale = Fr::from(1u64 << bit_i);
-        weighted_sum_expr =
-            weighted_sum_expr + AbstractExpression::scaled(bit_routed.expr(), scale);
+        weighted_sum_expr += AbstractExpression::scaled(bit_routed.expr(), scale);
 
         if bit_i == decomp_k - 1 {
             bit_routes.push(bit_routed); // save top bit for sign check
@@ -932,7 +940,7 @@ fn build_circuit_description(model: &XgboostModel) -> Vec<u8> {
     for tree in &model.trees {
         desc.extend_from_slice(&(tree.nodes.len() as u32).to_be_bytes());
         for node in &tree.nodes {
-            desc.extend_from_slice(&(node.feature_index as i32).to_be_bytes());
+            desc.extend_from_slice(&node.feature_index.to_be_bytes());
             desc.extend_from_slice(&model::quantize(node.threshold).to_be_bytes());
             desc.push(if node.is_leaf { 1 } else { 0 });
             if node.is_leaf {

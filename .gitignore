@@ -51,6 +51,9 @@ PRIVATE_INPUT_SERVER_QA.md
 PROOF_MATH_EXPLAINED.md
 SCALING_ZKVM.md
 
+# Development prompts
+*_PROMPT.md
+
 # Local cache
 cache/
 

@@ -84,6 +84,7 @@ struct XgbGradientBooster {
 struct XgbGbtreeModel {
     trees: Vec<XgbTree>,
     #[serde(default)]
+    #[allow(dead_code)]
     tree_info: Vec<i32>,
 }
 
@@ -216,7 +217,7 @@ pub fn predict(model: &XgboostModel, features: &[f64]) -> u32 {
         }
     } else {
         // Multi-class: trees are grouped by class
-        let trees_per_class = model.trees.len() / model.num_classes;
+        let _trees_per_class = model.trees.len() / model.num_classes;
         let mut scores = vec![model.base_score; model.num_classes];
 
         for (i, tree) in model.trees.iter().enumerate() {
@@ -371,7 +372,7 @@ pub fn tree_leaf_values(tree: &DecisionTree, target_depth: usize) -> Vec<i64> {
 /// Returns (leaf_values_flat, max_depth).
 /// leaf_values_flat has T * 2^max_depth entries.
 pub fn collect_all_leaf_values(model: &XgboostModel) -> (Vec<i64>, usize) {
-    let max_d = model.trees.iter().map(|t| tree_depth(t)).max().unwrap_or(0);
+    let max_d = model.trees.iter().map(tree_depth).max().unwrap_or(0);
     let mut all_leaves = Vec::new();
     for tree in &model.trees {
         all_leaves.extend(tree_leaf_values(tree, max_d));
@@ -383,20 +384,20 @@ pub fn collect_all_leaf_values(model: &XgboostModel) -> (Vec<i64>, usize) {
 /// Returns path_bits[t][k] = false (left) or true (right) for tree t at depth k.
 /// Paths are padded to max_depth (extra levels get false/left).
 pub fn compute_path_bits(model: &XgboostModel, features: &[f64]) -> (Vec<Vec<bool>>, usize) {
-    let max_d = model.trees.iter().map(|t| tree_depth(t)).max().unwrap_or(0);
+    let max_d = model.trees.iter().map(tree_depth).max().unwrap_or(0);
     let mut all_bits = Vec::new();
 
     for tree in &model.trees {
         let mut bits = vec![false; max_d];
         let mut node_idx = 0;
-        for depth in 0..max_d {
+        for bit in bits.iter_mut() {
             let node = &tree.nodes[node_idx];
             if node.is_leaf {
                 break; // remaining bits stay false (left)
             }
             let feature_val = features[node.feature_index as usize];
             let goes_right = feature_val >= node.threshold;
-            bits[depth] = goes_right;
+            *bit = goes_right;
             if goes_right {
                 node_idx = node.right_child;
             } else {
@@ -525,7 +526,7 @@ pub fn compute_comparison_witness(
 
     for (t, tree) in model.trees.iter().enumerate() {
         let mut node_idx = 0;
-        for k in 0..max_depth {
+        for (k, &path_bit) in path_bits_2d[t].iter().enumerate().take(max_depth) {
             let node = &tree.nodes[node_idx];
             let pos = t * max_depth + k;
 
@@ -556,7 +557,7 @@ pub fn compute_comparison_witness(
             }
 
             // Advance along actual path
-            if path_bits_2d[t][k] {
+            if path_bit {
                 node_idx = node.right_child;
             } else {
                 node_idx = node.left_child;

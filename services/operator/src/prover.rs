@@ -47,9 +47,7 @@ impl ProofManager {
     pub async fn generate_proof(&self, result_id: &str, features: &str) -> anyhow::Result<()> {
         match &self.mode {
             ProverMode::Subprocess => self.generate_proof_subprocess(result_id, features).await,
-            ProverMode::Http { url } => {
-                self.generate_proof_http(url, result_id, features).await
-            }
+            ProverMode::Http { url } => self.generate_proof_http(url, result_id, features).await,
         }
     }
 

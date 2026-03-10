@@ -93,7 +93,11 @@ pub fn parse_lightgbm_json(json_str: &str) -> Result<XgboostModel, String> {
 
     // num_classes: LightGBM uses num_class=1 for binary classification/regression,
     // which maps to 2 classes in our format (matching XGBoost's convention).
-    let num_classes = if lgbm.num_class <= 1 { 2 } else { lgbm.num_class };
+    let num_classes = if lgbm.num_class <= 1 {
+        2
+    } else {
+        lgbm.num_class
+    };
 
     let num_features = lgbm.max_feature_idx + 1;
 
@@ -690,10 +694,10 @@ mod tests {
 
         let model = parse_lightgbm_json(json).unwrap();
         assert_eq!(model.trees[0].nodes.len(), 7); // 3 internal + 4 leaves (BFS)
-        // Wait -- 3 internal nodes + 4 leaves = 7? Let me count:
-        // root(internal), left(internal), right(leaf), left.left(internal), left.right(leaf),
-        // left.left.left(leaf), left.left.right(leaf)
-        // = 3 internal + 4 leaves = 7. Yes.
+                                                   // Wait -- 3 internal nodes + 4 leaves = 7? Let me count:
+                                                   // root(internal), left(internal), right(leaf), left.left(internal), left.right(leaf),
+                                                   // left.left.left(leaf), left.left.right(leaf)
+                                                   // = 3 internal + 4 leaves = 7. Yes.
         assert_eq!(tree_depth(&model.trees[0]), 3);
         assert_eq!(model.max_depth, 3);
 

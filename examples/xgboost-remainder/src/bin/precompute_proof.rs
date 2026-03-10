@@ -26,6 +26,7 @@ use shared_types::pedersen::PedersenCommitter;
 
 use xgboost_remainder::abi_encode::encode_pedersen_gens;
 use xgboost_remainder::circuit::build_and_prove;
+use xgboost_remainder::lightgbm;
 use xgboost_remainder::model::{self, predict, XgboostModel};
 
 #[derive(Parser)]
@@ -40,6 +41,10 @@ struct Args {
     #[arg(long)]
     sample: bool,
 
+    /// Model format: "xgboost" (default) or "lightgbm"
+    #[arg(long, default_value = "xgboost")]
+    model_format: String,
+
     /// Feature vector as JSON array string, e.g. '[0.6, 0.2, 0.8, 0.5, 0.3]'
     #[arg(long)]
     features: String,
@@ -49,19 +54,31 @@ struct Args {
     output: Option<PathBuf>,
 }
 
-/// Load a model from a JSON file, trying direct XgboostModel format first,
-/// then XGBoost native format (from xgb.save_model()).
-fn load_model(path: &std::path::Path) -> Result<XgboostModel> {
-    let data = std::fs::read_to_string(path)?;
+/// Load a model from a JSON file using the specified format.
+fn load_model(path: &std::path::Path, model_format: &str) -> Result<XgboostModel> {
+    match model_format {
+        "lightgbm" => {
+            eprintln!("  (loading as LightGBM format)");
+            lightgbm::load_lightgbm_json(path).map_err(|e| anyhow::anyhow!("{}", e))
+        }
+        "xgboost" => {
+            let data = std::fs::read_to_string(path)?;
 
-    // Try direct XgboostModel deserialization first
-    if let Ok(m) = serde_json::from_str::<XgboostModel>(&data) {
-        eprintln!("  (loaded as XgboostModel format)");
-        return Ok(m);
+            // Try direct XgboostModel deserialization first
+            if let Ok(m) = serde_json::from_str::<XgboostModel>(&data) {
+                eprintln!("  (loaded as XgboostModel format)");
+                return Ok(m);
+            }
+
+            // Fall back to XGBoost native format
+            model::load_xgboost_json(path)
+                .map_err(|e| anyhow::anyhow!("Failed to load model: {e}"))
+        }
+        other => anyhow::bail!(
+            "Unknown model format '{}'. Supported: xgboost, lightgbm",
+            other
+        ),
     }
-
-    // Fall back to XGBoost native format
-    model::load_xgboost_json(path).map_err(|e| anyhow::anyhow!("Failed to load model: {e}"))
 }
 
 fn main() -> Result<()> {
@@ -80,8 +97,8 @@ fn main() -> Result<()> {
         model::sample_model()
     } else {
         let path = args.model.as_ref().unwrap();
-        eprintln!("Loading model from {:?}...", path);
-        load_model(path)?
+        eprintln!("Loading {} model from {:?}...", args.model_format, path);
+        load_model(path, &args.model_format)?
     };
     eprintln!(
         "  Model: {} trees, {} features, {} classes",

@@ -1,0 +1,62 @@
+name: SDK CI (TypeScript + Python)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'sdk/typescript/**'
+      - 'sdk/python/**'
+  pull_request:
+    paths:
+      - 'sdk/typescript/**'
+      - 'sdk/python/**'
+  workflow_dispatch:
+
+jobs:
+  typescript-sdk:
+    name: TypeScript SDK
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: sdk/typescript/package-lock.json
+
+      - name: Install dependencies
+        run: cd sdk/typescript && npm ci
+
+      - name: Type check
+        run: cd sdk/typescript && npx tsc --noEmit
+
+      - name: Run tests
+        run: cd sdk/typescript && npx vitest run
+
+  python-sdk:
+    name: Python SDK
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          cd sdk/python
+          pip install -e '.[dev,web3]'
+
+      - name: Run tests
+        run: cd sdk/python && python -m pytest tests/ -v

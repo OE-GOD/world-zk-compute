@@ -50,10 +50,7 @@ async fn advance_time(rpc_url: &str, seconds: u64) {
         .await
         .unwrap();
     // Mine a block to apply the time change
-    let _: serde_json::Value = provider
-        .raw_request("evm_mine".into(), ())
-        .await
-        .unwrap();
+    let _: serde_json::Value = provider.raw_request("evm_mine".into(), ()).await.unwrap();
 }
 
 fn get_env(var: &str) -> String {
@@ -185,8 +182,8 @@ async fn test_tee_challenge_flow() {
     println!("Result ID: {result_id}");
 
     // Challenge from a different account
-    let challenger_client = Client::new(&rpc_url, CHALLENGER_KEY, &contract_addr)
-        .expect("Failed to create challenger");
+    let challenger_client =
+        Client::new(&rpc_url, CHALLENGER_KEY, &contract_addr).expect("Failed to create challenger");
     let challenger = TEEVerifier::new(challenger_client);
 
     let bond = U256::from(100_000_000_000_000_000u128);
@@ -203,10 +200,7 @@ async fn test_tee_challenge_flow() {
         .expect("Failed to get result");
     assert!(result.challenged, "Result should be challenged");
     println!("Result challenged status: {}", result.challenged);
-    println!(
-        "Challenger: {}",
-        result.challenger
-    );
+    println!("Challenger: {}", result.challenger);
 
     // Verify challenger address matches
     let challenger_signer: PrivateKeySigner = CHALLENGER_KEY.parse().unwrap();

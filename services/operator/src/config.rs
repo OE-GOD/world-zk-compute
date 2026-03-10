@@ -319,7 +319,10 @@ metrics_port = 8888
         assert!(config.nitro_verification);
         assert_eq!(config.expected_pcr0.as_deref(), Some("tomlpcr0"));
         assert_eq!(config.attestation_cache_ttl, 900);
-        assert_eq!(config.prover_url.as_deref(), Some("http://toml-prover:4000"));
+        assert_eq!(
+            config.prover_url.as_deref(),
+            Some("http://toml-prover:4000")
+        );
         assert_eq!(config.metrics_port, 8888);
 
         clear_all_env_vars();

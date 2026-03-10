@@ -101,10 +101,10 @@ async fn main() -> Result<()> {
 
     // Load model (supports XGBoost and LightGBM JSON formats)
     let model = match cli.model_format.as_str() {
-        "xgboost" => model::load_xgboost_json(&cli.model)
-            .map_err(|e| anyhow::anyhow!("{}", e))?,
-        "lightgbm" => lightgbm::load_lightgbm_json(&cli.model)
-            .map_err(|e| anyhow::anyhow!("{}", e))?,
+        "xgboost" => model::load_xgboost_json(&cli.model).map_err(|e| anyhow::anyhow!("{}", e))?,
+        "lightgbm" => {
+            lightgbm::load_lightgbm_json(&cli.model).map_err(|e| anyhow::anyhow!("{}", e))?
+        }
         other => anyhow::bail!(
             "Unknown model format '{}'. Supported: xgboost, lightgbm",
             other

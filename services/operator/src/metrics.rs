@@ -111,7 +111,9 @@ mod tests {
         let state = MetricsState::new();
         state.total_submissions.fetch_add(1, Ordering::Relaxed);
         state.total_challenges.fetch_add(3, Ordering::Relaxed);
-        state.total_disputes_resolved.fetch_add(2, Ordering::Relaxed);
+        state
+            .total_disputes_resolved
+            .fetch_add(2, Ordering::Relaxed);
         state.total_finalizations.fetch_add(5, Ordering::Relaxed);
         state.last_block_polled.store(42, Ordering::Relaxed);
 
