@@ -8,6 +8,12 @@ pub struct Config {
     pub proofs_dir: String,
     pub prover_stake_wei: String,
     pub precompute_bin: String,
+    /// Whether to verify Nitro attestation before operations.
+    pub nitro_verification: bool,
+    /// Expected PCR0 value (optional, for strict verification).
+    pub expected_pcr0: Option<String>,
+    /// Attestation cache TTL in seconds.
+    pub attestation_cache_ttl: u64,
 }
 
 impl Config {
@@ -33,6 +39,15 @@ impl Config {
                 .unwrap_or_else(|_| "100000000000000000".to_string()),
             precompute_bin: std::env::var("PRECOMPUTE_BIN")
                 .unwrap_or_else(|_| "precompute_proof".to_string()),
+            nitro_verification: std::env::var("NITRO_VERIFICATION")
+                .unwrap_or_else(|_| "false".to_string())
+                .parse()
+                .unwrap_or(false),
+            expected_pcr0: std::env::var("EXPECTED_PCR0").ok(),
+            attestation_cache_ttl: std::env::var("ATTESTATION_CACHE_TTL")
+                .unwrap_or_else(|_| "300".to_string())
+                .parse()
+                .unwrap_or(300),
         })
     }
 }

@@ -17,11 +17,21 @@ pub struct InferResponse {
     pub enclave_address: String,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct EnclaveInfo {
     pub enclave_address: String,
+    #[allow(dead_code)]
     pub model_hash: String,
+}
+
+/// Attestation response from the enclave's /attestation endpoint.
+#[derive(Debug, Deserialize)]
+pub struct AttestationResponse {
+    pub document: String,
+    #[allow(dead_code)]
+    pub enclave_address: String,
+    pub is_nitro: bool,
+    pub pcr0: String,
 }
 
 #[allow(dead_code)]
@@ -50,7 +60,6 @@ impl EnclaveClient {
     }
 
     /// Get enclave info (address + model hash).
-    #[allow(dead_code)]
     pub async fn info(&self) -> anyhow::Result<EnclaveInfo> {
         let resp = self
             .client
@@ -60,6 +69,27 @@ impl EnclaveClient {
             .json::<EnclaveInfo>()
             .await?;
         Ok(resp)
+    }
+
+    /// Fetch attestation document from the enclave.
+    ///
+    /// If `nonce` is provided, it is passed as a query parameter to the enclave
+    /// so the attestation document includes it for freshness verification.
+    pub async fn attestation(&self, nonce: Option<&str>) -> anyhow::Result<AttestationResponse> {
+        let mut url = format!("{}/attestation", self.base_url);
+        if let Some(n) = nonce {
+            url = format!("{}?nonce={}", url, n);
+        }
+        let resp = self.client.get(&url).send().await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Attestation fetch failed ({}): {}", status, text);
+        }
+
+        let att_resp = resp.json::<AttestationResponse>().await?;
+        Ok(att_resp)
     }
 
     /// Run inference on the given features.

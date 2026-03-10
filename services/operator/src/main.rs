@@ -1,16 +1,32 @@
 mod chain;
 mod config;
 mod enclave;
+mod nitro;
 mod prover;
 mod store;
 mod watcher;
 
-use alloy::primitives::{Address, B256, U256};
+use alloy::primitives::{keccak256, Address, B256, U256};
+use alloy::providers::{Provider, ProviderBuilder};
 use clap::{Parser, Subcommand};
+use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
 
 use config::Config;
 use prover::ProofManager;
 use watcher::{EventWatcher, TEEEvent};
+
+/// Cached attestation verification result with TTL.
+struct CachedAttestation {
+    #[allow(dead_code)]
+    verified: nitro::VerifiedAttestation,
+    fetched_at: Instant,
+}
+
+/// Global attestation cache for the submit command.
+/// Avoids re-fetching and re-verifying attestation on every submit
+/// within the TTL window.
+static ATTESTATION_CACHE: OnceLock<Mutex<Option<CachedAttestation>>> = OnceLock::new();
 
 #[derive(Parser)]
 #[command(name = "tee-operator", about = "TEE ML Operator Service")]
@@ -34,6 +50,15 @@ enum Commands {
         /// Feature vector as JSON array
         #[arg(long)]
         features: String,
+    },
+    /// Register an enclave on-chain (fetch attestation, verify, register)
+    Register {
+        /// Expected PCR0 value (optional -- if set, validates against it)
+        #[arg(long)]
+        expected_pcr0: Option<String>,
+        /// Skip attestation verification (dev mode)
+        #[arg(long, default_value = "false")]
+        skip_verify: bool,
     },
 }
 
@@ -61,7 +86,99 @@ async fn main() -> anyhow::Result<()> {
         Commands::Submit { features } => cmd_submit(&config, &features).await,
         Commands::Watch => cmd_watch(&config).await,
         Commands::Run { features } => cmd_run(&config, &features).await,
+        Commands::Register {
+            expected_pcr0,
+            skip_verify,
+        } => cmd_register(&config, expected_pcr0.as_deref(), skip_verify).await,
     }
+}
+
+/// Compute a nonce for attestation freshness verification.
+///
+/// `nonce = keccak256(chainId || blockNumber || enclaveAddress)`
+///
+/// This binds the attestation to a specific chain state, preventing replay attacks.
+fn compute_attestation_nonce(chain_id: u64, block_number: u64, enclave_address: &str) -> String {
+    let mut preimage = Vec::with_capacity(36); // 8 + 8 + 20
+    preimage.extend_from_slice(&chain_id.to_be_bytes());
+    preimage.extend_from_slice(&block_number.to_be_bytes());
+    let addr_hex = enclave_address
+        .strip_prefix("0x")
+        .unwrap_or(enclave_address);
+    if let Ok(addr_bytes) = hex::decode(addr_hex) {
+        preimage.extend_from_slice(&addr_bytes);
+    }
+    hex::encode(keccak256(&preimage).as_slice())
+}
+
+/// Verify the enclave's attestation, using the cache if the TTL has not expired.
+///
+/// When `config.nitro_verification` is true, this fetches and verifies the
+/// attestation document. Results are cached for `config.attestation_cache_ttl`
+/// seconds to avoid redundant verification on rapid successive submits.
+///
+/// For fresh attestation fetches, a nonce is computed from the current chain
+/// state and included in the request to prevent replay attacks.
+async fn verify_enclave_attestation(
+    config: &Config,
+    client: &enclave::EnclaveClient,
+) -> anyhow::Result<()> {
+    let cache = ATTESTATION_CACHE.get_or_init(|| Mutex::new(None));
+    let mut cached = cache.lock().unwrap();
+
+    // Check if we have a valid cached attestation
+    if let Some(ref c) = *cached {
+        if c.fetched_at.elapsed().as_secs() < config.attestation_cache_ttl {
+            tracing::debug!(
+                "Using cached attestation (age={}s)",
+                c.fetched_at.elapsed().as_secs()
+            );
+            return Ok(());
+        }
+    }
+
+    // Compute nonce from chain state for replay prevention
+    let nonce_hex = {
+        let provider = ProviderBuilder::new().connect_http(config.rpc_url.parse()?);
+        let chain_id = provider.get_chain_id().await?;
+        let block_number = provider.get_block_number().await?;
+
+        // Get enclave address from enclave info
+        let info = client.info().await?;
+        let nonce = compute_attestation_nonce(chain_id, block_number, &info.enclave_address);
+        tracing::debug!(
+            "Computed attestation nonce: {} (chainId={}, block={})",
+            nonce,
+            chain_id,
+            block_number
+        );
+        nonce
+    };
+
+    // Fetch attestation with nonce for freshness binding
+    tracing::info!("Fetching attestation for verification...");
+    let att = client.attestation(Some(&nonce_hex)).await?;
+    let verified = nitro::verify_attestation(&att.document)?;
+
+    // Verify nonce matches what we sent (replay prevention)
+    nitro::validate_nonce(&verified, &nonce_hex)?;
+
+    if let Some(ref expected) = config.expected_pcr0 {
+        nitro::validate_pcr0(&verified, expected)?;
+    }
+    nitro::validate_freshness(&verified, 600)?;
+
+    tracing::info!(
+        "Enclave attestation verified (cert_chain={}, nonce_verified=true)",
+        verified.cert_chain_verified
+    );
+
+    *cached = Some(CachedAttestation {
+        verified,
+        fetched_at: Instant::now(),
+    });
+
+    Ok(())
 }
 
 async fn cmd_submit(config: &Config, features_json: &str) -> anyhow::Result<()> {
@@ -76,6 +193,11 @@ async fn cmd_submit(config: &Config, features_json: &str) -> anyhow::Result<()> 
     let health = enclave_client.health().await?;
     if !health {
         anyhow::bail!("Enclave is not healthy at {}", config.enclave_url);
+    }
+
+    // 2a. Verify enclave attestation if nitro verification is enabled
+    if config.nitro_verification {
+        verify_enclave_attestation(config, &enclave_client).await?;
     }
 
     let response = enclave_client.infer(&feats).await?;
@@ -197,6 +319,110 @@ async fn cmd_run(config: &Config, features_json: &str) -> anyhow::Result<()> {
     cmd_watch(config).await
 }
 
+async fn cmd_register(
+    config: &Config,
+    expected_pcr0: Option<&str>,
+    skip_verify: bool,
+) -> anyhow::Result<()> {
+    let enclave_client = enclave::EnclaveClient::new(&config.enclave_url);
+
+    // 1. Get enclave address first (needed for nonce computation)
+    let info = enclave_client.info().await?;
+
+    // 2. Generate chain-bound nonce for replay prevention
+    //    nonce = keccak256(chainId || blockNumber || enclaveAddress)
+    let provider = ProviderBuilder::new().connect_http(
+        config
+            .rpc_url
+            .parse()
+            .map_err(|e| anyhow::anyhow!("Invalid RPC URL: {}", e))?,
+    );
+    let chain_id: u64 = provider.get_chain_id().await?;
+    let block_number: u64 = provider.get_block_number().await?;
+
+    let nonce_hex =
+        compute_attestation_nonce(chain_id, block_number, &info.enclave_address);
+
+    tracing::info!(
+        "Generated nonce from chain_id={}, block={}, enclave={}: {}...",
+        chain_id,
+        block_number,
+        &info.enclave_address,
+        &nonce_hex[..16]
+    );
+
+    // 2. Fetch attestation document with nonce
+    tracing::info!("Fetching attestation from {}...", config.enclave_url);
+    let att_resp = enclave_client.attestation(Some(&nonce_hex)).await?;
+
+    tracing::info!(
+        "Attestation received: is_nitro={}, pcr0={}",
+        att_resp.is_nitro,
+        att_resp.pcr0
+    );
+
+    // 3. Verify attestation (unless skip_verify)
+    let verified = if skip_verify {
+        tracing::warn!("Skipping attestation verification (dev mode)");
+        nitro::parse_attestation(&att_resp.document)?
+    } else {
+        let verified = nitro::verify_attestation(&att_resp.document)?;
+
+        // Validate nonce matches what we sent
+        nitro::validate_nonce(&verified, &nonce_hex)?;
+        tracing::info!("Attestation nonce validated");
+
+        // Validate PCR0 if expected value provided
+        if let Some(pcr0) = expected_pcr0 {
+            nitro::validate_pcr0(&verified, pcr0)?;
+            tracing::info!("PCR0 validation passed");
+        }
+
+        // Validate freshness (5 minutes)
+        nitro::validate_freshness(&verified, 300)?;
+        tracing::info!("Attestation freshness validated");
+
+        verified
+    };
+
+    // 4. Parse enclave address
+    let enclave_addr: Address = verified
+        .enclave_address
+        .parse()
+        .map_err(|e| anyhow::anyhow!("Invalid enclave address: {}", e))?;
+
+    // 5. Convert PCR0 to bytes32 (take first 32 bytes of the 48-byte PCR0)
+    let pcr0_bytes =
+        hex::decode(&verified.pcr0).map_err(|e| anyhow::anyhow!("Invalid PCR0 hex: {}", e))?;
+    let image_hash = if pcr0_bytes.len() >= 32 {
+        B256::from_slice(&pcr0_bytes[..32])
+    } else {
+        let mut padded = [0u8; 32];
+        padded[..pcr0_bytes.len()].copy_from_slice(&pcr0_bytes);
+        B256::from(padded)
+    };
+
+    // 6. Register on-chain
+    let chain_client = chain::ChainClient::new(
+        &config.rpc_url,
+        &config.private_key,
+        &config.tee_verifier_address,
+    )?;
+
+    let tx_hash = chain_client
+        .register_enclave(enclave_addr, image_hash)
+        .await?;
+    tracing::info!("Enclave registered on-chain: tx={}", tx_hash);
+
+    println!("Enclave registered:");
+    println!("  address:    {}", enclave_addr);
+    println!("  pcr0:       0x{}", verified.pcr0);
+    println!("  image_hash: 0x{}", hex::encode(image_hash));
+    println!("  tx:         0x{}", hex::encode(tx_hash));
+
+    Ok(())
+}
+
 async fn handle_challenge(chain: &chain::ChainClient, proof_mgr: &ProofManager, result_id: B256) {
     let rid_hex = format!("0x{}", hex::encode(result_id));
 
@@ -302,5 +528,20 @@ mod tests {
             vec![0xde, 0xad, 0xbe, 0xef]
         );
         assert_eq!(hex_to_bytes("cafe").unwrap(), vec![0xca, 0xfe]);
+    }
+
+    #[test]
+    fn test_compute_attestation_nonce() {
+        let nonce = compute_attestation_nonce(1, 12345, "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
+        // Should be a 64-char hex string (SHA-256 = 32 bytes)
+        assert_eq!(nonce.len(), 64);
+
+        // Same inputs should produce same nonce
+        let nonce2 = compute_attestation_nonce(1, 12345, "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
+        assert_eq!(nonce, nonce2);
+
+        // Different inputs should produce different nonce
+        let nonce3 = compute_attestation_nonce(1, 12346, "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
+        assert_ne!(nonce, nonce3);
     }
 }
