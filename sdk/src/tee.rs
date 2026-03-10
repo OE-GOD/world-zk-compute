@@ -176,12 +176,72 @@ impl TEEVerifier {
         Ok(valid)
     }
 
-    /// Get the admin address.
-    pub async fn admin(&self) -> anyhow::Result<Address> {
+    // -- Owner / Pausable --
+
+    /// Get the owner address (Ownable2Step).
+    pub async fn owner(&self) -> anyhow::Result<Address> {
         let provider = self.build_provider();
         let contract = TEEMLVerifier::new(self.client.contract_address(), provider);
-        let addr = contract.admin().call().await?;
+        let addr = contract.owner().call().await?;
         Ok(addr)
+    }
+
+    /// Get the pending owner address (Ownable2Step).
+    pub async fn pending_owner(&self) -> anyhow::Result<Address> {
+        let provider = self.build_provider();
+        let contract = TEEMLVerifier::new(self.client.contract_address(), provider);
+        let addr = contract.pendingOwner().call().await?;
+        Ok(addr)
+    }
+
+    /// Initiate ownership transfer (Ownable2Step). New owner must call `accept_ownership()`.
+    pub async fn transfer_ownership(&self, new_owner: Address) -> anyhow::Result<B256> {
+        let provider = self.build_provider();
+        let contract = TEEMLVerifier::new(self.client.contract_address(), provider);
+        let receipt = contract
+            .transferOwnership(new_owner)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        Ok(receipt.transaction_hash)
+    }
+
+    /// Accept pending ownership transfer (Ownable2Step).
+    pub async fn accept_ownership(&self) -> anyhow::Result<B256> {
+        let provider = self.build_provider();
+        let contract = TEEMLVerifier::new(self.client.contract_address(), provider);
+        let receipt = contract
+            .acceptOwnership()
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+        Ok(receipt.transaction_hash)
+    }
+
+    /// Pause the contract (onlyOwner).
+    pub async fn pause(&self) -> anyhow::Result<B256> {
+        let provider = self.build_provider();
+        let contract = TEEMLVerifier::new(self.client.contract_address(), provider);
+        let receipt = contract.pause().send().await?.get_receipt().await?;
+        Ok(receipt.transaction_hash)
+    }
+
+    /// Unpause the contract (onlyOwner).
+    pub async fn unpause(&self) -> anyhow::Result<B256> {
+        let provider = self.build_provider();
+        let contract = TEEMLVerifier::new(self.client.contract_address(), provider);
+        let receipt = contract.unpause().send().await?.get_receipt().await?;
+        Ok(receipt.transaction_hash)
+    }
+
+    /// Check if the contract is paused.
+    pub async fn paused(&self) -> anyhow::Result<bool> {
+        let provider = self.build_provider();
+        let contract = TEEMLVerifier::new(self.client.contract_address(), provider);
+        let is_paused = contract.paused().call().await?;
+        Ok(is_paused)
     }
 
     /// Get the RemainderVerifier address.

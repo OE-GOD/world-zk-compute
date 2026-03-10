@@ -1,6 +1,7 @@
 mod chain;
 mod config;
 mod enclave;
+mod metrics;
 mod nitro;
 mod prover;
 mod store;
@@ -9,7 +10,8 @@ mod watcher;
 use alloy::primitives::{keccak256, Address, B256, U256};
 use alloy::providers::{Provider, ProviderBuilder};
 use clap::{Parser, Subcommand};
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use config::Config;
@@ -31,6 +33,11 @@ static ATTESTATION_CACHE: OnceLock<Mutex<Option<CachedAttestation>>> = OnceLock:
 #[derive(Parser)]
 #[command(name = "tee-operator", about = "TEE ML Operator Service")]
 struct Cli {
+    /// Path to a TOML config file (optional). Values from the file are
+    /// used as defaults; environment variables always take precedence.
+    #[arg(long, global = true)]
+    config: Option<String>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -44,12 +51,19 @@ enum Commands {
         features: String,
     },
     /// Watch chain events and auto-resolve disputes
-    Watch,
+    Watch {
+        /// Port for the health/metrics HTTP server
+        #[arg(long, default_value = "9090")]
+        metrics_port: u16,
+    },
     /// Combined: submit + watch + prove
     Run {
         /// Feature vector as JSON array
         #[arg(long)]
         features: String,
+        /// Port for the health/metrics HTTP server
+        #[arg(long, default_value = "9090")]
+        metrics_port: u16,
     },
     /// Register an enclave on-chain (fetch attestation, verify, register)
     Register {
@@ -76,16 +90,46 @@ fn hex_to_bytes(hex_str: &str) -> anyhow::Result<Vec<u8>> {
     Ok(hex::decode(stripped)?)
 }
 
+/// Initialize the tracing subscriber.
+///
+/// - Reads `RUST_LOG` env var for filter directives (default: "info").
+/// - When `RUST_LOG_FORMAT=json`, emits structured JSON logs (for production).
+/// - Otherwise, emits human-readable logs.
+fn init_tracing() {
+    use tracing_subscriber::EnvFilter;
+
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+
+    let json_format = std::env::var("RUST_LOG_FORMAT")
+        .map(|v| v == "json")
+        .unwrap_or(false);
+
+    if json_format {
+        tracing_subscriber::fmt()
+            .json()
+            .with_env_filter(filter)
+            .init();
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .init();
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    init_tracing();
     let cli = Cli::parse();
-    let config = Config::from_env()?;
+    let config = Config::from_env(cli.config.as_deref())?;
 
     match cli.command {
         Commands::Submit { features } => cmd_submit(&config, &features).await,
-        Commands::Watch => cmd_watch(&config).await,
-        Commands::Run { features } => cmd_run(&config, &features).await,
+        Commands::Watch { metrics_port } => cmd_watch(&config, metrics_port).await,
+        Commands::Run {
+            features,
+            metrics_port,
+        } => cmd_run(&config, &features, metrics_port).await,
         Commands::Register {
             expected_pcr0,
             skip_verify,
@@ -124,36 +168,34 @@ async fn verify_enclave_attestation(
     client: &enclave::EnclaveClient,
 ) -> anyhow::Result<()> {
     let cache = ATTESTATION_CACHE.get_or_init(|| Mutex::new(None));
-    let mut cached = cache.lock().unwrap();
 
-    // Check if we have a valid cached attestation
-    if let Some(ref c) = *cached {
-        if c.fetched_at.elapsed().as_secs() < config.attestation_cache_ttl {
-            tracing::debug!(
-                "Using cached attestation (age={}s)",
-                c.fetched_at.elapsed().as_secs()
-            );
-            return Ok(());
+    // Check cache (drop guard before any async work)
+    {
+        let cached = cache.lock().unwrap();
+        if let Some(ref c) = *cached {
+            if c.fetched_at.elapsed().as_secs() < config.attestation_cache_ttl {
+                tracing::debug!(
+                    "Using cached attestation (age={}s)",
+                    c.fetched_at.elapsed().as_secs()
+                );
+                return Ok(());
+            }
         }
     }
 
     // Compute nonce from chain state for replay prevention
-    let nonce_hex = {
-        let provider = ProviderBuilder::new().connect_http(config.rpc_url.parse()?);
-        let chain_id = provider.get_chain_id().await?;
-        let block_number = provider.get_block_number().await?;
+    let provider = ProviderBuilder::new().connect_http(config.rpc_url.parse()?);
+    let chain_id = provider.get_chain_id().await?;
+    let block_number = provider.get_block_number().await?;
 
-        // Get enclave address from enclave info
-        let info = client.info().await?;
-        let nonce = compute_attestation_nonce(chain_id, block_number, &info.enclave_address);
-        tracing::debug!(
-            "Computed attestation nonce: {} (chainId={}, block={})",
-            nonce,
-            chain_id,
-            block_number
-        );
-        nonce
-    };
+    let info = client.info().await?;
+    let nonce_hex = compute_attestation_nonce(chain_id, block_number, &info.enclave_address);
+    tracing::debug!(
+        "Computed attestation nonce: {} (chainId={}, block={})",
+        nonce_hex,
+        chain_id,
+        block_number
+    );
 
     // Fetch attestation with nonce for freshness binding
     tracing::info!("Fetching attestation for verification...");
@@ -173,14 +215,19 @@ async fn verify_enclave_attestation(
         verified.cert_chain_verified
     );
 
-    *cached = Some(CachedAttestation {
-        verified,
-        fetched_at: Instant::now(),
-    });
+    // Re-acquire lock to update cache
+    {
+        let mut cached = cache.lock().unwrap();
+        *cached = Some(CachedAttestation {
+            verified,
+            fetched_at: Instant::now(),
+        });
+    }
 
     Ok(())
 }
 
+#[tracing::instrument(skip(config, features_json))]
 async fn cmd_submit(config: &Config, features_json: &str) -> anyhow::Result<()> {
     // 1. Parse features
     let feats: Vec<f64> = serde_json::from_str(features_json)
@@ -226,27 +273,82 @@ async fn cmd_submit(config: &Config, features_json: &str) -> anyhow::Result<()> 
         .await?;
     tracing::info!("Submitted on-chain: tx={}", tx_hash);
 
-    // 4. Trigger proof pre-computation (best-effort)
-    let output_path = format!("{}/{}.json", config.proofs_dir, tx_hash);
-    let child = tokio::process::Command::new(&config.precompute_bin)
-        .arg("--model")
-        .arg(&config.model_path)
-        .arg("--features")
-        .arg(features_json)
-        .arg("--output")
-        .arg(&output_path)
-        .spawn();
-
-    match child {
-        Ok(_) => tracing::info!("Proof generation started: {}", output_path),
-        Err(e) => tracing::warn!("Could not start proof generation: {}", e),
-    }
+    // 4. Trigger proof pre-computation (best-effort, uses warm prover if PROVER_URL is set)
+    let proof_mgr = ProofManager::new(
+        &config.precompute_bin,
+        &config.model_path,
+        &config.proofs_dir,
+    );
+    let result_id = format!("0x{}", hex::encode(tx_hash));
+    let features_owned = features_json.to_string();
+    tokio::spawn(async move {
+        if let Err(e) = proof_mgr.generate_proof(&result_id, &features_owned).await {
+            tracing::warn!("Proof pre-computation failed (best-effort): {}", e);
+        }
+    });
 
     println!("tx_hash={}", tx_hash);
     Ok(())
 }
 
-async fn cmd_watch(config: &Config) -> anyhow::Result<()> {
+/// Shared shutdown state for graceful termination.
+struct ShutdownState {
+    shutting_down: AtomicBool,
+    in_flight_tasks: AtomicU64,
+}
+
+impl ShutdownState {
+    fn new() -> Self {
+        Self {
+            shutting_down: AtomicBool::new(false),
+            in_flight_tasks: AtomicU64::new(0),
+        }
+    }
+
+    fn is_shutting_down(&self) -> bool {
+        self.shutting_down.load(Ordering::Relaxed)
+    }
+
+    fn signal_shutdown(&self) {
+        self.shutting_down.store(true, Ordering::Relaxed);
+    }
+
+    fn track_task_start(&self) {
+        self.in_flight_tasks.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn track_task_done(&self) {
+        self.in_flight_tasks.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    fn in_flight_count(&self) -> u64 {
+        self.in_flight_tasks.load(Ordering::Relaxed)
+    }
+}
+
+/// Wait for shutdown signal (SIGINT or SIGTERM).
+async fn shutdown_signal() {
+    let ctrl_c = tokio::signal::ctrl_c();
+
+    #[cfg(unix)]
+    {
+        let mut sigterm =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("failed to install SIGTERM handler");
+        tokio::select! {
+            _ = ctrl_c => {},
+            _ = sigterm.recv() => {},
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        ctrl_c.await.ok();
+    }
+}
+
+#[tracing::instrument(skip(config))]
+async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
     let contract_addr: Address = config
         .tee_verifier_address
         .parse()
@@ -263,34 +365,84 @@ async fn cmd_watch(config: &Config) -> anyhow::Result<()> {
         &config.proofs_dir,
     );
 
+    let shutdown = Arc::new(ShutdownState::new());
+
+    // Spawn shutdown signal handler
+    {
+        let shutdown = shutdown.clone();
+        tokio::spawn(async move {
+            shutdown_signal().await;
+            tracing::info!("Shutdown signal received");
+            shutdown.signal_shutdown();
+        });
+    }
+
+    // Initialize metrics and spawn HTTP server
+    let metrics_state = Arc::new(metrics::MetricsState::new());
+    {
+        let ms = metrics_state.clone();
+        tokio::spawn(async move {
+            metrics::serve_metrics(ms, metrics_port).await;
+        });
+    }
+
     tracing::info!("Watching for events on {}...", config.tee_verifier_address);
 
     let mut from_block = 0u64;
     let mut finalize_counter = 0u64;
 
-    loop {
+    while !shutdown.is_shutting_down() {
         // Poll for new events
         let (events, next_block) = watcher.poll_events(from_block).await?;
+
+        if !events.is_empty() {
+            tracing::info!(
+                block_number = from_block,
+                event_count = events.len(),
+                "Polled events"
+            );
+        }
+
         from_block = next_block;
 
+        // Update last polled block
+        metrics_state
+            .last_block_polled
+            .store(from_block, Ordering::Relaxed);
+
         for event in &events {
+            if shutdown.is_shutting_down() {
+                tracing::info!("Shutdown in progress, skipping remaining events");
+                break;
+            }
             match event {
                 TEEEvent::ResultChallenged {
                     result_id,
                     challenger,
                 } => {
+                    metrics_state
+                        .total_challenges
+                        .fetch_add(1, Ordering::Relaxed);
                     tracing::warn!(
-                        "Challenge detected! resultId={}, challenger={}",
-                        result_id,
-                        challenger
+                        result_id = %result_id,
+                        challenger = %challenger,
+                        "Challenge detected"
                     );
+                    shutdown.track_task_start();
                     handle_challenge(&chain_client, &proof_mgr, *result_id).await;
+                    shutdown.track_task_done();
                 }
                 TEEEvent::ResultSubmitted { result_id, .. } => {
-                    tracing::info!("New result submitted: {}", result_id);
+                    metrics_state
+                        .total_submissions
+                        .fetch_add(1, Ordering::Relaxed);
+                    tracing::info!(result_id = %result_id, "New result submitted");
                 }
                 TEEEvent::ResultFinalized { result_id } => {
-                    tracing::info!("Result finalized: {}", result_id);
+                    metrics_state
+                        .total_finalizations
+                        .fetch_add(1, Ordering::Relaxed);
+                    tracing::info!(result_id = %result_id, "Result finalized");
                 }
             }
         }
@@ -302,11 +454,44 @@ async fn cmd_watch(config: &Config) -> anyhow::Result<()> {
             auto_finalize(&watcher, &chain_client, from_block.saturating_sub(7200)).await;
         }
 
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        // Use select to allow shutdown to interrupt the sleep
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {},
+            _ = async {
+                while !shutdown.is_shutting_down() {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+            } => {
+                break;
+            },
+        }
     }
+
+    // Graceful shutdown: wait for in-flight tasks
+    let in_flight = shutdown.in_flight_count();
+    if in_flight > 0 {
+        tracing::info!(
+            in_flight_tasks = in_flight,
+            "Waiting for in-flight tasks to complete (60s timeout)"
+        );
+        let deadline = Instant::now() + std::time::Duration::from_secs(60);
+        while shutdown.in_flight_count() > 0 && Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        let remaining = shutdown.in_flight_count();
+        if remaining > 0 {
+            tracing::warn!(
+                remaining_tasks = remaining,
+                "Shutdown timeout — exiting with in-flight tasks"
+            );
+        }
+    }
+
+    tracing::info!("Shutdown complete");
+    Ok(())
 }
 
-async fn cmd_run(config: &Config, features_json: &str) -> anyhow::Result<()> {
+async fn cmd_run(config: &Config, features_json: &str, metrics_port: u16) -> anyhow::Result<()> {
     // 1. Submit (same as cmd_submit)
     let submit_result = cmd_submit(config, features_json).await;
     if let Err(e) = &submit_result {
@@ -316,9 +501,10 @@ async fn cmd_run(config: &Config, features_json: &str) -> anyhow::Result<()> {
 
     // 2. Start watching
     tracing::info!("Starting watch loop...");
-    cmd_watch(config).await
+    cmd_watch(config, metrics_port).await
 }
 
+#[tracing::instrument(skip(config))]
 async fn cmd_register(
     config: &Config,
     expected_pcr0: Option<&str>,
@@ -340,8 +526,7 @@ async fn cmd_register(
     let chain_id: u64 = provider.get_chain_id().await?;
     let block_number: u64 = provider.get_block_number().await?;
 
-    let nonce_hex =
-        compute_attestation_nonce(chain_id, block_number, &info.enclave_address);
+    let nonce_hex = compute_attestation_nonce(chain_id, block_number, &info.enclave_address);
 
     tracing::info!(
         "Generated nonce from chain_id={}, block={}, enclave={}: {}...",
@@ -532,16 +717,65 @@ mod tests {
 
     #[test]
     fn test_compute_attestation_nonce() {
-        let nonce = compute_attestation_nonce(1, 12345, "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
-        // Should be a 64-char hex string (SHA-256 = 32 bytes)
+        let nonce =
+            compute_attestation_nonce(1, 12345, "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
+        // Should be a 64-char hex string (keccak256 = 32 bytes)
         assert_eq!(nonce.len(), 64);
 
         // Same inputs should produce same nonce
-        let nonce2 = compute_attestation_nonce(1, 12345, "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
+        let nonce2 =
+            compute_attestation_nonce(1, 12345, "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
         assert_eq!(nonce, nonce2);
 
         // Different inputs should produce different nonce
-        let nonce3 = compute_attestation_nonce(1, 12346, "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
+        let nonce3 =
+            compute_attestation_nonce(1, 12346, "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
         assert_ne!(nonce, nonce3);
+    }
+
+    #[test]
+    fn test_shutdown_state_initial() {
+        let state = ShutdownState::new();
+        assert!(!state.is_shutting_down());
+        assert_eq!(state.in_flight_count(), 0);
+    }
+
+    #[test]
+    fn test_shutdown_state_signal() {
+        let state = ShutdownState::new();
+        assert!(!state.is_shutting_down());
+        state.signal_shutdown();
+        assert!(state.is_shutting_down());
+    }
+
+    #[test]
+    fn test_shutdown_state_in_flight_tracking() {
+        let state = ShutdownState::new();
+        assert_eq!(state.in_flight_count(), 0);
+
+        state.track_task_start();
+        assert_eq!(state.in_flight_count(), 1);
+
+        state.track_task_start();
+        assert_eq!(state.in_flight_count(), 2);
+
+        state.track_task_done();
+        assert_eq!(state.in_flight_count(), 1);
+
+        state.track_task_done();
+        assert_eq!(state.in_flight_count(), 0);
+    }
+
+    #[test]
+    fn test_shutdown_state_arc_sharing() {
+        let state = Arc::new(ShutdownState::new());
+        let state2 = state.clone();
+
+        assert!(!state.is_shutting_down());
+        state2.signal_shutdown();
+        assert!(state.is_shutting_down());
+
+        state.track_task_start();
+        assert_eq!(state2.in_flight_count(), 1);
     }
 }

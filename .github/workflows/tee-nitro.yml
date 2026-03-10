@@ -1,0 +1,279 @@
+name: TEE Nitro Build & Test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'tee/enclave/**'
+      - 'tee/Dockerfile.nitro'
+      - 'tee/scripts/**'
+      - 'services/operator/**'
+      - '.github/workflows/tee-nitro.yml'
+  pull_request:
+    paths:
+      - 'tee/enclave/**'
+      - 'tee/Dockerfile.nitro'
+      - 'tee/scripts/**'
+      - 'services/operator/**'
+      - '.github/workflows/tee-nitro.yml'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.92.0"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job 1: Build & test enclave crate (with and without nitro feature)
+  # ---------------------------------------------------------------------------
+  enclave-test:
+    name: Enclave Build & Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy, rustfmt
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            tee/enclave/target
+          key: ${{ runner.os }}-cargo-tee-nitro-${{ hashFiles('tee/enclave/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-tee-nitro-
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path tee/enclave/Cargo.toml --check
+
+      - name: Clippy (default features)
+        run: cargo clippy --manifest-path tee/enclave/Cargo.toml -- -D warnings
+
+      - name: Clippy (nitro feature)
+        run: cargo clippy --manifest-path tee/enclave/Cargo.toml --features nitro -- -D warnings
+
+      - name: Run tests
+        run: cargo test --manifest-path tee/enclave/Cargo.toml
+
+  # ---------------------------------------------------------------------------
+  # Job 2: Build & test operator crate
+  # ---------------------------------------------------------------------------
+  operator-test:
+    name: Operator Build & Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            services/operator/target
+          key: ${{ runner.os }}-cargo-tee-operator-${{ hashFiles('services/operator/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-tee-operator-
+
+      - name: Run Clippy
+        run: cargo clippy --manifest-path services/operator/Cargo.toml -- -D warnings
+
+      - name: Run tests
+        run: cargo test --manifest-path services/operator/Cargo.toml
+
+  # ---------------------------------------------------------------------------
+  # Job 3: Build Nitro Docker image
+  # ---------------------------------------------------------------------------
+  docker-build:
+    name: Build Nitro Docker Image
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Nitro Docker image
+        run: docker build -f tee/Dockerfile.nitro -t tee-enclave-nitro tee/
+
+      - name: Verify image runs (smoke test)
+        run: |
+          # Start container in dev mode (no real NSM device)
+          CONTAINER_ID=$(docker run -d \
+            -p 8080:8080 \
+            -e NITRO_ENABLED=false \
+            -e ENCLAVE_PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
+            tee-enclave-nitro)
+
+          # Wait for health
+          for i in $(seq 1 15); do
+            if curl -sf http://127.0.0.1:8080/health > /dev/null 2>&1; then
+              echo "Enclave healthy after ${i}s"
+              break
+            fi
+            if [ "$i" -eq 15 ]; then
+              echo "Enclave did not become healthy"
+              docker logs "$CONTAINER_ID"
+              exit 1
+            fi
+            sleep 1
+          done
+
+          # Verify attestation endpoint works
+          curl -sf http://127.0.0.1:8080/attestation | python3 -c "
+          import sys, json
+          att = json.load(sys.stdin)
+          assert 'document' in att, 'Missing document field'
+          assert 'pcr0' in att, 'Missing pcr0 field'
+          print(f'Attestation OK: is_nitro={att[\"is_nitro\"]}, pcr0={att[\"pcr0\"][:16]}...')
+          "
+
+          docker rm -f "$CONTAINER_ID"
+
+      - name: Save Docker image
+        run: docker save tee-enclave-nitro | gzip > tee-enclave-nitro.tar.gz
+
+      - name: Upload Docker image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tee-enclave-nitro-image
+          path: tee-enclave-nitro.tar.gz
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Job 4: Dev-mode E2E test
+  # ---------------------------------------------------------------------------
+  nitro-e2e:
+    name: Nitro E2E (dev mode)
+    runs-on: ubuntu-latest
+    needs: [enclave-test, operator-test]
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Install forge dependencies
+        run: |
+          cd contracts
+          forge install foundry-rs/forge-std --no-git
+          forge install risc0/risc0-ethereum --no-git
+
+      - name: Build operator binary
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Cache Rust build (operator)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            services/operator/target
+          key: ${{ runner.os }}-cargo-tee-operator-${{ hashFiles('services/operator/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-tee-operator-
+
+      - name: Build enclave Docker image (dev mode)
+        run: docker build -t tee-enclave tee/
+
+      - name: Run Nitro E2E test (dev mode)
+        run: bash scripts/tee-nitro-e2e.sh --skip-build
+
+  # ---------------------------------------------------------------------------
+  # Job 5: Build EIF (self-hosted runner with nitro-cli, optional)
+  # ---------------------------------------------------------------------------
+  build-eif:
+    name: Build Nitro EIF
+    runs-on: ubuntu-latest
+    needs: [docker-build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    timeout-minutes: 30
+    continue-on-error: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Docker image
+        uses: actions/download-artifact@v4
+        with:
+          name: tee-enclave-nitro-image
+
+      - name: Load Docker image
+        run: docker load < tee-enclave-nitro.tar.gz
+
+      - name: Check for nitro-cli
+        id: check-nitro
+        run: |
+          if command -v nitro-cli &> /dev/null; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::nitro-cli not available — skipping EIF build. Run on an EC2 Nitro-enabled instance for full EIF build."
+          fi
+
+      - name: Build EIF
+        if: steps.check-nitro.outputs.available == 'true'
+        run: |
+          EIF_PATH="tee-enclave.eif"
+          BUILD_OUTPUT=$(nitro-cli build-enclave \
+            --docker-uri tee-enclave-nitro \
+            --output-file "$EIF_PATH" 2>&1)
+
+          echo "$BUILD_OUTPUT"
+
+          # Extract PCR values
+          PCR0=$(echo "$BUILD_OUTPUT" | python3 -c "import sys,json; print(json.load(sys.stdin)['Measurements']['PCR0'])")
+          PCR1=$(echo "$BUILD_OUTPUT" | python3 -c "import sys,json; print(json.load(sys.stdin)['Measurements']['PCR1'])")
+          PCR2=$(echo "$BUILD_OUTPUT" | python3 -c "import sys,json; print(json.load(sys.stdin)['Measurements']['PCR2'])")
+
+          # Save measurements
+          cat > enclave-measurements.json <<EOF
+          {
+            "pcr0": "${PCR0}",
+            "pcr1": "${PCR1}",
+            "pcr2": "${PCR2}",
+            "built_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "git_sha": "${GITHUB_SHA}"
+          }
+          EOF
+
+          echo "## Nitro EIF Measurements" >> "$GITHUB_STEP_SUMMARY"
+          echo "| PCR | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-----|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| PCR0 | \`${PCR0:0:32}...\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| PCR1 | \`${PCR1:0:32}...\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| PCR2 | \`${PCR2:0:32}...\` |" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload EIF artifact
+        if: steps.check-nitro.outputs.available == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tee-enclave-eif
+          path: |
+            tee-enclave.eif
+            enclave-measurements.json
+          retention-days: 30

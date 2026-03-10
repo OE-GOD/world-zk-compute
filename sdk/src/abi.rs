@@ -175,7 +175,14 @@ sol! {
         function getResult(bytes32 resultId) external view returns (MLResult memory);
         function isResultValid(bytes32 resultId) external view returns (bool);
 
-        function admin() external view returns (address);
+        function pause() external;
+        function unpause() external;
+        function transferOwnership(address newOwner) external;
+        function acceptOwnership() external;
+
+        function owner() external view returns (address);
+        function pendingOwner() external view returns (address);
+        function paused() external view returns (bool);
         function remainderVerifier() external view returns (address);
         function challengeBondAmount() external view returns (uint256);
         function proverStake() external view returns (uint256);

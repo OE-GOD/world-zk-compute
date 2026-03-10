@@ -1,0 +1,125 @@
+name: Rust CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'sdk/**'
+      - 'services/operator/**'
+      - 'examples/xgboost-remainder/**'
+  pull_request:
+    paths:
+      - 'sdk/**'
+      - 'services/operator/**'
+      - 'examples/xgboost-remainder/**'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.92.0"
+
+jobs:
+  rust-sdk:
+    name: Rust SDK
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy, rustfmt
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            sdk/target
+          key: ${{ runner.os }}-cargo-sdk-${{ hashFiles('sdk/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-sdk-
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path sdk/Cargo.toml --check
+
+      - name: Run Clippy
+        run: cargo clippy --manifest-path sdk/Cargo.toml -- -D warnings
+
+      - name: Run tests
+        run: cargo test --manifest-path sdk/Cargo.toml
+
+  operator:
+    name: Operator Service
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy, rustfmt
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            services/operator/target
+          key: ${{ runner.os }}-cargo-operator-${{ hashFiles('services/operator/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-operator-
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path services/operator/Cargo.toml --check
+
+      - name: Run Clippy
+        run: cargo clippy --manifest-path services/operator/Cargo.toml -- -D warnings
+
+      - name: Run tests
+        run: cargo test --manifest-path services/operator/Cargo.toml
+
+  xgboost-remainder:
+    name: XGBoost Remainder
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy, rustfmt
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            examples/xgboost-remainder/target
+          key: ${{ runner.os }}-cargo-remainder-${{ hashFiles('examples/xgboost-remainder/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-remainder-
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path examples/xgboost-remainder/Cargo.toml --check
+
+      - name: Run Clippy
+        run: cargo clippy --manifest-path examples/xgboost-remainder/Cargo.toml -- -D warnings
+
+      - name: Run tests
+        run: cargo test --manifest-path examples/xgboost-remainder/Cargo.toml

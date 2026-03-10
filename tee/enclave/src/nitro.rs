@@ -47,13 +47,17 @@ impl NitroAttestor {
         let attestation_doc = if nitro_enabled {
             #[cfg(feature = "nitro")]
             {
-                Some(Self::get_nitro_attestation(enclave_address, model_hash, None)?)
+                Some(Self::get_nitro_attestation(
+                    enclave_address,
+                    model_hash,
+                    None,
+                )?)
             }
             #[cfg(not(feature = "nitro"))]
             {
                 let _ = (enclave_address, model_hash);
                 return Err(
-                    "Nitro enabled but binary not compiled with 'nitro' feature".to_string(),
+                    "Nitro enabled but binary not compiled with 'nitro' feature".to_string()
                 );
             }
         } else {
@@ -91,15 +95,18 @@ impl NitroAttestor {
         if self.nitro_enabled {
             #[cfg(feature = "nitro")]
             {
-                self.attestation_doc =
-                    Some(Self::get_nitro_attestation(enclave_address, model_hash, nonce)?);
+                self.attestation_doc = Some(Self::get_nitro_attestation(
+                    enclave_address,
+                    model_hash,
+                    nonce,
+                )?);
                 return Ok(());
             }
             #[cfg(not(feature = "nitro"))]
             {
                 let _ = (enclave_address, model_hash, nonce);
                 return Err(
-                    "Nitro enabled but binary not compiled with 'nitro' feature".to_string(),
+                    "Nitro enabled but binary not compiled with 'nitro' feature".to_string()
                 );
             }
         }
@@ -185,10 +192,10 @@ impl NitroAttestor {
 
         // Wrap in a mock COSE_Sign1 structure: [protected, unprotected, payload, signature]
         let cose_sign1 = serde_cbor::Value::Array(vec![
-            serde_cbor::Value::Bytes(vec![]),                // protected header (empty for mock)
-            serde_cbor::Value::Map(BTreeMap::new()),         // unprotected header
-            serde_cbor::Value::Bytes(payload_bytes),         // payload
-            serde_cbor::Value::Bytes(vec![0u8; 96]),         // signature (mock P-384 sig)
+            serde_cbor::Value::Bytes(vec![]), // protected header (empty for mock)
+            serde_cbor::Value::Map(BTreeMap::new()), // unprotected header
+            serde_cbor::Value::Bytes(payload_bytes), // payload
+            serde_cbor::Value::Bytes(vec![0u8; 96]), // signature (mock P-384 sig)
         ]);
 
         // CBOR-encode the COSE_Sign1
@@ -236,8 +243,7 @@ impl NitroAttestor {
         // 4. Extract attestation document
         match response {
             Response::Attestation { document } => {
-                let doc_base64 =
-                    base64::engine::general_purpose::STANDARD.encode(&document);
+                let doc_base64 = base64::engine::general_purpose::STANDARD.encode(&document);
 
                 // Parse to extract PCR0
                 let cose: serde_cbor::Value = serde_cbor::from_slice(&document)

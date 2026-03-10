@@ -44,6 +44,10 @@ tracing-subscriber = "0.3"
 # Field operations
 ff = "0.13"
 
+# HTTP server (warm prover mode)
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+
 [[bin]]
 name = "xgboost-remainder"
 path = "src/main.rs"

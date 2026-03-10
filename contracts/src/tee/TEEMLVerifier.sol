@@ -3,14 +3,16 @@ pragma solidity ^0.8.20;
 
 import {ITEEMLVerifier} from "./ITEEMLVerifier.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @title TEEMLVerifier — TEE-attested ML inference with ZK dispute resolution
 /// @notice Happy path: verify ECDSA attestation from TEE enclave (~3K gas).
 ///         Dispute path: fall back to existing RemainderVerifier DAG proof verification.
-contract TEEMLVerifier is ITEEMLVerifier {
+contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuard {
     using ECDSA for bytes32;
 
-    address public admin;
     address public remainderVerifier;
 
     uint256 public constant CHALLENGE_WINDOW = 1 hours;
@@ -24,20 +26,13 @@ contract TEEMLVerifier is ITEEMLVerifier {
     mapping(bytes32 => bool) public disputeResolved;
     mapping(bytes32 => bool) public disputeProverWon;
 
-    modifier onlyAdmin() {
-        require(msg.sender == admin, "TEEMLVerifier: not admin");
-        _;
-    }
-
-    constructor(address _admin, address _remainderVerifier) {
-        require(_admin != address(0), "TEEMLVerifier: zero admin");
-        admin = _admin;
+    constructor(address _admin, address _remainderVerifier) Ownable(_admin) {
         remainderVerifier = _remainderVerifier;
     }
 
     // ─── Admin ───────────────────────────────────────────────────────────────
 
-    function registerEnclave(address enclaveKey, bytes32 enclaveImageHash) external onlyAdmin {
+    function registerEnclave(address enclaveKey, bytes32 enclaveImageHash) external onlyOwner {
         require(enclaveKey != address(0), "TEEMLVerifier: zero enclave key");
         require(!enclaves[enclaveKey].registered, "TEEMLVerifier: already registered");
 
@@ -48,7 +43,7 @@ contract TEEMLVerifier is ITEEMLVerifier {
         emit EnclaveRegistered(enclaveKey, enclaveImageHash);
     }
 
-    function revokeEnclave(address enclaveKey) external onlyAdmin {
+    function revokeEnclave(address enclaveKey) external onlyOwner {
         require(enclaves[enclaveKey].registered, "TEEMLVerifier: not registered");
         require(enclaves[enclaveKey].active, "TEEMLVerifier: already revoked");
 
@@ -57,16 +52,35 @@ contract TEEMLVerifier is ITEEMLVerifier {
         emit EnclaveRevoked(enclaveKey);
     }
 
-    function setRemainderVerifier(address _verifier) external onlyAdmin {
+    function setRemainderVerifier(address _verifier) external onlyOwner {
+        require(_verifier != address(0), "TEEMLVerifier: zero address");
+        address oldVerifier = remainderVerifier;
         remainderVerifier = _verifier;
+        emit RemainderVerifierUpdated(oldVerifier, _verifier);
     }
 
-    function setChallengeBondAmount(uint256 _amount) external onlyAdmin {
+    function setChallengeBondAmount(uint256 _amount) external onlyOwner {
+        require(_amount > 0, "TEEMLVerifier: zero amount");
+        require(_amount <= 100 ether, "TEEMLVerifier: amount too high");
+        uint256 oldAmount = challengeBondAmount;
         challengeBondAmount = _amount;
+        emit ChallengeBondUpdated(oldAmount, _amount);
     }
 
-    function setProverStake(uint256 _amount) external onlyAdmin {
+    function setProverStake(uint256 _amount) external onlyOwner {
+        require(_amount > 0, "TEEMLVerifier: zero amount");
+        require(_amount <= 100 ether, "TEEMLVerifier: amount too high");
+        uint256 oldAmount = proverStake;
         proverStake = _amount;
+        emit ProverStakeUpdated(oldAmount, _amount);
+    }
+
+    function pause() external onlyOwner {
+        _pause();
+    }
+
+    function unpause() external onlyOwner {
+        _unpause();
     }
 
     // ─── Submit ──────────────────────────────────────────────────────────────
@@ -74,6 +88,7 @@ contract TEEMLVerifier is ITEEMLVerifier {
     function submitResult(bytes32 modelHash, bytes32 inputHash, bytes calldata result, bytes calldata attestation)
         external
         payable
+        whenNotPaused
         returns (bytes32 resultId)
     {
         require(msg.value >= proverStake, "TEEMLVerifier: insufficient stake");
@@ -111,7 +126,7 @@ contract TEEMLVerifier is ITEEMLVerifier {
 
     // ─── Challenge ───────────────────────────────────────────────────────────
 
-    function challenge(bytes32 resultId) external payable {
+    function challenge(bytes32 resultId) external payable whenNotPaused {
         MLResult storage r = _results[resultId];
         require(r.submittedAt != 0, "TEEMLVerifier: result not found");
         require(!r.finalized, "TEEMLVerifier: already finalized");
@@ -138,7 +153,7 @@ contract TEEMLVerifier is ITEEMLVerifier {
         bytes32 circuitHash,
         bytes calldata publicInputs,
         bytes calldata gensData
-    ) external {
+    ) external nonReentrant {
         MLResult storage r = _results[resultId];
         require(r.challenged, "TEEMLVerifier: not challenged");
         require(!disputeResolved[resultId], "TEEMLVerifier: already resolved");
@@ -162,7 +177,7 @@ contract TEEMLVerifier is ITEEMLVerifier {
 
     /// @notice Resolve a dispute by timeout. If the prover fails to submit a ZK proof
     ///         within the dispute window, the challenger wins by default.
-    function resolveDisputeByTimeout(bytes32 resultId) external {
+    function resolveDisputeByTimeout(bytes32 resultId) external nonReentrant {
         MLResult storage r = _results[resultId];
         require(r.challenged, "TEEMLVerifier: not challenged");
         require(!disputeResolved[resultId], "TEEMLVerifier: already resolved");
@@ -173,7 +188,7 @@ contract TEEMLVerifier is ITEEMLVerifier {
 
     // ─── Finalize ────────────────────────────────────────────────────────────
 
-    function finalize(bytes32 resultId) external {
+    function finalize(bytes32 resultId) external nonReentrant {
         MLResult storage r = _results[resultId];
         require(r.submittedAt != 0, "TEEMLVerifier: result not found");
         require(block.timestamp >= r.challengeDeadline, "TEEMLVerifier: window not passed");
@@ -213,6 +228,7 @@ contract TEEMLVerifier is ITEEMLVerifier {
     function _settleDispute(bytes32 resultId, MLResult storage r, bool proofValid) internal {
         disputeResolved[resultId] = true;
         disputeProverWon[resultId] = proofValid;
+        r.finalized = true;
 
         uint256 totalPot = r.challengeBond + r.proverStakeAmount;
 

@@ -2,10 +2,12 @@
 set -euo pipefail
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TEE Happy Path E2E
+# TEE Happy Path E2E (with security feature tests)
 #
-# Deploy TEEMLVerifier → register enclave → submit TEE-attested result
-# → fast-forward time → finalize → verify isResultValid == true
+# Deploy TEEMLVerifier → verify owner → test pause/unpause → test input
+# validation → test 2-step ownership transfer → register enclave →
+# submit TEE-attested result → fast-forward time → finalize →
+# verify isResultValid == true
 # ═══════════════════════════════════════════════════════════════════════════════
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -104,6 +106,102 @@ if [ -z "$TEE_VERIFIER" ]; then
 fi
 ok "TEEMLVerifier deployed at: $TEE_VERIFIER"
 
+# Define test variables early (needed for pause test in Step 2b)
+MODEL_HASH=$(cast keccak "xgboost-model-weights")
+INPUT_HASH=$(cast keccak "test-input-data")
+RESULT_DATA="0xdeadbeef"
+
+# ── Step 2a: Verify owner ────────────────────────────────────────────────────
+
+log "Step 2a: Verifying contract owner..."
+OWNER=$(cast call "$TEE_VERIFIER" "owner()(address)" --rpc-url "$RPC_URL")
+# cast returns lowercase, ADMIN_ADDR has mixed case — compare lowercase
+ADMIN_LOWER=$(echo "$ADMIN_ADDR" | tr '[:upper:]' '[:lower:]')
+OWNER_LOWER=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
+if [ "$OWNER_LOWER" != "$ADMIN_LOWER" ]; then
+    err "Expected owner=$ADMIN_ADDR, got $OWNER"
+    exit 1
+fi
+ok "Owner verified: $OWNER"
+
+# ── Step 2b: Test pause/unpause ──────────────────────────────────────────────
+
+log "Step 2b: Testing pause/unpause..."
+cast send "$TEE_VERIFIER" "pause()" --rpc-url "$RPC_URL" --private-key "$ADMIN_KEY" > /dev/null
+ok "Contract paused"
+
+# submitResult should revert while paused
+PAUSE_RESULT=$(cast send "$TEE_VERIFIER" \
+    "submitResult(bytes32,bytes32,bytes,bytes)" \
+    "$MODEL_HASH" "$INPUT_HASH" "0xdeadbeef" "0x00" \
+    --value "0.1ether" \
+    --rpc-url "$RPC_URL" --private-key "$ADMIN_KEY" 2>&1 || true)
+
+if echo "$PAUSE_RESULT" | grep -qi "pause\|revert"; then
+    ok "submitResult correctly reverted while paused"
+else
+    err "submitResult should have reverted while paused"
+    exit 1
+fi
+
+cast send "$TEE_VERIFIER" "unpause()" --rpc-url "$RPC_URL" --private-key "$ADMIN_KEY" > /dev/null
+ok "Contract unpaused"
+
+# ── Step 2c: Test input validation ───────────────────────────────────────────
+
+log "Step 2c: Testing input validation..."
+BOND_RESULT=$(cast send "$TEE_VERIFIER" "setChallengeBondAmount(uint256)" 0 \
+    --rpc-url "$RPC_URL" --private-key "$ADMIN_KEY" 2>&1 || true)
+if echo "$BOND_RESULT" | grep -qi "zero amount\|revert"; then
+    ok "setChallengeBondAmount(0) correctly reverted"
+else
+    err "setChallengeBondAmount(0) should have reverted"
+    exit 1
+fi
+
+# ── Step 2d: Test 2-step ownership transfer ──────────────────────────────────
+
+log "Step 2d: Testing 2-step ownership transfer..."
+# Anvil account #2
+NEW_OWNER_KEY="0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a"
+NEW_OWNER_ADDR="0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
+
+# Step 1: Current owner initiates transfer
+cast send "$TEE_VERIFIER" "transferOwnership(address)" "$NEW_OWNER_ADDR" \
+    --rpc-url "$RPC_URL" --private-key "$ADMIN_KEY" > /dev/null
+ok "Ownership transfer initiated to $NEW_OWNER_ADDR"
+
+# Verify pending owner
+PENDING=$(cast call "$TEE_VERIFIER" "pendingOwner()(address)" --rpc-url "$RPC_URL")
+PENDING_LOWER=$(echo "$PENDING" | tr '[:upper:]' '[:lower:]')
+NEW_OWNER_LOWER=$(echo "$NEW_OWNER_ADDR" | tr '[:upper:]' '[:lower:]')
+if [ "$PENDING_LOWER" != "$NEW_OWNER_LOWER" ]; then
+    err "Expected pendingOwner=$NEW_OWNER_ADDR, got $PENDING"
+    exit 1
+fi
+ok "Pending owner verified: $PENDING"
+
+# Step 2: New owner accepts
+cast send "$TEE_VERIFIER" "acceptOwnership()" \
+    --rpc-url "$RPC_URL" --private-key "$NEW_OWNER_KEY" > /dev/null
+ok "Ownership accepted by $NEW_OWNER_ADDR"
+
+# Verify new owner
+OWNER=$(cast call "$TEE_VERIFIER" "owner()(address)" --rpc-url "$RPC_URL")
+OWNER_LOWER=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
+if [ "$OWNER_LOWER" != "$NEW_OWNER_LOWER" ]; then
+    err "Expected new owner=$NEW_OWNER_ADDR, got $OWNER"
+    exit 1
+fi
+ok "New owner verified: $OWNER"
+
+# Transfer back to original owner for remaining test steps
+cast send "$TEE_VERIFIER" "transferOwnership(address)" "$ADMIN_ADDR" \
+    --rpc-url "$RPC_URL" --private-key "$NEW_OWNER_KEY" > /dev/null
+cast send "$TEE_VERIFIER" "acceptOwnership()" \
+    --rpc-url "$RPC_URL" --private-key "$ADMIN_KEY" > /dev/null
+ok "Ownership transferred back to $ADMIN_ADDR"
+
 # ── Step 3: Register enclave ─────────────────────────────────────────────────
 
 log "Step 3: Registering test enclave..."
@@ -118,10 +216,6 @@ ok "Enclave registered: $ENCLAVE_ADDR"
 # ── Step 4: Submit TEE-attested result ────────────────────────────────────────
 
 log "Step 4: Submitting TEE-attested result..."
-
-MODEL_HASH=$(cast keccak "xgboost-model-weights")
-INPUT_HASH=$(cast keccak "test-input-data")
-RESULT_DATA="0xdeadbeef"
 
 ATTESTATION=$(sign_attestation "$MODEL_HASH" "$INPUT_HASH" "$RESULT_DATA" "$ENCLAVE_KEY")
 ok "Attestation signed"
@@ -175,9 +269,10 @@ ok "Result valid: true"
 
 echo ""
 echo "════════════════════════════════════════════════════════════"
-echo "  TEE Happy Path E2E — PASSED"
+echo "  TEE Happy Path E2E (with security tests) — PASSED"
 echo "════════════════════════════════════════════════════════════"
 echo "  Contract:  $TEE_VERIFIER"
 echo "  Result ID: $RESULT_ID"
-echo "  Flow:      submit → wait → finalize → valid ✓"
+echo "  Tested:    owner, pause/unpause, input validation,"
+echo "             2-step ownership, submit, finalize, valid"
 echo "════════════════════════════════════════════════════════════"

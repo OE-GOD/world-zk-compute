@@ -1,0 +1,75 @@
+# Operator Service Configuration
+#
+# All fields are optional. Environment variables always take precedence
+# over values in this file. If a field is not set here or in an env var,
+# the built-in default is used (shown in comments below).
+#
+# Usage:
+#   tee-operator --config config.toml submit --features '[1.0, 2.0]'
+
+# Ethereum JSON-RPC URL.
+# Env var: OPERATOR_RPC_URL
+# Default: "http://127.0.0.1:8545"
+# rpc_url = "http://127.0.0.1:8545"
+
+# Operator private key (hex, with or without 0x prefix).
+# Env var: OPERATOR_PRIVATE_KEY
+# REQUIRED (no default).
+# private_key = "0x..."
+
+# TEEMLVerifier contract address.
+# Env var: TEE_VERIFIER_ADDRESS
+# REQUIRED (no default).
+# tee_verifier_address = "0x..."
+
+# Enclave HTTP endpoint URL.
+# Env var: ENCLAVE_URL
+# Default: "http://127.0.0.1:8080"
+# enclave_url = "http://127.0.0.1:8080"
+
+# Path to the XGBoost model JSON file.
+# Env var: MODEL_PATH
+# Default: "./model.json"
+# model_path = "./model.json"
+
+# Directory for storing pre-computed proofs.
+# Env var: PROOFS_DIR
+# Default: "./proofs"
+# proofs_dir = "./proofs"
+
+# Prover stake amount in wei.
+# Env var: PROVER_STAKE
+# Default: "100000000000000000" (0.1 ETH)
+# prover_stake = "100000000000000000"
+
+# Path to the precompute_proof binary.
+# Env var: PRECOMPUTE_BIN
+# Default: "precompute_proof"
+# precompute_bin = "precompute_proof"
+
+# Enable AWS Nitro attestation verification.
+# Env var: NITRO_VERIFICATION
+# Default: false
+# nitro_verification = false
+
+# Expected PCR0 value for strict enclave identity verification.
+# Env var: EXPECTED_PCR0
+# Default: none (skip PCR0 check)
+# expected_pcr0 = "aabbccdd..."
+
+# Attestation cache TTL in seconds.
+# Env var: ATTESTATION_CACHE_TTL
+# Default: 300
+# attestation_cache_ttl = 300
+
+# Warm prover HTTP service URL (optional).
+# When set, the operator sends proof requests to this service
+# instead of running the precompute binary locally.
+# Env var: PROVER_URL
+# Default: none (use local binary)
+# prover_url = "http://127.0.0.1:3000"
+
+# Port for the health/metrics HTTP server (used by the watch command).
+# Env var: METRICS_PORT
+# Default: 9090
+# metrics_port = 9090

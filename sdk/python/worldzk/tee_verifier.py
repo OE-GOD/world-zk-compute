@@ -35,6 +35,59 @@ from web3.contract import Contract
 
 TEE_ML_VERIFIER_ABI: list[dict[str, Any]] = [
     {
+        "type": "event",
+        "name": "ResultSubmitted",
+        "inputs": [
+            {"name": "resultId", "type": "bytes32", "indexed": True},
+            {"name": "modelHash", "type": "bytes32", "indexed": False},
+            {"name": "inputHash", "type": "bytes32", "indexed": False},
+        ],
+        "anonymous": False,
+    },
+    {
+        "type": "event",
+        "name": "ResultChallenged",
+        "inputs": [
+            {"name": "resultId", "type": "bytes32", "indexed": True},
+            {"name": "challenger", "type": "address", "indexed": False},
+        ],
+        "anonymous": False,
+    },
+    {
+        "type": "event",
+        "name": "DisputeResolved",
+        "inputs": [
+            {"name": "resultId", "type": "bytes32", "indexed": True},
+            {"name": "proverWon", "type": "bool", "indexed": False},
+        ],
+        "anonymous": False,
+    },
+    {
+        "type": "event",
+        "name": "ResultFinalized",
+        "inputs": [
+            {"name": "resultId", "type": "bytes32", "indexed": True},
+        ],
+        "anonymous": False,
+    },
+    {
+        "type": "event",
+        "name": "EnclaveRegistered",
+        "inputs": [
+            {"name": "enclaveKey", "type": "address", "indexed": True},
+            {"name": "enclaveImageHash", "type": "bytes32", "indexed": False},
+        ],
+        "anonymous": False,
+    },
+    {
+        "type": "event",
+        "name": "EnclaveRevoked",
+        "inputs": [
+            {"name": "enclaveKey", "type": "address", "indexed": True},
+        ],
+        "anonymous": False,
+    },
+    {
         "type": "function",
         "name": "registerEnclave",
         "inputs": [
@@ -134,9 +187,51 @@ TEE_ML_VERIFIER_ABI: list[dict[str, Any]] = [
     },
     {
         "type": "function",
-        "name": "admin",
+        "name": "owner",
         "inputs": [],
         "outputs": [{"name": "", "type": "address"}],
+        "stateMutability": "view",
+    },
+    {
+        "type": "function",
+        "name": "pendingOwner",
+        "inputs": [],
+        "outputs": [{"name": "", "type": "address"}],
+        "stateMutability": "view",
+    },
+    {
+        "type": "function",
+        "name": "transferOwnership",
+        "inputs": [{"name": "newOwner", "type": "address"}],
+        "outputs": [],
+        "stateMutability": "nonpayable",
+    },
+    {
+        "type": "function",
+        "name": "acceptOwnership",
+        "inputs": [],
+        "outputs": [],
+        "stateMutability": "nonpayable",
+    },
+    {
+        "type": "function",
+        "name": "pause",
+        "inputs": [],
+        "outputs": [],
+        "stateMutability": "nonpayable",
+    },
+    {
+        "type": "function",
+        "name": "unpause",
+        "inputs": [],
+        "outputs": [],
+        "stateMutability": "nonpayable",
+    },
+    {
+        "type": "function",
+        "name": "paused",
+        "inputs": [],
+        "outputs": [{"name": "", "type": "bool"}],
         "stateMutability": "view",
     },
     {
@@ -362,9 +457,47 @@ class TEEVerifier:
             _to_bytes32(result_id)
         ).call()
 
-    def admin(self) -> str:
-        """Get the admin address."""
-        return self._contract.functions.admin().call()
+    def owner(self) -> str:
+        """Get the contract owner address."""
+        return self._contract.functions.owner().call()
+
+    def pending_owner(self) -> str:
+        """Get the pending owner address (for 2-step transfer)."""
+        return self._contract.functions.pendingOwner().call()
+
+    def transfer_ownership(self, new_owner: str) -> str:
+        """Initiate ownership transfer (2-step). Returns tx hash."""
+        receipt = self._send_tx(
+            self._contract.functions.transferOwnership(
+                Web3.to_checksum_address(new_owner),
+            )
+        )
+        return self._tx_hash_hex(receipt)
+
+    def accept_ownership(self) -> str:
+        """Accept pending ownership transfer. Returns tx hash."""
+        receipt = self._send_tx(
+            self._contract.functions.acceptOwnership()
+        )
+        return self._tx_hash_hex(receipt)
+
+    def pause(self) -> str:
+        """Pause the contract. Returns tx hash."""
+        receipt = self._send_tx(
+            self._contract.functions.pause()
+        )
+        return self._tx_hash_hex(receipt)
+
+    def unpause(self) -> str:
+        """Unpause the contract. Returns tx hash."""
+        receipt = self._send_tx(
+            self._contract.functions.unpause()
+        )
+        return self._tx_hash_hex(receipt)
+
+    def paused(self) -> bool:
+        """Check if the contract is paused."""
+        return self._contract.functions.paused().call()
 
     def challenge_bond_amount(self) -> int:
         """Get the minimum challenge bond amount."""

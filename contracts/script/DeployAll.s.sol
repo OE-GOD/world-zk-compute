@@ -50,6 +50,25 @@ contract DeployAll is Script {
             console.log("Skipping DAG circuit registration (SKIP_CIRCUIT_REGISTRATION=true)");
         }
 
+        // ── 4. Post-deploy verification ────────────────────────────────────
+        console.log("");
+        console.log("Post-deploy verification:");
+        address teeOwner = tee.owner();
+        console.log("  TEE owner():", teeOwner);
+        require(teeOwner == deployer, "owner() mismatch: expected deployer");
+        console.log("  owner matches deployer: OK");
+        console.log("  remainderVerifier():", tee.remainderVerifier());
+        require(tee.remainderVerifier() == address(remainder), "remainderVerifier mismatch");
+        console.log("  remainderVerifier matches: OK");
+
+        // ── 5. Optional ownership transfer ─────────────────────────────────
+        address adminAddr = vm.envOr("ADMIN_ADDRESS", address(0));
+        if (adminAddr != address(0) && adminAddr != deployer) {
+            tee.transferOwnership(adminAddr);
+            console.log("  transferOwnership initiated to:", adminAddr);
+            console.log("  NOTE: New admin must call acceptOwnership() to complete transfer");
+        }
+
         vm.stopBroadcast();
 
         // ── Summary ──────────────────────────────────────────────────────────

@@ -155,9 +155,8 @@ fn verify_cert_signature(
     // Extract the DER-encoded signature from the subject certificate.
     // X.509 signatures are ASN.1 DER-encoded ECDSA-Sig-Value (SEQUENCE { r INTEGER, s INTEGER }).
     let sig_bytes = subject.signature.raw_bytes();
-    let der_sig = p384::ecdsa::DerSignature::from_bytes(sig_bytes).map_err(|e| {
-        AttestationError::CertChain(format!("Invalid cert DER signature: {}", e))
-    })?;
+    let der_sig = p384::ecdsa::DerSignature::from_bytes(sig_bytes)
+        .map_err(|e| AttestationError::CertChain(format!("Invalid cert DER signature: {}", e)))?;
 
     // Verifier::verify() on VerifyingKey<NistP384> hashes msg with SHA-384 then verifies.
     // X.509 certs using ecdsa-with-SHA384 sign over SHA-384(TBS DER), which is exactly
@@ -263,12 +262,18 @@ fn verify_cert_chain(
     Ok(())
 }
 
+/// Decoded parts of a COSE_Sign1 structure:
+/// (protected_header, payload_bytes, signature_bytes, payload_map).
+type CoseSign1Parts = (
+    Vec<u8>,
+    Vec<u8>,
+    Vec<u8>,
+    Vec<(ciborium::Value, ciborium::Value)>,
+);
+
 /// Decode the COSE_Sign1 structure from raw document bytes and return
 /// (protected_header, payload_bytes, signature_bytes, payload_map).
-fn decode_cose_sign1(
-    doc_bytes: &[u8],
-) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<(ciborium::Value, ciborium::Value)>), AttestationError>
-{
+fn decode_cose_sign1(doc_bytes: &[u8]) -> Result<CoseSign1Parts, AttestationError> {
     let cose_value: ciborium::Value =
         ciborium::from_reader(doc_bytes).map_err(|e| AttestationError::Cbor(e.to_string()))?;
 
@@ -341,7 +346,12 @@ fn decode_cose_sign1(
         }
     };
 
-    Ok((protected_header, payload_bytes, signature_bytes, payload_map))
+    Ok((
+        protected_header,
+        payload_bytes,
+        signature_bytes,
+        payload_map,
+    ))
 }
 
 /// Parse fields from a CBOR payload map into a VerifiedAttestation.
@@ -384,9 +394,7 @@ fn parse_fields_from_map(
             if let ciborium::Value::Text(k_str) = k {
                 if k_str == key {
                     match v {
-                        ciborium::Value::Bytes(val) if !val.is_empty() => {
-                            return Some(val.clone())
-                        }
+                        ciborium::Value::Bytes(val) if !val.is_empty() => return Some(val.clone()),
                         _ => return None,
                     }
                 }
@@ -651,10 +659,7 @@ mod tests {
             Some(n) => ciborium::Value::Bytes(n.to_vec()),
             None => ciborium::Value::Null,
         };
-        payload_items.push((
-            ciborium::Value::Text("nonce".to_string()),
-            nonce_value,
-        ));
+        payload_items.push((ciborium::Value::Text("nonce".to_string()), nonce_value));
 
         let payload_value = ciborium::Value::Map(payload_items);
 
@@ -810,7 +815,7 @@ mod tests {
         // P-384 uncompressed point is 97 bytes (0x04 + 48 + 48)
         assert_eq!(pub_key_bytes.len(), 97);
         assert_eq!(pub_key_bytes[0], 0x04); // uncompressed point prefix
-        // Verify we can construct a VerifyingKey from it
+                                            // Verify we can construct a VerifyingKey from it
         let _vk = VerifyingKey::from_sec1_bytes(pub_key_bytes).unwrap();
     }
 
@@ -847,7 +852,7 @@ mod tests {
 
         let cose = ciborium::Value::Array(vec![
             ciborium::Value::Bytes(vec![0xA1]), // protected header
-            ciborium::Value::Map(vec![]),        // unprotected
+            ciborium::Value::Map(vec![]),       // unprotected
             ciborium::Value::Bytes(payload_bytes.clone()),
             ciborium::Value::Bytes(vec![0u8; 96]), // signature
         ]);
@@ -859,5 +864,341 @@ mod tests {
         assert_eq!(pb, payload_bytes);
         assert_eq!(sig.len(), 96);
         assert!(!map.is_empty());
+    }
+
+    // --- P-384 certificate chain end-to-end tests ---
+
+    /// Helper: Generate a P-384 signing key.
+    fn gen_p384_key() -> p384::ecdsa::SigningKey {
+        use p384::elliptic_curve::rand_core::OsRng;
+        p384::ecdsa::SigningKey::random(&mut OsRng)
+    }
+
+    /// Helper: Build a minimal self-signed X.509 certificate DER from a P-384 key.
+    /// Uses raw DER construction (no builder) to keep it simple.
+    fn build_self_signed_cert_der(signing_key: &p384::ecdsa::SigningKey) -> Vec<u8> {
+        use p384::ecdsa::signature::Signer;
+
+        let verifying_key = signing_key.verifying_key();
+        let pub_bytes = verifying_key.to_sec1_bytes();
+
+        // Build a minimal TBS Certificate in DER
+        let tbs = build_minimal_tbs_der(&pub_bytes);
+
+        // Sign the TBS with SHA-384 + ECDSA
+        let sig: p384::ecdsa::DerSignature = signing_key.sign(&tbs);
+        let sig_bytes = sig.as_bytes();
+
+        // Wrap: SEQUENCE { tbs, signatureAlgorithm, signatureValue }
+        let sig_algo = ecdsa_with_sha384_algo_der();
+        let sig_bitstring = der_bitstring(&sig_bytes);
+
+        der_sequence(&[&tbs, &sig_algo, &sig_bitstring])
+    }
+
+    /// Build a minimal TBS Certificate DER.
+    fn build_minimal_tbs_der(pub_key_sec1: &[u8]) -> Vec<u8> {
+        // version [0] EXPLICIT INTEGER 2 (v3)
+        let version = &[0xa0, 0x03, 0x02, 0x01, 0x02];
+
+        // serialNumber INTEGER 1
+        let serial = &[0x02, 0x01, 0x01];
+
+        // signature algorithm: ecdsa-with-SHA384
+        let sig_algo = ecdsa_with_sha384_algo_der();
+
+        // issuer: CN=test
+        let issuer = der_name("test");
+
+        // validity: notBefore/notAfter (generalized time)
+        let validity = build_validity_der();
+
+        // subject: CN=test
+        let subject = der_name("test");
+
+        // subjectPublicKeyInfo: P-384
+        let spki = build_spki_der(pub_key_sec1);
+
+        der_sequence(&[
+            version, serial, &sig_algo, &issuer, &validity, &subject, &spki,
+        ])
+    }
+
+    /// Build a cert signed by an issuer key.
+    fn build_signed_cert_der(
+        issuer_key: &p384::ecdsa::SigningKey,
+        subject_key: &p384::ecdsa::SigningKey,
+        issuer_name: &str,
+        subject_name: &str,
+    ) -> Vec<u8> {
+        use p384::ecdsa::signature::Signer;
+
+        let verifying_key = subject_key.verifying_key();
+        let pub_bytes = verifying_key.to_sec1_bytes();
+
+        let tbs = build_tbs_with_names(&pub_bytes, issuer_name, subject_name);
+
+        let sig: p384::ecdsa::DerSignature = issuer_key.sign(&tbs);
+        let sig_bytes = sig.as_bytes();
+
+        let sig_algo = ecdsa_with_sha384_algo_der();
+        let sig_bitstring = der_bitstring(&sig_bytes);
+
+        der_sequence(&[&tbs, &sig_algo, &sig_bitstring])
+    }
+
+    fn build_tbs_with_names(pub_key_sec1: &[u8], issuer: &str, subject: &str) -> Vec<u8> {
+        let version = &[0xa0, 0x03, 0x02, 0x01, 0x02];
+        let serial = &[0x02, 0x01, 0x01];
+        let sig_algo = ecdsa_with_sha384_algo_der();
+        let issuer_dn = der_name(issuer);
+        let validity = build_validity_der();
+        let subject_dn = der_name(subject);
+        let spki = build_spki_der(pub_key_sec1);
+        der_sequence(&[
+            version,
+            serial,
+            &sig_algo,
+            &issuer_dn,
+            &validity,
+            &subject_dn,
+            &spki,
+        ])
+    }
+
+    /// ecdsa-with-SHA384 AlgorithmIdentifier DER
+    fn ecdsa_with_sha384_algo_der() -> Vec<u8> {
+        // SEQUENCE { OID 1.2.840.10045.4.3.3 }
+        let oid = &[0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x03];
+        der_sequence(&[oid])
+    }
+
+    /// Build SubjectPublicKeyInfo for P-384
+    fn build_spki_der(pub_key_sec1: &[u8]) -> Vec<u8> {
+        // algorithm: SEQUENCE { OID ecPublicKey, OID secp384r1 }
+        let ec_oid = &[0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01]; // 1.2.840.10045.2.1
+        let curve_oid = &[0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x22]; // 1.3.132.0.34
+        let algo = der_sequence(&[ec_oid, curve_oid]);
+        let pub_bits = der_bitstring(pub_key_sec1);
+        der_sequence(&[&algo, &pub_bits])
+    }
+
+    /// Build Validity (notBefore/notAfter) with wide window
+    fn build_validity_der() -> Vec<u8> {
+        // UTCTime "190101000000Z" to "491231235959Z"
+        let not_before = der_utctime("190101000000Z");
+        let not_after = der_utctime("491231235959Z");
+        der_sequence(&[&not_before, &not_after])
+    }
+
+    /// Build a Name with just CN=value
+    fn der_name(cn: &str) -> Vec<u8> {
+        let cn_oid = &[0x06, 0x03, 0x55, 0x04, 0x03]; // 2.5.4.3
+        let cn_val = der_utf8string(cn);
+        let attr = der_sequence(&[cn_oid, &cn_val]);
+        let rdn = der_set(&[&attr]);
+        der_sequence(&[&rdn])
+    }
+
+    fn der_utctime(s: &str) -> Vec<u8> {
+        let mut out = vec![0x17, s.len() as u8];
+        out.extend_from_slice(s.as_bytes());
+        out
+    }
+
+    fn der_utf8string(s: &str) -> Vec<u8> {
+        let mut out = vec![0x0c, s.len() as u8];
+        out.extend_from_slice(s.as_bytes());
+        out
+    }
+
+    fn der_bitstring(data: &[u8]) -> Vec<u8> {
+        // BIT STRING: tag 0x03, length = data.len()+1, unused_bits = 0, data
+        let len = data.len() + 1;
+        let mut out = vec![0x03];
+        out.extend_from_slice(&der_length(len));
+        out.push(0x00); // unused bits
+        out.extend_from_slice(data);
+        out
+    }
+
+    fn der_sequence(items: &[&[u8]]) -> Vec<u8> {
+        let total: usize = items.iter().map(|i| i.len()).sum();
+        let mut out = vec![0x30];
+        out.extend_from_slice(&der_length(total));
+        for item in items {
+            out.extend_from_slice(item);
+        }
+        out
+    }
+
+    fn der_set(items: &[&[u8]]) -> Vec<u8> {
+        let total: usize = items.iter().map(|i| i.len()).sum();
+        let mut out = vec![0x31];
+        out.extend_from_slice(&der_length(total));
+        for item in items {
+            out.extend_from_slice(item);
+        }
+        out
+    }
+
+    fn der_length(len: usize) -> Vec<u8> {
+        if len < 128 {
+            vec![len as u8]
+        } else if len < 256 {
+            vec![0x81, len as u8]
+        } else {
+            vec![0x82, (len >> 8) as u8, (len & 0xff) as u8]
+        }
+    }
+
+    #[test]
+    fn test_self_signed_cert_chain_verification() {
+        // Generate a root key and self-signed cert
+        let root_key = gen_p384_key();
+        let root_cert_der = build_self_signed_cert_der(&root_key);
+
+        // Verify the cert parses
+        let root_cert = Certificate::from_der(&root_cert_der).unwrap();
+
+        // Verify the self-signed cert signature
+        verify_cert_signature(&root_cert, &root_cert).unwrap();
+    }
+
+    #[test]
+    fn test_two_level_cert_chain_verification() {
+        // Root key + cert
+        let root_key = gen_p384_key();
+        let root_cert_der = build_self_signed_cert_der(&root_key);
+        let root_cert = Certificate::from_der(&root_cert_der).unwrap();
+
+        // Leaf key + cert signed by root
+        let leaf_key = gen_p384_key();
+        let leaf_cert_der = build_signed_cert_der(&root_key, &leaf_key, "root", "leaf");
+        let leaf_cert = Certificate::from_der(&leaf_cert_der).unwrap();
+
+        // Verify root signed leaf
+        verify_cert_signature(&root_cert, &leaf_cert).unwrap();
+    }
+
+    #[test]
+    fn test_cert_chain_wrong_signer_fails() {
+        // Root key + cert
+        let root_key = gen_p384_key();
+        let root_cert_der = build_self_signed_cert_der(&root_key);
+        let root_cert = Certificate::from_der(&root_cert_der).unwrap();
+
+        // Leaf key + cert signed by a DIFFERENT key (not root)
+        let other_key = gen_p384_key();
+        let leaf_key = gen_p384_key();
+        let leaf_cert_der = build_signed_cert_der(&other_key, &leaf_key, "root", "leaf");
+        let leaf_cert = Certificate::from_der(&leaf_cert_der).unwrap();
+
+        // Should fail — root didn't sign this
+        let result = verify_cert_signature(&root_cert, &leaf_cert);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_cose_sign1_e2e_with_test_cert() {
+        use p384::ecdsa::signature::Signer;
+
+        // Generate key + self-signed cert
+        let leaf_key = gen_p384_key();
+        let leaf_cert_der = build_self_signed_cert_der(&leaf_key);
+        let leaf_cert = Certificate::from_der(&leaf_cert_der).unwrap();
+
+        // Build a COSE protected header: {1: -35} (alg: ES384)
+        let protected_header_map = ciborium::Value::Map(vec![(
+            ciborium::Value::Integer(1.into()),
+            ciborium::Value::Integer(ciborium::value::Integer::from(-35)),
+        )]);
+        let mut protected_bytes = Vec::new();
+        ciborium::into_writer(&protected_header_map, &mut protected_bytes).unwrap();
+
+        // Build payload
+        let payload = ciborium::Value::Map(vec![(
+            ciborium::Value::Text("module_id".to_string()),
+            ciborium::Value::Text("test-e2e".to_string()),
+        )]);
+        let mut payload_bytes = Vec::new();
+        ciborium::into_writer(&payload, &mut payload_bytes).unwrap();
+
+        // Build Sig_structure and sign
+        let sig_structure = ciborium::Value::Array(vec![
+            ciborium::Value::Text("Signature1".to_string()),
+            ciborium::Value::Bytes(protected_bytes.clone()),
+            ciborium::Value::Bytes(vec![]),
+            ciborium::Value::Bytes(payload_bytes.clone()),
+        ]);
+        let mut sig_input = Vec::new();
+        ciborium::into_writer(&sig_structure, &mut sig_input).unwrap();
+
+        // Sign with raw r||s (96 bytes)
+        let sig: Signature = leaf_key.sign(&sig_input);
+        let sig_raw = sig.to_bytes();
+        assert_eq!(sig_raw.len(), 96);
+
+        // Verify COSE signature
+        verify_cose_signature(&leaf_cert, &protected_bytes, &payload_bytes, &sig_raw).unwrap();
+    }
+
+    #[test]
+    fn test_full_cert_chain_and_cose_e2e() {
+        use p384::ecdsa::signature::Signer;
+
+        // 3-level chain: root -> intermediate -> leaf
+        let root_key = gen_p384_key();
+        let root_cert_der = build_self_signed_cert_der(&root_key);
+
+        let int_key = gen_p384_key();
+        let int_cert_der = build_signed_cert_der(&root_key, &int_key, "root", "intermediate");
+
+        let leaf_key = gen_p384_key();
+        let leaf_cert_der = build_signed_cert_der(&int_key, &leaf_key, "intermediate", "leaf");
+
+        // Parse all certs
+        let root_cert = Certificate::from_der(&root_cert_der).unwrap();
+        let int_cert = Certificate::from_der(&int_cert_der).unwrap();
+        let leaf_cert = Certificate::from_der(&leaf_cert_der).unwrap();
+
+        // Verify chain signatures: root->self, root->int, int->leaf
+        verify_cert_signature(&root_cert, &root_cert).unwrap();
+        verify_cert_signature(&root_cert, &int_cert).unwrap();
+        verify_cert_signature(&int_cert, &leaf_cert).unwrap();
+
+        // Build COSE_Sign1 signed by leaf
+        let protected_header_map = ciborium::Value::Map(vec![(
+            ciborium::Value::Integer(1.into()),
+            ciborium::Value::Integer(ciborium::value::Integer::from(-35)),
+        )]);
+        let mut protected_bytes = Vec::new();
+        ciborium::into_writer(&protected_header_map, &mut protected_bytes).unwrap();
+
+        let payload = ciborium::Value::Map(vec![(
+            ciborium::Value::Text("module_id".to_string()),
+            ciborium::Value::Text("e2e-chain-test".to_string()),
+        )]);
+        let mut payload_bytes = Vec::new();
+        ciborium::into_writer(&payload, &mut payload_bytes).unwrap();
+
+        let sig_structure = ciborium::Value::Array(vec![
+            ciborium::Value::Text("Signature1".to_string()),
+            ciborium::Value::Bytes(protected_bytes.clone()),
+            ciborium::Value::Bytes(vec![]),
+            ciborium::Value::Bytes(payload_bytes.clone()),
+        ]);
+        let mut sig_input = Vec::new();
+        ciborium::into_writer(&sig_structure, &mut sig_input).unwrap();
+
+        let sig: Signature = leaf_key.sign(&sig_input);
+        let sig_raw = sig.to_bytes();
+
+        // Verify COSE signature with leaf cert
+        verify_cose_signature(&leaf_cert, &protected_bytes, &payload_bytes, &sig_raw).unwrap();
+
+        // Cross-signer should fail: root cert's key should NOT verify COSE signed by leaf
+        let result = verify_cose_signature(&root_cert, &protected_bytes, &payload_bytes, &sig_raw);
+        assert!(result.is_err(), "Wrong key should fail COSE verification");
     }
 }

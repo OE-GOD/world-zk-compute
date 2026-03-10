@@ -1,0 +1,50 @@
+name: Contracts CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'contracts/**'
+  pull_request:
+    paths:
+      - 'contracts/**'
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: Build & Test Contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Install dependencies
+        run: |
+          cd contracts
+          forge install foundry-rs/forge-std --no-git
+          forge install risc0/risc0-ethereum --no-git
+
+      - name: Build contracts
+        run: |
+          cd contracts
+          forge build
+
+      - name: Check formatting
+        run: |
+          cd contracts
+          forge fmt --check
+
+      - name: Run all tests
+        run: |
+          cd contracts
+          forge test -vv
+
+      - name: Check contract sizes
+        run: |
+          cd contracts
+          forge build --sizes 2>&1 | head -50

@@ -104,13 +104,8 @@ async fn attestation(
 ) -> Result<Json<AttestationDocument>, (StatusCode, String)> {
     if let Some(nonce_hex) = &query.nonce {
         // If nonce provided, generate a fresh attestation with this nonce
-        let nonce_bytes =
-            hex::decode(nonce_hex.strip_prefix("0x").unwrap_or(nonce_hex)).map_err(|e| {
-                (
-                    StatusCode::BAD_REQUEST,
-                    format!("Invalid nonce hex: {}", e),
-                )
-            })?;
+        let nonce_bytes = hex::decode(nonce_hex.strip_prefix("0x").unwrap_or(nonce_hex))
+            .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid nonce hex: {}", e)))?;
 
         let mut attestor = state.nitro_attestor.lock().unwrap();
         attestor
@@ -210,9 +205,7 @@ async fn main() {
         Some(key) => Attestor::from_private_key(key).expect("Invalid private key"),
         None => {
             if config.nitro_enabled {
-                tracing::info!(
-                    "Nitro mode: generating random enclave key (bound via attestation)"
-                );
+                tracing::info!("Nitro mode: generating random enclave key (bound via attestation)");
             }
             let a = Attestor::random();
             tracing::info!("Generated enclave key: {}", a.address());
@@ -223,14 +216,13 @@ async fn main() {
     let enclave_address = attestor.address();
 
     // Create Nitro attestor (produces mock attestation in dev mode)
-    let nitro_attestor =
-        NitroAttestor::new(config.nitro_enabled, enclave_address, model_hash)
-            .unwrap_or_else(|e| {
-                tracing::warn!("Nitro attestation unavailable: {}", e);
-                // Fall back to mock attestation so the server can still start
-                NitroAttestor::new(false, enclave_address, model_hash)
-                    .expect("Mock attestation should always succeed")
-            });
+    let nitro_attestor = NitroAttestor::new(config.nitro_enabled, enclave_address, model_hash)
+        .unwrap_or_else(|e| {
+            tracing::warn!("Nitro attestation unavailable: {}", e);
+            // Fall back to mock attestation so the server can still start
+            NitroAttestor::new(false, enclave_address, model_hash)
+                .expect("Mock attestation should always succeed")
+        });
 
     tracing::info!(
         "Model loaded: {} features, {} classes, {} trees",

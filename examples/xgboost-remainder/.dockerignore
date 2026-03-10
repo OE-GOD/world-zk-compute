@@ -1,0 +1,5 @@
+target/
+gnark-wrapper/
+proving_key.bin
+verification_key.bin
+*.sol

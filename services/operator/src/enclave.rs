@@ -76,6 +76,7 @@ impl EnclaveClient {
     /// If `nonce` is provided, it is passed as a query parameter to the enclave
     /// so the attestation document includes it for freshness verification.
     pub async fn attestation(&self, nonce: Option<&str>) -> anyhow::Result<AttestationResponse> {
+        let start = std::time::Instant::now();
         let mut url = format!("{}/attestation", self.base_url);
         if let Some(n) = nonce {
             url = format!("{}?nonce={}", url, n);
@@ -89,11 +90,17 @@ impl EnclaveClient {
         }
 
         let att_resp = resp.json::<AttestationResponse>().await?;
+        tracing::debug!(
+            enclave_url = %self.base_url,
+            latency_ms = start.elapsed().as_millis() as u64,
+            "Attestation fetched"
+        );
         Ok(att_resp)
     }
 
     /// Run inference on the given features.
     pub async fn infer(&self, features: &[f64]) -> anyhow::Result<InferResponse> {
+        let start = std::time::Instant::now();
         let body = serde_json::json!({ "features": features });
         let resp = self
             .client
@@ -109,6 +116,12 @@ impl EnclaveClient {
         }
 
         let infer_resp = resp.json::<InferResponse>().await?;
+        tracing::debug!(
+            enclave_url = %self.base_url,
+            latency_ms = start.elapsed().as_millis() as u64,
+            num_features = features.len(),
+            "Inference completed"
+        );
         Ok(infer_resp)
     }
 }

@@ -121,11 +121,45 @@ export class TEEVerifier {
     });
   }
 
-  async admin(): Promise<Hex> {
+  // -- Owner / Pausable (Ownable2Step) --
+
+  async owner(): Promise<Hex> {
     return this.publicClient.readContract({
       address: this.contractAddress,
       abi: teeMLVerifierAbi,
-      functionName: 'admin',
+      functionName: 'owner',
+    });
+  }
+
+  async pendingOwner(): Promise<Hex> {
+    return this.publicClient.readContract({
+      address: this.contractAddress,
+      abi: teeMLVerifierAbi,
+      functionName: 'pendingOwner',
+    });
+  }
+
+  async transferOwnership(newOwner: Hex): Promise<Hex> {
+    return this.send('transferOwnership', [newOwner]);
+  }
+
+  async acceptOwnership(): Promise<Hex> {
+    return this.send('acceptOwnership', []);
+  }
+
+  async pause(): Promise<Hex> {
+    return this.send('pause', []);
+  }
+
+  async unpause(): Promise<Hex> {
+    return this.send('unpause', []);
+  }
+
+  async paused(): Promise<boolean> {
+    return this.publicClient.readContract({
+      address: this.contractAddress,
+      abi: teeMLVerifierAbi,
+      functionName: 'paused',
     });
   }
 

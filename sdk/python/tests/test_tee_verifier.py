@@ -96,7 +96,13 @@ class TestABI:
             "resolveDisputeByTimeout",
             "getResult",
             "isResultValid",
-            "admin",
+            "owner",
+            "pendingOwner",
+            "transferOwnership",
+            "acceptOwnership",
+            "pause",
+            "unpause",
+            "paused",
             "challengeBondAmount",
             "proverStake",
             "disputeResolved",
@@ -137,5 +143,28 @@ class TestABI:
         ]
         view_names = {e["name"] for e in views}
         assert "isResultValid" in view_names
-        assert "admin" in view_names
+        assert "owner" in view_names
+        assert "pendingOwner" in view_names
+        assert "paused" in view_names
         assert "getResult" in view_names
+
+    def test_ownable2step_functions(self):
+        fn_names = {e["name"] for e in TEE_ML_VERIFIER_ABI if e["type"] == "function"}
+        assert "owner" in fn_names
+        assert "pendingOwner" in fn_names
+        assert "transferOwnership" in fn_names
+        assert "acceptOwnership" in fn_names
+
+    def test_pausable_functions(self):
+        fn_names = {e["name"] for e in TEE_ML_VERIFIER_ABI if e["type"] == "function"}
+        assert "pause" in fn_names
+        assert "unpause" in fn_names
+        assert "paused" in fn_names
+
+    def test_transfer_ownership_has_address_input(self):
+        fn = next(
+            e for e in TEE_ML_VERIFIER_ABI
+            if e.get("name") == "transferOwnership"
+        )
+        assert fn["inputs"][0]["type"] == "address"
+        assert fn["stateMutability"] == "nonpayable"

@@ -3,6 +3,9 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
 import "../src/tee/TEEMLVerifier.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @dev Mock RemainderVerifier that returns a configurable result for verifyDAGProof
 contract MockRemainderVerifier {
@@ -17,12 +20,38 @@ contract MockRemainderVerifier {
     }
 }
 
+/// @dev Malicious contract that attempts reentrancy on finalize()
+contract ReentrantAttacker {
+    TEEMLVerifier public target;
+    bytes32 public targetResultId;
+    bool public attacked;
+
+    constructor(TEEMLVerifier _target) {
+        target = _target;
+    }
+
+    function setTargetResultId(bytes32 _resultId) external {
+        targetResultId = _resultId;
+    }
+
+    receive() external payable {
+        if (!attacked) {
+            attacked = true;
+            // Attempt to re-enter finalize
+            target.finalize(targetResultId);
+        }
+    }
+}
+
 contract TEEMLVerifierTest is Test {
     // Re-declare events for expectEmit (solc 0.8.20 compat)
     event ResultSubmitted(bytes32 indexed resultId, bytes32 modelHash, bytes32 inputHash);
     event ResultChallenged(bytes32 indexed resultId, address challenger);
     event DisputeResolved(bytes32 indexed resultId, bool proverWon);
     event ResultFinalized(bytes32 indexed resultId);
+    event ChallengeBondUpdated(uint256 oldAmount, uint256 newAmount);
+    event ProverStakeUpdated(uint256 oldAmount, uint256 newAmount);
+    event RemainderVerifierUpdated(address oldVerifier, address newVerifier);
 
     TEEMLVerifier verifier;
     MockRemainderVerifier mockVerifier;
@@ -251,7 +280,7 @@ contract TEEMLVerifierTest is Test {
         vm.prank(challenger);
         verifier.challenge{value: DEFAULT_CHALLENGE_BOND}(resultId);
 
-        // Mock: ZK proof verifies → prover was honest
+        // Mock: ZK proof verifies -> prover was honest
         mockVerifier.setResult(true);
         uint256 submitterBalBefore = address(this).balance;
 
@@ -275,7 +304,7 @@ contract TEEMLVerifierTest is Test {
         vm.prank(challenger);
         verifier.challenge{value: DEFAULT_CHALLENGE_BOND}(resultId);
 
-        // Mock: ZK proof fails → prover was dishonest
+        // Mock: ZK proof fails -> prover was dishonest
         mockVerifier.setResult(false);
         uint256 challengerBalBefore = challenger.balance;
 
@@ -318,14 +347,14 @@ contract TEEMLVerifierTest is Test {
     function test_registerEnclave_onlyAdmin() public {
         address nonAdmin = address(0xBEEF);
         vm.prank(nonAdmin);
-        vm.expectRevert("TEEMLVerifier: not admin");
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, nonAdmin));
         verifier.registerEnclave(address(0x1234), imageHash);
     }
 
     function test_revokeEnclave_onlyAdmin() public {
         address nonAdmin = address(0xBEEF);
         vm.prank(nonAdmin);
-        vm.expectRevert("TEEMLVerifier: not admin");
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, nonAdmin));
         verifier.revokeEnclave(enclaveAddr);
     }
 
@@ -495,6 +524,8 @@ contract TEEMLVerifierTest is Test {
     // ─── Admin: configurable bonds ───────────────────────────────────────────
 
     function test_admin_setChallengeBond() public {
+        vm.expectEmit(false, false, false, true);
+        emit ChallengeBondUpdated(0.1 ether, 0.5 ether);
         verifier.setChallengeBondAmount(0.5 ether);
         assertEq(verifier.challengeBondAmount(), 0.5 ether);
 
@@ -508,6 +539,8 @@ contract TEEMLVerifierTest is Test {
     }
 
     function test_admin_setProverStake() public {
+        vm.expectEmit(false, false, false, true);
+        emit ProverStakeUpdated(0.1 ether, 0.5 ether);
         verifier.setProverStake(0.5 ether);
         assertEq(verifier.proverStake(), 0.5 ether);
 
@@ -515,5 +548,153 @@ contract TEEMLVerifierTest is Test {
         bytes memory attestation = _signAttestation(modelHash, inputHash, resultData);
         vm.expectRevert("TEEMLVerifier: insufficient stake");
         verifier.submitResult{value: 0.1 ether}(modelHash, inputHash, resultData, attestation);
+    }
+
+    // ─── NEW: Bug Fix — _settleDispute sets finalized ────────────────────────
+
+    function test_settleDispute_setsFinalized() public {
+        bytes32 resultId = _submitDefault();
+
+        address challenger = address(0xC0FFEE);
+        vm.deal(challenger, 1 ether);
+        vm.prank(challenger);
+        verifier.challenge{value: DEFAULT_CHALLENGE_BOND}(resultId);
+
+        // Resolve dispute (prover wins)
+        mockVerifier.setResult(true);
+        verifier.resolveDispute(resultId, hex"", bytes32(0), hex"", hex"");
+
+        // After dispute resolution, finalized must be true
+        ITEEMLVerifier.MLResult memory r = verifier.getResult(resultId);
+        assertTrue(r.finalized, "finalized should be true after dispute resolution");
+        assertTrue(verifier.disputeResolved(resultId));
+    }
+
+    // ─── NEW: Pausable ──────────────────────────────────────────────────────
+
+    function test_pause_blocksSubmit() public {
+        verifier.pause();
+
+        bytes memory attestation = _signAttestation(modelHash, inputHash, resultData);
+        vm.expectRevert(Pausable.EnforcedPause.selector);
+        verifier.submitResult{value: DEFAULT_PROVER_STAKE}(modelHash, inputHash, resultData, attestation);
+    }
+
+    function test_pause_blocksChallenge() public {
+        bytes32 resultId = _submitDefault();
+
+        verifier.pause();
+
+        address challenger = address(0xC0FFEE);
+        vm.deal(challenger, 1 ether);
+        vm.prank(challenger);
+        vm.expectRevert(Pausable.EnforcedPause.selector);
+        verifier.challenge{value: DEFAULT_CHALLENGE_BOND}(resultId);
+    }
+
+    function test_pause_doesNotBlockFinalize() public {
+        bytes32 resultId = _submitDefault();
+        vm.warp(block.timestamp + 1 hours + 1);
+
+        verifier.pause();
+
+        // finalize should still work while paused
+        verifier.finalize(resultId);
+
+        ITEEMLVerifier.MLResult memory r = verifier.getResult(resultId);
+        assertTrue(r.finalized);
+    }
+
+    // ─── NEW: ReentrancyGuard ───────────────────────────────────────────────
+
+    function test_reentrancy_finalize() public {
+        // Deploy attacker contract
+        ReentrantAttacker attacker = new ReentrantAttacker(verifier);
+
+        // Submit a result as the attacker so the ETH payout goes to attacker's receive()
+        bytes memory attestation = _signAttestation(modelHash, inputHash, resultData);
+
+        vm.deal(address(attacker), 1 ether);
+        vm.prank(address(attacker));
+        bytes32 resultId =
+            verifier.submitResult{value: DEFAULT_PROVER_STAKE}(modelHash, inputHash, resultData, attestation);
+
+        // Submit a second result that the attacker will try to finalize on re-entry
+        vm.roll(block.number + 1);
+        vm.deal(address(attacker), 1 ether);
+        vm.prank(address(attacker));
+        bytes32 resultId2 =
+            verifier.submitResult{value: DEFAULT_PROVER_STAKE}(modelHash, inputHash, resultData, attestation);
+
+        attacker.setTargetResultId(resultId2);
+
+        vm.warp(block.timestamp + 1 hours + 1);
+
+        // When finalize pays out to attacker, attacker.receive() tries to re-enter finalize.
+        // The re-entrant call reverts with ReentrancyGuardReentrantCall, which causes the
+        // ETH transfer to fail, which causes the outer finalize to revert with "stake return failed".
+        // This proves reentrancy is blocked -- the attacker cannot drain funds.
+        vm.expectRevert("TEEMLVerifier: stake return failed");
+        verifier.finalize(resultId);
+
+        // Verify the result was NOT finalized (attack was fully prevented)
+        ITEEMLVerifier.MLResult memory r = verifier.getResult(resultId);
+        assertFalse(r.finalized, "result should not be finalized after failed reentrancy attack");
+    }
+
+    // ─── NEW: Ownable2Step ──────────────────────────────────────────────────
+
+    function test_ownershipTransfer_twoStep() public {
+        address newOwner = address(0xAE01);
+
+        // Step 1: current owner initiates transfer
+        verifier.transferOwnership(newOwner);
+        // Owner hasn't changed yet
+        assertEq(verifier.owner(), admin);
+        assertEq(verifier.pendingOwner(), newOwner);
+
+        // Step 2: new owner accepts
+        vm.prank(newOwner);
+        verifier.acceptOwnership();
+        assertEq(verifier.owner(), newOwner);
+        assertEq(verifier.pendingOwner(), address(0));
+
+        // Old admin can no longer call admin functions
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, admin));
+        verifier.registerEnclave(address(0x9999), imageHash);
+
+        // New owner can call admin functions
+        vm.prank(newOwner);
+        verifier.registerEnclave(address(0x9999), imageHash);
+    }
+
+    // ─── NEW: Input Validation ──────────────────────────────────────────────
+
+    function test_setRemainderVerifier_rejectsZero() public {
+        vm.expectRevert("TEEMLVerifier: zero address");
+        verifier.setRemainderVerifier(address(0));
+    }
+
+    function test_setBondAmount_rejectsZero() public {
+        vm.expectRevert("TEEMLVerifier: zero amount");
+        verifier.setChallengeBondAmount(0);
+
+        vm.expectRevert("TEEMLVerifier: zero amount");
+        verifier.setProverStake(0);
+    }
+
+    function test_setBondAmount_rejectsExcessive() public {
+        vm.expectRevert("TEEMLVerifier: amount too high");
+        verifier.setChallengeBondAmount(101 ether);
+
+        vm.expectRevert("TEEMLVerifier: amount too high");
+        verifier.setProverStake(101 ether);
+    }
+
+    function test_setRemainderVerifier_emitsEvent() public {
+        address newVerifier = address(0xABCD);
+        vm.expectEmit(false, false, false, true);
+        emit RemainderVerifierUpdated(address(mockVerifier), newVerifier);
+        verifier.setRemainderVerifier(newVerifier);
     }
 }

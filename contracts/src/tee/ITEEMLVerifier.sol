@@ -33,6 +33,9 @@ interface ITEEMLVerifier {
     event ResultChallenged(bytes32 indexed resultId, address challenger);
     event DisputeResolved(bytes32 indexed resultId, bool proverWon);
     event ResultFinalized(bytes32 indexed resultId);
+    event ChallengeBondUpdated(uint256 oldAmount, uint256 newAmount);
+    event ProverStakeUpdated(uint256 oldAmount, uint256 newAmount);
+    event RemainderVerifierUpdated(address oldVerifier, address newVerifier);
 
     // Admin
     function registerEnclave(address enclaveKey, bytes32 enclaveImageHash) external;
@@ -40,6 +43,8 @@ interface ITEEMLVerifier {
     function setRemainderVerifier(address _verifier) external;
     function setChallengeBondAmount(uint256 _amount) external;
     function setProverStake(uint256 _amount) external;
+    function pause() external;
+    function unpause() external;
 
     // Submit
     function submitResult(bytes32 modelHash, bytes32 inputHash, bytes calldata result, bytes calldata attestation)

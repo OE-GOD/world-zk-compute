@@ -315,6 +315,176 @@ pub fn build_and_prove(
     Ok((proof_bytes, circuit_hash.to_vec(), public_inputs))
 }
 
+// ========================================================================
+// Cached (warm) prover: pre-builds circuit and generators for reuse
+// ========================================================================
+
+/// Pre-built circuit and generator state that can be reused across multiple
+/// proof requests. Building the circuit and Pedersen generators is expensive,
+/// so caching them across requests saves significant time per proof.
+pub struct CachedProver {
+    /// The model (owned, for preparing per-request inputs).
+    pub model: XgboostModel,
+    /// Pre-built base circuit (cloned per request for prover/verifier).
+    pub base_circuit: Circuit<Fr>,
+    /// Cached circuit hash (depends only on the model).
+    pub circuit_hash: [u8; 32],
+    /// Pre-built prover config.
+    pub prover_config: GKRCircuitProverConfig,
+    /// Pre-built verifier config.
+    pub verifier_config: GKRCircuitVerifierConfig,
+    /// Cached Pedersen committer (generator points, expensive to create).
+    pub pedersen_committer: PedersenCommitter<Bn256Point>,
+    /// Cached model parameters for input preparation.
+    pub fi_padded: Vec<usize>,
+    pub num_trees_padded: usize,
+    pub max_depth: usize,
+    pub num_features_padded: usize,
+    pub decomp_k: usize,
+}
+
+impl CachedProver {
+    /// Create a new CachedProver for the given model.
+    ///
+    /// This performs all expensive one-time setup:
+    /// - Builds the GKR circuit from the model structure
+    /// - Computes the circuit hash
+    /// - Initializes Pedersen commitment generators
+    /// - Pre-computes prover/verifier configs
+    pub fn new(model: XgboostModel) -> Self {
+        // Compute model-dependent parameters
+        let max_depth = model.trees.iter().map(|t| model::tree_depth(t)).max().unwrap_or(0);
+        let num_trees_padded = model.trees.len().next_power_of_two();
+        let num_features_padded = model.num_features.next_power_of_two();
+        let decomp_k = model::DEFAULT_DECOMP_K;
+
+        // Compute feature index table (model-dependent, not feature-dependent)
+        let num_positions = 1usize << max_depth;
+        let vt_count = max_depth * num_trees_padded;
+        let vt_padded = vt_count.next_power_of_two();
+        let (_, feature_indices_raw, _) = model::compute_comparison_tables(&model, max_depth);
+        let mut fi_padded = vec![0usize; vt_padded * num_positions];
+        let num_trees = model.trees.len();
+        for k in 0..max_depth {
+            for t in 0..num_trees {
+                for j in 0..num_positions {
+                    let src = k * num_trees * num_positions + t * num_positions + j;
+                    let dst_v = k * num_trees_padded + t;
+                    let dst = dst_v * num_positions + j;
+                    fi_padded[dst] = feature_indices_raw[src];
+                }
+            }
+        }
+
+        // Build circuit (expensive)
+        let base_circuit = build_full_inference_circuit(
+            num_trees_padded,
+            max_depth,
+            num_features_padded,
+            &fi_padded,
+            decomp_k,
+        );
+
+        // Compute circuit hash
+        let circuit_hash: [u8; 32] = {
+            use sha2::{Digest, Sha256};
+            let circuit_desc = build_circuit_description(&model);
+            let mut hasher = Sha256::new();
+            hasher.update(&circuit_desc);
+            hasher.finalize().into()
+        };
+
+        // Build configs
+        let prover_config = GKRCircuitProverConfig::hyrax_compatible_runtime_optimized_default();
+        let verifier_config =
+            GKRCircuitVerifierConfig::new_from_prover_config(&prover_config, false);
+
+        // Initialize Pedersen generators (expensive)
+        let pedersen_committer =
+            PedersenCommitter::new(512, "xgboost-remainder Pedersen committer", None);
+
+        CachedProver {
+            model,
+            base_circuit,
+            circuit_hash,
+            prover_config,
+            verifier_config,
+            pedersen_committer,
+            fi_padded,
+            num_trees_padded,
+            max_depth,
+            num_features_padded,
+            decomp_k,
+        }
+    }
+
+    /// Generate and verify a proof for the given features.
+    ///
+    /// Reuses the cached circuit and generators — only witness-dependent
+    /// computation is done per call.
+    pub fn prove(&self, features: &[f64], predicted_class: u32) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+        let inputs = prepare_circuit_inputs(&self.model, features);
+
+        // Clone the cached base circuit for this request
+        let mut prover_circuit = self.base_circuit.clone();
+        let verifier_circuit = self.base_circuit.clone();
+
+        // Set witness-specific inputs
+        prover_circuit.set_input("path_bits", inputs.flat_path_bits.into());
+        prover_circuit.set_input("features", inputs.features_quantized.into());
+        prover_circuit.set_input("decomp_bits", inputs.decomp_bits_padded.into());
+        prover_circuit.set_input("leaf_values", inputs.leaf_values_padded.into());
+        prover_circuit.set_input("expected_sum", vec![inputs.expected_sum].into());
+        prover_circuit.set_input("thresholds", inputs.thresholds_padded.into());
+        prover_circuit.set_input("is_real", inputs.is_real_padded.into());
+
+        // Generate Hyrax proof
+        let mut hyrax_provable = prover_circuit
+            .gen_hyrax_provable_circuit()
+            .expect("Failed to generate Hyrax-provable circuit");
+
+        let mut blinding_rng = thread_rng();
+        let mut vandermonde = VandermondeInverse::new();
+        let mut prover_transcript: ECTranscript<Bn256Point, PoseidonSponge<Fq>> =
+            ECTranscript::new("xgboost-remainder prover transcript");
+
+        let (proof, proof_config) = perform_function_under_prover_config!(
+            |w, x, y, z| hyrax_provable.prove(w, x, y, z),
+            &self.prover_config,
+            &self.pedersen_committer,
+            &mut blinding_rng,
+            &mut vandermonde,
+            &mut prover_transcript
+        );
+
+        // Verify the proof
+        let hyrax_verifiable = verifier_circuit
+            .gen_hyrax_verifiable_circuit()
+            .expect("Failed to generate Hyrax-verifiable circuit");
+
+        let verifier_pedersen_committer =
+            PedersenCommitter::new(512, "xgboost-remainder Pedersen committer", None);
+        let mut verifier_transcript: ECTranscript<Bn256Point, PoseidonSponge<Fq>> =
+            ECTranscript::new("xgboost-remainder verifier transcript");
+
+        perform_function_under_verifier_config!(
+            verify_hyrax_proof,
+            &self.verifier_config,
+            &proof,
+            &hyrax_verifiable,
+            &verifier_pedersen_committer,
+            &mut verifier_transcript,
+            &proof_config
+        );
+
+        // ABI-encode the proof
+        let proof_bytes = crate::abi_encode::encode_hyrax_proof(&proof, &self.circuit_hash)?;
+        let public_inputs = predicted_class.to_be_bytes().to_vec();
+
+        Ok((proof_bytes, self.circuit_hash.to_vec(), public_inputs))
+    }
+}
+
 /// Build a GKR circuit for XGBoost tree inference verification (Phase 1a).
 ///
 /// The circuit verifies:

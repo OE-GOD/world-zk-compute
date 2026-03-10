@@ -1,0 +1,44 @@
+# Multi-stage Dockerfile for AWS Nitro Enclave EIF build.
+#
+# Stage 1: Build enclave binary with --features nitro on x86_64 Linux
+# Stage 2: Minimal runtime image for nitro-cli build-enclave
+#
+# Usage:
+#   docker build -f tee/Dockerfile.nitro -t tee-enclave-nitro tee/
+#   nitro-cli build-enclave --docker-uri tee-enclave-nitro --output-file tee-enclave.eif
+
+# ---------------------------------------------------------------------------
+# Stage 1: Build
+# ---------------------------------------------------------------------------
+FROM rust:1.82-slim AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY enclave/ .
+
+# Build with Nitro NSM support enabled
+RUN cargo build --release --features nitro
+
+# ---------------------------------------------------------------------------
+# Stage 2: Runtime (minimal for EIF)
+# ---------------------------------------------------------------------------
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app/target/release/tee-enclave /usr/local/bin/
+COPY test-model/ /app/model/
+
+ENV MODEL_PATH=/app/model/model.json
+ENV PORT=8080
+ENV NITRO_ENABLED=true
+
+EXPOSE 8080
+
+# nitro-cli build-enclave reads CMD as the enclave init process
+CMD ["tee-enclave"]
