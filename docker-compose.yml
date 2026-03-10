@@ -1,0 +1,129 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# TEE + ZK Dispute System — Full Stack (Local Demo)
+#
+# One-command local demo with all components:
+#   anvil (local chain) → deployer (contracts) → enclave (TEE inference) → operator
+#
+# Usage:
+#   docker compose build
+#   docker compose up
+#   docker compose down -v
+# ═══════════════════════════════════════════════════════════════════════════════
+
+services:
+  # ── Local Ethereum Node ──────────────────────────────────────────────────────
+  anvil:
+    image: ghcr.io/foundry-rs/foundry:latest
+    entrypoint:
+      - anvil
+      - --host
+      - "0.0.0.0"
+      - --gas-limit
+      - "500000000"
+      - --code-size-limit
+      - "200000"
+    ports:
+      - "8545:8545"
+    healthcheck:
+      test: ["CMD", "cast", "block-number", "--rpc-url", "http://localhost:8545"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  # ── Contract Deployer (runs once, exits) ─────────────────────────────────────
+  deployer:
+    image: ghcr.io/foundry-rs/foundry:latest
+    volumes:
+      - ./contracts:/contracts
+      - deployment-data:/deployment
+    working_dir: /contracts
+    depends_on:
+      anvil:
+        condition: service_healthy
+    environment:
+      DEPLOYER_KEY: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+      RPC_URL: "http://anvil:8545"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "=== Deploying contracts ==="
+
+        # Deploy RemainderVerifier + TEEMLVerifier + register DAG circuit
+        forge script script/DeployAll.s.sol:DeployAll \
+          --rpc-url $$RPC_URL \
+          --private-key $$DEPLOYER_KEY \
+          --broadcast \
+          --code-size-limit 200000
+
+        echo "=== Extracting addresses ==="
+        # Find broadcast file
+        BROADCAST_FILE=$$(find broadcast/DeployAll.s.sol -name "run-latest.json" | head -1)
+
+        if [ -z "$$BROADCAST_FILE" ]; then
+          echo "ERROR: No broadcast file found"
+          exit 1
+        fi
+
+        # Extract addresses using jq (available in foundry image)
+        REMAINDER=$$(jq -r '.transactions[] | select(.contractName == "RemainderVerifier") | .contractAddress // empty' "$$BROADCAST_FILE" | head -1)
+        TEE=$$(jq -r '.transactions[] | select(.contractName == "TEEMLVerifier") | .contractAddress // empty' "$$BROADCAST_FILE" | head -1)
+        DEPLOYER=$$(jq -r '.transactions[0].transaction.from // empty' "$$BROADCAST_FILE")
+
+        # Write addresses to shared volume
+        cat > /deployment/addresses.json <<ADDR_EOF
+        {
+          "RemainderVerifier": "$$REMAINDER",
+          "TEEMLVerifier": "$$TEE",
+          "deployer": "$$DEPLOYER"
+        }
+        ADDR_EOF
+
+        echo "=== Deployment complete ==="
+        echo "  RemainderVerifier: $$REMAINDER"
+        echo "  TEEMLVerifier:     $$TEE"
+        cat /deployment/addresses.json
+    restart: "no"
+
+  # ── TEE Enclave ──────────────────────────────────────────────────────────────
+  enclave:
+    build:
+      context: ./tee
+    ports:
+      - "8080:8080"
+    environment:
+      MODEL_PATH: /app/model/model.json
+      PORT: "8080"
+      # Anvil account #1 — enclave signer
+      ENCLAVE_PRIVATE_KEY: "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── Operator Service ─────────────────────────────────────────────────────────
+  operator:
+    build:
+      context: .
+      dockerfile: services/operator/Dockerfile
+    depends_on:
+      deployer:
+        condition: service_completed_successfully
+      enclave:
+        condition: service_healthy
+    environment:
+      OPERATOR_RPC_URL: "http://anvil:8545"
+      # Anvil account #0 — admin + operator
+      OPERATOR_PRIVATE_KEY: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+      ENCLAVE_URL: "http://enclave:8080"
+      MODEL_PATH: /app/model/model.json
+      PROOFS_DIR: /app/proofs
+      PRECOMPUTE_BIN: /usr/local/bin/precompute_proof
+    volumes:
+      - deployment-data:/deployment:ro
+      - proof-storage:/app/proofs
+
+volumes:
+  deployment-data:
+  proof-storage:

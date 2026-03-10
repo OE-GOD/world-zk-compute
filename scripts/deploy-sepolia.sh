@@ -15,9 +15,10 @@
 #   DEPLOYER_PRIVATE_KEY=0x... ARBITRUM_SEPOLIA_RPC=http://127.0.0.1:8545 bash scripts/deploy-sepolia.sh
 #
 # Local Anvil note:
-#   Contract deployment + DAG registration needs >30M gas (RemainderVerifier is large).
-#   Start Anvil with a high block gas limit:
-#     anvil --gas-limit 500000000
+#   RemainderVerifier has ~129KB bytecode (exceeds EIP-3860 initcode limit) and
+#   DAG registration needs ~78M gas (exceeds default 30M block gas limit).
+#   Start Anvil with:
+#     anvil --gas-limit 500000000 --code-size-limit 200000
 
 set -euo pipefail
 
