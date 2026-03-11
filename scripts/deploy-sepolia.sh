@@ -2,17 +2,21 @@
 # Deploy RemainderVerifier + TEEMLVerifier + DAG circuit to Arbitrum Sepolia.
 #
 # Required env vars:
-#   DEPLOYER_PRIVATE_KEY    — deployer private key
-#   ARBITRUM_SEPOLIA_RPC    — RPC URL (default: https://sepolia-rollup.arbitrum.io/rpc)
+#   DEPLOYER_PRIVATE_KEY    -- deployer private key
+#   ARBITRUM_SEPOLIA_RPC    -- RPC URL (default: https://sepolia-rollup.arbitrum.io/rpc)
 #
 # Optional env vars:
-#   ARBISCAN_API_KEY        — for contract verification on Arbiscan
-#   REMAINDER_VERIFIER      — reuse existing RemainderVerifier address
-#   SKIP_CIRCUIT_REGISTRATION — set "true" to skip DAG registration
+#   ARBISCAN_API_KEY        -- for contract verification on Arbiscan
+#   REMAINDER_VERIFIER      -- reuse existing RemainderVerifier address
+#   SKIP_CIRCUIT_REGISTRATION -- set "true" to skip DAG registration
 #
 # Usage:
 #   DEPLOYER_PRIVATE_KEY=0x... bash scripts/deploy-sepolia.sh
 #   DEPLOYER_PRIVATE_KEY=0x... ARBITRUM_SEPOLIA_RPC=http://127.0.0.1:8545 bash scripts/deploy-sepolia.sh
+#
+# Verify-only mode (check already-deployed contracts exist on chain):
+#   bash scripts/deploy-sepolia.sh --verify-only
+#   bash scripts/deploy-sepolia.sh --verify-only --deployment-file deployments/anvil-local.json
 #
 # Local Anvil note:
 #   RemainderVerifier has ~129KB bytecode (exceeds EIP-3860 initcode limit) and
@@ -22,16 +26,102 @@
 
 set -euo pipefail
 
-: "${DEPLOYER_PRIVATE_KEY:?Set DEPLOYER_PRIVATE_KEY}"
-ARBITRUM_SEPOLIA_RPC="${ARBITRUM_SEPOLIA_RPC:-https://sepolia-rollup.arbitrum.io/rpc}"
+# ── Parse CLI flags ──────────────────────────────────────────────────────────
+VERIFY_ONLY=false
+CUSTOM_DEPLOYMENT_FILE=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --verify-only)
+            VERIFY_ONLY=true
+            shift
+            ;;
+        --deployment-file)
+            CUSTOM_DEPLOYMENT_FILE="$2"
+            shift 2
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Usage: $0 [--verify-only] [--deployment-file <path>]"
+            exit 1
+            ;;
+    esac
+done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONTRACTS_DIR="$PROJECT_ROOT/contracts"
 DEPLOYMENTS_DIR="$PROJECT_ROOT/deployments"
-DEPLOYMENT_FILE="$DEPLOYMENTS_DIR/arbitrum-sepolia.json"
 
 mkdir -p "$DEPLOYMENTS_DIR"
+
+# ── Verify-only mode ─────────────────────────────────────────────────────────
+if [ "$VERIFY_ONLY" = "true" ]; then
+    ARBITRUM_SEPOLIA_RPC="${ARBITRUM_SEPOLIA_RPC:-https://sepolia-rollup.arbitrum.io/rpc}"
+
+    # Determine which deployment file to read
+    DEPLOY_FILE="${CUSTOM_DEPLOYMENT_FILE:-$DEPLOYMENTS_DIR/arbitrum-sepolia.json}"
+    if [ ! -f "$DEPLOY_FILE" ]; then
+        echo "ERROR: Deployment file not found: $DEPLOY_FILE"
+        echo "Deploy first or specify a file with --deployment-file <path>"
+        exit 1
+    fi
+
+    echo "=== Verify-only mode ==="
+    echo "  Reading: $DEPLOY_FILE"
+    echo "  RPC:     $ARBITRUM_SEPOLIA_RPC"
+    echo ""
+
+    # Validate JSON
+    if ! jq . "$DEPLOY_FILE" > /dev/null 2>&1; then
+        echo "ERROR: Invalid JSON in $DEPLOY_FILE"
+        exit 1
+    fi
+
+    NETWORK=$(jq -r '.network // "unknown"' "$DEPLOY_FILE")
+    echo "  Network: $NETWORK"
+    echo ""
+
+    PASS=true
+
+    # Check each contract
+    for CONTRACT_NAME in $(jq -r '.contracts | keys[]' "$DEPLOY_FILE"); do
+        ADDR=$(jq -r ".contracts[\"$CONTRACT_NAME\"]" "$DEPLOY_FILE")
+        if [ -z "$ADDR" ] || [ "$ADDR" = "null" ]; then
+            echo "  $CONTRACT_NAME: SKIPPED (no address)"
+            continue
+        fi
+
+        CODE=$(cast code "$ADDR" --rpc-url "$ARBITRUM_SEPOLIA_RPC" 2>/dev/null || echo "0x")
+        if [ "$CODE" = "0x" ] || [ -z "$CODE" ]; then
+            echo "  $CONTRACT_NAME ($ADDR): FAIL (no code on chain)"
+            PASS=false
+        else
+            CODE_LEN=${#CODE}
+            echo "  $CONTRACT_NAME ($ADDR): OK (code size: $((CODE_LEN / 2 - 1)) bytes)"
+        fi
+    done
+
+    echo ""
+    if [ "$PASS" = "true" ]; then
+        echo "=== All contracts verified ==="
+        # Update verified flag in deployment file
+        TMP_FILE=$(mktemp)
+        jq '.verified = true' "$DEPLOY_FILE" > "$TMP_FILE" && mv "$TMP_FILE" "$DEPLOY_FILE"
+        echo "  Updated 'verified' flag to true in $DEPLOY_FILE"
+    else
+        echo "=== Some contracts FAILED verification ==="
+        TMP_FILE=$(mktemp)
+        jq '.verified = false' "$DEPLOY_FILE" > "$TMP_FILE" && mv "$TMP_FILE" "$DEPLOY_FILE"
+        exit 1
+    fi
+    exit 0
+fi
+
+# ── Deploy mode ──────────────────────────────────────────────────────────────
+
+: "${DEPLOYER_PRIVATE_KEY:?Set DEPLOYER_PRIVATE_KEY}"
+ARBITRUM_SEPOLIA_RPC="${ARBITRUM_SEPOLIA_RPC:-https://sepolia-rollup.arbitrum.io/rpc}"
 
 echo "=== Deploying to: $ARBITRUM_SEPOLIA_RPC ==="
 echo ""
@@ -117,18 +207,31 @@ else
     fi
 fi
 
+# Determine network name and deployment file path
 NETWORK="arbitrum-sepolia"
 if [ "$CHAIN_ID" = "31337" ]; then
     NETWORK="anvil-local"
 fi
 
-TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+# Select appropriate deployment file (or use custom if set)
+if [ -n "$CUSTOM_DEPLOYMENT_FILE" ]; then
+    DEPLOYMENT_FILE="$CUSTOM_DEPLOYMENT_FILE"
+else
+    DEPLOYMENT_FILE="$DEPLOYMENTS_DIR/${NETWORK}.json"
+fi
 
-# Write deployment file
+# Capture timestamp and current block number
+TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+BLOCK_NUM=$(cast block-number --rpc-url "$ARBITRUM_SEPOLIA_RPC" 2>/dev/null || echo "0")
+
+# Write deployment file with full metadata
 cat > "$DEPLOYMENT_FILE" <<EOF
 {
   "network": "$NETWORK",
-  "chainId": $CHAIN_ID,
+  "chain_id": $CHAIN_ID,
+  "deployed_at": "$TIMESTAMP",
+  "deployer": "${DEPLOYER_ADDR:-}",
+  "block_number": $BLOCK_NUM,
   "contracts": {
     "RemainderVerifier": "${REMAINDER_ADDR:-}",
     "TEEMLVerifier": "${TEE_ADDR:-}"
@@ -137,17 +240,36 @@ cat > "$DEPLOYMENT_FILE" <<EOF
     "registered": $CIRCUIT_REGISTERED,
     "circuitHash": "${CIRCUIT_HASH:-}"
   },
-  "deployer": "${DEPLOYER_ADDR:-}",
-  "deployedAt": "$TIMESTAMP"
+  "circuit_hash": "${CIRCUIT_HASH:-}",
+  "verified": false
 }
 EOF
+
+# Validate generated JSON
+if ! jq . "$DEPLOYMENT_FILE" > /dev/null 2>&1; then
+    echo "ERROR: Generated invalid JSON in $DEPLOYMENT_FILE"
+    cat "$DEPLOYMENT_FILE"
+    exit 1
+fi
 
 echo ""
 echo "=== Deployment Summary ==="
 echo "  Network:            $NETWORK (chain $CHAIN_ID)"
+echo "  Block:              $BLOCK_NUM"
+echo "  Timestamp:          $TIMESTAMP"
 echo "  RemainderVerifier:  ${REMAINDER_ADDR:-NOT DEPLOYED}"
 echo "  TEEMLVerifier:      ${TEE_ADDR:-NOT DEPLOYED}"
+echo "  Circuit hash:       ${CIRCUIT_HASH:-N/A}"
 echo "  Deployer:           ${DEPLOYER_ADDR:-}"
 echo "  Saved to:           $DEPLOYMENT_FILE"
 echo ""
+
+# Also maintain the canonical arbitrum-sepolia.json for backward compatibility
+# when deploying to Arbitrum Sepolia (in case someone relied on the fixed path)
+CANONICAL_FILE="$DEPLOYMENTS_DIR/arbitrum-sepolia.json"
+if [ "$DEPLOYMENT_FILE" != "$CANONICAL_FILE" ] && [ "$NETWORK" = "arbitrum-sepolia" ]; then
+    cp "$DEPLOYMENT_FILE" "$CANONICAL_FILE"
+    echo "  Also saved to: $CANONICAL_FILE (backward compat)"
+fi
+
 echo "=== Done ==="

@@ -255,6 +255,7 @@ pub fn traverse_tree(tree: &DecisionTree, features: &[f64]) -> f64 {
 
 /// Collect all decision path information for circuit building.
 /// Returns (node_indices, comparisons) for each tree.
+#[allow(dead_code)]
 pub fn trace_inference(model: &XgboostModel, features: &[f64]) -> Vec<Vec<(usize, bool)>> {
     let mut paths = Vec::new();
 
@@ -293,6 +294,7 @@ pub fn quantize(val: f64) -> i64 {
     (val * FIXED_POINT_SCALE as f64).round() as i64
 }
 
+#[allow(dead_code)]
 pub fn dequantize(val: i64) -> f64 {
     val as f64 / FIXED_POINT_SCALE as f64
 }
@@ -571,6 +573,7 @@ pub fn compute_comparison_witness(
 /// Generate a perfect binary tree of given depth with deterministic thresholds and leaf values.
 /// Uses `num_features` features with thresholds spread across [0.1, 0.9] and
 /// leaf values in [-1.0, 1.0].
+#[allow(dead_code)]
 pub fn generate_perfect_tree(depth: usize, num_features: usize, seed: u64) -> DecisionTree {
     let num_internal = (1usize << depth) - 1;
     let num_leaves = 1usize << depth;
@@ -613,6 +616,7 @@ pub fn generate_perfect_tree(depth: usize, num_features: usize, seed: u64) -> De
 }
 
 /// Generate a complete XGBoost model with `num_trees` perfect trees of given depth.
+#[allow(dead_code)]
 pub fn generate_model(num_trees: usize, depth: usize, num_features: usize) -> XgboostModel {
     let trees: Vec<DecisionTree> = (0..num_trees)
         .map(|t| generate_perfect_tree(depth, num_features, (t + 1) as u64 * 137))
@@ -628,6 +632,7 @@ pub fn generate_model(num_trees: usize, depth: usize, num_features: usize) -> Xg
 }
 
 /// Generate deterministic feature values for testing (spread across [0.0, 1.0]).
+#[allow(dead_code)]
 pub fn generate_features(num_features: usize, seed: u64) -> Vec<f64> {
     (0..num_features)
         .map(|i| {
@@ -638,6 +643,7 @@ pub fn generate_features(num_features: usize, seed: u64) -> Vec<f64> {
 }
 
 /// Create a sample XGBoost model for testing
+#[allow(dead_code)]
 pub fn sample_model() -> XgboostModel {
     // Simple 2-tree binary classifier on 5 features
     XgboostModel {

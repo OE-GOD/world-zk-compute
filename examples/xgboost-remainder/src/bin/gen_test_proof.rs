@@ -151,7 +151,7 @@ fn main() -> Result<()> {
     let output = json!({
         "proof_hex": format!("0x{}", hex::encode(&abi_bytes)),
         "gens_hex": format!("0x{}", hex::encode(&gens_bytes)),
-        "circuit_hash": format!("0x{}", hex::encode(&circuit_hash)),
+        "circuit_hash": format!("0x{}", hex::encode(circuit_hash)),
         "proof_size_bytes": abi_bytes.len(),
         "gens_size_bytes": gens_bytes.len(),
         "structure": {

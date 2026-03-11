@@ -61,13 +61,37 @@ impl NitroAttestor {
                 );
             }
         } else {
-            Some(Self::mock_attestation(enclave_address, model_hash, None))
+            Some(Self::mock_attestation(enclave_address, model_hash, None)?)
         };
 
         Ok(Self {
             attestation_doc,
             nitro_enabled,
         })
+    }
+
+    /// Create a mock-only `NitroAttestor` that cannot fail.
+    ///
+    /// This is used as a fallback when real Nitro attestation is unavailable.
+    /// The underlying CBOR serialization of well-known `BTreeMap` values is
+    /// infallible in practice, but we handle the error gracefully regardless.
+    pub fn mock_fallback(enclave_address: Address, model_hash: B256) -> Self {
+        let attestation_doc = Self::mock_attestation(enclave_address, model_hash, None)
+            .unwrap_or_else(|e| {
+                tracing::error!("Failed to create mock attestation (unexpected): {}", e);
+                // Return a minimal empty attestation document so the server can
+                // still start and serve health/info endpoints.
+                AttestationDocument {
+                    document: String::new(),
+                    enclave_address: format!("{}", enclave_address),
+                    is_nitro: false,
+                    pcr0: "0".repeat(96),
+                }
+            });
+        Self {
+            attestation_doc: Some(attestation_doc),
+            nitro_enabled: false,
+        }
     }
 
     /// Get the cached attestation document.
@@ -110,16 +134,21 @@ impl NitroAttestor {
                 );
             }
         }
-        self.attestation_doc = Some(Self::mock_attestation(enclave_address, model_hash, nonce));
+        self.attestation_doc = Some(Self::mock_attestation(enclave_address, model_hash, nonce)?);
         Ok(())
     }
 
     /// Create a mock attestation document for dev/testing.
+    ///
+    /// The CBOR serialization here uses deterministic, well-known structures
+    /// (BTreeMaps of simple CBOR values), so in practice these serializations
+    /// cannot fail. We return `Result` nonetheless to avoid `expect`/`unwrap`
+    /// in production code paths.
     fn mock_attestation(
         enclave_address: Address,
         model_hash: B256,
         nonce: Option<&[u8]>,
-    ) -> AttestationDocument {
+    ) -> Result<AttestationDocument, String> {
         // Build a mock CBOR structure that mimics Nitro attestation format.
         // This is NOT cryptographically valid -- for dev/testing only.
         use std::collections::BTreeMap;
@@ -135,7 +164,7 @@ impl NitroAttestor {
         // timestamp (milliseconds since epoch)
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or(std::time::Duration::ZERO)
             .as_millis() as i128;
         payload.insert(
             "timestamp".to_string(),
@@ -187,8 +216,9 @@ impl NitroAttestor {
             },
         );
 
-        // Encode payload as CBOR
-        let payload_bytes = serde_cbor::to_vec(&payload).unwrap();
+        // Encode payload as CBOR.
+        let payload_bytes = serde_cbor::to_vec(&payload)
+            .map_err(|e| format!("Failed to CBOR-encode mock attestation payload: {}", e))?;
 
         // Wrap in a mock COSE_Sign1 structure: [protected, unprotected, payload, signature]
         let cose_sign1 = serde_cbor::Value::Array(vec![
@@ -198,16 +228,17 @@ impl NitroAttestor {
             serde_cbor::Value::Bytes(vec![0u8; 96]), // signature (mock P-384 sig)
         ]);
 
-        // CBOR-encode the COSE_Sign1
-        let doc_bytes = serde_cbor::to_vec(&cose_sign1).unwrap();
+        // CBOR-encode the COSE_Sign1.
+        let doc_bytes = serde_cbor::to_vec(&cose_sign1)
+            .map_err(|e| format!("Failed to CBOR-encode mock COSE_Sign1: {}", e))?;
         let doc_base64 = base64::engine::general_purpose::STANDARD.encode(&doc_bytes);
 
-        AttestationDocument {
+        Ok(AttestationDocument {
             document: doc_base64,
             enclave_address: format!("{}", enclave_address),
             is_nitro: false,
             pcr0: hex::encode(&mock_pcr0),
-        }
+        })
     }
 
     /// Get real Nitro attestation from NSM device.

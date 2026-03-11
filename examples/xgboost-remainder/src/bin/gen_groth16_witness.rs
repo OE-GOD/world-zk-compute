@@ -15,7 +15,7 @@
 use anyhow::Result;
 use ff::PrimeField;
 use frontend::layouter::builder::{Circuit, CircuitBuilder, LayerVisibility};
-use hyrax::gkr::layer::{get_claims_from_product, HyraxClaim};
+use hyrax::gkr::layer::HyraxClaim;
 use hyrax::gkr::verify_hyrax_proof;
 use hyrax::primitives::proof_of_sumcheck::ProofOfSumcheck;
 use hyrax::utils::vandermonde::VandermondeInverse;
@@ -80,7 +80,7 @@ fn compute_beta_fr(bindings: &[Fr], claim_point: &[Fr]) -> Fr {
         let one_minus_r = Fr::one() - bindings[i];
         let one_minus_c = Fr::one() - claim_point[i];
         let term = rc + one_minus_r * one_minus_c;
-        beta = beta * term;
+        beta *= term;
     }
     beta
 }
@@ -447,7 +447,7 @@ fn main() -> Result<()> {
             .as_array()
             .unwrap()
             .iter()
-            .map(|v| parse_fr_from_json(v))
+            .map(parse_fr_from_json)
             .collect();
         let podp_z_delta: Fr = parse_fr_from_json(&podp_json["z_delta"]);
         let podp_z_beta: Fr = parse_fr_from_json(&podp_json["z_beta"]);
@@ -501,12 +501,12 @@ fn main() -> Result<()> {
         let new_claims: Vec<HyraxClaim<Fr, Bn256Point>> = psl
             .0
             .iter()
-            .flat_map(|p| hyrax::gkr::layer::get_claims_from_product(p))
+            .flat_map(hyrax::gkr::layer::get_claims_from_product)
             .collect();
         for claim in new_claims {
             claim_tracker
                 .entry(claim.to_layer_id)
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(claim);
         }
 
@@ -515,7 +515,7 @@ fn main() -> Result<()> {
             layer_idx,
             _layer_id,
             layer_desc.max_degree(),
-            bindings.iter().map(|b| fr_to_hex(b)).collect::<Vec<_>>(),
+            bindings.iter().map(fr_to_hex).collect::<Vec<_>>(),
             j_star.len(),
             podp_z_vector.len(),
             pop_data.len(),
@@ -557,7 +557,7 @@ fn main() -> Result<()> {
         .as_array()
         .unwrap()
         .iter()
-        .map(|v| parse_fr_from_json(v))
+        .map(parse_fr_from_json)
         .collect();
     let input_podp_z_delta: Fr = parse_fr_from_json(&input_podp_json["z_delta"]);
     let input_podp_z_beta: Fr = parse_fr_from_json(&input_podp_json["z_beta"]);
@@ -627,10 +627,7 @@ fn main() -> Result<()> {
 
     eprintln!(
         "output_challenges: {:?}",
-        output_challenges
-            .iter()
-            .map(|c| fr_to_hex(c))
-            .collect::<Vec<_>>()
+        output_challenges.iter().map(fr_to_hex).collect::<Vec<_>>()
     );
     eprintln!(
         "claim_agg_coeff: {}",
@@ -686,10 +683,7 @@ fn main() -> Result<()> {
     eprintln!(
         "input_claim_point (len={}): {:?}",
         input_num_vars,
-        input_claim_point
-            .iter()
-            .map(|p| fr_to_hex(p))
-            .collect::<Vec<_>>()
+        input_claim_point.iter().map(fr_to_hex).collect::<Vec<_>>()
     );
 
     // L-tensor: for each shred, scale tensor(left_bindings) by the RLC coefficient
@@ -717,7 +711,7 @@ fn main() -> Result<()> {
     // The public input claim's point is the MLE eval point.
     let mle_eval_point: Vec<Fr> = {
         let mut found_point: Option<Vec<Fr>> = None;
-        for (_lid, claims) in &claim_tracker {
+        for claims in claim_tracker.values() {
             for claim in claims {
                 // Look for a claim whose point length matches log2(pub_input_count)
                 let expected_len = (pub_values.len() as f64).log2() as usize;
@@ -736,10 +730,7 @@ fn main() -> Result<()> {
     eprintln!(
         "mle_eval_point (len={}): {:?}",
         mle_eval_point.len(),
-        mle_eval_point
-            .iter()
-            .map(|p| fr_to_hex(p))
-            .collect::<Vec<_>>()
+        mle_eval_point.iter().map(fr_to_hex).collect::<Vec<_>>()
     );
     let mle_eval = evaluate_mle_fr(pub_values, &mle_eval_point);
 
@@ -816,9 +807,9 @@ fn main() -> Result<()> {
         .iter()
         .map(|le| {
             let mut layer = json!({
-                "bindings": le.bindings.iter().map(|b| fr_to_hex(b)).collect::<Vec<_>>(),
-                "rhos": le.rhos.iter().map(|r| fr_to_hex(r)).collect::<Vec<_>>(),
-                "gammas": le.gammas.iter().map(|g| fr_to_hex(g)).collect::<Vec<_>>(),
+                "bindings": le.bindings.iter().map(fr_to_hex).collect::<Vec<_>>(),
+                "rhos": le.rhos.iter().map(fr_to_hex).collect::<Vec<_>>(),
+                "gammas": le.gammas.iter().map(fr_to_hex).collect::<Vec<_>>(),
                 "podp_challenge": fr_to_hex(&le.podp_challenge),
             });
             // Include pop_challenge for layers that have PoP data (degree > 2)
@@ -834,7 +825,7 @@ fn main() -> Result<()> {
         .iter()
         .map(|le| {
             json!({
-                "z_vector": le.podp_z_vector.iter().map(|z| fr_to_hex(z)).collect::<Vec<_>>(),
+                "z_vector": le.podp_z_vector.iter().map(fr_to_hex).collect::<Vec<_>>(),
                 "z_delta": fr_to_hex(&le.podp_z_delta),
                 "z_beta": fr_to_hex(&le.podp_z_beta),
             })
@@ -867,21 +858,21 @@ fn main() -> Result<()> {
         "public_inputs": {
             "circuit_hash": [circuit_hash_0, circuit_hash_1],
             "public_values": pub_values.iter().map(fr_to_hex).collect::<Vec<_>>(),
-            "output_challenges": output_challenges.iter().map(|c| fr_to_hex(c)).collect::<Vec<_>>(),
+            "output_challenges": output_challenges.iter().map(fr_to_hex).collect::<Vec<_>>(),
             "claim_agg_coeff": fr_to_hex(&layer_extracts[0].random_coeff),
-            "inter_layer_coeffs": inter_layer_coeffs.iter().map(|c| fr_to_hex(c)).collect::<Vec<_>>(),
+            "inter_layer_coeffs": inter_layer_coeffs.iter().map(fr_to_hex).collect::<Vec<_>>(),
             // Backward compat: single inter_layer_coeff for 2-layer case
             "inter_layer_coeff": if num_layers >= 2 { fr_to_hex(&layer_extracts[1].random_coeff) } else { "0x0".to_string() },
             "layers": layers,
             "input_rlc_coeffs": [fr_to_hex(&input_rlc_0), fr_to_hex(&input_rlc_1)],
             "input_podp_challenge": fr_to_hex(&input_podp_c),
-            "mle_eval_point": mle_eval_point.iter().map(|p| fr_to_hex(p)).collect::<Vec<_>>(),
-            "input_claim_point": input_claim_point.iter().map(|p| fr_to_hex(p)).collect::<Vec<_>>(),
+            "mle_eval_point": mle_eval_point.iter().map(fr_to_hex).collect::<Vec<_>>(),
+            "input_claim_point": input_claim_point.iter().map(fr_to_hex).collect::<Vec<_>>(),
         },
         "public_outputs": {
-            "rlc_betas": rlc_betas.iter().map(|v| fr_to_hex(v)).collect::<Vec<_>>(),
-            "z_dot_jstars": z_dot_jstars.iter().map(|v| fr_to_hex(v)).collect::<Vec<_>>(),
-            "l_tensor": l_tensor.iter().map(|v| fr_to_hex(v)).collect::<Vec<_>>(),
+            "rlc_betas": rlc_betas.iter().map(fr_to_hex).collect::<Vec<_>>(),
+            "z_dot_jstars": z_dot_jstars.iter().map(fr_to_hex).collect::<Vec<_>>(),
+            "l_tensor": l_tensor.iter().map(fr_to_hex).collect::<Vec<_>>(),
             "z_dot_r": fr_to_hex(&z_dot_r),
             "mle_eval": fr_to_hex(&mle_eval),
         },
@@ -889,7 +880,7 @@ fn main() -> Result<()> {
             "layer_podps": layer_podps,
             "layer_pops": layer_pops,
             "input_podp": {
-                "z_vector": input_podp_z_vector.iter().map(|z| fr_to_hex(z)).collect::<Vec<_>>(),
+                "z_vector": input_podp_z_vector.iter().map(fr_to_hex).collect::<Vec<_>>(),
                 "z_delta": fr_to_hex(&input_podp_z_delta),
                 "z_beta": fr_to_hex(&input_podp_z_beta),
             },
@@ -897,7 +888,7 @@ fn main() -> Result<()> {
         // Extra fields for on-chain hybrid verification
         "inner_proof_hex": format!("0x{}", hex::encode(&abi_bytes)),
         "gens_hex": format!("0x{}", hex::encode(&gens_bytes)),
-        "circuit_hash_raw": format!("0x{}", hex::encode(&circuit_hash)),
+        "circuit_hash_raw": format!("0x{}", hex::encode(circuit_hash)),
         "public_values_abi": format!("0x{}", hex::encode(&pub_values_bytes)),
     });
 

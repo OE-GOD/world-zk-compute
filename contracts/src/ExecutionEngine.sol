@@ -5,22 +5,30 @@ import "./ProgramRegistry.sol";
 import "./ProverReputation.sol";
 import {IProofVerifier} from "./IProofVerifier.sol";
 import {IRiscZeroVerifier} from "risc0-ethereum/IRiscZeroVerifier.sol";
+import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @title IExecutionCallback
 /// @notice Interface for contracts that receive verified computation results
 interface IExecutionCallback {
+    /// @notice Called by ExecutionEngine after a proof is verified
+    /// @param requestId The ID of the completed execution request
+    /// @param imageId The program image ID that was executed
+    /// @param journal The public outputs (journal) from the execution
     function onExecutionComplete(uint256 requestId, bytes32 imageId, bytes calldata journal) external;
 }
 
 /// @title ExecutionEngine
 /// @notice Core engine for verifiable computation on World Chain
-/// @dev Handles the full lifecycle: request → claim → prove → callback
-contract ExecutionEngine is ReentrancyGuard {
+/// @dev Handles the full lifecycle: request -> claim -> prove -> callback
+///      Uses Ownable2Step for safe ownership transfers and Pausable for emergency stops.
+contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
     // ========================================================================
     // TYPES
     // ========================================================================
 
+    /// @notice Lifecycle status of an execution request
     enum RequestStatus {
         Pending, // Waiting for prover to claim
         Claimed, // Prover claimed, proof expected
@@ -29,6 +37,8 @@ contract ExecutionEngine is ReentrancyGuard {
         Cancelled // Requester cancelled
     }
 
+    /// @notice Storage layout for a single execution request
+    /// @dev Fields are packed to minimize storage slots (8 slots total)
     struct ExecutionRequest {
         uint256 id; // Slot 0
         bytes32 imageId; // Slot 1: program to execute
@@ -49,17 +59,18 @@ contract ExecutionEngine is ReentrancyGuard {
     // CONSTANTS
     // ========================================================================
 
+    /// @notice Minimum tip required to create an execution request
     uint256 public constant MIN_TIP = 0.0001 ether;
+    /// @notice Default expiration time for requests when none specified
     uint256 public constant DEFAULT_EXPIRATION = 1 hours;
+    /// @notice Time window a prover has to submit proof after claiming
     uint256 public constant CLAIM_WINDOW = 10 minutes;
+    /// @notice Duration over which the tip linearly decays to 50% of maxTip
     uint256 public constant TIP_DECAY_PERIOD = 30 minutes;
 
     // ========================================================================
     // STATE
     // ========================================================================
-
-    /// @notice Contract owner (admin)
-    address public owner;
 
     /// @notice The program registry
     ProgramRegistry public immutable registry;
@@ -90,6 +101,7 @@ contract ExecutionEngine is ReentrancyGuard {
     // EVENTS
     // ========================================================================
 
+    /// @notice Emitted when a new execution request is created
     event ExecutionRequested(
         uint256 indexed requestId,
         address indexed requester,
@@ -101,43 +113,80 @@ contract ExecutionEngine is ReentrancyGuard {
         uint256 expiresAt
     );
 
+    /// @notice Emitted when a prover claims an execution request
     event ExecutionClaimed(uint256 indexed requestId, address indexed prover, uint256 claimDeadline);
 
+    /// @notice Emitted when a proof is verified and the prover is paid
     event ExecutionCompleted(uint256 indexed requestId, address indexed prover, bytes32 journalDigest, uint256 payout);
 
+    /// @notice Emitted when a request passes its expiration time
     event ExecutionExpired(uint256 indexed requestId);
+    /// @notice Emitted when a requester cancels their pending request
     event ExecutionCancelled(uint256 indexed requestId);
+    /// @notice Emitted when a prover's claim deadline passes without proof submission
     event ClaimExpired(uint256 indexed requestId, address indexed prover);
+    /// @notice Emitted when an onExecutionComplete callback reverts (proof still valid)
     event CallbackFailed(uint256 indexed requestId, address indexed callbackContract);
-    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    /// @notice Emitted when the reputation contract address is updated
     event ReputationContractSet(address indexed reputation);
+    /// @notice Emitted when the protocol fee basis points are changed
+    event ProtocolFeeUpdated(uint256 oldFeeBps, uint256 newFeeBps);
+    /// @notice Emitted when the fee recipient address is changed
+    event FeeRecipientUpdated(address indexed oldRecipient, address indexed newRecipient);
 
     // ========================================================================
     // ERRORS
     // ========================================================================
 
-    error NotOwner();
+    /// @notice Thrown when msg.value is below MIN_TIP
     error InsufficientTip();
+    /// @notice Thrown when the requested program is not active in the registry
     error ProgramNotActive();
+    /// @notice Thrown when the specified request ID does not exist
     error RequestNotFound();
+    /// @notice Thrown when the request is not in Pending status
     error RequestNotPending();
+    /// @notice Thrown when the request is not in Claimed status
     error RequestNotClaimed();
+    /// @notice Thrown when msg.sender is not the original requester
     error NotRequester();
+    /// @notice Thrown when msg.sender is not the prover who claimed the request
     error NotClaimant();
+    /// @notice Thrown when trying to reclaim a request whose claim has not yet expired
     error ClaimNotExpired();
+    /// @notice Thrown when trying to claim a request past its expiration
     error RequestExpired();
+    /// @notice Thrown when proof is submitted after the claim deadline
     error ClaimDeadlinePassed();
+    /// @notice Thrown when the proof verification fails
     error InvalidProof();
+    /// @notice Thrown when an empty seal is provided to submitProof
     error EmptySeal();
+    /// @notice Thrown when an empty journal is provided to submitProof
     error EmptyJournal();
+    /// @notice Thrown when an ETH transfer (tip refund or payout) fails
     error TransferFailed();
+    /// @notice Thrown when imageId is bytes32(0)
+    error ZeroImageId();
+    /// @notice Thrown when the computed expiration overflows
+    error ExpirationInPast();
+    /// @notice Thrown when a zero address is provided where a valid address is required
+    error ZeroAddress();
 
     // ========================================================================
     // CONSTRUCTOR
     // ========================================================================
 
-    constructor(address _registry, address _verifier, address _feeRecipient) {
-        owner = msg.sender;
+    /// @notice Deploy a new ExecutionEngine
+    /// @param _admin Owner address for Ownable2Step
+    /// @param _registry ProgramRegistry contract address
+    /// @param _verifier Default IRiscZeroVerifier contract address
+    /// @param _feeRecipient Address that receives protocol fees
+    constructor(address _admin, address _registry, address _verifier, address _feeRecipient) Ownable(_admin) {
+        if (_admin == address(0)) revert ZeroAddress();
+        if (_registry == address(0)) revert ZeroAddress();
+        if (_verifier == address(0)) revert ZeroAddress();
+        if (_feeRecipient == address(0)) revert ZeroAddress();
         registry = ProgramRegistry(_registry);
         verifier = IRiscZeroVerifier(_verifier);
         feeRecipient = _feeRecipient;
@@ -152,8 +201,9 @@ contract ExecutionEngine is ReentrancyGuard {
     /// @param inputDigest Hash of the inputs
     /// @param inputUrl URL where prover can fetch inputs
     /// @param callbackContract Contract to receive results (0x0 for no callback)
-    /// @param expirationSeconds How long before request expires
+    /// @param expirationSeconds How long before request expires (0 uses DEFAULT_EXPIRATION)
     /// @param inputType 0 = Public, 1 = Private (event-only, not stored)
+    /// @return requestId The unique ID assigned to this request
     function requestExecution(
         bytes32 imageId,
         bytes32 inputDigest,
@@ -161,11 +211,13 @@ contract ExecutionEngine is ReentrancyGuard {
         address callbackContract,
         uint256 expirationSeconds,
         uint8 inputType
-    ) external payable returns (uint256 requestId) {
+    ) external payable whenNotPaused returns (uint256 requestId) {
+        if (imageId == bytes32(0)) revert ZeroImageId();
         if (msg.value < MIN_TIP) revert InsufficientTip();
         if (!registry.isProgramActive(imageId)) revert ProgramNotActive();
 
         uint256 expiration = expirationSeconds > 0 ? expirationSeconds : DEFAULT_EXPIRATION;
+        if (block.timestamp + expiration <= block.timestamp) revert ExpirationInPast();
 
         requestId = nextRequestId++;
 
@@ -191,17 +243,25 @@ contract ExecutionEngine is ReentrancyGuard {
     }
 
     /// @notice Request execution with public input (backward-compatible overload)
+    /// @param imageId The program to execute
+    /// @param inputDigest Hash of the inputs
+    /// @param inputUrl URL where prover can fetch inputs
+    /// @param callbackContract Contract to receive results (0x0 for no callback)
+    /// @param expirationSeconds How long before request expires (0 uses DEFAULT_EXPIRATION)
+    /// @return requestId The unique ID assigned to this request
     function requestExecution(
         bytes32 imageId,
         bytes32 inputDigest,
         string calldata inputUrl,
         address callbackContract,
         uint256 expirationSeconds
-    ) external payable returns (uint256 requestId) {
+    ) external payable whenNotPaused returns (uint256 requestId) {
+        if (imageId == bytes32(0)) revert ZeroImageId();
         if (msg.value < MIN_TIP) revert InsufficientTip();
         if (!registry.isProgramActive(imageId)) revert ProgramNotActive();
 
         uint256 expiration = expirationSeconds > 0 ? expirationSeconds : DEFAULT_EXPIRATION;
+        if (block.timestamp + expiration <= block.timestamp) revert ExpirationInPast();
 
         requestId = nextRequestId++;
 
@@ -226,7 +286,8 @@ contract ExecutionEngine is ReentrancyGuard {
         );
     }
 
-    /// @notice Cancel a pending execution request
+    /// @notice Cancel a pending execution request and refund the tip
+    /// @param requestId The request to cancel (must be Pending and owned by msg.sender)
     function cancelExecution(uint256 requestId) external nonReentrant {
         ExecutionRequest storage req = requests[requestId];
         if (req.id == 0) revert RequestNotFound();
@@ -248,7 +309,7 @@ contract ExecutionEngine is ReentrancyGuard {
 
     /// @notice Claim an execution request (prover)
     /// @param requestId The request to claim
-    function claimExecution(uint256 requestId) external nonReentrant {
+    function claimExecution(uint256 requestId) external nonReentrant whenNotPaused {
         ExecutionRequest storage req = requests[requestId];
         if (req.id == 0) revert RequestNotFound();
         if (block.timestamp > req.expiresAt) revert RequestExpired();
@@ -277,7 +338,11 @@ contract ExecutionEngine is ReentrancyGuard {
     /// @param requestId The request ID
     /// @param seal The proof seal (risc0 seal or Remainder proof)
     /// @param journal The public outputs (journal / public inputs)
-    function submitProof(uint256 requestId, bytes calldata seal, bytes calldata journal) external nonReentrant {
+    function submitProof(uint256 requestId, bytes calldata seal, bytes calldata journal)
+        external
+        nonReentrant
+        whenNotPaused
+    {
         ExecutionRequest storage req = requests[requestId];
         if (req.id == 0) revert RequestNotFound();
         if (req.status != RequestStatus.Claimed) revert RequestNotClaimed();
@@ -421,27 +486,36 @@ contract ExecutionEngine is ReentrancyGuard {
     // ADMIN
     // ========================================================================
 
-    function setProtocolFee(uint256 _feeBps) external {
-        if (msg.sender != owner) revert NotOwner();
+    /// @notice Pause the contract (blocks createRequest, claimRequest, submitProof)
+    /// @dev cancelExecution remains available so users can always recover funds
+    function pause() external onlyOwner {
+        _pause();
+    }
+
+    /// @notice Unpause the contract
+    function unpause() external onlyOwner {
+        _unpause();
+    }
+
+    /// @notice Update the protocol fee in basis points (max 10%)
+    function setProtocolFee(uint256 _feeBps) external onlyOwner {
         require(_feeBps <= 1000, "Fee too high"); // Max 10%
+        uint256 oldFeeBps = protocolFeeBps;
         protocolFeeBps = _feeBps;
+        emit ProtocolFeeUpdated(oldFeeBps, _feeBps);
     }
 
-    function setFeeRecipient(address _recipient) external {
-        if (msg.sender != owner) revert NotOwner();
+    /// @notice Update the fee recipient address
+    function setFeeRecipient(address _recipient) external onlyOwner {
+        if (_recipient == address(0)) revert ZeroAddress();
+        address oldRecipient = feeRecipient;
         feeRecipient = _recipient;
+        emit FeeRecipientUpdated(oldRecipient, _recipient);
     }
 
-    function setReputation(address _reputation) external {
-        if (msg.sender != owner) revert NotOwner();
+    /// @notice Set or update the reputation contract
+    function setReputation(address _reputation) external onlyOwner {
         reputation = ProverReputation(_reputation);
         emit ReputationContractSet(_reputation);
-    }
-
-    function transferOwnership(address newOwner) external {
-        if (msg.sender != owner) revert NotOwner();
-        require(newOwner != address(0), "Invalid owner");
-        emit OwnershipTransferred(owner, newOwner);
-        owner = newOwner;
     }
 }

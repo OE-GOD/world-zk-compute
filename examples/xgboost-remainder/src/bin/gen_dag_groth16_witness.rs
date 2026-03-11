@@ -66,7 +66,7 @@ fn compute_beta_fr(bindings: &[Fr], claim_point: &[Fr]) -> Fr {
         let one_minus_r = Fr::one() - bindings[i];
         let one_minus_c = Fr::one() - claim_point[i];
         let term = rc + one_minus_r * one_minus_c;
-        beta = beta * term;
+        beta *= term;
     }
     beta
 }
@@ -179,10 +179,10 @@ fn resolve_point_template(
 }
 
 fn parse_template_entry(entry: &str) -> u64 {
-    if entry.starts_with('B') {
-        entry[1..].parse::<u64>().unwrap()
-    } else if entry.starts_with('F') {
-        20000 + entry[1..].parse::<u64>().unwrap()
+    if let Some(rest) = entry.strip_prefix('B') {
+        rest.parse::<u64>().unwrap()
+    } else if let Some(rest) = entry.strip_prefix('F') {
+        20000 + rest.parse::<u64>().unwrap()
     } else {
         panic!("Unknown template entry: {}", entry);
     }
@@ -196,7 +196,7 @@ fn resolve_point_from_template(template: &[u64], source_bindings: &[Fr]) -> Vec<
             if entry < 1000 {
                 source_bindings[entry as usize]
             } else if entry >= 20000 {
-                Fr::from((entry - 20000) as u64)
+                Fr::from(entry - 20000)
             } else {
                 panic!("Unsupported template entry: {}", entry);
             }
@@ -456,10 +456,7 @@ fn main() -> Result<()> {
     eprintln!(
         "output_challenges (len={}): {:?}",
         output_challenges.len(),
-        output_challenges
-            .iter()
-            .map(|c| fr_to_hex(c))
-            .collect::<Vec<_>>()
+        output_challenges.iter().map(fr_to_hex).collect::<Vec<_>>()
     );
 
     // === Per-layer transcript replay ===
@@ -551,7 +548,7 @@ fn main() -> Result<()> {
             .as_array()
             .unwrap()
             .iter()
-            .map(|v| parse_fr_from_json(v))
+            .map(parse_fr_from_json)
             .collect();
         let podp_z_delta: Fr = parse_fr_from_json(&podp_json["z_delta"]);
         let podp_z_beta: Fr = parse_fr_from_json(&podp_json["z_beta"]);
@@ -642,11 +639,8 @@ fn main() -> Result<()> {
         }
 
         // Extract claims (atom routing)
-        let new_claims: Vec<HyraxClaim<Fr, Bn256Point>> = psl
-            .0
-            .iter()
-            .flat_map(|p| get_claims_from_product(p))
-            .collect();
+        let new_claims: Vec<HyraxClaim<Fr, Bn256Point>> =
+            psl.0.iter().flat_map(get_claims_from_product).collect();
 
         let mut atom_targets = Vec::new();
         let mut point_templates = Vec::new();
@@ -668,7 +662,7 @@ fn main() -> Result<()> {
             // Forward claim to target layer
             claim_tracker
                 .entry(claim.to_layer_id)
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(claim.clone());
         }
 
@@ -773,7 +767,7 @@ fn main() -> Result<()> {
                     .as_array()
                     .unwrap()
                     .iter()
-                    .map(|v| parse_fr_from_json(v))
+                    .map(parse_fr_from_json)
                     .collect();
                 let z_delta: Fr = parse_fr_from_json(&podp_json["z_delta"]);
                 let z_beta: Fr = parse_fr_from_json(&podp_json["z_beta"]);
@@ -1056,9 +1050,9 @@ fn main() -> Result<()> {
     let mut flat_incoming_atom_idx: Vec<usize> = vec![0; flat_atom_targets.len()];
     let mut write_pos: Vec<usize> = vec![0; total_layers];
     let mut offset = 0usize;
-    for i in 0..total_layers {
+    for count in incoming_counts.iter().take(total_layers) {
         incoming_offsets.push(offset);
-        offset += incoming_counts[i];
+        offset += count;
     }
     incoming_offsets.push(offset);
     for (atom_idx, &target) in flat_atom_targets.iter().enumerate() {
@@ -1202,7 +1196,7 @@ fn main() -> Result<()> {
         // On-chain verification data
         "inner_proof_hex": format!("0x{}", hex::encode(&abi_bytes)),
         "gens_hex": format!("0x{}", hex::encode(&gens_bytes)),
-        "circuit_hash_raw": format!("0x{}", hex::encode(&circuit_hash)),
+        "circuit_hash_raw": format!("0x{}", hex::encode(circuit_hash)),
         "public_values_abi": format!("0x{}", hex::encode(&pub_values_bytes)),
     });
 
@@ -1416,7 +1410,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .map(|v| parse_fr_from_json(v))
+                .map(parse_fr_from_json)
                 .collect();
             let podp_z_delta: Fr = parse_fr_from_json(&podp_json["z_delta"]);
             let podp_z_beta: Fr = parse_fr_from_json(&podp_json["z_beta"]);
@@ -1486,7 +1480,7 @@ mod tests {
                 point_templates_layer.push(template);
                 claim_tracker
                     .entry(claim.to_layer_id)
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(claim.clone());
             }
 
@@ -1556,7 +1550,7 @@ mod tests {
                         .as_array()
                         .unwrap()
                         .iter()
-                        .map(|v| parse_fr_from_json(v))
+                        .map(parse_fr_from_json)
                         .collect();
                     let z_delta: Fr = parse_fr_from_json(&podp_json["z_delta"]);
                     let z_beta: Fr = parse_fr_from_json(&podp_json["z_beta"]);

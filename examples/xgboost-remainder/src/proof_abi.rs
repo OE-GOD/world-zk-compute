@@ -24,6 +24,7 @@ use anyhow::Result;
 /// ...
 /// offset N:    Hyrax PCS evaluation proof
 /// ```
+#[allow(dead_code)]
 pub fn encode_proof(proof_bytes: &[u8]) -> Result<Vec<u8>> {
     // The proof bytes are already structured with:
     // - 4-byte selector ("REM1")
@@ -53,6 +54,7 @@ pub fn encode_proof(proof_bytes: &[u8]) -> Result<Vec<u8>> {
 ///
 /// Public inputs are encoded as a dynamic bytes array containing
 /// the predicted class and any other public outputs.
+#[allow(dead_code)]
 pub fn encode_public_inputs(public_inputs: &[u8]) -> Result<Vec<u8>> {
     let mut encoded = Vec::new();
 
@@ -67,6 +69,7 @@ pub fn encode_public_inputs(public_inputs: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// Encode a BN254 G1 point as (uint256, uint256)
+#[allow(dead_code)]
 pub fn encode_g1_point(x: &[u8; 32], y: &[u8; 32]) -> Vec<u8> {
     let mut encoded = Vec::with_capacity(64);
     encoded.extend_from_slice(x);
@@ -75,11 +78,13 @@ pub fn encode_g1_point(x: &[u8; 32], y: &[u8; 32]) -> Vec<u8> {
 }
 
 /// Encode a BN254 Fr scalar as uint256
+#[allow(dead_code)]
 pub fn encode_fr(scalar: &[u8; 32]) -> Vec<u8> {
     scalar.to_vec()
 }
 
 /// Encode an array of Fr scalars with length prefix
+#[allow(dead_code)]
 pub fn encode_fr_array(scalars: &[[u8; 32]]) -> Vec<u8> {
     let mut encoded = Vec::new();
     encoded.extend_from_slice(&pad_left_32(&(scalars.len() as u64).to_be_bytes()));
@@ -90,6 +95,7 @@ pub fn encode_fr_array(scalars: &[[u8; 32]]) -> Vec<u8> {
 }
 
 /// Encode an array of G1 points with length prefix
+#[allow(dead_code)]
 pub fn encode_g1_array(points: &[([u8; 32], [u8; 32])]) -> Vec<u8> {
     let mut encoded = Vec::new();
     encoded.extend_from_slice(&pad_left_32(&(points.len() as u64).to_be_bytes()));
@@ -101,6 +107,7 @@ pub fn encode_g1_array(points: &[([u8; 32], [u8; 32])]) -> Vec<u8> {
 }
 
 /// Left-pad a byte slice to 32 bytes
+#[allow(dead_code)]
 fn pad_left_32(data: &[u8]) -> [u8; 32] {
     let mut padded = [0u8; 32];
     let start = 32 - data.len().min(32);

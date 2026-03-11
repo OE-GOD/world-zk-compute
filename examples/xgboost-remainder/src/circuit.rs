@@ -337,10 +337,14 @@ pub struct CachedProver {
     /// Cached Pedersen committer (generator points, expensive to create).
     pub pedersen_committer: PedersenCommitter<Bn256Point>,
     /// Cached model parameters for input preparation.
+    #[allow(dead_code)]
     pub fi_padded: Vec<usize>,
+    #[allow(dead_code)]
     pub num_trees_padded: usize,
     pub max_depth: usize,
+    #[allow(dead_code)]
     pub num_features_padded: usize,
+    #[allow(dead_code)]
     pub decomp_k: usize,
 }
 
@@ -354,12 +358,7 @@ impl CachedProver {
     /// - Pre-computes prover/verifier configs
     pub fn new(model: XgboostModel) -> Self {
         // Compute model-dependent parameters
-        let max_depth = model
-            .trees
-            .iter()
-            .map(model::tree_depth)
-            .max()
-            .unwrap_or(0);
+        let max_depth = model.trees.iter().map(model::tree_depth).max().unwrap_or(0);
         let num_trees_padded = model.trees.len().next_power_of_two();
         let num_features_padded = model.num_features.next_power_of_two();
         let decomp_k = model::DEFAULT_DECOMP_K;
@@ -510,6 +509,7 @@ impl CachedProver {
 /// Leaf ordering is big-endian: leaf index = b_0 * 2^(d-1) + b_1 * 2^(d-2) + ... + b_{d-1}.
 /// The fold processes b_0 first (root decision), splitting each tree's leaves into
 /// first-half (left subtree) and second-half (right subtree).
+#[allow(dead_code)]
 pub fn build_tree_inference_circuit(num_trees_padded: usize, max_depth: usize) -> Circuit<Fr> {
     assert!(num_trees_padded.is_power_of_two());
     assert!(max_depth > 0);

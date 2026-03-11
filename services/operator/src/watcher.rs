@@ -18,6 +18,8 @@ pub enum TEEEvent {
         model_hash: B256,
         #[allow(dead_code)]
         input_hash: B256,
+        #[allow(dead_code)]
+        submitter: Address,
     },
     ResultChallenged {
         result_id: B256,
@@ -26,10 +28,15 @@ pub enum TEEEvent {
     ResultFinalized {
         result_id: B256,
     },
+    /// Emitted when finalize() is called after challenge window with no challenge.
+    /// The result expired without being challenged, indicating normal happy-path completion.
+    ResultExpired {
+        result_id: B256,
+    },
 }
 
 fn topic_result_submitted() -> B256 {
-    keccak256("ResultSubmitted(bytes32,bytes32,bytes32)")
+    keccak256("ResultSubmitted(bytes32,bytes32,bytes32,address)")
 }
 
 fn topic_result_challenged() -> B256 {
@@ -38,6 +45,10 @@ fn topic_result_challenged() -> B256 {
 
 fn topic_result_finalized() -> B256 {
     keccak256("ResultFinalized(bytes32)")
+}
+
+fn topic_result_expired() -> B256 {
+    keccak256("ResultExpired(bytes32)")
 }
 
 fn parse_log(log: &Log) -> Option<TEEEvent> {
@@ -61,22 +72,29 @@ fn parse_log(log: &Log) -> Option<TEEEvent> {
             challenger,
         })
     } else if topic0 == topic_result_submitted() {
+        // Updated layout: resultId (topic[1]), modelHash (topic[2]), submitter (topic[3])
+        // inputHash is non-indexed, in data
         let result_id = *topics.get(1)?;
-        // modelHash and inputHash are non-indexed, in data
+        let model_hash = *topics.get(2)?;
+        let submitter_topic = *topics.get(3)?;
+        let submitter = Address::from_slice(&submitter_topic.as_slice()[12..32]);
         let data = log.data().data.as_ref();
-        if data.len() < 64 {
+        if data.len() < 32 {
             return None;
         }
-        let model_hash = B256::from_slice(&data[0..32]);
-        let input_hash = B256::from_slice(&data[32..64]);
+        let input_hash = B256::from_slice(&data[0..32]);
         Some(TEEEvent::ResultSubmitted {
             result_id,
             model_hash,
             input_hash,
+            submitter,
         })
     } else if topic0 == topic_result_finalized() {
         let result_id = *topics.get(1)?;
         Some(TEEEvent::ResultFinalized { result_id })
+    } else if topic0 == topic_result_expired() {
+        let result_id = *topics.get(1)?;
+        Some(TEEEvent::ResultExpired { result_id })
     } else {
         None
     }
@@ -171,13 +189,17 @@ mod tests {
 
     #[test]
     fn test_topic_hashes() {
-        // Verify topic hashes are deterministic
+        // Verify topic hashes are deterministic and unique
         let t1 = topic_result_submitted();
         let t2 = topic_result_challenged();
         let t3 = topic_result_finalized();
+        let t4 = topic_result_expired();
         assert_ne!(t1, t2);
         assert_ne!(t2, t3);
         assert_ne!(t1, t3);
+        assert_ne!(t1, t4);
+        assert_ne!(t2, t4);
+        assert_ne!(t3, t4);
     }
 
     #[test]

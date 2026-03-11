@@ -8,6 +8,8 @@ import {GKRHybridVerifier} from "./GKRHybridVerifier.sol";
 import {GKRDAGVerifier} from "./GKRDAGVerifier.sol";
 import {GKRDAGHybridVerifier} from "./GKRDAGHybridVerifier.sol";
 import {DAGBatchVerifier} from "./DAGBatchVerifier.sol";
+import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 
 /// @title RemainderVerifier
 /// @notice Top-level on-chain verifier for Remainder (GKR+Hyrax) proofs
@@ -23,7 +25,7 @@ import {DAGBatchVerifier} from "./DAGBatchVerifier.sol";
 ///      Each registered circuit has a fixed description hash that
 ///      identifies the model structure. The proof must reference
 ///      a registered circuit.
-contract RemainderVerifier {
+contract RemainderVerifier is Ownable2Step, Pausable {
     // ========================================================================
     // TYPES
     // ========================================================================
@@ -40,9 +42,6 @@ contract RemainderVerifier {
     // ========================================================================
     // STATE
     // ========================================================================
-
-    /// @notice Admin address
-    address public admin;
 
     /// @notice Groth16 verifier contract address (for hybrid verification)
     address public groth16Verifier;
@@ -86,36 +85,43 @@ contract RemainderVerifier {
 
     event CircuitRegistered(bytes32 indexed circuitHash, string name);
     event CircuitDeactivated(bytes32 indexed circuitHash);
+    event CircuitReactivated(bytes32 indexed circuitHash);
     event ProofVerified(bytes32 indexed circuitHash, bool valid);
-    event AdminTransferred(address indexed oldAdmin, address indexed newAdmin);
+    event Groth16VerifierUpdated(address indexed oldVerifier, address indexed newVerifier);
+    event CircuitGroth16VerifierUpdated(bytes32 indexed circuitHash, address indexed verifier, uint256 inputCount);
+    event DAGCircuitGroth16VerifierUpdated(bytes32 indexed circuitHash, address indexed verifier, uint256 inputCount);
+    event DAGStylusVerifierUpdated(bytes32 indexed circuitHash, address indexed stylusVerifier);
 
     // ========================================================================
     // ERRORS
     // ========================================================================
 
-    error NotAdmin();
     error CircuitNotRegistered();
     error CircuitNotActive();
     error InvalidProofSelector();
     error InvalidProofLength();
     error ProofVerificationFailed();
     error InvalidGenerators();
-
-    // ========================================================================
-    // MODIFIERS
-    // ========================================================================
-
-    modifier onlyAdmin() {
-        if (msg.sender != admin) revert NotAdmin();
-        _;
-    }
+    error ZeroAddress();
 
     // ========================================================================
     // CONSTRUCTOR
     // ========================================================================
 
-    constructor(address _admin) {
-        admin = _admin;
+    constructor(address _admin) Ownable(_admin) {}
+
+    // ========================================================================
+    // PAUSABLE
+    // ========================================================================
+
+    /// @notice Pause the contract (disables registration and verification)
+    function pause() external onlyOwner {
+        _pause();
+    }
+
+    /// @notice Unpause the contract
+    function unpause() external onlyOwner {
+        _unpause();
     }
 
     // ========================================================================
@@ -133,7 +139,7 @@ contract RemainderVerifier {
         bytes32 circuitHash,
         bytes calldata publicInputs,
         bytes calldata gensData
-    ) external returns (bool valid) {
+    ) external whenNotPaused returns (bool valid) {
         // Check circuit is registered and active
         CircuitConfig storage config = circuits[circuitHash];
         if (config.circuitHash == bytes32(0)) revert CircuitNotRegistered();
@@ -172,7 +178,7 @@ contract RemainderVerifier {
         bytes32 circuitHash,
         bytes calldata publicInputs,
         bytes calldata gensData
-    ) external view {
+    ) external view whenNotPaused {
         // Check circuit is registered and active
         CircuitConfig storage config = circuits[circuitHash];
         if (config.circuitHash == bytes32(0)) revert CircuitNotRegistered();
@@ -221,7 +227,7 @@ contract RemainderVerifier {
         bytes calldata gensData,
         uint256[8] calldata groth16Proof,
         uint256[] calldata groth16Outputs
-    ) external view {
+    ) external view whenNotPaused {
         // Validate circuit registration, proof format, generators, and structure
         _validateHybridInputs(circuitHash, innerProof, gensData);
 
@@ -915,7 +921,7 @@ contract RemainderVerifier {
         uint8[] calldata layerTypes,
         bool[] calldata isCommitted,
         string calldata name
-    ) external onlyAdmin {
+    ) external onlyOwner whenNotPaused {
         _registerCircuit(circuitHash, numLayers, layerSizes, layerTypes, isCommitted, name, bytes32(0));
     }
 
@@ -929,7 +935,7 @@ contract RemainderVerifier {
         bool[] calldata isCommitted,
         string calldata name,
         bytes32 gensHash
-    ) external onlyAdmin {
+    ) external onlyOwner whenNotPaused {
         _registerCircuit(circuitHash, numLayers, layerSizes, layerTypes, isCommitted, name, gensHash);
     }
 
@@ -960,37 +966,37 @@ contract RemainderVerifier {
     }
 
     /// @notice Deactivate a circuit
-    function deactivateCircuit(bytes32 circuitHash) external onlyAdmin {
+    function deactivateCircuit(bytes32 circuitHash) external onlyOwner whenNotPaused {
         if (circuits[circuitHash].circuitHash == bytes32(0)) revert CircuitNotRegistered();
         circuits[circuitHash].active = false;
         emit CircuitDeactivated(circuitHash);
     }
 
     /// @notice Reactivate a circuit
-    function reactivateCircuit(bytes32 circuitHash) external onlyAdmin {
+    function reactivateCircuit(bytes32 circuitHash) external onlyOwner whenNotPaused {
         if (circuits[circuitHash].circuitHash == bytes32(0)) revert CircuitNotRegistered();
         circuits[circuitHash].active = true;
-    }
-
-    /// @notice Transfer admin rights
-    function transferAdmin(address newAdmin) external onlyAdmin {
-        emit AdminTransferred(admin, newAdmin);
-        admin = newAdmin;
+        emit CircuitReactivated(circuitHash);
     }
 
     /// @notice Set the Groth16 verifier contract address (for hybrid verification)
-    function setGroth16Verifier(address _groth16Verifier) external onlyAdmin {
+    function setGroth16Verifier(address _groth16Verifier) external onlyOwner {
+        if (_groth16Verifier == address(0)) revert ZeroAddress();
+        address oldVerifier = groth16Verifier;
         groth16Verifier = _groth16Verifier;
+        emit Groth16VerifierUpdated(oldVerifier, _groth16Verifier);
     }
 
     /// @notice Set a per-circuit Groth16 verifier address and input count
     function setCircuitGroth16Verifier(bytes32 circuitHash, address verifier, uint256 groth16InputCount)
         external
-        onlyAdmin
+        onlyOwner
     {
         require(circuits[circuitHash].circuitHash != bytes32(0), "Circuit not registered");
+        if (verifier == address(0)) revert ZeroAddress();
         circuitGroth16Verifiers[circuitHash] = verifier;
         circuitGroth16Selectors[circuitHash] = _computeGroth16Selector(groth16InputCount);
+        emit CircuitGroth16VerifierUpdated(circuitHash, verifier, groth16InputCount);
     }
 
     // ========================================================================
@@ -1007,7 +1013,8 @@ contract RemainderVerifier {
     /// @param gensHash keccak256 of expected generators (0 = skip)
     function registerDAGCircuit(bytes32 circuitHash, bytes calldata descData, string calldata name, bytes32 gensHash)
         external
-        onlyAdmin
+        onlyOwner
+        whenNotPaused
     {
         require(dagCircuits[circuitHash].circuitHash == bytes32(0), "DAG circuit already registered");
 
@@ -1029,7 +1036,7 @@ contract RemainderVerifier {
         bytes32 circuitHash,
         bytes calldata publicInputs,
         bytes calldata gensData
-    ) external view returns (bool valid) {
+    ) external view whenNotPaused returns (bool valid) {
         DAGCircuitConfig storage config = dagCircuits[circuitHash];
         if (config.circuitHash == bytes32(0)) revert CircuitNotRegistered();
         if (!config.active) revert CircuitNotActive();
@@ -1081,7 +1088,7 @@ contract RemainderVerifier {
         bytes calldata gensData,
         uint256[8] calldata groth16Proof,
         uint256[] calldata groth16Outputs
-    ) external view {
+    ) external view whenNotPaused {
         _validateDAGHybridInputs(circuitHash, innerProof, gensData);
 
         DAGCircuitConfig storage config = dagCircuits[circuitHash];
@@ -1253,11 +1260,13 @@ contract RemainderVerifier {
     /// @notice Set a per-DAG-circuit Groth16 verifier address and input count
     function setDAGCircuitGroth16Verifier(bytes32 circuitHash, address verifier, uint256 groth16InputCount)
         external
-        onlyAdmin
+        onlyOwner
     {
         require(dagCircuits[circuitHash].circuitHash != bytes32(0), "DAG circuit not registered");
+        if (verifier == address(0)) revert ZeroAddress();
         dagCircuitGroth16Verifiers[circuitHash] = verifier;
         dagCircuitGroth16Selectors[circuitHash] = _computeGroth16Selector(groth16InputCount);
+        emit DAGCircuitGroth16VerifierUpdated(circuitHash, verifier, groth16InputCount);
     }
 
     // ========================================================================
@@ -1265,9 +1274,11 @@ contract RemainderVerifier {
     // ========================================================================
 
     /// @notice Set a per-DAG-circuit Stylus verifier address
-    function setDAGStylusVerifier(bytes32 circuitHash, address stylusVerifier) external onlyAdmin {
+    function setDAGStylusVerifier(bytes32 circuitHash, address stylusVerifier) external onlyOwner {
         require(dagCircuits[circuitHash].circuitHash != bytes32(0), "DAG circuit not registered");
+        if (stylusVerifier == address(0)) revert ZeroAddress();
         dagCircuitStylusVerifiers[circuitHash] = stylusVerifier;
+        emit DAGStylusVerifierUpdated(circuitHash, stylusVerifier);
     }
 
     /// @notice Verify a DAG proof via Stylus verifier (delegated verification)
@@ -1281,7 +1292,7 @@ contract RemainderVerifier {
         bytes32 circuitHash,
         bytes calldata publicInputs,
         bytes calldata gensData
-    ) external view returns (bool valid) {
+    ) external view whenNotPaused returns (bool valid) {
         DAGCircuitConfig storage config = dagCircuits[circuitHash];
         if (config.circuitHash == bytes32(0)) revert CircuitNotRegistered();
         if (!config.active) revert CircuitNotActive();
@@ -1603,7 +1614,7 @@ contract RemainderVerifier {
         bytes32 circuitHash,
         bytes calldata publicInputs,
         bytes calldata gensData
-    ) external returns (bytes32 sessionId) {
+    ) external whenNotPaused returns (bytes32 sessionId) {
         // Validate circuit
         DAGCircuitConfig storage config = dagCircuits[circuitHash];
         if (config.circuitHash == bytes32(0)) revert CircuitNotRegistered();
@@ -1684,7 +1695,7 @@ contract RemainderVerifier {
         bytes calldata proof,
         bytes calldata publicInputs,
         bytes calldata gensData
-    ) external {
+    ) external whenNotPaused {
         DAGBatchVerifier.DAGBatchSession memory session = DAGBatchVerifier.loadSession(sessionId);
         require(session.circuitHash != bytes32(0), "Batch: session not found");
         require(session.verifier == msg.sender, "Batch: unauthorized");
@@ -1824,7 +1835,7 @@ contract RemainderVerifier {
         bytes calldata proof,
         bytes calldata publicInputs,
         bytes calldata gensData
-    ) external returns (bool finalized) {
+    ) external whenNotPaused returns (bool finalized) {
         DAGBatchVerifier.DAGBatchSession memory session = DAGBatchVerifier.loadSession(sessionId);
         require(session.circuitHash != bytes32(0), "Batch: session not found");
         require(session.verifier == msg.sender, "Batch: unauthorized");

@@ -10,7 +10,6 @@
 //! Usage: cargo run --release --bin gen_transcript_trace
 
 use anyhow::Result;
-use ff::Field as FfField;
 use ff::PrimeField;
 use frontend::layouter::builder::{Circuit, CircuitBuilder, LayerVisibility};
 use hyrax::gkr::verify_hyrax_proof;
@@ -74,7 +73,7 @@ fn sha256_hash_chain(elems: &[Fq]) -> (Fq, Fq) {
     // Iterate SHA-256 1000 times
     for _ in 0..1000 {
         let mut hasher = Sha256::new();
-        hasher.update(&hash_result);
+        hasher.update(hash_result);
         hash_result = hasher.finalize();
     }
 
@@ -320,7 +319,7 @@ fn main() -> Result<()> {
         eprintln!("  y: {}", fq_to_hex(&cy));
 
         // Also check what serde_json produces (compressed hex)
-        let json_val = serde_json::to_value(&olp.claim_commitment).unwrap();
+        let json_val = serde_json::to_value(olp.claim_commitment).unwrap();
         let hex_str = json_val.as_str().unwrap();
         eprintln!("  compressed hex: {}", hex_str);
         eprintln!(
@@ -331,8 +330,8 @@ fn main() -> Result<()> {
         // Decompress and compare
         let compressed_bytes = hex::decode(hex_str).unwrap();
         let (x_be, y_be) = abi_encode::decompress_point(&compressed_bytes).unwrap();
-        let decompressed_x_hex = format!("0x{}", hex::encode(&x_be));
-        let decompressed_y_hex = format!("0x{}", hex::encode(&y_be));
+        let decompressed_x_hex = format!("0x{}", hex::encode(x_be));
+        let decompressed_y_hex = format!("0x{}", hex::encode(y_be));
         eprintln!("  decompressed x: {}", decompressed_x_hex);
         eprintln!("  decompressed y: {}", decompressed_y_hex);
         let direct_x_hex = fq_to_hex(&cx);
@@ -646,12 +645,12 @@ fn main() -> Result<()> {
         let new_claims: Vec<HyraxClaim<Fr, Bn256Point>> = psl
             .0
             .iter()
-            .flat_map(|p| hyrax::gkr::layer::get_claims_from_product(p))
+            .flat_map(hyrax::gkr::layer::get_claims_from_product)
             .collect();
         for claim in new_claims {
             claim_tracker
                 .entry(claim.to_layer_id)
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(claim);
         }
     }
@@ -668,7 +667,7 @@ fn main() -> Result<()> {
         "proof_size_bytes": abi_bytes.len(),
         "gens_hex": format!("0x{}", hex::encode(&gens_bytes)),
         "gens_size_bytes": gens_bytes.len(),
-        "circuit_hash_raw": format!("0x{}", hex::encode(&circuit_hash_raw)),
+        "circuit_hash_raw": format!("0x{}", hex::encode(circuit_hash_raw)),
         "transcript_trace": {
             "circuit_hash_fq_1": fq_to_hex(&circuit_hash_1),
             "circuit_hash_fq_2": fq_to_hex(&circuit_hash_2),

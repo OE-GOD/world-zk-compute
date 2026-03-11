@@ -558,7 +558,7 @@ pub fn validate_freshness(
 ) -> Result<(), AttestationError> {
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .map_err(|_| AttestationError::Expired)?
         .as_millis() as u64;
 
     let age_secs = (now_ms.saturating_sub(attestation.timestamp)) / 1000;

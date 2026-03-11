@@ -11,7 +11,6 @@
 
 import {
   createPublicClient,
-  createWalletClient,
   http,
   keccak256,
   encodePacked,

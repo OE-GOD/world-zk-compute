@@ -1,0 +1,517 @@
+openapi: 3.0.3
+info:
+  title: World ZK Compute - Warm Prover API
+  description: |
+    HTTP API for the XGBoost-Remainder warm prover server.
+
+    The warm prover pre-builds the GKR circuit and Pedersen generators on
+    startup, then serves proof requests over HTTP. This avoids the expensive
+    circuit construction on every request.
+
+    ## Starting the server
+
+    ```bash
+    xgboost-remainder --model model.json --serve [OPTIONS]
+    ```
+
+    ### CLI flags
+
+    | Flag | Default | Description |
+    |------|---------|-------------|
+    | `--host` | `127.0.0.1` | Bind address |
+    | `--port` | `3000` | Bind port |
+    | `--api-key <key>` | *(none)* | Enable Bearer token auth on POST routes |
+    | `--rate-limit <n>` | `60` | Max requests/min per IP (0 = unlimited) |
+    | `--rate-limit-burst <n>` | `10` | Extra burst tokens above the per-minute rate |
+    | `--request-timeout <secs>` | `120` | Per-request timeout in seconds (0 = no timeout) |
+    | `--enable-cors` | `false` | Enable CORS headers on all responses |
+    | `--cors-origins <list>` | *(all)* | Restrict CORS to specific origins |
+    | `--model-format` | `xgboost` | Model format: `xgboost` or `lightgbm` |
+
+    ## Authentication
+
+    When started with `--api-key <key>`, all POST routes (`/prove`,
+    `/prove/batch`) require the header `Authorization: Bearer <key>`.
+    GET `/health` is always unauthenticated (suitable for load-balancer
+    health checks).
+
+    When `--api-key` is not set, no authentication is required on any
+    endpoint.
+
+    ## Rate limiting
+
+    Per-IP token-bucket rate limiting is applied to POST routes when
+    `--rate-limit` is greater than 0. Each IP starts with
+    `rate_limit + rate_limit_burst` tokens. Tokens refill at
+    `rate_limit / 60` tokens per second. Each POST request consumes
+    one token. When tokens are exhausted, requests receive a 429 response.
+
+    ## Request timeout
+
+    Proof generation is subject to a per-request timeout controlled by
+    `--request-timeout` (default: 120 seconds). Requests that exceed the
+    timeout receive a 504 response.
+
+    ## CORS
+
+    Cross-origin support is enabled with `--enable-cors`. When enabled,
+    the server allows GET, POST, and OPTIONS methods with Content-Type
+    and Authorization headers. Origins can be restricted with
+    `--cors-origins origin1,origin2`; when omitted, all origins are allowed.
+  version: 1.0.0
+  contact:
+    name: World ZK Compute
+  license:
+    name: MIT
+
+servers:
+  - url: http://127.0.0.1:3000
+    description: Local development server (default --host/--port)
+
+# Security is optional: when --api-key is not set, all endpoints are open.
+# When --api-key is set, POST routes require Bearer auth.
+security: []
+
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      summary: Server health and model info
+      description: |
+        Returns the current server status along with metadata about the
+        loaded XGBoost/LightGBM model and precomputed circuit.
+
+        This endpoint is always unauthenticated and exempt from rate
+        limiting, making it suitable for load-balancer health checks
+        and monitoring.
+      tags:
+        - Health
+      responses:
+        "200":
+          description: Server is healthy and ready to accept proof requests.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              example:
+                status: "ok"
+                num_trees: 5
+                num_features: 4
+                max_depth: 3
+                circuit_hash: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+
+  /prove:
+    post:
+      operationId: prove
+      summary: Generate a single ZK proof
+      description: |
+        Runs XGBoost inference on the provided feature vector, then generates
+        a GKR+Hyrax zero-knowledge proof of correct inference.
+
+        The circuit and Pedersen generators are cached from server startup,
+        so only the witness computation and proving step run per-request.
+
+        The feature vector length must exactly match the model's
+        `num_features` (check via GET /health).
+      tags:
+        - Proving
+      security:
+        - bearerAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProveRequest"
+            example:
+              features: [5.1, 3.5, 1.4, 0.2]
+      responses:
+        "200":
+          description: Proof generated successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProveResponse"
+              example:
+                predicted_class: 0
+                proof_hex: "00000000000000200000001f4a9b..."
+                circuit_hash: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+                public_inputs_hex: "0000000000000000000000000000000000000000000000000000000000000000"
+                proof_size_bytes: 47520
+                prove_time_ms: 1230
+        "400":
+          description: |
+            Invalid request. The feature vector length does not match the
+            model's expected `num_features`, or the JSON body is malformed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "Expected 4 features, got 3"
+        "401":
+          description: |
+            Missing or invalid API key. Only returned when the server was
+            started with `--api-key`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                missing:
+                  summary: No Authorization header provided
+                  value:
+                    error: "Missing Authorization: Bearer <key> header"
+                invalid:
+                  summary: Wrong API key
+                  value:
+                    error: "Invalid API key"
+        "429":
+          description: |
+            Rate limit exceeded for this IP address. The client should wait
+            before retrying. Tokens refill continuously at the configured
+            rate.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "Rate limit exceeded. Try again later."
+        "500":
+          description: |
+            Internal error during proof generation (e.g., witness
+            computation failure).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "Proof generation failed: witness computation error"
+        "504":
+          description: |
+            Proof generation exceeded the per-request timeout configured
+            via `--request-timeout` (default: 120 seconds).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "Request timed out"
+
+  /prove/batch:
+    post:
+      operationId: proveBatch
+      summary: Generate proofs for multiple feature vectors
+      description: |
+        Accepts a batch of prove requests and processes them sequentially.
+        Proving is CPU-bound, so parallelism within a batch does not help.
+        Returns all results in the same order as the input requests.
+
+        The batch fails fast on any invalid request (e.g., wrong feature
+        count). If proof generation fails for any item, the entire batch
+        returns an error.
+
+        Maximum batch size is **10** (`MAX_BATCH_SIZE`).
+      tags:
+        - Proving
+      security:
+        - bearerAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BatchProveRequest"
+            example:
+              requests:
+                - features: [5.1, 3.5, 1.4, 0.2]
+                - features: [6.7, 3.0, 5.2, 2.3]
+                - features: [5.8, 2.7, 4.1, 1.0]
+      responses:
+        "200":
+          description: All proofs in the batch generated successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BatchProveResponse"
+              example:
+                results:
+                  - predicted_class: 0
+                    proof_hex: "00000000000000200000001f..."
+                    circuit_hash: "a1b2c3d4e5f6..."
+                    public_inputs_hex: "00000000..."
+                    proof_size_bytes: 47520
+                    prove_time_ms: 1230
+                  - predicted_class: 2
+                    proof_hex: "00000000000000200000001f..."
+                    circuit_hash: "a1b2c3d4e5f6..."
+                    public_inputs_hex: "00000000..."
+                    proof_size_bytes: 47520
+                    prove_time_ms: 1180
+                  - predicted_class: 1
+                    proof_hex: "00000000000000200000001f..."
+                    circuit_hash: "a1b2c3d4e5f6..."
+                    public_inputs_hex: "00000000..."
+                    proof_size_bytes: 47520
+                    prove_time_ms: 1205
+                total_time_ms: 3680
+        "400":
+          description: |
+            Invalid request. Possible causes:
+            - Empty batch (no requests)
+            - Batch size exceeds maximum of 10
+            - Wrong feature count in any item
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                empty_batch:
+                  summary: Empty batch
+                  value:
+                    error: "Empty batch"
+                oversized_batch:
+                  summary: Batch exceeds maximum size
+                  value:
+                    error: "Batch size 15 exceeds maximum 10"
+                wrong_features:
+                  summary: Wrong feature count in a batch item
+                  value:
+                    error: "Expected 4 features, got 2"
+        "401":
+          description: |
+            Missing or invalid API key. Only returned when the server was
+            started with `--api-key`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                missing:
+                  summary: No Authorization header provided
+                  value:
+                    error: "Missing Authorization: Bearer <key> header"
+                invalid:
+                  summary: Wrong API key
+                  value:
+                    error: "Invalid API key"
+        "429":
+          description: |
+            Rate limit exceeded for this IP address. The rate limit token
+            is consumed per batch request, not per item in the batch.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "Rate limit exceeded. Try again later."
+        "500":
+          description: |
+            Internal error during proof generation for one of the items
+            in the batch.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "Proof failed: witness computation error"
+        "504":
+          description: |
+            Proof generation exceeded the per-request timeout configured
+            via `--request-timeout` (default: 120 seconds). The timeout
+            applies to the entire batch, not individual items.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "Request timed out"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        API key authentication. Enable on the server with `--api-key <key>`.
+        When enabled, POST routes require `Authorization: Bearer <key>`.
+        GET /health is always unauthenticated regardless of this setting.
+
+        When the server is started without `--api-key`, this security
+        scheme is not enforced and all endpoints are open.
+
+  schemas:
+    HealthResponse:
+      type: object
+      description: Server health status and loaded model metadata.
+      required:
+        - status
+        - num_trees
+        - num_features
+        - max_depth
+        - circuit_hash
+      properties:
+        status:
+          type: string
+          description: |
+            Server status. Always `"ok"` when the server is running and
+            the circuit has been built successfully.
+          example: "ok"
+        num_trees:
+          type: integer
+          description: Number of trees in the loaded XGBoost or LightGBM model.
+          example: 5
+        num_features:
+          type: integer
+          description: |
+            Number of input features the model expects per sample. All
+            proof requests must provide exactly this many features.
+          example: 4
+        max_depth:
+          type: integer
+          description: Maximum depth across all trees in the model.
+          example: 3
+        circuit_hash:
+          type: string
+          description: |
+            Hex-encoded 32-byte hash of the GKR circuit description.
+            This uniquely identifies the circuit topology and is used
+            for on-chain circuit registration. The same hash is returned
+            in each ProveResponse.
+          example: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+
+    ProveRequest:
+      type: object
+      description: |
+        Single proof request. The feature vector must have exactly the
+        number of features the loaded model expects (see GET /health
+        for `num_features`).
+      required:
+        - features
+      properties:
+        features:
+          type: array
+          description: |
+            Input feature vector (floating-point values). The length must
+            match the model's `num_features` exactly. Values are the raw
+            feature values used for XGBoost tree traversal.
+          items:
+            type: number
+            format: double
+          example: [5.1, 3.5, 1.4, 0.2]
+
+    ProveResponse:
+      type: object
+      description: |
+        Result of a successful proof generation. Contains the predicted
+        class, the hex-encoded proof bytes (ABI-encoded for on-chain
+        verification), the circuit hash, public inputs, and timing
+        information.
+      required:
+        - predicted_class
+        - proof_hex
+        - circuit_hash
+        - public_inputs_hex
+        - proof_size_bytes
+        - prove_time_ms
+      properties:
+        predicted_class:
+          type: integer
+          format: uint32
+          description: |
+            The class predicted by XGBoost inference on the provided
+            features. For binary classification this is 0 or 1. For
+            multi-class this is the argmax class index.
+          example: 0
+        proof_hex:
+          type: string
+          description: |
+            Hex-encoded ABI-encoded proof bytes. This is the complete
+            proof suitable for submission to the on-chain GKR DAG
+            verifier or batch verifier contract.
+          example: "00000000000000200000001f4a9b..."
+        circuit_hash:
+          type: string
+          description: |
+            Hex-encoded 32-byte circuit hash. Matches the `circuit_hash`
+            from GET /health. Used to identify which on-chain circuit
+            registration this proof corresponds to.
+          example: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+        public_inputs_hex:
+          type: string
+          description: |
+            Hex-encoded public inputs for the proof. These are the values
+            the on-chain verifier checks against (e.g., the predicted class
+            encoded as a field element).
+          example: "0000000000000000000000000000000000000000000000000000000000000000"
+        proof_size_bytes:
+          type: integer
+          description: Size of the raw proof in bytes (before hex encoding).
+          example: 47520
+        prove_time_ms:
+          type: integer
+          format: uint64
+          description: |
+            Time spent generating the proof in milliseconds. Measures the
+            witness computation + GKR proving + Hyrax commitment, but not
+            the model inference or ABI encoding overhead.
+          example: 1230
+
+    BatchProveRequest:
+      type: object
+      description: |
+        Batch proof request containing multiple feature vectors. Each item
+        is processed sequentially. The batch must contain between 1 and 10
+        requests (inclusive).
+      required:
+        - requests
+      properties:
+        requests:
+          type: array
+          description: |
+            List of individual prove requests. Must contain at least 1
+            and at most 10 items.
+          minItems: 1
+          maxItems: 10
+          items:
+            $ref: "#/components/schemas/ProveRequest"
+
+    BatchProveResponse:
+      type: object
+      description: |
+        Batch proof response. Contains a result for each input request
+        in the same order, plus the total wall-clock time for the batch.
+      required:
+        - results
+        - total_time_ms
+      properties:
+        results:
+          type: array
+          description: |
+            Proof results for each request, in the same order as the
+            input `requests` array.
+          items:
+            $ref: "#/components/schemas/ProveResponse"
+        total_time_ms:
+          type: integer
+          format: uint64
+          description: |
+            Total wall-clock time for the entire batch in milliseconds.
+            This includes all individual prove times plus any overhead
+            between items.
+          example: 3680
+
+    ErrorResponse:
+      type: object
+      description: |
+        Error response returned for all non-2xx status codes. The `error`
+        field contains a human-readable message describing the problem.
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          description: Human-readable error message.
+          example: "Expected 4 features, got 3"

@@ -20,6 +20,7 @@ import type {
   BatchSession,
   StepResult,
   BatchVerifyOptions,
+  ProgressEvent,
 } from './batch-verifier-types';
 
 const LAYERS_PER_BATCH = 8;
@@ -28,6 +29,56 @@ const DEFAULT_GAS_LIMIT = 30_000_000n;
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_RETRY_DELAY_MS = 2000;
 
+/**
+ * Tracks timing for completed steps to estimate time remaining.
+ * Exported for testing.
+ */
+export class ProgressTracker {
+  private stepTimestamps: number[] = [];
+  private startTime: number;
+
+  constructor(startTime?: number) {
+    this.startTime = startTime ?? Date.now();
+  }
+
+  /** Record that a step completed at the given timestamp (or now). */
+  recordStep(timestamp?: number): void {
+    this.stepTimestamps.push(timestamp ?? Date.now());
+  }
+
+  /** Number of completed steps. */
+  get completedSteps(): number {
+    return this.stepTimestamps.length;
+  }
+
+  /** Average milliseconds per step, or undefined if no steps completed. */
+  get averageStepMs(): number | undefined {
+    if (this.stepTimestamps.length === 0) return undefined;
+    const elapsed = this.stepTimestamps[this.stepTimestamps.length - 1] - this.startTime;
+    return elapsed / this.stepTimestamps.length;
+  }
+
+  /** Elapsed milliseconds since start. */
+  get elapsedMs(): number {
+    return Date.now() - this.startTime;
+  }
+
+  /**
+   * Estimate time remaining in milliseconds.
+   * Returns undefined if no steps completed yet or totalSteps is unknown.
+   */
+  estimateRemainingMs(remainingSteps: number): number | undefined {
+    const avg = this.averageStepMs;
+    if (avg === undefined || remainingSteps < 0) return undefined;
+    return Math.round(avg * remainingSteps);
+  }
+
+  /** Reset for testing purposes. */
+  getStartTime(): number {
+    return this.startTime;
+  }
+}
+
 export class BatchVerifier {
   private publicClient: PublicClient<Transport, Chain>;
   private walletClient: WalletClient<Transport, Chain>;
@@ -35,6 +86,7 @@ export class BatchVerifier {
   private gasLimit: bigint;
   private maxRetries: number;
   private retryDelayMs: number;
+  private abortController: AbortController | null = null;
 
   constructor(config: BatchVerifierConfig) {
     const chain = defineChain({
@@ -52,6 +104,17 @@ export class BatchVerifier {
     this.gasLimit = config.gasLimit ?? DEFAULT_GAS_LIMIT;
     this.maxRetries = config.maxRetries ?? DEFAULT_MAX_RETRIES;
     this.retryDelayMs = config.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS;
+  }
+
+  /**
+   * Cancel an in-progress batch verification.
+   * No further transactions will be submitted after the current one completes.
+   * The partial result (with cancelled: true) will be returned from verifyBatch/resumeBatch.
+   */
+  cancel(): void {
+    if (this.abortController) {
+      this.abortController.abort();
+    }
   }
 
   async isCircuitActive(circuitHash: Hex): Promise<boolean> {
@@ -85,8 +148,24 @@ export class BatchVerifier {
     input: BatchVerifyInput,
     options?: BatchVerifyOptions,
   ): Promise<BatchVerifyResult> {
+    // Create a new AbortController for this verification run.
+    // Merge with any external signal from options.
+    this.abortController = new AbortController();
+    const internalSignal = this.abortController.signal;
+
+    // If an external signal is provided, forward its abort to our internal controller.
+    if (options?.signal) {
+      if (options.signal.aborted) {
+        this.abortController.abort();
+      } else {
+        options.signal.addEventListener('abort', () => this.abortController?.abort(), { once: true });
+      }
+    }
+
     const startTime = Date.now();
     const onProgress = options?.onProgress;
+    const tracker = new ProgressTracker(startTime);
+    let cancelled = false;
 
     const active = await this.isCircuitActive(input.circuitHash);
     if (!active) {
@@ -95,21 +174,57 @@ export class BatchVerifier {
       );
     }
 
-    // Start
-    onProgress?.({
-      phase: 'start',
-      stepIndex: 0,
-      totalSteps: 1,
-    });
+    // Emit pre-start progress
+    let overallStep = 0;
+    // We don't know the total yet; we'll update after start tx.
+    const emitProgress = (
+      phase: ProgressEvent['phase'],
+      stepIndex: number,
+      totalSteps: number,
+      overallTotalSteps: number,
+      txHash?: Hex,
+      gasUsed?: bigint,
+    ) => {
+      if (!onProgress) return;
 
+      const remainingSteps = overallTotalSteps > 0
+        ? overallTotalSteps - overallStep
+        : -1;
+
+      onProgress({
+        phase,
+        stepIndex,
+        totalSteps,
+        txHash,
+        gasUsed,
+        overallStep,
+        overallTotalSteps,
+        estimatedTimeRemainingMs: remainingSteps >= 0
+          ? tracker.estimateRemainingMs(remainingSteps)
+          : undefined,
+        elapsedMs: Date.now() - startTime,
+      });
+    };
+
+    // --- Start ---
+    emitProgress('start', 0, 1, -1);
+
+    this.checkAborted(internalSignal);
     const startReceipt = await this.sendTransaction(
       'startDAGBatchVerify',
       [input.proof, input.circuitHash, input.publicInputs, input.gensData],
     );
+    tracker.recordStep();
 
     const sessionId = this.extractSessionIdFromLogs(startReceipt);
     const session = await this.getSession(sessionId);
     const totalBatches = Number(session.totalBatches);
+
+    // Estimate finalize steps (unknown exactly, use groups heuristic if available).
+    // We don't know numEvalGroups from on-chain, so estimate finalize = 3 (typical XGBoost).
+    // This will self-correct once finalize steps happen.
+    const estimatedFinalize = 3;
+    const overallTotalWithCleanup = 1 + totalBatches + estimatedFinalize + (options?.skipCleanup ? 0 : 1);
 
     const startStep: StepResult = {
       txHash: startReceipt.transactionHash,
@@ -117,27 +232,24 @@ export class BatchVerifier {
       blockNumber: startReceipt.blockNumber,
     };
 
-    onProgress?.({
-      phase: 'start',
-      stepIndex: 0,
-      totalSteps: 1,
-      txHash: startStep.txHash,
-      gasUsed: startStep.gasUsed,
-    });
+    overallStep = 1;
+    emitProgress('start', 0, 1, overallTotalWithCleanup, startStep.txHash, startStep.gasUsed);
 
-    // Continue
+    // --- Continue ---
     const continueSteps: StepResult[] = [];
     for (let i = 0; i < totalBatches; i++) {
-      onProgress?.({
-        phase: 'continue',
-        stepIndex: i,
-        totalSteps: totalBatches,
-      });
+      if (internalSignal.aborted) {
+        cancelled = true;
+        break;
+      }
+
+      emitProgress('continue', i, totalBatches, overallTotalWithCleanup);
 
       const receipt = await this.sendTransaction(
         'continueDAGBatchVerify',
         [sessionId, input.proof, input.publicInputs, input.gensData],
       );
+      tracker.recordStep();
 
       const step: StepResult = {
         txHash: receipt.transactionHash,
@@ -146,62 +258,63 @@ export class BatchVerifier {
       };
       continueSteps.push(step);
 
-      onProgress?.({
-        phase: 'continue',
-        stepIndex: i,
-        totalSteps: totalBatches,
-        txHash: step.txHash,
-        gasUsed: step.gasUsed,
-      });
+      overallStep = 1 + i + 1;
+      emitProgress('continue', i, totalBatches, overallTotalWithCleanup, step.txHash, step.gasUsed);
     }
 
-    // Finalize
+    // --- Finalize ---
     const finalizeSteps: StepResult[] = [];
-    let finalized = false;
-    let finalizeIdx = 0;
-    while (!finalized) {
-      onProgress?.({
-        phase: 'finalize',
-        stepIndex: finalizeIdx,
-        totalSteps: -1, // unknown until done
-      });
+    if (!cancelled) {
+      let finalized = false;
+      let finalizeIdx = 0;
+      while (!finalized) {
+        if (internalSignal.aborted) {
+          cancelled = true;
+          break;
+        }
 
-      const receipt = await this.sendTransaction(
-        'finalizeDAGBatchVerify',
-        [sessionId, input.proof, input.publicInputs, input.gensData],
-      );
+        emitProgress('finalize', finalizeIdx, -1, overallTotalWithCleanup);
 
-      const step: StepResult = {
-        txHash: receipt.transactionHash,
-        gasUsed: receipt.gasUsed,
-        blockNumber: receipt.blockNumber,
-      };
-      finalizeSteps.push(step);
+        const receipt = await this.sendTransaction(
+          'finalizeDAGBatchVerify',
+          [sessionId, input.proof, input.publicInputs, input.gensData],
+        );
+        tracker.recordStep();
 
-      // Check on-chain state to know if finalized
-      const sessionState = await this.getSession(sessionId);
-      finalized = sessionState.finalized;
+        const step: StepResult = {
+          txHash: receipt.transactionHash,
+          gasUsed: receipt.gasUsed,
+          blockNumber: receipt.blockNumber,
+        };
+        finalizeSteps.push(step);
 
-      onProgress?.({
-        phase: 'finalize',
-        stepIndex: finalizeIdx,
-        totalSteps: finalized ? finalizeIdx + 1 : -1,
-        txHash: step.txHash,
-        gasUsed: step.gasUsed,
-      });
+        const sessionState = await this.getSession(sessionId);
+        finalized = sessionState.finalized;
 
-      finalizeIdx++;
+        overallStep = 1 + totalBatches + finalizeIdx + 1;
+        emitProgress(
+          'finalize',
+          finalizeIdx,
+          finalized ? finalizeIdx + 1 : -1,
+          overallTotalWithCleanup,
+          step.txHash,
+          step.gasUsed,
+        );
+
+        finalizeIdx++;
+      }
     }
 
-    // Cleanup
+    // --- Cleanup ---
     let cleanupStep: StepResult | undefined;
-    if (!options?.skipCleanup) {
-      onProgress?.({ phase: 'cleanup', stepIndex: 0, totalSteps: 1 });
+    if (!cancelled && !options?.skipCleanup) {
+      emitProgress('cleanup', 0, 1, overallTotalWithCleanup);
 
       const receipt = await this.sendTransaction(
         'cleanupDAGBatchSession',
         [sessionId],
       );
+      tracker.recordStep();
 
       cleanupStep = {
         txHash: receipt.transactionHash,
@@ -209,13 +322,8 @@ export class BatchVerifier {
         blockNumber: receipt.blockNumber,
       };
 
-      onProgress?.({
-        phase: 'cleanup',
-        stepIndex: 0,
-        totalSteps: 1,
-        txHash: cleanupStep.txHash,
-        gasUsed: cleanupStep.gasUsed,
-      });
+      overallStep++;
+      emitProgress('cleanup', 0, 1, overallTotalWithCleanup, cleanupStep.txHash, cleanupStep.gasUsed);
     }
 
     const totalGasUsed =
@@ -223,6 +331,8 @@ export class BatchVerifier {
       continueSteps.reduce((sum, s) => sum + s.gasUsed, 0n) +
       finalizeSteps.reduce((sum, s) => sum + s.gasUsed, 0n) +
       (cleanupStep?.gasUsed ?? 0n);
+
+    this.abortController = null;
 
     return {
       sessionId,
@@ -232,6 +342,7 @@ export class BatchVerifier {
       cleanupStep,
       totalGasUsed,
       durationMs: Date.now() - startTime,
+      cancelled,
     };
   }
 
@@ -240,8 +351,22 @@ export class BatchVerifier {
     input: BatchVerifyInput,
     options?: BatchVerifyOptions,
   ): Promise<BatchVerifyResult> {
+    this.abortController = new AbortController();
+    const internalSignal = this.abortController.signal;
+
+    if (options?.signal) {
+      if (options.signal.aborted) {
+        this.abortController.abort();
+      } else {
+        options.signal.addEventListener('abort', () => this.abortController?.abort(), { once: true });
+      }
+    }
+
     const startTime = Date.now();
     const onProgress = options?.onProgress;
+    const tracker = new ProgressTracker(startTime);
+    let cancelled = false;
+
     const session = await this.getSession(sessionId);
 
     if (session.circuitHash === '0x' + '0'.repeat(64)) {
@@ -258,19 +383,54 @@ export class BatchVerifier {
       blockNumber: 0n,
     };
 
+    const remainingContinue = totalBatches - startBatchIdx;
+    const estimatedFinalize = 3;
+    const overallTotalSteps = remainingContinue + estimatedFinalize + (options?.skipCleanup ? 0 : 1);
+    let overallStep = 0;
+
+    const emitProgress = (
+      phase: ProgressEvent['phase'],
+      stepIndex: number,
+      totalSteps: number,
+      txHash?: Hex,
+      gasUsed?: bigint,
+    ) => {
+      if (!onProgress) return;
+
+      const remainingSteps = overallTotalSteps > 0
+        ? overallTotalSteps - overallStep
+        : -1;
+
+      onProgress({
+        phase,
+        stepIndex,
+        totalSteps,
+        txHash,
+        gasUsed,
+        overallStep,
+        overallTotalSteps,
+        estimatedTimeRemainingMs: remainingSteps >= 0
+          ? tracker.estimateRemainingMs(remainingSteps)
+          : undefined,
+        elapsedMs: Date.now() - startTime,
+      });
+    };
+
     // Continue remaining batches
     const continueSteps: StepResult[] = [];
     for (let i = startBatchIdx; i < totalBatches; i++) {
-      onProgress?.({
-        phase: 'continue',
-        stepIndex: i,
-        totalSteps: totalBatches,
-      });
+      if (internalSignal.aborted) {
+        cancelled = true;
+        break;
+      }
+
+      emitProgress('continue', i, totalBatches);
 
       const receipt = await this.sendTransaction(
         'continueDAGBatchVerify',
         [sessionId, input.proof, input.publicInputs, input.gensData],
       );
+      tracker.recordStep();
 
       const step: StepResult = {
         txHash: receipt.transactionHash,
@@ -279,31 +439,28 @@ export class BatchVerifier {
       };
       continueSteps.push(step);
 
-      onProgress?.({
-        phase: 'continue',
-        stepIndex: i,
-        totalSteps: totalBatches,
-        txHash: step.txHash,
-        gasUsed: step.gasUsed,
-      });
+      overallStep++;
+      emitProgress('continue', i, totalBatches, step.txHash, step.gasUsed);
     }
 
     // Finalize (if not already finalized)
     const finalizeSteps: StepResult[] = [];
-    if (!session.finalized) {
+    if (!cancelled && !session.finalized) {
       let finalized = false;
       let finalizeIdx = 0;
       while (!finalized) {
-        onProgress?.({
-          phase: 'finalize',
-          stepIndex: finalizeIdx,
-          totalSteps: -1,
-        });
+        if (internalSignal.aborted) {
+          cancelled = true;
+          break;
+        }
+
+        emitProgress('finalize', finalizeIdx, -1);
 
         const receipt = await this.sendTransaction(
           'finalizeDAGBatchVerify',
           [sessionId, input.proof, input.publicInputs, input.gensData],
         );
+        tracker.recordStep();
 
         const step: StepResult = {
           txHash: receipt.transactionHash,
@@ -315,13 +472,14 @@ export class BatchVerifier {
         const state = await this.getSession(sessionId);
         finalized = state.finalized;
 
-        onProgress?.({
-          phase: 'finalize',
-          stepIndex: finalizeIdx,
-          totalSteps: finalized ? finalizeIdx + 1 : -1,
-          txHash: step.txHash,
-          gasUsed: step.gasUsed,
-        });
+        overallStep++;
+        emitProgress(
+          'finalize',
+          finalizeIdx,
+          finalized ? finalizeIdx + 1 : -1,
+          step.txHash,
+          step.gasUsed,
+        );
 
         finalizeIdx++;
       }
@@ -329,13 +487,14 @@ export class BatchVerifier {
 
     // Cleanup
     let cleanupStep: StepResult | undefined;
-    if (!options?.skipCleanup) {
-      onProgress?.({ phase: 'cleanup', stepIndex: 0, totalSteps: 1 });
+    if (!cancelled && !options?.skipCleanup) {
+      emitProgress('cleanup', 0, 1);
 
       const receipt = await this.sendTransaction(
         'cleanupDAGBatchSession',
         [sessionId],
       );
+      tracker.recordStep();
 
       cleanupStep = {
         txHash: receipt.transactionHash,
@@ -343,19 +502,16 @@ export class BatchVerifier {
         blockNumber: receipt.blockNumber,
       };
 
-      onProgress?.({
-        phase: 'cleanup',
-        stepIndex: 0,
-        totalSteps: 1,
-        txHash: cleanupStep.txHash,
-        gasUsed: cleanupStep.gasUsed,
-      });
+      overallStep++;
+      emitProgress('cleanup', 0, 1, cleanupStep.txHash, cleanupStep.gasUsed);
     }
 
     const totalGasUsed =
       continueSteps.reduce((sum, s) => sum + s.gasUsed, 0n) +
       finalizeSteps.reduce((sum, s) => sum + s.gasUsed, 0n) +
       (cleanupStep?.gasUsed ?? 0n);
+
+    this.abortController = null;
 
     return {
       sessionId,
@@ -365,6 +521,7 @@ export class BatchVerifier {
       cleanupStep,
       totalGasUsed,
       durationMs: Date.now() - startTime,
+      cancelled,
     };
   }
 
@@ -405,6 +562,12 @@ export class BatchVerifier {
       finalize: finalizeTxs,
       total: 1 + continueTxs + finalizeTxs,
     };
+  }
+
+  private checkAborted(signal: AbortSignal): void {
+    if (signal.aborted) {
+      throw new BatchVerificationCancelledError();
+    }
   }
 
   private async sendTransaction(
@@ -490,6 +653,13 @@ export class BatchVerifier {
   }
 }
 
+export class BatchVerificationCancelledError extends Error {
+  constructor() {
+    super('Batch verification was cancelled');
+    this.name = 'BatchVerificationCancelledError';
+  }
+}
+
 function ensureHex(value: string): Hex {
   if (value.startsWith('0x')) return value as Hex;
   return `0x${value}`;
@@ -539,6 +709,12 @@ async function main() {
     gasLimit,
   });
 
+  // Allow Ctrl+C to cancel gracefully
+  process.on('SIGINT', () => {
+    console.log('\nCancelling batch verification...');
+    verifier.cancel();
+  });
+
   const onProgress: import('./batch-verifier-types').ProgressCallback = (event) => {
     const gas = event.gasUsed ? ` | gas: ${event.gasUsed.toLocaleString()}` : '';
     const tx = event.txHash ? ` | tx: ${event.txHash.slice(0, 10)}...` : '';
@@ -546,7 +722,13 @@ async function main() {
       event.totalSteps > 0
         ? `${event.stepIndex + 1}/${event.totalSteps}`
         : `${event.stepIndex + 1}`;
-    console.log(`[${event.phase}] step ${step}${gas}${tx}`);
+    const overall = event.overallTotalSteps > 0
+      ? ` (${event.overallStep}/${event.overallTotalSteps})`
+      : '';
+    const eta = event.estimatedTimeRemainingMs !== undefined
+      ? ` | ETA: ${(event.estimatedTimeRemainingMs / 1000).toFixed(1)}s`
+      : '';
+    console.log(`[${event.phase}] step ${step}${overall}${gas}${tx}${eta}`);
   };
 
   try {
@@ -579,6 +761,9 @@ async function main() {
     console.log(`Total gas used: ${result.totalGasUsed.toLocaleString()}`);
     console.log(`Duration:       ${(result.durationMs / 1000).toFixed(1)}s`);
     console.log(`Transactions:   ${1 + result.continueSteps.length + result.finalizeSteps.length + (result.cleanupStep ? 1 : 0)}`);
+    if (result.cancelled) {
+      console.log('Status:         CANCELLED (partial verification)');
+    }
   } catch (error) {
     console.error('Batch verification failed:', (error as Error).message);
     process.exit(1);

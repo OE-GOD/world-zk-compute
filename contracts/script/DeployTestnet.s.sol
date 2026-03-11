@@ -25,12 +25,13 @@ contract DeployTestnetScript is Script {
 
         vm.startBroadcast(deployerPrivateKey);
 
-        // 1. Deploy Program Registry
-        ProgramRegistry registry = new ProgramRegistry();
+        // 1. Deploy Program Registry (deployer is admin)
+        address deployer = vm.addr(deployerPrivateKey);
+        ProgramRegistry registry = new ProgramRegistry(deployer);
         console.log("ProgramRegistry deployed at:", address(registry));
 
-        // 2. Deploy Execution Engine pointing to the real verifier
-        ExecutionEngine engine = new ExecutionEngine(address(registry), verifierAddress, feeRecipient);
+        // 2. Deploy Execution Engine pointing to the real verifier (deployer is admin)
+        ExecutionEngine engine = new ExecutionEngine(deployer, address(registry), verifierAddress, feeRecipient);
         console.log("ExecutionEngine deployed at:", address(engine));
 
         vm.stopBroadcast();

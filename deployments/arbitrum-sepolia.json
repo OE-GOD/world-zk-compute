@@ -1,6 +1,9 @@
 {
   "network": "arbitrum-sepolia",
-  "chainId": 421614,
+  "chain_id": 421614,
+  "deployed_at": "",
+  "deployer": "",
+  "block_number": 0,
   "contracts": {
     "RemainderVerifier": "",
     "TEEMLVerifier": ""
@@ -9,6 +12,6 @@
     "registered": false,
     "circuitHash": ""
   },
-  "deployer": "",
-  "deployedAt": ""
+  "circuit_hash": "",
+  "verified": false
 }

@@ -71,8 +71,7 @@ fn load_model(path: &std::path::Path, model_format: &str) -> Result<XgboostModel
             }
 
             // Fall back to XGBoost native format
-            model::load_xgboost_json(path)
-                .map_err(|e| anyhow::anyhow!("Failed to load model: {e}"))
+            model::load_xgboost_json(path).map_err(|e| anyhow::anyhow!("Failed to load model: {e}"))
         }
         other => anyhow::bail!(
             "Unknown model format '{}'. Supported: xgboost, lightgbm",

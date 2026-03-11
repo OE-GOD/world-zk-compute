@@ -64,6 +64,27 @@ struct Cli {
     /// GET /health remains unauthenticated.
     #[arg(long)]
     api_key: Option<String>,
+
+    /// Max requests per minute per IP (0 = unlimited)
+    #[arg(long, default_value_t = 60)]
+    rate_limit: u32,
+
+    /// Burst allowance above the per-minute rate
+    #[arg(long, default_value_t = 10)]
+    rate_limit_burst: u32,
+
+    /// Request timeout in seconds (0 = no timeout). Default: 120.
+    #[arg(long, default_value_t = 120)]
+    request_timeout: u64,
+
+    /// Enable CORS headers for browser clients.
+    #[arg(long)]
+    enable_cors: bool,
+
+    /// Allowed CORS origins (comma-separated). Only used when --enable-cors is set.
+    /// If not specified, allows all origins.
+    #[arg(long, value_delimiter = ',')]
+    cors_origins: Option<Vec<String>>,
 }
 
 /// Standard input format for the XGBoost circuit
@@ -120,7 +141,17 @@ async fn main() -> Result<()> {
 
     if cli.serve {
         // Warm prover server mode
-        server::run_server(model, &cli.host, cli.port, cli.api_key).await?;
+        let config = server::ServerConfig {
+            host: cli.host,
+            port: cli.port,
+            api_key: cli.api_key,
+            rate_limit: cli.rate_limit,
+            rate_limit_burst: cli.rate_limit_burst,
+            request_timeout_secs: cli.request_timeout,
+            enable_cors: cli.enable_cors,
+            cors_origins: cli.cors_origins,
+        };
+        server::run_server_with_config(model, config).await?;
         return Ok(());
     }
 

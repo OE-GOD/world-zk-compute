@@ -5,6 +5,8 @@ import "forge-std/Test.sol";
 import "../src/ExecutionEngine.sol";
 import "../src/ProgramRegistry.sol";
 import "../src/MockRiscZeroVerifier.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 
 contract MockCallback is IExecutionCallback {
     uint256 public lastRequestId;
@@ -37,8 +39,8 @@ contract ExecutionEngineTest is Test {
 
         // Deploy contracts
         verifier = new MockRiscZeroVerifier();
-        registry = new ProgramRegistry();
-        engine = new ExecutionEngine(address(registry), address(verifier), feeRecipient);
+        registry = new ProgramRegistry(deployer);
+        engine = new ExecutionEngine(deployer, address(registry), address(verifier), feeRecipient);
 
         // Register a test program
         registry.registerProgram(imageId, "Test Program", "https://example.com/test.elf", bytes32(0));
@@ -421,20 +423,17 @@ contract ExecutionEngineTest is Test {
         Vm.Log[] memory logs = vm.getRecordedLogs();
 
         // Find the ExecutionRequested event
-        // event ExecutionRequested(uint256 indexed requestId, address indexed requester, bytes32 indexed imageId, bytes32 inputDigest, string inputUrl, uint8 inputType, uint256 tip, uint256 expiresAt)
         bool found = false;
         for (uint256 i = 0; i < logs.length; i++) {
-            // Topic 0 is the event signature
             if (
                 logs[i].topics[0]
                     == keccak256("ExecutionRequested(uint256,address,bytes32,bytes32,string,uint8,uint256,uint256)")
             ) {
-                // Decode non-indexed params: inputDigest, inputUrl, inputType, tip, expiresAt
                 (bytes32 evInputDigest, string memory evInputUrl, uint8 evInputType, uint256 evTip,) =
                     abi.decode(logs[i].data, (bytes32, string, uint8, uint256, uint256));
                 assertEq(evInputUrl, testInputUrl);
                 assertEq(evInputDigest, inputDigest);
-                assertEq(evInputType, 0); // Default public
+                assertEq(evInputType, 0);
                 assertEq(evTip, 0.1 ether);
                 found = true;
                 break;
@@ -442,7 +441,6 @@ contract ExecutionEngineTest is Test {
         }
         assertTrue(found, "ExecutionRequested event not found");
 
-        // Struct has no inputUrl field — getRequest compiles and returns without it
         ExecutionEngine.ExecutionRequest memory req = engine.getRequest(requestId);
         assertEq(req.id, requestId);
     }
@@ -464,14 +462,13 @@ contract ExecutionEngineTest is Test {
                     == keccak256("ExecutionRequested(uint256,address,bytes32,bytes32,string,uint8,uint256,uint256)")
             ) {
                 (,, uint8 evInputType,,) = abi.decode(logs[i].data, (bytes32, string, uint8, uint256, uint256));
-                assertEq(evInputType, 1); // Private
+                assertEq(evInputType, 1);
                 found = true;
                 break;
             }
         }
         assertTrue(found, "ExecutionRequested event not found");
 
-        // Verify request was created correctly
         ExecutionEngine.ExecutionRequest memory req = engine.getRequest(requestId);
         assertEq(req.id, requestId);
         assertEq(req.tip, 0.1 ether);
@@ -492,7 +489,7 @@ contract ExecutionEngineTest is Test {
                     == keccak256("ExecutionRequested(uint256,address,bytes32,bytes32,string,uint8,uint256,uint256)")
             ) {
                 (,, uint8 evInputType,,) = abi.decode(logs[i].data, (bytes32, string, uint8, uint256, uint256));
-                assertEq(evInputType, 0); // Public (default)
+                assertEq(evInputType, 0);
                 found = true;
                 break;
             }
@@ -512,7 +509,6 @@ contract ExecutionEngineTest is Test {
         vm.prank(requester);
         uint256 id2 = engine.requestExecution{value: 0.3 ether}(imageId, inputDigest, inputUrl, callback2, 7200);
 
-        // Verify isolation after creation
         ExecutionEngine.ExecutionRequest memory req1 = engine.getRequest(id1);
         ExecutionEngine.ExecutionRequest memory req2 = engine.getRequest(id2);
 
@@ -526,12 +522,10 @@ contract ExecutionEngineTest is Test {
         assertEq(req2.tip, 0.3 ether);
         assertEq(req2.callbackContract, callback2);
 
-        // Claim only request 1
         vm.warp(6100);
         vm.prank(prover);
         engine.claimExecution(id1);
 
-        // Request 1 is Claimed, request 2 still Pending
         req1 = engine.getRequest(id1);
         req2 = engine.getRequest(id2);
 
@@ -542,9 +536,358 @@ contract ExecutionEngineTest is Test {
         assertEq(uint256(req2.status), uint256(ExecutionEngine.RequestStatus.Pending));
         assertEq(req2.claimedBy, address(0));
         assertEq(req2.claimedAt, 0);
-        // Request 2 fields unchanged
         assertEq(req2.createdAt, 6000);
         assertEq(req2.tip, 0.3 ether);
         assertEq(req2.callbackContract, callback2);
+    }
+
+    // ========================================================================
+    // OWNABLE2STEP TESTS
+    // ========================================================================
+
+    function testOwnerIsDeployer() public view {
+        assertEq(engine.owner(), deployer);
+    }
+
+    function testTransferOwnership2Step() public {
+        address newOwner = address(0xABCD);
+
+        // Step 1: current owner initiates transfer
+        vm.prank(deployer);
+        engine.transferOwnership(newOwner);
+
+        // Owner has NOT changed yet
+        assertEq(engine.owner(), deployer);
+        assertEq(engine.pendingOwner(), newOwner);
+
+        // Step 2: new owner accepts
+        vm.prank(newOwner);
+        engine.acceptOwnership();
+
+        // Now ownership has transferred
+        assertEq(engine.owner(), newOwner);
+        assertEq(engine.pendingOwner(), address(0));
+    }
+
+    function testTransferOwnershipRevertsForNonOwner() public {
+        address attacker = address(0xBAD);
+        vm.prank(attacker);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, attacker));
+        engine.transferOwnership(address(0xABCD));
+    }
+
+    function testAcceptOwnershipRevertsForNonPendingOwner() public {
+        address newOwner = address(0xABCD);
+        address attacker = address(0xBAD);
+
+        vm.prank(deployer);
+        engine.transferOwnership(newOwner);
+
+        vm.prank(attacker);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, attacker));
+        engine.acceptOwnership();
+    }
+
+    function testNewOwnerCanCallAdminFunctions() public {
+        address newOwner = address(0xABCD);
+
+        // Transfer ownership
+        vm.prank(deployer);
+        engine.transferOwnership(newOwner);
+        vm.prank(newOwner);
+        engine.acceptOwnership();
+
+        // Old owner can NOT call admin functions
+        vm.prank(deployer);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, deployer));
+        engine.setProtocolFee(100);
+
+        // New owner CAN call admin functions
+        vm.prank(newOwner);
+        engine.setProtocolFee(100);
+        assertEq(engine.protocolFeeBps(), 100);
+    }
+
+    // ========================================================================
+    // PAUSABLE TESTS
+    // ========================================================================
+
+    function testPauseAndUnpause() public {
+        vm.prank(deployer);
+        engine.pause();
+        assertTrue(engine.paused());
+
+        vm.prank(deployer);
+        engine.unpause();
+        assertFalse(engine.paused());
+    }
+
+    function testPauseRevertsForNonOwner() public {
+        vm.prank(requester);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, requester));
+        engine.pause();
+    }
+
+    function testUnpauseRevertsForNonOwner() public {
+        vm.prank(deployer);
+        engine.pause();
+
+        vm.prank(requester);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, requester));
+        engine.unpause();
+    }
+
+    function testPausedRequestExecutionReverts() public {
+        vm.prank(deployer);
+        engine.pause();
+
+        vm.prank(requester);
+        vm.expectRevert(Pausable.EnforcedPause.selector);
+        engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+    }
+
+    function testPausedRequestExecutionWithInputTypeReverts() public {
+        vm.prank(deployer);
+        engine.pause();
+
+        vm.prank(requester);
+        vm.expectRevert(Pausable.EnforcedPause.selector);
+        engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600, 1);
+    }
+
+    function testPausedClaimExecutionReverts() public {
+        // Create request before pausing
+        vm.prank(requester);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+
+        vm.prank(deployer);
+        engine.pause();
+
+        vm.prank(prover);
+        vm.expectRevert(Pausable.EnforcedPause.selector);
+        engine.claimExecution(requestId);
+    }
+
+    function testPausedSubmitProofReverts() public {
+        // Create request and claim before pausing
+        vm.prank(requester);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+
+        vm.prank(prover);
+        engine.claimExecution(requestId);
+
+        vm.prank(deployer);
+        engine.pause();
+
+        vm.prank(prover);
+        vm.expectRevert(Pausable.EnforcedPause.selector);
+        engine.submitProof(requestId, hex"deadbeef", hex"cafebabe");
+    }
+
+    function testCancelExecutionWorksWhilePaused() public {
+        // Create request before pausing
+        vm.prank(requester);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+
+        vm.prank(deployer);
+        engine.pause();
+
+        // Cancel should still work -- users must always be able to recover funds
+        uint256 balanceBefore = requester.balance;
+        vm.prank(requester);
+        engine.cancelExecution(requestId);
+
+        uint256 balanceAfter = requester.balance;
+        assertEq(balanceAfter - balanceBefore, 0.1 ether);
+
+        ExecutionEngine.ExecutionRequest memory req = engine.getRequest(requestId);
+        assertEq(uint256(req.status), uint256(ExecutionEngine.RequestStatus.Cancelled));
+    }
+
+    function testUnpauseRestoresNormalOperation() public {
+        vm.prank(deployer);
+        engine.pause();
+
+        vm.prank(deployer);
+        engine.unpause();
+
+        // Request should work again after unpause
+        vm.prank(requester);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        assertEq(requestId, 1);
+    }
+
+    // ========================================================================
+    // INPUT VALIDATION TESTS
+    // ========================================================================
+
+    function testZeroImageIdReverts() public {
+        vm.prank(requester);
+        vm.expectRevert(ExecutionEngine.ZeroImageId.selector);
+        engine.requestExecution{value: 0.1 ether}(bytes32(0), inputDigest, inputUrl, address(0), 3600);
+    }
+
+    function testZeroImageIdRevertsWithInputType() public {
+        vm.prank(requester);
+        vm.expectRevert(ExecutionEngine.ZeroImageId.selector);
+        engine.requestExecution{value: 0.1 ether}(bytes32(0), inputDigest, inputUrl, address(0), 3600, 1);
+    }
+
+    // ========================================================================
+    // ADMIN FUNCTION TESTS (onlyOwner via Ownable2Step)
+    // ========================================================================
+
+    function testSetProtocolFeeByOwner() public {
+        vm.prank(deployer);
+        engine.setProtocolFee(500);
+        assertEq(engine.protocolFeeBps(), 500);
+    }
+
+    function testSetProtocolFeeRevertsForNonOwner() public {
+        vm.prank(requester);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, requester));
+        engine.setProtocolFee(500);
+    }
+
+    function testSetProtocolFeeTooHighReverts() public {
+        vm.prank(deployer);
+        vm.expectRevert("Fee too high");
+        engine.setProtocolFee(1001);
+    }
+
+    function testSetProtocolFeeEmitsEvent() public {
+        vm.recordLogs();
+        vm.prank(deployer);
+        engine.setProtocolFee(500);
+
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bool found = false;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics[0] == keccak256("ProtocolFeeUpdated(uint256,uint256)")) {
+                (uint256 oldFee, uint256 newFee) = abi.decode(logs[i].data, (uint256, uint256));
+                assertEq(oldFee, 250);
+                assertEq(newFee, 500);
+                found = true;
+                break;
+            }
+        }
+        assertTrue(found, "ProtocolFeeUpdated event not found");
+    }
+
+    function testSetFeeRecipientByOwner() public {
+        address newRecipient = address(0xFEE);
+        vm.prank(deployer);
+        engine.setFeeRecipient(newRecipient);
+        assertEq(engine.feeRecipient(), newRecipient);
+    }
+
+    function testSetFeeRecipientRevertsForNonOwner() public {
+        vm.prank(requester);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, requester));
+        engine.setFeeRecipient(address(0xFEE));
+    }
+
+    function testSetFeeRecipientZeroAddressReverts() public {
+        vm.prank(deployer);
+        vm.expectRevert(ExecutionEngine.ZeroAddress.selector);
+        engine.setFeeRecipient(address(0));
+    }
+
+    function testSetFeeRecipientEmitsEvent() public {
+        address newRecipient = address(0xFEE);
+        vm.recordLogs();
+        vm.prank(deployer);
+        engine.setFeeRecipient(newRecipient);
+
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bool found = false;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics[0] == keccak256("FeeRecipientUpdated(address,address)")) {
+                found = true;
+                break;
+            }
+        }
+        assertTrue(found, "FeeRecipientUpdated event not found");
+    }
+
+    function testSetReputationByOwner() public {
+        address rep = address(0x5E70);
+        vm.prank(deployer);
+        engine.setReputation(rep);
+        assertEq(address(engine.reputation()), rep);
+    }
+
+    function testSetReputationRevertsForNonOwner() public {
+        vm.prank(requester);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, requester));
+        engine.setReputation(address(0x5E70));
+    }
+
+    // ========================================================================
+    // CONSTRUCTOR VALIDATION TESTS
+    // ========================================================================
+
+    function testConstructorZeroAdminReverts() public {
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableInvalidOwner.selector, address(0)));
+        new ExecutionEngine(address(0), address(registry), address(verifier), feeRecipient);
+    }
+
+    function testConstructorZeroRegistryReverts() public {
+        vm.expectRevert(ExecutionEngine.ZeroAddress.selector);
+        new ExecutionEngine(deployer, address(0), address(verifier), feeRecipient);
+    }
+
+    function testConstructorZeroVerifierReverts() public {
+        vm.expectRevert(ExecutionEngine.ZeroAddress.selector);
+        new ExecutionEngine(deployer, address(registry), address(0), feeRecipient);
+    }
+
+    function testConstructorZeroFeeRecipientReverts() public {
+        vm.expectRevert(ExecutionEngine.ZeroAddress.selector);
+        new ExecutionEngine(deployer, address(registry), address(verifier), address(0));
+    }
+
+    // ========================================================================
+    // FULL FLOW TEST: PAUSE -> CANCEL -> UNPAUSE -> RESUME
+    // ========================================================================
+
+    function testFullPauseCancelUnpauseFlow() public {
+        // 1. Create a request
+        vm.prank(requester);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+
+        // 2. Pause the engine
+        vm.prank(deployer);
+        engine.pause();
+
+        // 3. User can still cancel and recover funds
+        uint256 balanceBefore = requester.balance;
+        vm.prank(requester);
+        engine.cancelExecution(requestId);
+        assertEq(requester.balance - balanceBefore, 0.1 ether);
+
+        // 4. New requests are blocked
+        vm.prank(requester);
+        vm.expectRevert(Pausable.EnforcedPause.selector);
+        engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+
+        // 5. Unpause
+        vm.prank(deployer);
+        engine.unpause();
+
+        // 6. Normal operation resumes
+        vm.prank(requester);
+        uint256 newRequestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        assertGt(newRequestId, 0);
+
+        vm.prank(prover);
+        engine.claimExecution(newRequestId);
+
+        vm.prank(prover);
+        engine.submitProof(newRequestId, hex"deadbeef", hex"cafebabe");
+
+        ExecutionEngine.ExecutionRequest memory req = engine.getRequest(newRequestId);
+        assertEq(uint256(req.status), uint256(ExecutionEngine.RequestStatus.Completed));
     }
 }

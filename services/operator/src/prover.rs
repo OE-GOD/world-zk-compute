@@ -29,26 +29,77 @@ pub struct ProofManager {
     model_path: String,
     proofs_dir: PathBuf,
     mode: ProverMode,
+    max_retries: u32,
+    retry_delay_secs: u64,
 }
 
 impl ProofManager {
-    pub fn new(precompute_bin: &str, model_path: &str, proofs_dir: &str) -> Self {
+    pub fn new(
+        precompute_bin: &str,
+        model_path: &str,
+        proofs_dir: &str,
+        max_retries: u32,
+        retry_delay_secs: u64,
+    ) -> Self {
         let mode = ProverMode::from_env();
-        tracing::info!("ProofManager initialized with mode: {:?}", mode);
+        tracing::info!(
+            "ProofManager initialized with mode: {:?}, max_retries: {}, retry_delay_secs: {}",
+            mode,
+            max_retries,
+            retry_delay_secs,
+        );
         Self {
             precompute_bin: precompute_bin.to_string(),
             model_path: model_path.to_string(),
             proofs_dir: PathBuf::from(proofs_dir),
             mode,
+            max_retries,
+            retry_delay_secs,
         }
     }
 
     /// Trigger proof generation for given features. Stores result at `{proofs_dir}/{result_id}.json`.
+    ///
+    /// On failure, retries up to `max_retries` times with exponential backoff
+    /// starting from `retry_delay_secs` (capped at 16x the base delay).
     pub async fn generate_proof(&self, result_id: &str, features: &str) -> anyhow::Result<()> {
-        match &self.mode {
-            ProverMode::Subprocess => self.generate_proof_subprocess(result_id, features).await,
-            ProverMode::Http { url } => self.generate_proof_http(url, result_id, features).await,
+        let mut last_error = None;
+        for attempt in 0..=self.max_retries {
+            if attempt > 0 {
+                // Exponential backoff: base * 2^(attempt-1), capped at 16x base
+                let delay = self.retry_delay_secs * (1u64 << (attempt - 1).min(4));
+                tracing::warn!(
+                    attempt = attempt,
+                    delay_secs = delay,
+                    result_id = result_id,
+                    "Retrying proof generation"
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+            }
+
+            let result = match &self.mode {
+                ProverMode::Subprocess => self.generate_proof_subprocess(result_id, features).await,
+                ProverMode::Http { url } => {
+                    self.generate_proof_http(url, result_id, features).await
+                }
+            };
+
+            match result {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    tracing::error!(
+                        attempt = attempt,
+                        max_retries = self.max_retries,
+                        error = %e,
+                        result_id = result_id,
+                        "Proof generation failed"
+                    );
+                    last_error = Some(e);
+                }
+            }
         }
+
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Proof generation failed after retries")))
     }
 
     /// Generate a proof by spawning a subprocess.
@@ -175,17 +226,19 @@ mod tests {
         let _lock = ENV_MUTEX.lock().unwrap();
         // Ensure subprocess mode when PROVER_URL is not set.
         std::env::remove_var("PROVER_URL");
-        let pm = ProofManager::new("precompute_proof", "./model.json", "/tmp/proofs");
+        let pm = ProofManager::new("precompute_proof", "./model.json", "/tmp/proofs", 3, 10);
         assert_eq!(pm.precompute_bin, "precompute_proof");
         assert_eq!(pm.model_path, "./model.json");
         assert!(matches!(pm.mode, ProverMode::Subprocess));
+        assert_eq!(pm.max_retries, 3);
+        assert_eq!(pm.retry_delay_secs, 10);
     }
 
     #[test]
     fn test_has_proof_missing() {
         let _lock = ENV_MUTEX.lock().unwrap();
         std::env::remove_var("PROVER_URL");
-        let pm = ProofManager::new("x", "y", "/tmp/nonexistent-proof-dir-12345");
+        let pm = ProofManager::new("x", "y", "/tmp/nonexistent-proof-dir-12345", 3, 10);
         assert!(!pm.has_proof("does-not-exist"));
     }
 
@@ -193,7 +246,7 @@ mod tests {
     fn test_read_proof_missing() {
         let _lock = ENV_MUTEX.lock().unwrap();
         std::env::remove_var("PROVER_URL");
-        let pm = ProofManager::new("x", "y", "/tmp/nonexistent-proof-dir-12345");
+        let pm = ProofManager::new("x", "y", "/tmp/nonexistent-proof-dir-12345", 3, 10);
         let result = pm.read_proof("does-not-exist").unwrap();
         assert!(result.is_none());
     }
@@ -231,11 +284,29 @@ mod tests {
     fn test_proof_manager_http_mode() {
         let _lock = ENV_MUTEX.lock().unwrap();
         std::env::set_var("PROVER_URL", "http://warm-prover:8080");
-        let pm = ProofManager::new("unused", "unused", "/tmp/proofs");
+        let pm = ProofManager::new("unused", "unused", "/tmp/proofs", 3, 10);
         assert!(matches!(pm.mode, ProverMode::Http { .. }));
         if let ProverMode::Http { url } = &pm.mode {
             assert_eq!(url, "http://warm-prover:8080");
         }
         std::env::remove_var("PROVER_URL");
+    }
+
+    #[test]
+    fn test_proof_manager_new_with_retries() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("PROVER_URL");
+        let pm = ProofManager::new("x", "y", "/tmp/test", 5, 15);
+        assert_eq!(pm.max_retries, 5);
+        assert_eq!(pm.retry_delay_secs, 15);
+    }
+
+    #[test]
+    fn test_proof_manager_zero_retries() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("PROVER_URL");
+        let pm = ProofManager::new("x", "y", "/tmp/test", 0, 10);
+        assert_eq!(pm.max_retries, 0);
+        assert_eq!(pm.retry_delay_secs, 10);
     }
 }

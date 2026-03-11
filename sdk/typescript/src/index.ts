@@ -22,10 +22,30 @@
  */
 
 export { Client } from './client';
-export { BatchVerifier } from './batch-verifier';
+export { BatchVerifier, ProgressTracker, BatchVerificationCancelledError } from './batch-verifier';
 export { TEEVerifier } from './tee-verifier';
 export type { TEEVerifierConfig } from './tee-verifier';
+export { TEEEventWatcher } from './tee-event-watcher';
+export type {
+  TEEEventWatcherConfig,
+  TEEEventName,
+  TEEEventData,
+  ResultSubmittedEvent,
+  ResultChallengedEvent,
+  ResultFinalizedEvent,
+  DisputeResolvedEvent,
+  EnclaveRegisteredEvent,
+  EnclaveRevokedEvent,
+} from './tee-event-watcher';
 export { teeMLVerifierAbi } from './tee-verifier-abi';
+export {
+  computeModelHash,
+  computeInputHash,
+  computeResultHash,
+  computeInputHashFromJson,
+  computeResultHashFromBytes,
+  serializeF64List,
+} from './hash';
 
 export {
   WorldZKError,
@@ -88,3 +108,13 @@ export {
   type ProgressCallback,
   type BatchVerifyOptions,
 } from './batch-verifier-types';
+
+export {
+  LightGBMConverter,
+  ModelParseError,
+  InputValidationError,
+} from './lightgbm';
+export type {
+  TreeNode,
+  LightGBMModel,
+} from './lightgbm';

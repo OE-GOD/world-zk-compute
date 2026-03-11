@@ -1,0 +1,367 @@
+name: E2E Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'contracts/**'
+      - 'sdk/**'
+      - 'scripts/**'
+      - '.github/workflows/e2e-ci.yml'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.92.0"
+
+jobs:
+  # ── Job 1: TEE Happy Path ────────────────────────────────────────────────
+  # Self-contained script: starts Anvil, deploys TEEMLVerifier, runs full
+  # happy path (owner, pause/unpause, input validation, 2-step ownership,
+  # register enclave, submit, finalize, verify).
+  tee-happy-path:
+    name: TEE Happy Path E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Install forge dependencies
+        working-directory: contracts
+        run: |
+          forge install foundry-rs/forge-std --no-git
+          forge install risc0/risc0-ethereum --no-git
+
+      - name: Run TEE happy path E2E
+        run: bash scripts/tee-e2e.sh
+
+  # ── Job 2: TEE Dispute Path ──────────────────────────────────────────────
+  # Deploys RemainderVerifier + TEEMLVerifier, submits result, challenges it,
+  # then resolves the dispute with a real ZK proof (~254M gas). Requires
+  # high gas-limit Anvil and the DAG fixture file.
+  tee-dispute:
+    name: TEE Dispute E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Install forge dependencies
+        working-directory: contracts
+        run: |
+          forge install foundry-rs/forge-std --no-git
+          forge install risc0/risc0-ethereum --no-git
+
+      - name: Install Python (for fixture parsing)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run TEE dispute E2E
+        run: bash scripts/tee-dispute-e2e.sh
+
+  # ── Job 3: Rust SDK E2E ──────────────────────────────────────────────────
+  # Starts Anvil, deploys TEEMLVerifier, runs Rust SDK integration tests
+  # (e2e_tee_verify) which cover the full TEE verification flow from Rust.
+  rust-sdk-e2e:
+    name: Rust SDK TEE E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Cache Rust SDK build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            sdk/target
+          key: ${{ runner.os }}-cargo-sdk-e2e-${{ hashFiles('sdk/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-sdk-e2e-
+
+      - name: Install forge dependencies
+        working-directory: contracts
+        run: |
+          forge install foundry-rs/forge-std --no-git
+          forge install risc0/risc0-ethereum --no-git
+
+      - name: Run Rust SDK E2E
+        run: bash scripts/tee-sdk-e2e.sh
+
+  # ── Job 4: Python SDK E2E ────────────────────────────────────────────────
+  # Starts Anvil, deploys TEEMLVerifier, installs the Python SDK and runs
+  # a comprehensive E2E covering owner, pause, enclave registration,
+  # submit, finalize, ownership transfer, revocation.
+  python-sdk-e2e:
+    name: Python SDK TEE E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Install forge dependencies
+        working-directory: contracts
+        run: |
+          forge install foundry-rs/forge-std --no-git
+          forge install risc0/risc0-ethereum --no-git
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run Python SDK TEE E2E
+        run: bash scripts/python-sdk-tee-e2e.sh
+
+  # ── Job 5: TypeScript SDK E2E ────────────────────────────────────────────
+  # Starts Anvil, deploys TEEMLVerifier, installs the TypeScript SDK and
+  # runs E2E tests covering owner reads, pause/unpause, enclave
+  # registration, submit, finalize, ownership transfer, revocation.
+  typescript-sdk-e2e:
+    name: TypeScript SDK TEE E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Install forge dependencies
+        working-directory: contracts
+        run: |
+          forge install foundry-rs/forge-std --no-git
+          forge install risc0/risc0-ethereum --no-git
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: sdk/typescript/package-lock.json
+
+      - name: Install Python (needed by forge create JSON parsing)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run TypeScript SDK TEE E2E
+        run: bash scripts/typescript-sdk-tee-e2e.sh
+
+  # ── Job 6: SDK Batch Verification E2E ────────────────────────────────────
+  # Full multi-tx batch verification: deploy RemainderVerifier, register DAG
+  # circuit, run TypeScript + Rust + Python SDK batch verifiers against
+  # the phase1a_dag_fixture.json.
+  sdk-batch-e2e:
+    name: SDK Batch Verification E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: sdk/typescript/package-lock.json
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Cache Rust SDK build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            sdk/target
+          key: ${{ runner.os }}-cargo-sdk-batch-${{ hashFiles('sdk/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-sdk-batch-
+
+      - name: Install forge dependencies
+        working-directory: contracts
+        run: |
+          forge install foundry-rs/forge-std --no-git
+          forge install risc0/risc0-ethereum --no-git
+
+      - name: Start Anvil and deploy contracts
+        run: |
+          # Start Anvil with high gas limit and no code size limit
+          anvil --port 8545 --silent --disable-code-size-limit --gas-limit 500000000 &
+          ANVIL_PID=$!
+          sleep 2
+
+          # Verify Anvil is up
+          curl -sf http://127.0.0.1:8545 -X POST -H "Content-Type: application/json" \
+            --data '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' > /dev/null
+
+          # Deploy RemainderVerifier + register DAG circuit
+          cd contracts
+          DEPLOYER_KEY="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" \
+            forge script script/DeployRemainderDAG.s.sol:DeployRemainderDAG \
+            --rpc-url http://127.0.0.1:8545 --broadcast --disable-code-size-limit
+
+          # Extract deployed contract address
+          CONTRACT_ADDRESS=$(python3 -c "
+          import json, sys
+          data = json.load(open('broadcast/DeployRemainderDAG.s.sol/31337/run-latest.json'))
+          for tx in data['transactions']:
+              if tx.get('transactionType') == 'CREATE':
+                  print(tx['contractAddress']); sys.exit(0)
+          sys.exit(1)
+          ")
+
+          echo "Deployed contract at: $CONTRACT_ADDRESS"
+          echo "CONTRACT_ADDRESS=$CONTRACT_ADDRESS" >> $GITHUB_ENV
+
+      - name: TypeScript SDK Batch E2E
+        run: |
+          cd sdk/typescript
+          npm ci
+          npx tsx src/batch-verifier.ts \
+            --rpc-url http://127.0.0.1:8545 \
+            --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
+            --contract $CONTRACT_ADDRESS \
+            --fixture ../../contracts/test/fixtures/phase1a_dag_fixture.json
+
+      - name: Rust SDK Batch E2E
+        run: |
+          cd sdk
+          RPC_URL=http://127.0.0.1:8545 CONTRACT_ADDRESS=$CONTRACT_ADDRESS \
+            cargo test --test e2e_batch_verify -- --ignored --nocapture
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Python SDK Batch E2E
+        run: |
+          cd sdk/python
+          pip install -e ".[web3]"
+          python e2e_batch_verify.py \
+            --rpc-url http://127.0.0.1:8545 \
+            --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
+            --contract $CONTRACT_ADDRESS \
+            --fixture ../../contracts/test/fixtures/phase1a_dag_fixture.json
+
+  # ── Job 7: DeployAll Smoke Test ──────────────────────────────────────────
+  # Verify the DeployAll.s.sol script works end-to-end: deploy both
+  # RemainderVerifier and TEEMLVerifier, register DAG circuit, and validate
+  # contract state on Anvil.
+  deploy-all-smoke:
+    name: DeployAll Smoke Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Install forge dependencies
+        working-directory: contracts
+        run: |
+          forge install foundry-rs/forge-std --no-git
+          forge install risc0/risc0-ethereum --no-git
+
+      - name: Start Anvil
+        run: |
+          anvil --port 8545 --silent --gas-limit 500000000 --code-size-limit 200000 &
+          sleep 2
+          cast block-number --rpc-url http://127.0.0.1:8545
+
+      - name: Deploy all contracts via DeployAll
+        working-directory: contracts
+        env:
+          DEPLOYER_KEY: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+        run: |
+          forge script script/DeployAll.s.sol:DeployAll \
+            --rpc-url http://127.0.0.1:8545 \
+            --broadcast \
+            --code-size-limit 200000
+
+          # Extract addresses from broadcast
+          BROADCAST_FILE=$(find broadcast/DeployAll.s.sol -name "run-latest.json" | head -1)
+          echo "Broadcast file: $BROADCAST_FILE"
+
+          REMAINDER=$(jq -r '.transactions[] | select(.contractName == "RemainderVerifier") | .contractAddress // empty' "$BROADCAST_FILE" | head -1)
+          TEE=$(jq -r '.transactions[] | select(.contractName == "TEEMLVerifier") | .contractAddress // empty' "$BROADCAST_FILE" | head -1)
+
+          echo "RemainderVerifier: $REMAINDER"
+          echo "TEEMLVerifier: $TEE"
+
+          # Basic validation
+          if [ -z "$REMAINDER" ]; then
+            echo "ERROR: RemainderVerifier address not found"
+            exit 1
+          fi
+          if [ -z "$TEE" ]; then
+            echo "ERROR: TEEMLVerifier address not found"
+            exit 1
+          fi
+
+          # Verify TEEMLVerifier owner
+          OWNER=$(cast call "$TEE" "owner()(address)" --rpc-url http://127.0.0.1:8545)
+          echo "TEEMLVerifier owner: $OWNER"
+
+          # Verify RemainderVerifier link
+          RV=$(cast call "$TEE" "remainderVerifier()(address)" --rpc-url http://127.0.0.1:8545)
+          echo "TEEMLVerifier.remainderVerifier: $RV"
+
+          echo "DeployAll smoke test PASSED"

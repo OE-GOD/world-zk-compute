@@ -1,5 +1,9 @@
 # Docker Compose for GPU-accelerated prover deployment
 #
+# Includes:
+#   - prover:           risc0 ZK prover with CUDA acceleration
+#   - warm-prover-gpu:  XGBoost Remainder prover (GKR/Hyrax) with GPU hints
+#
 # Usage:
 #   docker compose -f docker-compose.gpu.yml up -d
 #
@@ -9,6 +13,7 @@
 #   - .env file with PRIVATE_KEY, RPC_URL, ENGINE_ADDRESS
 
 services:
+  # ── risc0 ZK Prover (CUDA) ────────────────────────────────────────────────
   prover:
     build:
       context: .
@@ -47,6 +52,38 @@ services:
       timeout: 10s
       start_period: 10s
       retries: 3
+
+  # ── XGBoost Remainder Warm Prover (GPU-accelerated) ────────────────────────
+  #
+  # Serves GKR/Hyrax proofs for XGBoost decision tree inference.
+  # GPU environment is set for future ICICLE integration (v3.8+) which can
+  # accelerate Groth16 wrapping and multi-scalar multiplication by ~3x.
+  #
+  # The prover URL should be pointed at this service:
+  #   PROVER_URL=http://warm-prover-gpu:3000
+  warm-prover-gpu:
+    build:
+      context: ./examples/xgboost-remainder
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+      - REMAINDER_GPU=1
+      - RUST_LOG=${RUST_LOG:-info}
+    ports:
+      - "${WARM_PROVER_PORT:-3000}:3000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      start_period: 60s
+      retries: 5
 
 volumes:
   prover-cache:

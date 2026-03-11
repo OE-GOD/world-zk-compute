@@ -30,11 +30,16 @@
 pub mod abi;
 pub mod client;
 pub mod fixture;
+pub mod hash;
 pub mod precompiles;
 pub mod tee;
 pub mod verifier;
 
 pub use client::Client;
 pub use fixture::{DAGFixture, ProofData};
+pub use hash::{
+    compute_input_hash, compute_input_hash_from_json, compute_model_hash,
+    compute_model_hash_from_file, compute_result_hash, compute_result_hash_from_bytes,
+};
 pub use tee::TEEVerifier;
 pub use verifier::{BatchProgress, BatchSession, DAGVerifier};

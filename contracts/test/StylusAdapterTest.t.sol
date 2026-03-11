@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 import "forge-std/Test.sol";
 import "../src/remainder/RemainderVerifier.sol";
 import "../src/remainder/GKRDAGVerifier.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 /// @notice Mock Stylus verifier that returns true
 contract MockStylusVerifier {
@@ -95,7 +96,7 @@ contract StylusAdapterTest is Test {
     /// @notice Test only admin can set Stylus verifier
     function test_set_stylus_verifier_not_admin_reverts() public {
         vm.prank(address(0xBEEF));
-        vm.expectRevert(RemainderVerifier.NotAdmin.selector);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, address(0xBEEF)));
         verifier.setDAGStylusVerifier(circuitHash, address(mockStylus));
     }
 

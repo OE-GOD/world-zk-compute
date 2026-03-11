@@ -192,15 +192,16 @@ fn mat_invert(m: &Matrix3) -> Matrix3 {
         aug.swap(col, pivot);
 
         let inv = aug[col][col].invert().unwrap();
-        for j in 0..6 {
-            aug[col][j] *= inv;
+        for item in &mut aug[col] {
+            *item *= inv;
         }
 
         for row in 0..3 {
             if row != col {
                 let factor = aug[row][col];
-                for j in 0..6 {
-                    aug[row][j] -= factor * aug[col][j];
+                let col_row = aug[col];
+                for (item, &col_val) in aug[row].iter_mut().zip(col_row.iter()) {
+                    *item -= factor * col_val;
                 }
             }
         }
@@ -290,8 +291,12 @@ fn main() {
 
     // End constants: last r_f/2 - 1 rounds
     let mut constants_end: Vec<[Fq; 3]> = Vec::new();
-    for i in (r_f_half + r_p + 1)..num_rounds {
-        constants_end.push(mat_mul_vec(&inv_mds, &raw_constants[i]));
+    for item in raw_constants
+        .iter()
+        .take(num_rounds)
+        .skip(r_f_half + r_p + 1)
+    {
+        constants_end.push(mat_mul_vec(&inv_mds, item));
     }
 
     // ── Compute sparse matrices ────────────────────────────────────────────
@@ -320,26 +325,21 @@ fn main() {
     println!();
 
     println!("// ═══ Full MDS Matrix (3x3, Cauchy) ═══");
-    for i in 0..3 {
-        for j in 0..3 {
-            println!(
-                "uint256 constant MDS_{}_{} = {};",
-                i,
-                j,
-                fq_to_hex(&mds[i][j])
-            );
+    for (i, row) in mds.iter().enumerate() {
+        for (j, val) in row.iter().enumerate() {
+            println!("uint256 constant MDS_{}_{} = {};", i, j, fq_to_hex(val));
         }
     }
     println!();
 
     println!("// ═══ Pre-sparse MDS Matrix (3x3) ═══");
-    for i in 0..3 {
-        for j in 0..3 {
+    for (i, row) in pre_sparse_mds.iter().enumerate() {
+        for (j, val) in row.iter().enumerate() {
             println!(
                 "uint256 constant PRE_SPARSE_{}_{} = {};",
                 i,
                 j,
-                fq_to_hex(&pre_sparse_mds[i][j])
+                fq_to_hex(val)
             );
         }
     }
@@ -414,13 +414,13 @@ fn main() {
 
     // Raw round constants (first few, for cross-validation)
     println!("// First 3 raw (unoptimized) round constants for cross-validation:");
-    for i in 0..3 {
+    for (i, rc) in raw_constants.iter().take(3).enumerate() {
         println!(
             "// RC[{}] = [{}, {}, {}]",
             i,
-            fq_to_hex(&raw_constants[i][0]),
-            fq_to_hex(&raw_constants[i][1]),
-            fq_to_hex(&raw_constants[i][2])
+            fq_to_hex(&rc[0]),
+            fq_to_hex(&rc[1]),
+            fq_to_hex(&rc[2])
         );
     }
     println!();

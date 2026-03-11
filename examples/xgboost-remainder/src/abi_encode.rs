@@ -136,6 +136,7 @@ pub fn encode_hyrax_proof(
 ///
 /// Format: numGens (uint256) | G1[numGens] (message gens) | G1 (scalarGen) | G1 (blindingGen)
 /// Each G1 point is 64 bytes (x, y) in big-endian.
+#[allow(dead_code)]
 pub fn encode_pedersen_gens(committer: &PedersenCommitter<Bn256Point>) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
 
@@ -171,6 +172,7 @@ pub fn encode_pedersen_gens(committer: &PedersenCommitter<Bn256Point>) -> Result
 }
 
 /// Encode an Fq field element as big-endian 32 bytes.
+#[allow(dead_code)]
 fn encode_fq_be(buf: &mut Vec<u8>, val: &Fq) {
     let repr = val.to_repr();
     let mut be = [0u8; 32];

@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity ^0.8.20;
 
+import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+
 /// @title ProgramRegistry
 /// @notice Registry for zkVM programs that can be executed on World ZK Compute
-/// @dev Programs are identified by their RISC Zero image ID (deterministic hash of the ELF)
-contract ProgramRegistry {
+/// @dev Programs are identified by their RISC Zero image ID (deterministic hash of the ELF).
+///      Admin (via Ownable2Step) can verify/unverify programs and pause registration.
+contract ProgramRegistry is Ownable2Step, Pausable {
     // ========================================================================
     // TYPES
     // ========================================================================
@@ -17,6 +21,7 @@ contract ProgramRegistry {
         bytes32 inputSchema; // Hash of expected input schema (optional)
         uint256 registeredAt; // Block timestamp of registration
         bool active; // Whether program is active
+        bool verified; // Whether program has been verified by admin
         address verifierContract; // IProofVerifier address (0x0 = use default risc0)
         string proofSystem; // "risc0" | "remainder" | "ezkl" (empty = risc0)
     }
@@ -45,6 +50,9 @@ contract ProgramRegistry {
     event ProgramDeactivated(bytes32 indexed imageId);
     event ProgramReactivated(bytes32 indexed imageId);
 
+    event ProgramVerified(bytes32 indexed imageId);
+    event ProgramUnverified(bytes32 indexed imageId);
+
     // ========================================================================
     // ERRORS
     // ========================================================================
@@ -53,6 +61,17 @@ contract ProgramRegistry {
     error ProgramNotFound();
     error NotProgramOwner();
     error InvalidImageId();
+    error ProgramAlreadyVerified();
+    error ProgramNotVerified();
+    error ProgramAlreadyActive();
+    error ProgramAlreadyInactive();
+
+    // ========================================================================
+    // CONSTRUCTOR
+    // ========================================================================
+
+    /// @param _admin The initial owner/admin address
+    constructor(address _admin) Ownable(_admin) {}
 
     // ========================================================================
     // REGISTRATION
@@ -65,6 +84,7 @@ contract ProgramRegistry {
     /// @param inputSchema Optional hash of the expected input schema
     function registerProgram(bytes32 imageId, string calldata name, string calldata programUrl, bytes32 inputSchema)
         external
+        whenNotPaused
     {
         _registerProgram(imageId, name, programUrl, inputSchema, address(0), "risc0");
     }
@@ -83,7 +103,7 @@ contract ProgramRegistry {
         bytes32 inputSchema,
         address verifierContract,
         string calldata _proofSystem
-    ) external {
+    ) external whenNotPaused {
         _registerProgram(imageId, name, programUrl, inputSchema, verifierContract, _proofSystem);
     }
 
@@ -106,6 +126,7 @@ contract ProgramRegistry {
             inputSchema: inputSchema,
             registeredAt: block.timestamp,
             active: true,
+            verified: false,
             verifierContract: verifierContract,
             proofSystem: _proofSystem
         });
@@ -116,7 +137,7 @@ contract ProgramRegistry {
         emit ProgramRegistered(imageId, msg.sender, name, programUrl);
     }
 
-    /// @notice Update program URL (only owner)
+    /// @notice Update program URL (only program owner)
     function updateProgramUrl(bytes32 imageId, string calldata newUrl) external {
         Program storage program = programs[imageId];
         if (program.registeredAt == 0) revert ProgramNotFound();
@@ -127,29 +148,29 @@ contract ProgramRegistry {
         emit ProgramUpdated(imageId, newUrl);
     }
 
-    /// @notice Deactivate a program (only owner)
-    function deactivateProgram(bytes32 imageId) external {
+    /// @notice Deactivate a program (only contract owner/admin)
+    function deactivateProgram(bytes32 imageId) external onlyOwner {
         Program storage program = programs[imageId];
         if (program.registeredAt == 0) revert ProgramNotFound();
-        if (program.owner != msg.sender) revert NotProgramOwner();
+        if (!program.active) revert ProgramAlreadyInactive();
 
         program.active = false;
 
         emit ProgramDeactivated(imageId);
     }
 
-    /// @notice Reactivate a program (only owner)
-    function reactivateProgram(bytes32 imageId) external {
+    /// @notice Reactivate a program (only contract owner/admin)
+    function reactivateProgram(bytes32 imageId) external onlyOwner {
         Program storage program = programs[imageId];
         if (program.registeredAt == 0) revert ProgramNotFound();
-        if (program.owner != msg.sender) revert NotProgramOwner();
+        if (program.active) revert ProgramAlreadyActive();
 
         program.active = true;
 
         emit ProgramReactivated(imageId);
     }
 
-    /// @notice Update the verifier contract for a program (only owner)
+    /// @notice Update the verifier contract for a program (only program owner)
     /// @param imageId The program ID
     /// @param verifierContract New IProofVerifier address (0x0 = use default)
     function updateVerifier(bytes32 imageId, address verifierContract) external {
@@ -161,6 +182,48 @@ contract ProgramRegistry {
     }
 
     // ========================================================================
+    // ADMIN: VERIFICATION
+    // ========================================================================
+
+    /// @notice Mark a program as verified (admin trust signal)
+    /// @param imageId The program ID to verify
+    function verifyProgram(bytes32 imageId) external onlyOwner {
+        Program storage program = programs[imageId];
+        if (program.registeredAt == 0) revert ProgramNotFound();
+        if (program.verified) revert ProgramAlreadyVerified();
+
+        program.verified = true;
+
+        emit ProgramVerified(imageId);
+    }
+
+    /// @notice Remove verification from a program (admin)
+    /// @param imageId The program ID to unverify
+    function unverifyProgram(bytes32 imageId) external onlyOwner {
+        Program storage program = programs[imageId];
+        if (program.registeredAt == 0) revert ProgramNotFound();
+        if (!program.verified) revert ProgramNotVerified();
+
+        program.verified = false;
+
+        emit ProgramUnverified(imageId);
+    }
+
+    // ========================================================================
+    // ADMIN: PAUSABLE
+    // ========================================================================
+
+    /// @notice Pause program registration (admin only)
+    function pause() external onlyOwner {
+        _pause();
+    }
+
+    /// @notice Unpause program registration (admin only)
+    function unpause() external onlyOwner {
+        _unpause();
+    }
+
+    // ========================================================================
     // VIEW FUNCTIONS
     // ========================================================================
 
@@ -168,6 +231,12 @@ contract ProgramRegistry {
     function isProgramActive(bytes32 imageId) external view returns (bool) {
         Program storage program = programs[imageId];
         return program.registeredAt != 0 && program.active;
+    }
+
+    /// @notice Check if a program is verified by admin
+    function isProgramVerified(bytes32 imageId) external view returns (bool) {
+        Program storage program = programs[imageId];
+        return program.registeredAt != 0 && program.verified;
     }
 
     /// @notice Get program details

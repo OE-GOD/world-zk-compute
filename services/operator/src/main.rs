@@ -1,8 +1,10 @@
 mod chain;
 mod config;
+pub mod deadline_monitor;
 mod enclave;
 mod metrics;
 mod nitro;
+pub mod notifications;
 mod prover;
 mod store;
 mod watcher;
@@ -14,7 +16,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
-use config::Config;
+use config::{Config, ModelConfig};
 use prover::ProofManager;
 use watcher::{EventWatcher, TEEEvent};
 
@@ -49,6 +51,9 @@ enum Commands {
         /// Feature vector as JSON array, e.g. '[5.0, 3.5, 1.5, 0.3]'
         #[arg(long)]
         features: String,
+        /// Name of the model to use (from [[models]] config). Defaults to first model.
+        #[arg(long)]
+        model: Option<String>,
     },
     /// Watch chain events and auto-resolve disputes
     Watch {
@@ -64,6 +69,9 @@ enum Commands {
         /// Port for the health/metrics HTTP server
         #[arg(long, default_value = "9090")]
         metrics_port: u16,
+        /// Name of the model to use (from [[models]] config). Defaults to first model.
+        #[arg(long)]
+        model: Option<String>,
     },
     /// Register an enclave on-chain (fetch attestation, verify, register)
     Register {
@@ -74,6 +82,8 @@ enum Commands {
         #[arg(long, default_value = "false")]
         skip_verify: bool,
     },
+    /// List all registered models from the configuration
+    Models,
 }
 
 fn hex_to_b256(hex_str: &str) -> anyhow::Result<B256> {
@@ -121,16 +131,24 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::from_env(cli.config.as_deref())?;
 
     match cli.command {
-        Commands::Submit { features } => cmd_submit(&config, &features).await,
+        Commands::Submit { features, model } => {
+            let selected = config.get_model(model.as_deref())?;
+            cmd_submit(&config, &features, selected).await
+        }
         Commands::Watch { metrics_port } => cmd_watch(&config, metrics_port).await,
         Commands::Run {
             features,
             metrics_port,
-        } => cmd_run(&config, &features, metrics_port).await,
+            model,
+        } => {
+            let selected = config.get_model(model.as_deref())?;
+            cmd_run(&config, &features, metrics_port, selected).await
+        }
         Commands::Register {
             expected_pcr0,
             skip_verify,
         } => cmd_register(&config, expected_pcr0.as_deref(), skip_verify).await,
+        Commands::Models => cmd_models(&config),
     }
 }
 
@@ -168,7 +186,9 @@ async fn verify_enclave_attestation(
 
     // Check cache (drop guard before any async work)
     {
-        let cached = cache.lock().unwrap();
+        let cached = cache
+            .lock()
+            .map_err(|e| anyhow::anyhow!("attestation cache lock poisoned: {e}"))?;
         if let Some(ref c) = *cached {
             if c.fetched_at.elapsed().as_secs() < config.attestation_cache_ttl {
                 tracing::debug!(
@@ -214,7 +234,9 @@ async fn verify_enclave_attestation(
 
     // Re-acquire lock to update cache
     {
-        let mut cached = cache.lock().unwrap();
+        let mut cached = cache
+            .lock()
+            .map_err(|e| anyhow::anyhow!("attestation cache lock poisoned: {e}"))?;
         *cached = Some(CachedAttestation {
             verified,
             fetched_at: Instant::now(),
@@ -224,12 +246,22 @@ async fn verify_enclave_attestation(
     Ok(())
 }
 
-#[tracing::instrument(skip(config, features_json))]
-async fn cmd_submit(config: &Config, features_json: &str) -> anyhow::Result<()> {
+#[tracing::instrument(skip(config, features_json, model))]
+async fn cmd_submit(
+    config: &Config,
+    features_json: &str,
+    model: &ModelConfig,
+) -> anyhow::Result<()> {
     // 1. Parse features
     let feats: Vec<f64> = serde_json::from_str(features_json)
         .map_err(|e| anyhow::anyhow!("Invalid features JSON: {}", e))?;
-    tracing::info!("Submitting inference for {} features", feats.len());
+    tracing::info!(
+        model_name = %model.name,
+        model_path = %model.path,
+        "Submitting inference for {} features using model '{}'",
+        feats.len(),
+        model.name
+    );
 
     // 2. Call enclave /infer
     let enclave_client = enclave::EnclaveClient::new(&config.enclave_url);
@@ -273,8 +305,10 @@ async fn cmd_submit(config: &Config, features_json: &str) -> anyhow::Result<()> 
     // 4. Trigger proof pre-computation (best-effort, uses warm prover if PROVER_URL is set)
     let proof_mgr = ProofManager::new(
         &config.precompute_bin,
-        &config.model_path,
+        &model.path,
         &config.proofs_dir,
+        config.max_proof_retries,
+        config.proof_retry_delay_secs,
     );
     let result_id = format!("0x{}", hex::encode(tx_hash));
     let features_owned = features_json.to_string();
@@ -285,6 +319,26 @@ async fn cmd_submit(config: &Config, features_json: &str) -> anyhow::Result<()> 
     });
 
     println!("tx_hash={}", tx_hash);
+    Ok(())
+}
+
+/// Print all registered models from the configuration.
+fn cmd_models(config: &Config) -> anyhow::Result<()> {
+    if config.models.is_empty() {
+        println!("No models configured.");
+        return Ok(());
+    }
+
+    println!("Registered models ({}):", config.models.len());
+    println!("{:<20} {:<50} {:<12} HASH", "NAME", "PATH", "FORMAT");
+    println!("{}", "-".repeat(100));
+    for model in &config.models {
+        let hash_display = model.model_hash.as_deref().unwrap_or("-");
+        println!(
+            "{:<20} {:<50} {:<12} {}",
+            model.name, model.path, model.model_format, hash_display
+        );
+    }
     Ok(())
 }
 
@@ -329,8 +383,13 @@ async fn shutdown_signal() {
 
     #[cfg(unix)]
     {
-        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to install SIGTERM handler");
+        let Ok(mut sigterm) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        else {
+            tracing::warn!("failed to install SIGTERM handler, using ctrl-c only");
+            ctrl_c.await.ok();
+            return;
+        };
         tokio::select! {
             _ = ctrl_c => {},
             _ = sigterm.recv() => {},
@@ -359,7 +418,17 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
         &config.precompute_bin,
         &config.model_path,
         &config.proofs_dir,
+        config.max_proof_retries,
+        config.proof_retry_delay_secs,
     );
+
+    // Initialize webhook notifier (None if WEBHOOK_URL is not set)
+    let notifier = notifications::WebhookNotifier::from_optional(config.webhook_url.as_deref());
+    if notifier.is_some() {
+        tracing::info!("Webhook notifications enabled");
+    } else {
+        tracing::debug!("Webhook notifications disabled (no WEBHOOK_URL configured)");
+    }
 
     let shutdown = Arc::new(ShutdownState::new());
 
@@ -424,6 +493,20 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
                         challenger = %challenger,
                         "Challenge detected"
                     );
+
+                    // Fire-and-forget webhook notification
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    notifications::maybe_notify_challenge(
+                        &notifier,
+                        &format!("0x{}", hex::encode(result_id)),
+                        &format!("{}", challenger),
+                        now,
+                        now + 3600, // 1-hour deadline estimate
+                    );
+
                     shutdown.track_task_start();
                     handle_challenge(&chain_client, &proof_mgr, *result_id).await;
                     shutdown.track_task_done();
@@ -439,6 +522,9 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
                         .total_finalizations
                         .fetch_add(1, Ordering::Relaxed);
                     tracing::info!(result_id = %result_id, "Result finalized");
+                }
+                TEEEvent::ResultExpired { result_id } => {
+                    tracing::info!(result_id = %result_id, "Result expired (unchallenged finalize)");
                 }
             }
         }
@@ -487,9 +573,14 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn cmd_run(config: &Config, features_json: &str, metrics_port: u16) -> anyhow::Result<()> {
+async fn cmd_run(
+    config: &Config,
+    features_json: &str,
+    metrics_port: u16,
+    model: &ModelConfig,
+) -> anyhow::Result<()> {
     // 1. Submit (same as cmd_submit)
-    let submit_result = cmd_submit(config, features_json).await;
+    let submit_result = cmd_submit(config, features_json, model).await;
     if let Err(e) = &submit_result {
         tracing::error!("Submit failed: {}", e);
         return submit_result;

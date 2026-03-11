@@ -21,12 +21,13 @@ contract DeployLocalScript is Script {
         MockRiscZeroVerifier verifier = new MockRiscZeroVerifier();
         console.log("MockRiscZeroVerifier deployed at:", address(verifier));
 
-        // 2. Deploy Program Registry
-        ProgramRegistry registry = new ProgramRegistry();
+        // 2. Deploy Program Registry (deployer is admin)
+        address deployer = vm.addr(deployerPrivateKey);
+        ProgramRegistry registry = new ProgramRegistry(deployer);
         console.log("ProgramRegistry deployed at:", address(registry));
 
-        // 3. Deploy Execution Engine
-        ExecutionEngine engine = new ExecutionEngine(address(registry), address(verifier), feeRecipient);
+        // 3. Deploy Execution Engine (deployer is admin)
+        ExecutionEngine engine = new ExecutionEngine(deployer, address(registry), address(verifier), feeRecipient);
         console.log("ExecutionEngine deployed at:", address(engine));
 
         vm.stopBroadcast();

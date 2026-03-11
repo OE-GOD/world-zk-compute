@@ -42,7 +42,16 @@ from .errors import (
     ProofError,
     NetworkError,
 )
+from .hash_utils import (
+    compute_model_hash,
+    compute_model_hash_from_bytes,
+    compute_input_hash,
+    compute_input_hash_from_json,
+    compute_result_hash,
+    compute_result_hash_from_bytes,
+)
 from .xgboost import XGBoostConverter, XGBoostModel, ModelParseError
+from .lightgbm import LightGBMConverter
 
 try:
     from .verifier import (
@@ -86,6 +95,8 @@ __all__ = [
     "XGBoostConverter",
     "XGBoostModel",
     "ModelParseError",
+    # LightGBM
+    "LightGBMConverter",
     # Batch Verifier (requires web3 optional dependency)
     "BatchVerifier",
     "BatchVerifyInput",
@@ -96,4 +107,11 @@ __all__ = [
     # TEE Verifier (requires web3 optional dependency)
     "TEEVerifier",
     "MLResult",
+    # Hash utilities
+    "compute_model_hash",
+    "compute_model_hash_from_bytes",
+    "compute_input_hash",
+    "compute_input_hash_from_json",
+    "compute_result_hash",
+    "compute_result_hash_from_bytes",
 ]

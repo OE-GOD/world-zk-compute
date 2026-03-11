@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
 import "../src/remainder/RemainderVerifier.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import "../src/remainder/PoseidonSponge.sol";
 import "../src/remainder/SumcheckVerifier.sol";
 import "../src/remainder/HyraxVerifier.sol";
@@ -319,18 +320,21 @@ contract RemainderVerifierTest is Test {
 
     function test_only_admin_can_register() public {
         vm.prank(address(99));
-        vm.expectRevert(RemainderVerifier.NotAdmin.selector);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, address(99)));
         uint256[] memory sizes = new uint256[](1);
         uint8[] memory types = new uint8[](1);
         bool[] memory committed = new bool[](1);
         verifier.registerCircuit(keccak256("another"), 1, sizes, types, committed, "test");
     }
 
-    function test_admin_transfer() public {
+    function test_ownership_transfer() public {
         address newAdmin = address(42);
         vm.prank(admin);
-        verifier.transferAdmin(newAdmin);
-        assertEq(verifier.admin(), newAdmin);
+        verifier.transferOwnership(newAdmin);
+        // Ownable2Step: must accept
+        vm.prank(newAdmin);
+        verifier.acceptOwnership();
+        assertEq(verifier.owner(), newAdmin);
     }
 
     function test_get_circuit_hashes() public view {
@@ -359,7 +363,7 @@ contract IntegrationTest is Test {
         vm.startPrank(deployer);
 
         // Deploy registry and verifiers
-        registry = new ProgramRegistry();
+        registry = new ProgramRegistry(deployer);
         mockVerifier = new MockRiscZeroVerifier();
         remainderVerifier = new RemainderVerifier(deployer);
 
@@ -367,7 +371,7 @@ contract IntegrationTest is Test {
         remainderAdapter = new RemainderVerifierAdapter(address(remainderVerifier));
 
         // Deploy execution engine
-        engine = new ExecutionEngine(address(registry), address(mockVerifier), feeRecipient);
+        engine = new ExecutionEngine(deployer, address(registry), address(mockVerifier), feeRecipient);
 
         // Register risc0 program (backward-compatible, no verifier)
         registry.registerProgram(risc0ImageId, "test-risc0", "https://example.com/elf", bytes32(0));

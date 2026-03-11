@@ -244,9 +244,9 @@ library PoseidonSponge {{
         println!();
         if round == 0 {
             println!("        // === First half full rounds (rounds 0-3) ===");
-        } else if round == r_f_half as usize {
+        } else if round == r_f_half {
             println!("        // === Partial rounds (rounds 4-60) ===");
-        } else if round == (r_f_half + r_p) as usize {
+        } else if round == (r_f_half + r_p) {
             println!("        // === Second half full rounds (rounds 61-64) ===");
         }
         println!("        // Round {}", round);

@@ -126,6 +126,8 @@ services:
         condition: service_healthy
       warm-prover:
         condition: service_healthy
+    ports:
+      - "9090:9090"
     environment:
       OPERATOR_RPC_URL: "http://anvil:8545"
       # Anvil account #0 — admin + operator
@@ -135,6 +137,14 @@ services:
       MODEL_PATH: /app/model/model.json
       PROOFS_DIR: /app/proofs
       PRECOMPUTE_BIN: /usr/local/bin/precompute_proof
+      RUST_LOG: "info"
+      RUST_LOG_FORMAT: "json"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9090/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
     volumes:
       - deployment-data:/deployment:ro
       - proof-storage:/app/proofs
