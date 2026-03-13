@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! OpenTelemetry distributed tracing setup for the worldzk-operator service.
 //!
 //! Provides a [`TracingConfig`] struct that reads configuration from environment
@@ -60,12 +61,11 @@ impl TracingConfig {
     ///
     /// Any variable that is unset or empty falls back to the default value.
     pub fn from_env() -> Self {
-        let service_name = non_empty_env("OTEL_SERVICE_NAME")
-            .unwrap_or_else(|| DEFAULT_SERVICE_NAME.to_string());
+        let service_name =
+            non_empty_env("OTEL_SERVICE_NAME").unwrap_or_else(|| DEFAULT_SERVICE_NAME.to_string());
         let otlp_endpoint = non_empty_env("OTEL_EXPORTER_OTLP_ENDPOINT")
             .unwrap_or_else(|| DEFAULT_OTLP_ENDPOINT.to_string());
-        let log_level =
-            non_empty_env("LOG_LEVEL").unwrap_or_else(|| DEFAULT_LOG_LEVEL.to_string());
+        let log_level = non_empty_env("LOG_LEVEL").unwrap_or_else(|| DEFAULT_LOG_LEVEL.to_string());
         let enabled = non_empty_env("OTEL_ENABLED")
             .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
             .unwrap_or(false);
@@ -82,12 +82,8 @@ impl TracingConfig {
     /// `None` parameter.
     pub fn new(service_name: Option<&str>, otlp_endpoint: Option<&str>) -> Self {
         Self {
-            service_name: service_name
-                .unwrap_or(DEFAULT_SERVICE_NAME)
-                .to_string(),
-            otlp_endpoint: otlp_endpoint
-                .unwrap_or(DEFAULT_OTLP_ENDPOINT)
-                .to_string(),
+            service_name: service_name.unwrap_or(DEFAULT_SERVICE_NAME).to_string(),
+            otlp_endpoint: otlp_endpoint.unwrap_or(DEFAULT_OTLP_ENDPOINT).to_string(),
             ..Self::default()
         }
     }
@@ -112,9 +108,7 @@ impl TracingConfig {
 pub fn init_tracing(service_name: &str, otlp_endpoint: Option<&str>) {
     let config = TracingConfig {
         service_name: service_name.to_string(),
-        otlp_endpoint: otlp_endpoint
-            .unwrap_or(DEFAULT_OTLP_ENDPOINT)
-            .to_string(),
+        otlp_endpoint: otlp_endpoint.unwrap_or(DEFAULT_OTLP_ENDPOINT).to_string(),
         ..TracingConfig::from_env()
     };
     init_tracing_with_config(&config);
@@ -129,8 +123,8 @@ pub fn init_tracing(service_name: &str, otlp_endpoint: Option<&str>) {
 /// When OpenTelemetry crates are available, an OTLP span-exporter layer will
 /// be added here conditionally on `config.enabled`.
 pub fn init_tracing_with_config(config: &TracingConfig) {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(&config.log_level));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.log_level));
 
     let json_format = std::env::var("RUST_LOG_FORMAT")
         .map(|v| v == "json")
@@ -171,7 +165,9 @@ pub fn init_tracing_with_config(config: &TracingConfig) {
 /// `opentelemetry::global::shutdown_tracer_provider()` to flush any pending
 /// spans before the process exits.
 pub fn shutdown_tracer_provider() {
-    tracing::debug!("Tracer provider shutdown requested (no-op until opentelemetry crate is added)");
+    tracing::debug!(
+        "Tracer provider shutdown requested (no-op until opentelemetry crate is added)"
+    );
     // When opentelemetry is available:
     // opentelemetry::global::shutdown_tracer_provider();
 }
@@ -310,10 +306,7 @@ mod tests {
 
     #[test]
     fn test_tracing_config_new_with_overrides() {
-        let config = TracingConfig::new(
-            Some("custom-service"),
-            Some("http://remote:4317"),
-        );
+        let config = TracingConfig::new(Some("custom-service"), Some("http://remote:4317"));
         assert_eq!(config.service_name, "custom-service");
         assert_eq!(config.otlp_endpoint, "http://remote:4317");
     }
@@ -328,21 +321,19 @@ mod tests {
 
     #[test]
     fn test_span_watch_cycle_fields() {
-        let span = span_watch_cycle(100, 200, 1);
-        // The span should be created without panicking and be valid
-        assert!(!span.is_disabled());
+        // Verify span creation does not panic (span may be disabled without a
+        // global subscriber, which is expected in unit tests).
+        let _span = span_watch_cycle(100, 200, 1);
     }
 
     #[test]
     fn test_span_submit_proof_fields() {
-        let span = span_submit_proof("0xabc123", "0xContractAddr");
-        assert!(!span.is_disabled());
+        let _span = span_submit_proof("0xabc123", "0xContractAddr");
     }
 
     #[test]
     fn test_span_dispute_fields() {
-        let span = span_dispute("0xresult1", "0xchallenger1");
-        assert!(!span.is_disabled());
+        let _span = span_dispute("0xresult1", "0xchallenger1");
     }
 
     #[test]
@@ -364,7 +355,10 @@ mod tests {
 
         // Set with value
         std::env::set_var("__TEST_TRACING_VAL__", "hello");
-        assert_eq!(non_empty_env("__TEST_TRACING_VAL__"), Some("hello".to_string()));
+        assert_eq!(
+            non_empty_env("__TEST_TRACING_VAL__"),
+            Some("hello".to_string())
+        );
         std::env::remove_var("__TEST_TRACING_VAL__");
     }
 

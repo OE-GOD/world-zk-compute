@@ -21,10 +21,9 @@ pub async fn version_header_middleware(
     next: Next,
 ) -> Response {
     let mut response = next.run(request).await;
-    response.headers_mut().insert(
-        "X-API-Version",
-        HeaderValue::from_static(API_VERSION),
-    );
+    response
+        .headers_mut()
+        .insert("X-API-Version", HeaderValue::from_static(API_VERSION));
     response
 }
 
@@ -39,22 +38,15 @@ pub async fn version_header_middleware(
 /// The returned router should be merged with the main app router.
 #[allow(dead_code)]
 pub fn versioned_routes<S: Clone + Send + Sync + 'static>() -> Router<S> {
-    Router::new()
-        .layer(middleware::from_fn(version_header_middleware))
+    Router::new().layer(middleware::from_fn(version_header_middleware))
 }
 
 /// Handler that redirects old unversioned API paths to `/api/v1/`.
 #[allow(dead_code)]
-pub async fn redirect_to_v1(
-    uri: axum::http::Uri,
-) -> impl IntoResponse {
+pub async fn redirect_to_v1(uri: axum::http::Uri) -> impl IntoResponse {
     let path = uri.path();
     let new_path = format!("/api/v1{}", path);
-    (
-        StatusCode::MOVED_PERMANENTLY,
-        [("Location", new_path)],
-        "",
-    )
+    (StatusCode::MOVED_PERMANENTLY, [("Location", new_path)], "")
 }
 
 #[cfg(test)]
@@ -76,23 +68,23 @@ mod tests {
             .route("/test", get(|| async { "ok" }))
             .layer(middleware::from_fn(version_header_middleware));
 
-        let req = Request::builder()
-            .uri("/test")
-            .body(Body::empty())
-            .unwrap();
+        let req = Request::builder().uri("/test").body(Body::empty()).unwrap();
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(
-            resp.headers().get("X-API-Version").unwrap().to_str().unwrap(),
+            resp.headers()
+                .get("X-API-Version")
+                .unwrap()
+                .to_str()
+                .unwrap(),
             "v1"
         );
     }
 
     #[tokio::test]
     async fn test_redirect_to_v1() {
-        let app = Router::new()
-            .route("/results", get(redirect_to_v1));
+        let app = Router::new().route("/results", get(redirect_to_v1));
 
         let req = Request::builder()
             .uri("/results")

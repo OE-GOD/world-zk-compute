@@ -77,6 +77,10 @@ indexer:
     pullPolicy: IfNotPresent
   # -- Indexer service port
   port: 8081
+  # -- Postgres configuration (when using DB_TYPE=postgres)
+  postgres:
+    # -- Enable Postgres backend (requires DATABASE_URL in secrets)
+    enabled: false
   # -- Additional environment variables for the indexer
   env:
     DB_PATH: "/data/indexer.db"

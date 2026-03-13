@@ -24,6 +24,11 @@ ALL_SUITES=(
     operator
     enclave
     rust-sdk
+    admin-cli
+    indexer
+    watcher-crate
+    events-crate
+    chaos
     python-sdk
     typescript-sdk
     solidity
@@ -49,6 +54,11 @@ Suite names:
   operator          services/operator (Rust)
   enclave           tee/enclave (Rust)
   rust-sdk          sdk (Rust)
+  admin-cli         services/admin-cli (Rust)
+  indexer           services/indexer (Rust)
+  watcher-crate     crates/watcher (Rust)
+  events-crate      crates/events (Rust)
+  chaos             tests/chaos (Rust, fault injection)
   python-sdk        sdk/python (pytest)
   typescript-sdk    sdk/typescript (vitest)
   solidity          contracts (forge)
@@ -220,6 +230,41 @@ fi
 if should_run "rust-sdk"; then
     run_suite "Rust SDK" \
         "$ROOT_DIR/sdk" \
+        cargo test
+fi
+
+# ── 3a. Admin CLI ────────────────────────────────────────────────────────────
+if should_run "admin-cli"; then
+    run_suite "Admin CLI (Rust)" \
+        "$ROOT_DIR/services/admin-cli" \
+        cargo test
+fi
+
+# ── 3b. Indexer ──────────────────────────────────────────────────────────────
+if should_run "indexer"; then
+    run_suite "Indexer (Rust)" \
+        "$ROOT_DIR/services/indexer" \
+        cargo test
+fi
+
+# ── 3c. Watcher Crate ───────────────────────────────────────────────────────
+if should_run "watcher-crate"; then
+    run_suite "Watcher Crate" \
+        "$ROOT_DIR/crates/watcher" \
+        cargo test
+fi
+
+# ── 3d. Events Crate ────────────────────────────────────────────────────────
+if should_run "events-crate"; then
+    run_suite "Events Crate" \
+        "$ROOT_DIR/crates/events" \
+        cargo test
+fi
+
+# ── 3e. Chaos Tests ─────────────────────────────────────────────────────────
+if should_run "chaos"; then
+    run_suite "Chaos Tests" \
+        "$ROOT_DIR/tests/chaos" \
         cargo test
 fi
 

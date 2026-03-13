@@ -1,10 +1,9 @@
 //! Chaos / fault-injection tests for TEE enclave resilience.
 //!
-//! The enclave is a binary crate without a library target, so these tests
-//! are self-contained: they re-implement the enclave's core resilience
-//! components (replay protection, timestamp freshness, rate limiting)
-//! using the same algorithms as the real enclave code, then stress-test
-//! them under adversarial conditions.
+//! Imports core enclave components from `tee_enclave` (replay protection,
+//! timestamp freshness, nonce registry, model validation) and stress-tests
+//! them under adversarial conditions. The sliding-window rate limiter is
+//! kept local since it lives in the enclave binary, not the library.
 //!
 //! Tests cover:
 //! 1. Replay protection with duplicate nonces
@@ -14,121 +13,21 @@
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{HashMap, VecDeque};
+    use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+    // Import enclave components directly instead of re-implementing
+    use tee_enclave::validation::{compute_model_hash, validate_model};
+    use tee_enclave::watchdog::{
+        check_timestamp, NonceRegistry, ReplayError, ReplayProtection, MAX_NONCE_ENTRIES,
+    };
+
     // ===================================================================
-    // Inline enclave component re-implementations
-    // (mirrors tee/enclave/src/watchdog.rs and tee/enclave/src/main.rs)
+    // Local mock components (test infrastructure, not in production code)
     // ===================================================================
 
-    /// Maximum number of nonces stored in the LRU cache.
-    const MAX_NONCE_ENTRIES: usize = 100_000;
-
-    /// Default maximum age for a request timestamp (seconds).
-    const DEFAULT_MAX_REQUEST_AGE_SECS: u64 = 60;
-
-    /// Errors from replay protection validation.
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    enum ReplayError {
-        DuplicateNonce,
-        ExpiredTimestamp,
-        InvalidChainId,
-    }
-
-    /// Bounded LRU nonce registry (matches enclave implementation).
-    struct NonceRegistry {
-        set: HashMap<String, ()>,
-        order: VecDeque<String>,
-        max_entries: usize,
-    }
-
-    impl NonceRegistry {
-        fn new(max_entries: usize) -> Self {
-            Self {
-                set: HashMap::with_capacity(max_entries.min(1024)),
-                order: VecDeque::with_capacity(max_entries.min(1024)),
-                max_entries,
-            }
-        }
-
-        fn check_nonce(&mut self, nonce: &str) -> bool {
-            if self.set.contains_key(nonce) {
-                return false;
-            }
-            if self.set.len() >= self.max_entries {
-                if let Some(oldest) = self.order.pop_front() {
-                    self.set.remove(&oldest);
-                }
-            }
-            self.set.insert(nonce.to_owned(), ());
-            self.order.push_back(nonce.to_owned());
-            true
-        }
-
-        fn len(&self) -> usize {
-            self.set.len()
-        }
-    }
-
-    /// Check timestamp freshness (matches enclave implementation).
-    fn check_timestamp(timestamp_secs: u64, max_age: u64) -> bool {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
-        if now > timestamp_secs && (now - timestamp_secs) > max_age {
-            return false;
-        }
-        if timestamp_secs > now && (timestamp_secs - now) > max_age {
-            return false;
-        }
-        true
-    }
-
-    /// Chain ID check (matches enclave implementation).
-    fn check_chain_id(request_chain_id: u64, expected: u64) -> bool {
-        request_chain_id == expected
-    }
-
-    /// Combined replay protection (matches enclave implementation).
-    struct ReplayProtection {
-        nonces: NonceRegistry,
-        max_request_age_secs: u64,
-        expected_chain_id: u64,
-    }
-
-    impl ReplayProtection {
-        fn new(max_request_age_secs: u64, expected_chain_id: u64) -> Self {
-            Self {
-                nonces: NonceRegistry::new(MAX_NONCE_ENTRIES),
-                max_request_age_secs,
-                expected_chain_id,
-            }
-        }
-
-        fn validate_request(
-            &mut self,
-            nonce: &str,
-            timestamp_secs: u64,
-            chain_id: u64,
-        ) -> Result<(), ReplayError> {
-            if !check_chain_id(chain_id, self.expected_chain_id) {
-                return Err(ReplayError::InvalidChainId);
-            }
-            if !check_timestamp(timestamp_secs, self.max_request_age_secs) {
-                return Err(ReplayError::ExpiredTimestamp);
-            }
-            if !self.nonces.check_nonce(nonce) {
-                return Err(ReplayError::DuplicateNonce);
-            }
-            Ok(())
-        }
-    }
-
-    /// Sliding-window rate limiter (matches enclave main.rs implementation).
+    /// Sliding-window rate limiter (test mock, different from production).
     struct SlidingWindowRateLimiter {
         window: Mutex<VecDeque<Instant>>,
         max_requests_per_minute: u64,
@@ -164,34 +63,6 @@ mod tests {
         }
     }
 
-    /// SHA-256 model hash validator (matches enclave validation.rs).
-    fn compute_model_hash(model_bytes: &[u8]) -> String {
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(model_bytes);
-        hex::encode(hasher.finalize())
-    }
-
-    fn validate_model(
-        model_bytes: &[u8],
-        expected_hash: Option<&str>,
-    ) -> Result<String, String> {
-        let computed = compute_model_hash(model_bytes);
-        if let Some(expected) = expected_hash {
-            let expected_clean = expected
-                .strip_prefix("0x")
-                .unwrap_or(expected)
-                .to_ascii_lowercase();
-            if computed != expected_clean {
-                return Err(format!(
-                    "Model hash mismatch: expected {}, computed {}",
-                    expected_clean, computed
-                ));
-            }
-        }
-        Ok(computed)
-    }
-
     fn now_secs() -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -212,9 +83,7 @@ mod tests {
         assert!(rp.validate_request("nonce-abc-123", ts, 1).is_ok());
 
         // Replay with same nonce is rejected.
-        let err = rp
-            .validate_request("nonce-abc-123", ts, 1)
-            .unwrap_err();
+        let err = rp.validate_request("nonce-abc-123", ts, 1).unwrap_err();
         assert_eq!(err, ReplayError::DuplicateNonce);
     }
 
@@ -241,7 +110,10 @@ mod tests {
                 rejected += 1;
             }
         }
-        assert_eq!(rejected, 1000, "All 1000 replayed nonces should be rejected");
+        assert_eq!(
+            rejected, 1000,
+            "All 1000 replayed nonces should be rejected"
+        );
     }
 
     #[test]
@@ -297,9 +169,7 @@ mod tests {
         let ts = now_secs();
 
         // Wrong chain ID should be rejected before the nonce is consumed.
-        let err = rp
-            .validate_request("unique-nonce", ts, 42)
-            .unwrap_err();
+        let err = rp.validate_request("unique-nonce", ts, 42).unwrap_err();
         assert_eq!(err, ReplayError::InvalidChainId);
 
         // The nonce should NOT have been recorded (chain ID check is first).
@@ -373,9 +243,7 @@ mod tests {
 
         // Expired timestamp should be rejected.
         let old_ts = now_secs() - 120;
-        let err = rp
-            .validate_request("fresh-nonce-1", old_ts, 1)
-            .unwrap_err();
+        let err = rp.validate_request("fresh-nonce-1", old_ts, 1).unwrap_err();
         assert_eq!(err, ReplayError::ExpiredTimestamp);
 
         // The nonce should NOT have been consumed (timestamp check is before
@@ -417,7 +285,7 @@ mod tests {
         assert!(result.is_err(), "11th request should be rate-limited");
         if let Err(retry_after) = result {
             assert!(
-                retry_after >= 1 && retry_after <= 60,
+                (1..=60).contains(&retry_after),
                 "Retry-after should be between 1 and 60, got {}",
                 retry_after
             );
@@ -550,10 +418,7 @@ mod tests {
             accepted_count, 1,
             "Exactly one thread should accept the nonce"
         );
-        assert_eq!(
-            rejected_count, 99,
-            "99 threads should detect the replay"
-        );
+        assert_eq!(rejected_count, 99, "99 threads should detect the replay");
     }
 
     #[test]
@@ -650,8 +515,7 @@ mod tests {
     #[test]
     fn test_model_validation_wrong_hash_rejected() {
         let model_data = b"legitimate model data";
-        let wrong_hash =
-            "0000000000000000000000000000000000000000000000000000000000000000";
+        let wrong_hash = "0000000000000000000000000000000000000000000000000000000000000000";
         let result = validate_model(model_data, Some(wrong_hash));
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("mismatch"));
@@ -690,10 +554,7 @@ mod tests {
         assert!(validate_model(model_data, Some(&format!("0x{}", hash))).is_ok());
 
         // With 0x prefix + uppercase.
-        assert!(
-            validate_model(model_data, Some(&format!("0x{}", hash.to_uppercase())))
-                .is_ok()
-        );
+        assert!(validate_model(model_data, Some(&format!("0x{}", hash.to_uppercase()))).is_ok());
     }
 
     #[test]

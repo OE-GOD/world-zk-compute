@@ -238,7 +238,10 @@ fn test_help_flag() {
     // Check that all subcommands are listed
     assert!(stdout.contains("status"), "help should list status command");
     assert!(stdout.contains("pause"), "help should list pause command");
-    assert!(stdout.contains("unpause"), "help should list unpause command");
+    assert!(
+        stdout.contains("unpause"),
+        "help should list unpause command"
+    );
 }
 
 #[test]

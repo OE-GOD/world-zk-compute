@@ -128,7 +128,10 @@ fn chaos_rate_limiter_same_ip_flood() {
     }
 
     // Most requests should be rate-limited (only first 5 allowed as burst)
-    assert!(limited >= 990, "Expected most requests to be limited, got {limited}");
+    assert!(
+        limited >= 990,
+        "Expected most requests to be limited, got {limited}"
+    );
     assert_eq!(limiter.total_rate_limited(), limited);
 }
 
@@ -188,9 +191,17 @@ fn chaos_pruning_large_dataset() {
     let elapsed = start.elapsed();
 
     // Should handle 100K entries without excessive time
-    assert!(elapsed < Duration::from_secs(5), "Pruning took too long: {:?}", elapsed);
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "Pruning took too long: {:?}",
+        elapsed
+    );
     assert!(pruned > 0, "Should have pruned old disputes");
-    assert_eq!(disputes.len(), 1000, "Should be at max_disputes after eviction");
+    assert_eq!(
+        disputes.len(),
+        1000,
+        "Should be at max_disputes after eviction"
+    );
     assert!(pruned + evicted > 0, "Combined should remove entries");
 }
 

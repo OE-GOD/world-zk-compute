@@ -117,6 +117,7 @@ jobs:
       - name: Verify image runs (smoke test)
         run: |
           # Start container in dev mode (no real NSM device)
+          # ENCLAVE_PRIVATE_KEY is a well-known Anvil/Hardhat Account #0 test key (no real value).
           CONTAINER_ID=$(docker run -d \
             -p 8080:8080 \
             -e NITRO_ENABLED=false \

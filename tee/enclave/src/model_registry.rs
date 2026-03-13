@@ -73,10 +73,12 @@ pub struct LoadedModel {
     /// Unique caller-chosen identifier (e.g. "xgboost-iris-v2").
     pub model_id: String,
     /// Filesystem path from which this model was loaded.
+    #[allow(dead_code)] // Used once model registry HTTP routes are wired (T210)
     pub model_path: String,
     /// SHA-256 hex digest of the raw model bytes.
     pub model_hash: String,
     /// Monotonic timestamp when the model was loaded.
+    #[allow(dead_code)] // Used once model registry HTTP routes are wired (T210)
     pub loaded_at: Instant,
     /// Size of the raw model file in bytes.
     pub size_bytes: usize,
@@ -275,6 +277,7 @@ impl ModelRegistry {
     /// Return the first model that was loaded (the "default").
     ///
     /// Returns `None` if the registry is empty.
+    #[allow(dead_code)] // Used once model registry HTTP routes are wired (T210)
     pub fn default_model(&self) -> Option<LoadedModel> {
         let inner = self
             .inner
@@ -288,6 +291,7 @@ impl ModelRegistry {
     }
 
     /// Number of models currently loaded.
+    #[allow(dead_code)] // Used once model registry HTTP routes are wired (T210)
     pub fn len(&self) -> usize {
         let inner = self
             .inner
@@ -297,6 +301,7 @@ impl ModelRegistry {
     }
 
     /// Whether the registry is empty.
+    #[allow(dead_code)] // Used once model registry HTTP routes are wired (T210)
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -567,7 +572,11 @@ mod tests {
     fn test_load_model_io_error() {
         let reg = make_registry(5);
         let err = reg
-            .load_model("bad", "/tmp/model_registry_tests_nonexistent_xyz.json", None)
+            .load_model(
+                "bad",
+                "/tmp/model_registry_tests_nonexistent_xyz.json",
+                None,
+            )
             .unwrap_err();
         match err {
             RegistryError::IoError(msg) => {

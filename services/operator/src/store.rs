@@ -237,12 +237,9 @@ mod tests {
             ]
             .into_iter()
             .collect(),
-            processed_event_ids: [
-                "0xdeadbeef:0".to_string(),
-                "0xdeadbeef:1".to_string(),
-            ]
-            .into_iter()
-            .collect(),
+            processed_event_ids: ["0xdeadbeef:0".to_string(), "0xdeadbeef:1".to_string()]
+                .into_iter()
+                .collect(),
         };
 
         let json = serde_json::to_string_pretty(&state).unwrap();
@@ -250,10 +247,7 @@ mod tests {
 
         assert_eq!(loaded.last_polled_block, 12345);
         assert_eq!(loaded.active_disputes.len(), 2);
-        assert_eq!(
-            loaded.active_disputes.get("0xaabb"),
-            Some(&1700000000u64)
-        );
+        assert_eq!(loaded.active_disputes.get("0xaabb"), Some(&1700000000u64));
         assert_eq!(loaded.processed_event_ids.len(), 2);
         assert!(loaded.processed_event_ids.contains("0xdeadbeef:0"));
     }

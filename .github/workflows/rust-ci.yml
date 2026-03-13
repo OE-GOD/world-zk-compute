@@ -8,18 +8,24 @@ on:
       - 'services/operator/**'
       - 'services/admin-cli/**'
       - 'services/indexer/**'
-      - 'crates/watcher/**'
+      - 'crates/**'
       - 'tee/enclave/**'
+      - 'tests/chaos/**'
       - 'examples/xgboost-remainder/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
   pull_request:
     paths:
       - 'sdk/**'
       - 'services/operator/**'
       - 'services/admin-cli/**'
       - 'services/indexer/**'
-      - 'crates/watcher/**'
+      - 'crates/**'
       - 'tee/enclave/**'
+      - 'tests/chaos/**'
       - 'examples/xgboost-remainder/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
   workflow_dispatch:
 
 env:
@@ -271,3 +277,78 @@ jobs:
 
       - name: Run tests
         run: cargo test --manifest-path examples/xgboost-remainder/Cargo.toml
+
+  workspace-clippy:
+    name: Workspace Clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-clippy-
+
+      - name: Run Clippy (workspace)
+        run: cargo clippy --workspace -- -D warnings
+
+  workspace-fmt:
+    name: Workspace Rustfmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  chaos-tests:
+    name: Chaos Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-chaos-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-chaos-
+
+      - name: Run chaos tests
+        run: cargo test -p chaos-tests

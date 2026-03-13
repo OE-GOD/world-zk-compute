@@ -139,10 +139,7 @@ impl RateLimiter {
     /// Returns the number of currently tracked IPs.
     #[allow(dead_code)] // used in tests; kept as public metrics API
     pub fn tracked_ips(&self) -> usize {
-        self.buckets
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .len()
+        self.buckets.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 }
 

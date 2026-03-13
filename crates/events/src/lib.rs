@@ -70,6 +70,13 @@ pub struct EnclaveRegistered {
     pub image_hash: [u8; 32],
 }
 
+/// A result expired without being challenged (challenge window elapsed).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResultExpired {
+    /// The expired result identifier (indexed topic 1).
+    pub result_id: [u8; 32],
+}
+
 /// A TEE enclave was revoked.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnclaveRevoked {
@@ -87,6 +94,7 @@ pub enum TEEEvent {
     ResultSubmitted(ResultSubmitted),
     ResultChallenged(ResultChallenged),
     ResultFinalized(ResultFinalized),
+    ResultExpired(ResultExpired),
     DisputeResolved(DisputeResolved),
     EnclaveRegistered(EnclaveRegistered),
     EnclaveRevoked(EnclaveRevoked),
@@ -101,24 +109,22 @@ pub const TOPIC_RESULT_SUBMITTED: [u8; 32] =
     const_keccak(b"ResultSubmitted(bytes32,bytes32,bytes32,address)");
 
 /// Topic hash for `ResultChallenged(bytes32,address)`.
-pub const TOPIC_RESULT_CHALLENGED: [u8; 32] =
-    const_keccak(b"ResultChallenged(bytes32,address)");
+pub const TOPIC_RESULT_CHALLENGED: [u8; 32] = const_keccak(b"ResultChallenged(bytes32,address)");
 
 /// Topic hash for `ResultFinalized(bytes32)`.
-pub const TOPIC_RESULT_FINALIZED: [u8; 32] =
-    const_keccak(b"ResultFinalized(bytes32)");
+pub const TOPIC_RESULT_FINALIZED: [u8; 32] = const_keccak(b"ResultFinalized(bytes32)");
 
 /// Topic hash for `DisputeResolved(bytes32,bool)`.
-pub const TOPIC_DISPUTE_RESOLVED: [u8; 32] =
-    const_keccak(b"DisputeResolved(bytes32,bool)");
+pub const TOPIC_DISPUTE_RESOLVED: [u8; 32] = const_keccak(b"DisputeResolved(bytes32,bool)");
+
+/// Topic hash for `ResultExpired(bytes32)`.
+pub const TOPIC_RESULT_EXPIRED: [u8; 32] = const_keccak(b"ResultExpired(bytes32)");
 
 /// Topic hash for `EnclaveRegistered(address,bytes32)`.
-pub const TOPIC_ENCLAVE_REGISTERED: [u8; 32] =
-    const_keccak(b"EnclaveRegistered(address,bytes32)");
+pub const TOPIC_ENCLAVE_REGISTERED: [u8; 32] = const_keccak(b"EnclaveRegistered(address,bytes32)");
 
 /// Topic hash for `EnclaveRevoked(address)`.
-pub const TOPIC_ENCLAVE_REVOKED: [u8; 32] =
-    const_keccak(b"EnclaveRevoked(address)");
+pub const TOPIC_ENCLAVE_REVOKED: [u8; 32] = const_keccak(b"EnclaveRevoked(address)");
 
 // ---------------------------------------------------------------------------
 // Log parsing
@@ -208,6 +214,13 @@ pub fn parse_log(topics: &[[u8; 32]], data: &[u8]) -> Option<TEEEvent> {
             result_id,
             is_valid,
         }))
+    } else if selector == &TOPIC_RESULT_EXPIRED {
+        // topics: [selector, resultId]
+        if topics.len() < 2 {
+            return None;
+        }
+        let result_id = topics[1];
+        Some(TEEEvent::ResultExpired(ResultExpired { result_id }))
     } else if selector == &TOPIC_DISPUTE_RESOLVED {
         // topics: [selector, resultId]
         // data:   [proverWon (bool, ABI-encoded as uint256)]
@@ -286,8 +299,7 @@ fn read_u64_from_word(word: &[u8]) -> u64 {
         return 0;
     }
     u64::from_be_bytes([
-        word[24], word[25], word[26], word[27],
-        word[28], word[29], word[30], word[31],
+        word[24], word[25], word[26], word[27], word[28], word[29], word[30], word[31],
     ])
 }
 
@@ -353,22 +365,37 @@ const fn xor_and_permute(mut state: [u64; 25], buf: &[u8; 136]) -> [u64; 25] {
 
 const fn keccak_f1600(mut state: [u64; 25]) -> [u64; 25] {
     const RC: [u64; 24] = [
-        0x0000000000000001, 0x0000000000008082, 0x800000000000808A, 0x8000000080008000,
-        0x000000000000808B, 0x0000000080000001, 0x8000000080008081, 0x8000000000008009,
-        0x000000000000008A, 0x0000000000000088, 0x0000000080008009, 0x000000008000000A,
-        0x000000008000808B, 0x800000000000008B, 0x8000000000008089, 0x8000000000008003,
-        0x8000000000008002, 0x8000000000000080, 0x000000000000800A, 0x800000008000000A,
-        0x8000000080008081, 0x8000000000008080, 0x0000000080000001, 0x8000000080008008,
+        0x0000000000000001,
+        0x0000000000008082,
+        0x800000000000808A,
+        0x8000000080008000,
+        0x000000000000808B,
+        0x0000000080000001,
+        0x8000000080008081,
+        0x8000000000008009,
+        0x000000000000008A,
+        0x0000000000000088,
+        0x0000000080008009,
+        0x000000008000000A,
+        0x000000008000808B,
+        0x800000000000008B,
+        0x8000000000008089,
+        0x8000000000008003,
+        0x8000000000008002,
+        0x8000000000000080,
+        0x000000000000800A,
+        0x800000008000000A,
+        0x8000000080008081,
+        0x8000000000008080,
+        0x0000000080000001,
+        0x8000000080008008,
     ];
     const ROTATIONS: [u32; 25] = [
-        0, 1, 62, 28, 27, 36, 44, 6, 55, 20,
-        3, 10, 43, 25, 39, 41, 45, 15, 21, 8,
-        18, 2, 61, 56, 14,
+        0, 1, 62, 28, 27, 36, 44, 6, 55, 20, 3, 10, 43, 25, 39, 41, 45, 15, 21, 8, 18, 2, 61, 56,
+        14,
     ];
     const PI: [usize; 25] = [
-        0, 10, 20, 5, 15, 16, 1, 11, 21, 6,
-        7, 17, 2, 12, 22, 23, 8, 18, 3, 13,
-        14, 24, 9, 19, 4,
+        0, 10, 20, 5, 15, 16, 1, 11, 21, 6, 7, 17, 2, 12, 22, 23, 8, 18, 3, 13, 14, 24, 9, 19, 4,
     ];
 
     let mut round = 0;
@@ -616,12 +643,7 @@ mod tests {
     #[test]
     fn test_parse_insufficient_data_returns_none() {
         // ResultSubmitted needs 32 bytes of data (input_hash)
-        let topics = vec![
-            TOPIC_RESULT_SUBMITTED,
-            [0x11; 32],
-            [0x22; 32],
-            [0u8; 32],
-        ];
+        let topics = vec![TOPIC_RESULT_SUBMITTED, [0x11; 32], [0x22; 32], [0u8; 32]];
         assert!(parse_log(&topics, &[0u8; 16]).is_none());
 
         // ResultChallenged needs 32 bytes of data (challenger address)

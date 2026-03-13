@@ -130,8 +130,7 @@ fn parse_b256(s: &str) -> Result<B256> {
 
 /// Parse an ETH amount string (e.g. "0.01") into wei (U256).
 fn parse_ether(s: &str) -> Result<U256> {
-    alloy::primitives::utils::parse_ether(s)
-        .with_context(|| format!("invalid ETH amount: {s}"))
+    alloy::primitives::utils::parse_ether(s).with_context(|| format!("invalid ETH amount: {s}"))
 }
 
 fn format_ether(wei: U256) -> String {
@@ -155,7 +154,11 @@ async fn run_status(cli: &Cli) -> Result<()> {
     let provider = ProviderBuilder::new().connect_http(rpc_url);
     let contract = TEEMLVerifier::new(contract_addr, &provider);
 
-    let owner = contract.owner().call().await.context("owner() call failed")?;
+    let owner = contract
+        .owner()
+        .call()
+        .await
+        .context("owner() call failed")?;
     let pending = contract
         .pendingOwner()
         .call()
@@ -186,8 +189,16 @@ async fn run_status(cli: &Cli) -> Result<()> {
     println!("  owner:              {owner}");
     println!("  pendingOwner:       {pending}");
     println!("  paused:             {is_paused}");
-    println!("  proverStake:        {} wei ({} ETH)", stake, format_ether(stake));
-    println!("  challengeBondAmount:{} wei ({} ETH)", bond, format_ether(bond));
+    println!(
+        "  proverStake:        {} wei ({} ETH)",
+        stake,
+        format_ether(stake)
+    );
+    println!(
+        "  challengeBondAmount:{} wei ({} ETH)",
+        bond,
+        format_ether(bond)
+    );
     println!("  remainderVerifier:  {verifier}");
 
     Ok(())
@@ -238,10 +249,7 @@ async fn run_write_command(cli: &Cli) -> Result<()> {
             let hash = parse_b256(image_hash)?;
             println!("Registering enclave {addr} with image hash {hash} ...");
             if cli.dry_run {
-                let _gas = contract
-                    .registerEnclave(addr, hash)
-                    .estimate_gas()
-                    .await?;
+                let _gas = contract.registerEnclave(addr, hash).estimate_gas().await?;
                 println!("[dry-run] estimated gas: {_gas}");
                 return Ok(());
             }
@@ -292,10 +300,7 @@ async fn run_write_command(cli: &Cli) -> Result<()> {
             let wei = parse_ether(amount)?;
             println!("Setting challenge bond to {amount} ETH ({wei} wei) ...");
             if cli.dry_run {
-                let _gas = contract
-                    .setChallengeBondAmount(wei)
-                    .estimate_gas()
-                    .await?;
+                let _gas = contract.setChallengeBondAmount(wei).estimate_gas().await?;
                 println!("[dry-run] estimated gas: {_gas}");
                 return Ok(());
             }
@@ -312,10 +317,7 @@ async fn run_write_command(cli: &Cli) -> Result<()> {
             let addr = parse_address(address)?;
             println!("Setting remainder verifier to {addr} ...");
             if cli.dry_run {
-                let _gas = contract
-                    .setRemainderVerifier(addr)
-                    .estimate_gas()
-                    .await?;
+                let _gas = contract.setRemainderVerifier(addr).estimate_gas().await?;
                 println!("[dry-run] estimated gas: {_gas}");
                 return Ok(());
             }
@@ -332,10 +334,7 @@ async fn run_write_command(cli: &Cli) -> Result<()> {
             let addr = parse_address(address)?;
             println!("Initiating ownership transfer to {addr} ...");
             if cli.dry_run {
-                let _gas = contract
-                    .transferOwnership(addr)
-                    .estimate_gas()
-                    .await?;
+                let _gas = contract.transferOwnership(addr).estimate_gas().await?;
                 println!("[dry-run] estimated gas: {_gas}");
                 return Ok(());
             }
@@ -412,10 +411,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(cli.rpc_url, "http://localhost:8545");
-        assert_eq!(
-            cli.contract,
-            "0x1234567890abcdef1234567890abcdef12345678"
-        );
+        assert_eq!(cli.contract, "0x1234567890abcdef1234567890abcdef12345678");
         assert!(cli.private_key.is_none());
         assert!(!cli.dry_run);
         assert!(matches!(cli.command, Command::Status));
@@ -651,12 +647,7 @@ mod tests {
 
     #[test]
     fn test_missing_contract_fails() {
-        let result = try_parse(&[
-            "admin-cli",
-            "--rpc-url",
-            "http://localhost:8545",
-            "status",
-        ]);
+        let result = try_parse(&["admin-cli", "--rpc-url", "http://localhost:8545", "status"]);
         assert!(result.is_err());
     }
 
@@ -686,8 +677,7 @@ mod tests {
 
     #[test]
     fn test_parse_address_helper() {
-        let addr =
-            parse_address("0x1234567890abcdef1234567890abcdef12345678").unwrap();
+        let addr = parse_address("0x1234567890abcdef1234567890abcdef12345678").unwrap();
         assert_eq!(
             format!("{addr}"),
             "0x1234567890AbcdEF1234567890aBcdef12345678"
@@ -698,10 +688,8 @@ mod tests {
 
     #[test]
     fn test_parse_b256_helper() {
-        let hash = parse_b256(
-            "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-        )
-        .unwrap();
+        let hash = parse_b256("0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+            .unwrap();
         assert_eq!(
             format!("{hash}"),
             "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"

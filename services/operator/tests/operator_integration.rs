@@ -144,15 +144,9 @@ fn test_dispute_lifecycle_multiple_concurrent() {
     assert_eq!(state.active_disputes.len(), 3);
 
     // Remaining disputes: 1, 3, 4
-    assert!(state
-        .active_disputes
-        .contains_key(&format!("0x{:064x}", 1)));
-    assert!(state
-        .active_disputes
-        .contains_key(&format!("0x{:064x}", 3)));
-    assert!(state
-        .active_disputes
-        .contains_key(&format!("0x{:064x}", 4)));
+    assert!(state.active_disputes.contains_key(&format!("0x{:064x}", 1)));
+    assert!(state.active_disputes.contains_key(&format!("0x{:064x}", 3)));
+    assert!(state.active_disputes.contains_key(&format!("0x{:064x}", 4)));
 }
 
 #[test]

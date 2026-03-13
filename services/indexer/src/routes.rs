@@ -135,8 +135,8 @@ pub fn build_app(storage: Arc<dyn Storage>, broadcaster: Arc<EventBroadcaster>) 
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::SqliteStorage;
+    use super::*;
     use axum::body::Body;
     use http_body_util::BodyExt;
     use tower::ServiceExt;
@@ -175,8 +175,7 @@ mod tests {
     #[tokio::test]
     async fn test_versioned_result_by_id() {
         let s = test_storage();
-        s.insert_result("0xdef", "0xm", "0xi", "0xa", 42)
-            .unwrap();
+        s.insert_result("0xdef", "0xm", "0xi", "0xa", 42).unwrap();
         let app = build_app(s, test_broadcaster());
 
         let req = axum::http::Request::builder()
@@ -186,10 +185,7 @@ mod tests {
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        assert_eq!(
-            resp.headers().get("x-api-version").unwrap(),
-            "v1"
-        );
+        assert_eq!(resp.headers().get("x-api-version").unwrap(), "v1");
 
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         let row: ResultRow = serde_json::from_slice(&body).unwrap();
@@ -209,10 +205,7 @@ mod tests {
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        assert_eq!(
-            resp.headers().get("x-api-version").unwrap(),
-            "v1"
-        );
+        assert_eq!(resp.headers().get("x-api-version").unwrap(), "v1");
     }
 
     #[tokio::test]
@@ -229,10 +222,7 @@ mod tests {
 
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        assert_eq!(
-            resp.headers().get("x-api-version").unwrap(),
-            "v1"
-        );
+        assert_eq!(resp.headers().get("x-api-version").unwrap(), "v1");
     }
 
     #[tokio::test]

@@ -353,6 +353,103 @@ class PaginatedList:
     pagination: Pagination
 
 
+class ResultStatus(str, Enum):
+    """Inference result status (from the indexer)."""
+
+    SUBMITTED = "submitted"
+    CHALLENGED = "challenged"
+    FINALIZED = "finalized"
+    RESOLVED = "resolved"
+
+
+@dataclass
+class ResultRow:
+    """An indexed inference result from the TEE indexer."""
+
+    id: str
+    model_hash: str
+    input_hash: str
+    output: str
+    submitter: str
+    status: ResultStatus
+    block_number: int
+    timestamp: int = 0
+    challenger: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ResultRow":
+        """Create from indexer API response."""
+        return cls(
+            id=data["id"],
+            model_hash=data["model_hash"],
+            input_hash=data["input_hash"],
+            output=data.get("output", ""),
+            submitter=data["submitter"],
+            status=ResultStatus(data["status"]),
+            block_number=data["block_number"],
+            timestamp=data.get("timestamp", 0),
+            challenger=data.get("challenger"),
+        )
+
+    @property
+    def is_finalized(self) -> bool:
+        """Check if the result has been finalized."""
+        return self.status == ResultStatus.FINALIZED
+
+    @property
+    def is_challenged(self) -> bool:
+        """Check if the result has been challenged."""
+        return self.status == ResultStatus.CHALLENGED
+
+
+@dataclass
+class IndexerHealthResponse:
+    """Health response from the TEE indexer."""
+
+    status: str
+    last_indexed_block: int
+    total_results: int
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "IndexerHealthResponse":
+        """Create from indexer API response."""
+        return cls(
+            status=data.get("status", "unknown"),
+            last_indexed_block=data.get("last_indexed_block", 0),
+            total_results=data.get("total_results", 0),
+        )
+
+
+@dataclass
+class IndexerStatsResponse:
+    """Aggregate statistics from the TEE indexer."""
+
+    total_submitted: int
+    total_challenged: int
+    total_finalized: int
+    total_resolved: int
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "IndexerStatsResponse":
+        """Create from indexer API response."""
+        return cls(
+            total_submitted=data.get("total_submitted", 0),
+            total_challenged=data.get("total_challenged", 0),
+            total_finalized=data.get("total_finalized", 0),
+            total_resolved=data.get("total_resolved", 0),
+        )
+
+    @property
+    def total(self) -> int:
+        """Total number of results across all statuses."""
+        return (
+            self.total_submitted
+            + self.total_challenged
+            + self.total_finalized
+            + self.total_resolved
+        )
+
+
 def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
     """Parse ISO datetime string."""
     if not value:

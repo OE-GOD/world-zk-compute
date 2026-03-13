@@ -54,6 +54,15 @@ spec:
                 configMapKeyRef:
                   name: {{ include "worldzk.configMapName" . }}
                   key: OPERATOR_RPC_URL
+            {{- if .Values.indexer.postgres.enabled }}
+            - name: DB_TYPE
+              value: "postgres"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "worldzk.secretName" . }}
+                  key: DATABASE_URL
+            {{- end }}
             {{- range $key, $value := .Values.indexer.env }}
             - name: {{ $key }}
               value: {{ $value | quote }}

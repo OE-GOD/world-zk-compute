@@ -245,7 +245,6 @@ impl Watchdog {
             },
         }
     }
-
 }
 
 /// Determine the overall status from individual check results.
@@ -271,8 +270,7 @@ pub fn spawn_watchdog(metrics: Arc<Metrics>, interval_secs: u64) -> Arc<Watchdog
     let watchdog = Arc::new(Watchdog::new(metrics));
     let wd = watchdog.clone();
     tokio::spawn(async move {
-        let mut interval =
-            tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
         // The first tick fires immediately -- run an initial check.
         interval.tick().await;
         wd.check();
@@ -946,7 +944,10 @@ mod tests {
 
     #[test]
     fn test_replay_error_display() {
-        assert_eq!(format!("{}", ReplayError::DuplicateNonce), "duplicate nonce");
+        assert_eq!(
+            format!("{}", ReplayError::DuplicateNonce),
+            "duplicate nonce"
+        );
         assert_eq!(
             format!("{}", ReplayError::ExpiredTimestamp),
             "expired timestamp"

@@ -6,19 +6,24 @@ mod metrics;
 mod nitro;
 pub mod notifications;
 mod prover;
+mod routes;
 mod store;
+mod tracing_setup;
 mod watcher;
 
 use alloy::primitives::{keccak256, Address, B256, U256};
 use alloy::providers::{Provider, ProviderBuilder};
 use clap::{Parser, Subcommand};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
+use tracing::Instrument;
 
 use config::{Config, ModelConfig};
 use prover::ProofManager;
 use store::StateStore;
+use tee_operator::alerting::{AlertConfig, AlertManager, AlertSeverity};
 use watcher::{EventWatcher, TEEEvent};
 
 /// Cached attestation verification result with TTL.
@@ -101,33 +106,9 @@ fn hex_to_bytes(hex_str: &str) -> anyhow::Result<Vec<u8>> {
     Ok(hex::decode(stripped)?)
 }
 
-/// Initialize the tracing subscriber.
-///
-/// - Reads `RUST_LOG` env var for filter directives (default: "info").
-/// - When `RUST_LOG_FORMAT=json`, emits structured JSON logs (for production).
-/// - Otherwise, emits human-readable logs.
-fn init_tracing() {
-    use tracing_subscriber::EnvFilter;
-
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-
-    let json_format = std::env::var("RUST_LOG_FORMAT")
-        .map(|v| v == "json")
-        .unwrap_or(false);
-
-    if json_format {
-        tracing_subscriber::fmt()
-            .json()
-            .with_env_filter(filter)
-            .init();
-    } else {
-        tracing_subscriber::fmt().with_env_filter(filter).init();
-    }
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    init_tracing();
+    tracing_setup::init_tracing("worldzk-operator", None);
     let cli = Cli::parse();
     let config = Config::from_env(cli.config.as_deref())?;
 
@@ -410,18 +391,18 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
         .parse()
         .map_err(|e| anyhow::anyhow!("Invalid contract address: {}", e))?;
     let watcher = EventWatcher::new(&config.rpc_url, contract_addr);
-    let chain_client = chain::ChainClient::new(
+    let chain_client = Arc::new(chain::ChainClient::new(
         &config.rpc_url,
         &config.private_key,
         &config.tee_verifier_address,
-    )?;
-    let proof_mgr = ProofManager::new(
+    )?);
+    let proof_mgr = Arc::new(ProofManager::new(
         &config.precompute_bin,
         &config.model_path,
         &config.proofs_dir,
         config.max_proof_retries,
         config.proof_retry_delay_secs,
-    );
+    ));
 
     // Initialize webhook notifier (None if WEBHOOK_URL is not set)
     let notifier = notifications::WebhookNotifier::from_optional(config.webhook_url.as_deref());
@@ -430,6 +411,20 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
     } else {
         tracing::debug!("Webhook notifications disabled (no WEBHOOK_URL configured)");
     }
+
+    // Initialize AlertManager for multi-channel alerting (log-only by default)
+    let alert_config = match std::env::var("ALERT_CONFIG_JSON") {
+        Ok(json) => serde_json::from_str::<AlertConfig>(&json).unwrap_or_else(|e| {
+            tracing::warn!("Invalid ALERT_CONFIG_JSON, using defaults: {}", e);
+            AlertConfig::default()
+        }),
+        Err(_) => AlertConfig::default(),
+    };
+    let alert_manager = Arc::new(AlertManager::new(alert_config));
+    tracing::info!("AlertManager initialized");
+
+    // Semaphore to limit concurrent proof submissions (T215)
+    let proof_semaphore = Arc::new(tokio::sync::Semaphore::new(10));
 
     let shutdown = Arc::new(ShutdownState::new());
 
@@ -464,6 +459,9 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
     while !shutdown.is_shutting_down() {
         // Poll for new events
         let (events, next_block) = watcher.poll_events(from_block).await?;
+
+        let _watch_span = tracing_setup::span_watch_cycle(from_block, next_block, 0);
+        let _watch_guard = _watch_span.enter();
 
         if !events.is_empty() {
             tracing::info!(
@@ -516,9 +514,7 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
                         .unwrap_or_default()
                         .as_secs();
                     let deadline = now + 86400; // 24h dispute window
-                    op_state
-                        .active_disputes
-                        .insert(rid_hex.clone(), deadline);
+                    op_state.active_disputes.insert(rid_hex.clone(), deadline);
 
                     // Fire-and-forget webhook notification
                     notifications::maybe_notify_challenge(
@@ -529,11 +525,55 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
                         deadline,
                     );
 
-                    shutdown.track_task_start();
-                    handle_challenge(&chain_client, &proof_mgr, *result_id).await;
-                    shutdown.track_task_done();
+                    // Alert via AlertManager (multi-channel)
+                    let mut meta = HashMap::new();
+                    meta.insert("result_id".to_string(), rid_hex.clone());
+                    meta.insert("challenger".to_string(), format!("{}", challenger));
+                    if let Err(e) = alert_manager.send_alert(
+                        AlertSeverity::Warning,
+                        "challenge_detected",
+                        "operator",
+                        &format!("Challenge detected for result {}", rid_hex),
+                        meta,
+                    ) {
+                        tracing::debug!("Alert suppressed or failed: {}", e);
+                    }
 
-                    // Mark as processed after successful handling
+                    // Spawn proof resolution as a separate task to avoid blocking
+                    // the event loop (T215)
+                    let dispute_span =
+                        tracing_setup::span_dispute(&rid_hex, &format!("{}", challenger));
+                    let permit = proof_semaphore.clone().try_acquire_owned();
+                    match permit {
+                        Ok(permit) => {
+                            let chain = chain_client.clone();
+                            let pm = proof_mgr.clone();
+                            let rid = *result_id;
+                            let am = alert_manager.clone();
+                            let ms = metrics_state.clone();
+                            shutdown.track_task_start();
+                            let sd = shutdown.clone();
+                            tokio::spawn(
+                                async move {
+                                    handle_challenge(&chain, &pm, rid, &am, &ms).await;
+                                    sd.track_task_done();
+                                    drop(permit);
+                                }
+                                .instrument(dispute_span),
+                            );
+                        }
+                        Err(_) => {
+                            tracing::warn!(
+                                "Max concurrent proof submissions reached, skipping (will retry on next poll): {}",
+                                rid_hex
+                            );
+                            metrics_state.total_errors.fetch_add(1, Ordering::Relaxed);
+                            // Don't mark as processed — will be retried on next poll
+                            continue;
+                        }
+                    }
+
+                    // Mark as processed after handling initiated
                     op_state.processed_event_ids.insert(rid_hex);
                 }
                 TEEEvent::ResultSubmitted { result_id, .. } => {
@@ -755,17 +795,19 @@ async fn cmd_register(
     Ok(())
 }
 
-async fn handle_challenge(chain: &chain::ChainClient, proof_mgr: &ProofManager, result_id: B256) {
+async fn handle_challenge(
+    chain: &chain::ChainClient,
+    proof_mgr: &ProofManager,
+    result_id: B256,
+    alert_manager: &AlertManager,
+    metrics: &metrics::MetricsState,
+) {
     let rid_hex = format!("0x{}", hex::encode(result_id));
 
-    // Try to load pre-computed proof
-    match proof_mgr.read_proof(&rid_hex) {
+    let resolve_result = match proof_mgr.read_proof(&rid_hex) {
         Ok(Some(proof)) => {
             tracing::info!("Found pre-computed proof for {}", rid_hex);
-            match resolve_with_proof(chain, result_id, &proof).await {
-                Ok(tx) => tracing::info!("Dispute resolved! tx={}", tx),
-                Err(e) => tracing::error!("Failed to resolve dispute: {}", e),
-            }
+            resolve_with_proof(chain, result_id, &proof).await
         }
         Ok(None) => {
             tracing::warn!(
@@ -775,17 +817,56 @@ async fn handle_challenge(chain: &chain::ChainClient, proof_mgr: &ProofManager, 
             match proof_mgr.wait_for_proof(&rid_hex, 60).await {
                 Ok(true) => {
                     if let Ok(Some(proof)) = proof_mgr.read_proof(&rid_hex) {
-                        match resolve_with_proof(chain, result_id, &proof).await {
-                            Ok(tx) => tracing::info!("Dispute resolved (after wait)! tx={}", tx),
-                            Err(e) => tracing::error!("Failed to resolve dispute: {}", e),
-                        }
+                        resolve_with_proof(chain, result_id, &proof).await
+                    } else {
+                        Err(anyhow::anyhow!("Proof disappeared after wait"))
                     }
                 }
-                Ok(false) => tracing::error!("Proof not available after timeout for {}", rid_hex),
-                Err(e) => tracing::error!("Error waiting for proof: {}", e),
+                Ok(false) => {
+                    tracing::error!("Proof not available after timeout for {}", rid_hex);
+                    Err(anyhow::anyhow!("Proof timeout for {}", rid_hex))
+                }
+                Err(e) => {
+                    tracing::error!("Error waiting for proof: {}", e);
+                    Err(e)
+                }
             }
         }
-        Err(e) => tracing::error!("Error reading proof: {}", e),
+        Err(e) => {
+            tracing::error!("Error reading proof: {}", e);
+            Err(e)
+        }
+    };
+
+    match resolve_result {
+        Ok(tx) => {
+            tracing::info!("Dispute resolved for {}! tx={}", rid_hex, tx);
+            metrics.record_dispute_resolved();
+            let mut meta = HashMap::new();
+            meta.insert("result_id".to_string(), rid_hex);
+            meta.insert("tx".to_string(), format!("{}", tx));
+            let _ = alert_manager.send_alert(
+                AlertSeverity::Info,
+                "dispute_resolved",
+                "operator",
+                "Dispute resolved successfully",
+                meta,
+            );
+        }
+        Err(e) => {
+            tracing::error!("Failed to resolve dispute for {}: {}", rid_hex, e);
+            metrics.record_dispute_failed();
+            let mut meta = HashMap::new();
+            meta.insert("result_id".to_string(), rid_hex);
+            meta.insert("error".to_string(), format!("{}", e));
+            let _ = alert_manager.send_alert(
+                AlertSeverity::Critical,
+                "dispute_failed",
+                "operator",
+                &format!("Dispute resolution failed: {}", e),
+                meta,
+            );
+        }
     }
 }
 

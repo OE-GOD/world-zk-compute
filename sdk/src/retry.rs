@@ -76,10 +76,7 @@ pub fn is_retryable(err: &anyhow::Error) -> bool {
 ///
 /// Only retries if `should_retry` returns true for the error. Non-retryable errors
 /// are returned immediately.
-pub async fn retry_with_backoff<F, Fut, T>(
-    policy: &RetryPolicy,
-    mut f: F,
-) -> anyhow::Result<T>
+pub async fn retry_with_backoff<F, Fut, T>(policy: &RetryPolicy, mut f: F) -> anyhow::Result<T>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = anyhow::Result<T>>,

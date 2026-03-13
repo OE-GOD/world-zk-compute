@@ -6,23 +6,34 @@ A Python client library for the World ZK Compute decentralized proving network.
 Example usage:
     from worldzk import Client
 
-    client = Client(api_key="your-api-key")
+    client = Client()  # defaults to http://localhost:8081
 
-    # Submit a computation request
-    request = client.requests.create(
-        image_id="0x1234...",
-        input_data=b"hello world",
-    )
+    # Check indexer health
+    health = client.health()
+    print(f"Status: {health.status}, block: {health.last_indexed_block}")
 
-    # Wait for completion
-    result = client.requests.wait(request.id)
-    print(f"Proof: {result.proof}")
+    # List inference results
+    results = client.list_results(status="finalized", limit=10)
+    for r in results:
+        print(f"{r.id}: {r.status}")
+
+    # Get a single result
+    result = client.get_result("0xabc123")
+    print(f"Submitter: {result.submitter}")
+
+    # Get aggregate statistics
+    stats = client.stats()
+    print(f"Finalized: {stats.total_finalized}")
 """
 
-from .client import Client, AsyncClient, ResultRow, StatsResponse, HealthResponse
+from .client import Client, AsyncClient
 from .models import (
     ExecutionRequest,
     RequestStatus,
+    ResultRow,
+    ResultStatus,
+    IndexerHealthResponse,
+    IndexerStatsResponse,
     Program,
     Prover,
     Reputation,
@@ -41,6 +52,7 @@ from .errors import (
     RateLimitError,
     ProofError,
     NetworkError,
+    TimeoutError,
 )
 from .hash_utils import (
     compute_model_hash,
@@ -91,10 +103,12 @@ __all__ = [
     # Client
     "Client",
     "AsyncClient",
+    # Indexer response models
     "ResultRow",
-    "StatsResponse",
-    "HealthResponse",
-    # Models
+    "ResultStatus",
+    "IndexerHealthResponse",
+    "IndexerStatsResponse",
+    # Legacy models (kept for backward compatibility)
     "ExecutionRequest",
     "RequestStatus",
     "Program",

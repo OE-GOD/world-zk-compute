@@ -180,8 +180,7 @@ impl TestContext {
         let mut deploy_data = creation_code.to_vec();
         deploy_data.extend_from_slice(&constructor_args);
 
-        let tx = alloy::rpc::types::TransactionRequest::default()
-            .with_deploy_code(deploy_data);
+        let tx = alloy::rpc::types::TransactionRequest::default().with_deploy_code(deploy_data);
         let receipt = provider
             .send_transaction(tx)
             .await
@@ -203,10 +202,7 @@ impl TestContext {
     }
 
     /// Build a provider with the given private key's wallet.
-    fn provider_with_key(
-        &self,
-        key: &str,
-    ) -> impl alloy::providers::Provider + Clone {
+    fn provider_with_key(&self, key: &str) -> impl alloy::providers::Provider + Clone {
         let signer = parse_signer(key);
         let wallet = EthereumWallet::from(signer);
         ProviderBuilder::new()
@@ -218,9 +214,7 @@ impl TestContext {
     fn contract_with_key(
         &self,
         key: &str,
-    ) -> TEEMLVerifier::TEEMLVerifierInstance<
-        impl alloy::providers::Provider + Clone,
-    > {
+    ) -> TEEMLVerifier::TEEMLVerifierInstance<impl alloy::providers::Provider + Clone> {
         let provider = self.provider_with_key(key);
         TEEMLVerifier::new(self.contract_addr, provider)
     }
@@ -237,10 +231,7 @@ impl TestContext {
             .raw_request("evm_increaseTime".into(), [U256::from(seconds)])
             .await
             .unwrap();
-        let _: serde_json::Value = provider
-            .raw_request("evm_mine".into(), ())
-            .await
-            .unwrap();
+        let _: serde_json::Value = provider.raw_request("evm_mine".into(), ()).await.unwrap();
     }
 }
 
@@ -271,9 +262,7 @@ fn extract_result_id(receipt: &alloy::rpc::types::TransactionReceipt) -> B256 {
 }
 
 /// Helper: register an enclave (USER_KEY) and submit a result, returning the resultId.
-async fn setup_submitted_result(
-    ctx: &TestContext,
-) -> B256 {
+async fn setup_submitted_result(ctx: &TestContext) -> B256 {
     let admin = ctx.contract_with_key(ADMIN_KEY);
 
     // Register enclave
@@ -324,7 +313,10 @@ async fn test_deploy_and_initial_state() {
 
     // Owner should be the admin address
     let owner = contract.owner().call().await.unwrap();
-    assert_eq!(owner, ctx.admin_addr, "Owner should be the deployer (admin)");
+    assert_eq!(
+        owner, ctx.admin_addr,
+        "Owner should be the deployer (admin)"
+    );
 
     // Contract should not be paused
     let paused = contract.paused().call().await.unwrap();
@@ -389,7 +381,10 @@ async fn test_register_enclave() {
         .registerEnclave(Address::from([0x99u8; 20]), B256::ZERO)
         .call()
         .await;
-    assert!(result.is_err(), "Non-owner should not be able to register enclave");
+    assert!(
+        result.is_err(),
+        "Non-owner should not be able to register enclave"
+    );
 
     println!("test_register_enclave PASSED");
 }
@@ -479,7 +474,10 @@ async fn test_finalize_after_time_warp() {
 
     // Cannot finalize before challenge window
     let early = admin.finalize(result_id).call().await;
-    assert!(early.is_err(), "Should revert before challenge window passes");
+    assert!(
+        early.is_err(),
+        "Should revert before challenge window passes"
+    );
 
     // Get balance before finalize
     let provider = ctx.provider_readonly();
@@ -528,8 +526,15 @@ async fn test_challenge_flow() {
     let bond = U256::from(100_000_000_000_000_000u128);
 
     // Insufficient bond should revert
-    let bad = challenger.challenge(result_id).value(U256::from(1u64)).call().await;
-    assert!(bad.is_err(), "Challenge with insufficient bond should revert");
+    let bad = challenger
+        .challenge(result_id)
+        .value(U256::from(1u64))
+        .call()
+        .await;
+    assert!(
+        bad.is_err(),
+        "Challenge with insufficient bond should revert"
+    );
 
     // Challenge with correct bond
     let receipt = challenger
@@ -657,7 +662,14 @@ async fn test_pause_unpause_flow() {
     assert!(user.pause().call().await.is_err());
 
     // Owner pauses
-    admin.pause().send().await.unwrap().get_receipt().await.unwrap();
+    admin
+        .pause()
+        .send()
+        .await
+        .unwrap()
+        .get_receipt()
+        .await
+        .unwrap();
     assert!(admin.paused().call().await.unwrap());
 
     // Submit reverts when paused
@@ -681,7 +693,14 @@ async fn test_pause_unpause_flow() {
     assert!(user.unpause().call().await.is_err());
 
     // Owner unpauses
-    admin.unpause().send().await.unwrap().get_receipt().await.unwrap();
+    admin
+        .unpause()
+        .send()
+        .await
+        .unwrap()
+        .get_receipt()
+        .await
+        .unwrap();
     assert!(!admin.paused().call().await.unwrap());
 
     // Submit works after unpause
@@ -752,7 +771,14 @@ async fn test_ownership_transfer() {
     assert!(admin.pause().call().await.is_err());
 
     // New owner can admin
-    new_owner.pause().send().await.unwrap().get_receipt().await.unwrap();
+    new_owner
+        .pause()
+        .send()
+        .await
+        .unwrap()
+        .get_receipt()
+        .await
+        .unwrap();
     assert!(admin.paused().call().await.unwrap());
 
     println!("test_ownership_transfer PASSED");
@@ -823,17 +849,35 @@ async fn test_admin_config() {
 
     // Set prover stake
     let new_stake = U256::from(50_000_000_000_000_000u128);
-    admin.setProverStake(new_stake).send().await.unwrap().get_receipt().await.unwrap();
+    admin
+        .setProverStake(new_stake)
+        .send()
+        .await
+        .unwrap()
+        .get_receipt()
+        .await
+        .unwrap();
     assert_eq!(admin.proverStake().call().await.unwrap(), new_stake);
 
     // Set challenge bond
     let new_bond = U256::from(200_000_000_000_000_000u128);
-    admin.setChallengeBondAmount(new_bond).send().await.unwrap().get_receipt().await.unwrap();
+    admin
+        .setChallengeBondAmount(new_bond)
+        .send()
+        .await
+        .unwrap()
+        .get_receipt()
+        .await
+        .unwrap();
     assert_eq!(admin.challengeBondAmount().call().await.unwrap(), new_bond);
 
     // Zero stake/bond should revert (use .call())
     assert!(admin.setProverStake(U256::ZERO).call().await.is_err());
-    assert!(admin.setChallengeBondAmount(U256::ZERO).call().await.is_err());
+    assert!(admin
+        .setChallengeBondAmount(U256::ZERO)
+        .call()
+        .await
+        .is_err());
 
     // Too high (>100 ETH) should revert
     let too_high = U256::from(101u64) * U256::from(10u64).pow(U256::from(18u64));
@@ -845,11 +889,25 @@ async fn test_admin_config() {
 
     // Set remainder verifier
     let fake_verifier = Address::from([0xBBu8; 20]);
-    admin.setRemainderVerifier(fake_verifier).send().await.unwrap().get_receipt().await.unwrap();
-    assert_eq!(admin.remainderVerifier().call().await.unwrap(), fake_verifier);
+    admin
+        .setRemainderVerifier(fake_verifier)
+        .send()
+        .await
+        .unwrap()
+        .get_receipt()
+        .await
+        .unwrap();
+    assert_eq!(
+        admin.remainderVerifier().call().await.unwrap(),
+        fake_verifier
+    );
 
     // Zero address should revert
-    assert!(admin.setRemainderVerifier(Address::ZERO).call().await.is_err());
+    assert!(admin
+        .setRemainderVerifier(Address::ZERO)
+        .call()
+        .await
+        .is_err());
 
     println!("test_admin_config PASSED");
 }
@@ -898,7 +956,11 @@ async fn test_dispute_extension() {
     assert!(admin.extendDisputeWindow(result_id).call().await.is_err());
 
     // Non-submitter cannot extend
-    assert!(challenger.extendDisputeWindow(result_id).call().await.is_err());
+    assert!(challenger
+        .extendDisputeWindow(result_id)
+        .call()
+        .await
+        .is_err());
 
     println!("test_dispute_extension PASSED");
 }

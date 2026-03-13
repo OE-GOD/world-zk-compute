@@ -11,17 +11,18 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use tee_operator::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitBreakerError, State};
-    use tee_operator::notifications::WebhookNotifier;
-    use tee_operator::deadline_monitor::DeadlineMonitor;
-    use tee_operator::{
-        evict_excess_disputes, prune_and_evict, prune_old_disputes, PruneConfig,
+    use tee_operator::circuit_breaker::{
+        CircuitBreaker, CircuitBreakerConfig, CircuitBreakerError, State,
     };
+    use tee_operator::deadline_monitor::DeadlineMonitor;
+    use tee_operator::notifications::WebhookNotifier;
+    use tee_operator::{evict_excess_disputes, prune_and_evict, prune_old_disputes, PruneConfig};
 
     // -----------------------------------------------------------------------
     // Helper: reusable state store wrapper using the operator's StateStore
     // -----------------------------------------------------------------------
 
+    #[allow(dead_code)]
     fn new_state_store(dir: &tempfile::TempDir) -> tee_operator::store::StateStore {
         let path = dir.path().join("chaos-state.json");
         tee_operator::store::StateStore::new(path)
@@ -63,9 +64,8 @@ mod tests {
 
         // Subsequent requests should be rejected immediately without
         // attempting the actual call (fast-fail)
-        let rejected: Result<(), _> = cb.call_sync(|| {
-            panic!("this closure should never be called when breaker is open")
-        });
+        let rejected: Result<(), _> =
+            cb.call_sync(|| panic!("this closure should never be called when breaker is open"));
         assert!(rejected.is_err());
         match rejected.unwrap_err() {
             CircuitBreakerError::Open { remaining_secs } => {
@@ -130,9 +130,7 @@ mod tests {
         );
 
         // A successful call should close the breaker
-        let result = cb
-            .call(|| async { Ok::<_, anyhow::Error>(()) })
-            .await;
+        let result = cb.call(|| async { Ok::<_, anyhow::Error>(()) }).await;
         assert!(result.is_ok());
         assert_eq!(cb.state(), State::Closed);
     }
@@ -153,7 +151,10 @@ mod tests {
             ("binary garbage", "\x00\x01\x02\x7e\x7f"),
             ("truncated JSON", r#"{"last_polled_block": 42, "active_dis"#),
             ("wrong JSON type", r#"[1, 2, 3]"#),
-            ("HTML error page", "<html><body>502 Bad Gateway</body></html>"),
+            (
+                "HTML error page",
+                "<html><body>502 Bad Gateway</body></html>",
+            ),
             ("null value", "null"),
         ];
 
@@ -212,9 +213,7 @@ mod tests {
         state
             .active_disputes
             .insert("0xdead".to_string(), 1700000000);
-        state
-            .processed_event_ids
-            .insert("0xbeef:0".to_string());
+        state.processed_event_ids.insert("0xbeef:0".to_string());
 
         // Save should succeed
         store.save(&state).unwrap();
@@ -237,7 +236,10 @@ mod tests {
         let app = axum::Router::new().route(
             "/webhook",
             axum::routing::post(|| async {
-                (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "server error")
+                (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    "server error",
+                )
             }),
         );
 
@@ -310,20 +312,19 @@ mod tests {
         let state_path = dir.path().join("dedup-state.json");
         let store = tee_operator::store::StateStore::new(&state_path);
 
-        let mut state = tee_operator::store::OperatorState::default();
-        state.last_polled_block = 100;
-
         // Simulate processing events from blocks 95-100
-        let events = vec![
+        let events = [
             "0xaaa:0", "0xaaa:1", // block 95
-            "0xbbb:0",            // block 96
+            "0xbbb:0", // block 96
             "0xccc:0", "0xccc:1", "0xccc:2", // block 98
-            "0xddd:0",            // block 100
+            "0xddd:0", // block 100
         ];
 
-        for event_id in &events {
-            state.processed_event_ids.insert(event_id.to_string());
-        }
+        let state = tee_operator::store::OperatorState {
+            last_polled_block: 100,
+            processed_event_ids: events.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        };
 
         store.save(&state).unwrap();
 
@@ -356,8 +357,10 @@ mod tests {
     fn test_out_of_order_block_number_regression() {
         // Verify that the operator can handle seeing a lower block number
         // than last_polled_block (which happens during reorgs).
-        let mut state = tee_operator::store::OperatorState::default();
-        state.last_polled_block = 200;
+        let mut state = tee_operator::store::OperatorState {
+            last_polled_block: 200,
+            ..Default::default()
+        };
 
         // Simulate receiving events from block 195 (before last_polled_block)
         // The operator should process new events even from "old" blocks
@@ -422,8 +425,7 @@ mod tests {
         assert_eq!(disputes.len(), 5, "should have 5 remaining");
 
         // The remaining disputes should be the ones with the latest deadlines
-        let remaining_deadlines: Vec<u64> =
-            disputes.values().copied().collect();
+        let remaining_deadlines: Vec<u64> = disputes.values().copied().collect();
         for deadline in &remaining_deadlines {
             // The 5 remaining should be the ones with deadlines
             // from i=5..10 (the newest ones)
@@ -678,7 +680,7 @@ mod tests {
         assert_eq!(disputes.len(), 100);
 
         // Remaining should be the 100 newest (highest deadline values).
-        for (_, deadline) in &disputes {
+        for deadline in disputes.values() {
             assert!(
                 *deadline >= now + 900,
                 "Expected only newest disputes to remain, got deadline {}",
@@ -713,7 +715,8 @@ mod tests {
         }
 
         for h in handles {
-            h.join().expect("concurrent dispute tracking thread panicked");
+            h.join()
+                .expect("concurrent dispute tracking thread panicked");
         }
 
         let disputes = disputes.lock().unwrap();
@@ -916,11 +919,11 @@ mod tests {
         let store = tee_operator::store::StateStore::new(&state_path);
 
         for block in 0..100u64 {
-            let mut state = tee_operator::store::OperatorState::default();
-            state.last_polled_block = block;
-            state
-                .processed_event_ids
-                .insert(format!("evt-{}", block));
+            let state = tee_operator::store::OperatorState {
+                last_polled_block: block,
+                processed_event_ids: [format!("evt-{}", block)].into_iter().collect(),
+                ..Default::default()
+            };
 
             store.save(&state).unwrap();
 

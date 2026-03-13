@@ -266,18 +266,20 @@ impl TEEEventWatcher {
             let mut from_block: u64 = 0;
 
             // Attempt to get the current block number for the starting point.
-            if let Ok(provider) = rpc_url.parse().map(|url| {
-                ProviderBuilder::new().connect_http(url)
-            }) {
+            if let Ok(provider) = rpc_url
+                .parse()
+                .map(|url| ProviderBuilder::new().connect_http(url))
+            {
                 if let Ok(latest) = provider.get_block_number().await {
                     from_block = latest;
                 }
             }
 
             while !stop_flag.load(Ordering::SeqCst) {
-                if let Ok(provider) = rpc_url.parse().map(|url| {
-                    ProviderBuilder::new().connect_http(url)
-                }) {
+                if let Ok(provider) = rpc_url
+                    .parse()
+                    .map(|url| ProviderBuilder::new().connect_http(url))
+                {
                     if let Ok(latest) = provider.get_block_number().await {
                         if from_block <= latest {
                             let filter = Filter::new()
@@ -384,10 +386,7 @@ mod tests {
             topic_result_finalized(),
             keccak256("ResultFinalized(bytes32)")
         );
-        assert_eq!(
-            topic_result_expired(),
-            keccak256("ResultExpired(bytes32)")
-        );
+        assert_eq!(topic_result_expired(), keccak256("ResultExpired(bytes32)"));
     }
 
     // -- parse_log tests --

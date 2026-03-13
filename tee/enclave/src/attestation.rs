@@ -446,7 +446,7 @@ mod tests {
         );
 
         // Verify message hashes differ
-        let msg1 = keccak256(&Attestor::pack_attestation_payload(
+        let msg1 = keccak256(Attestor::pack_attestation_payload(
             model_hash,
             input_hash,
             att_t1.result_hash,
@@ -454,7 +454,7 @@ mod tests {
             att_t1.nonce,
             1000,
         ));
-        let msg2 = keccak256(&Attestor::pack_attestation_payload(
+        let msg2 = keccak256(Attestor::pack_attestation_payload(
             model_hash,
             input_hash,
             att_t2.result_hash,

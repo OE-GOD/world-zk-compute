@@ -13,9 +13,8 @@ path = "src/mod.rs"
 # Operator library (circuit breaker, state store, notifications, etc.)
 tee-operator = { path = "../../services/operator" }
 
-# Note: tee-enclave is a binary crate (no lib.rs), so enclave chaos tests
-# are self-contained with mock implementations of the relevant enclave
-# components (rate limiter, replay protection, model validation, etc.)
+# Enclave library (watchdog, metrics, model_registry, validation)
+tee-enclave = { path = "../../tee/enclave" }
 
 # Async runtime
 tokio = { version = "1", features = ["full", "test-util"] }
@@ -33,10 +32,6 @@ alloy = { version = "1.0", features = ["full"] }
 
 # Error handling
 anyhow = "1"
-
-# Crypto for enclave model validation tests
-sha2 = "0.10"
-hex = "0.4"
 
 # Temp directories for state file tests
 tempfile = "3"

@@ -539,8 +539,7 @@ mod tests {
         assert!(msg.contains("circuit breaker is open"));
         assert!(msg.contains("15.3s"));
 
-        let inner_err =
-            CircuitBreakerError::Inner(anyhow::anyhow!("connection refused"));
+        let inner_err = CircuitBreakerError::Inner(anyhow::anyhow!("connection refused"));
         let msg = inner_err.to_string();
         assert!(msg.contains("connection refused"));
     }

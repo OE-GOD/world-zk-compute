@@ -8,16 +8,19 @@ mod attestation;
 mod config;
 mod metrics;
 mod model;
+mod model_registry;
 mod nitro;
+#[allow(dead_code)] // Public API exported via lib.rs; binary will wire in when OTLP is enabled
+mod tracing_setup;
 mod validation;
 mod watchdog;
 
 use std::sync::Arc;
 
 use alloy_primitives::keccak256;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
@@ -25,6 +28,7 @@ use attestation::Attestor;
 use config::Config;
 use metrics::{Metrics, MetricsSnapshot};
 use model::XgboostModel;
+use model_registry::ModelRegistry;
 use nitro::{AttestationDocument, NitroAttestor};
 use watchdog::{DetailedHealth, Watchdog};
 
@@ -120,6 +124,8 @@ struct AppState {
     watchdog: Option<Arc<Watchdog>>,
     /// Optional expected SHA-256 hash for model validation (from EXPECTED_MODEL_HASH env var).
     expected_model_hash: Option<String>,
+    /// Multi-model registry for loading/unloading models at runtime.
+    model_registry: ModelRegistry,
 }
 
 // ---------------------------------------------------------------------------
@@ -200,6 +206,45 @@ struct ReloadModelResponse {
     model_sha256: String,
 }
 
+#[derive(Deserialize)]
+struct LoadModelRequest {
+    /// Caller-chosen unique identifier for the model (e.g. "xgboost-iris-v2").
+    model_id: String,
+    /// Filesystem path to the model file.
+    model_path: String,
+    /// Optional expected SHA-256 hash for integrity verification.
+    #[serde(default)]
+    expected_hash: Option<String>,
+}
+
+#[derive(Serialize)]
+struct LoadModelResponse {
+    success: bool,
+    model_id: String,
+    model_hash: String,
+    size_bytes: usize,
+}
+
+#[derive(Serialize)]
+struct UnloadModelResponse {
+    success: bool,
+    model_id: String,
+}
+
+#[derive(Serialize)]
+struct ModelInfoResponse {
+    model_id: String,
+    model_hash: String,
+    size_bytes: usize,
+}
+
+#[derive(Serialize)]
+struct ListModelsResponse {
+    models: Vec<ModelInfoResponse>,
+    count: usize,
+    max_models: usize,
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -234,9 +279,7 @@ async fn health(
     }))
 }
 
-async fn health_detailed(
-    State(state): State<Arc<AppState>>,
-) -> Json<DetailedHealth> {
+async fn health_detailed(State(state): State<Arc<AppState>>) -> Json<DetailedHealth> {
     match &state.watchdog {
         Some(wd) => Json(wd.detailed_health()),
         None => {
@@ -484,14 +527,15 @@ async fn reload_model(
     })?;
 
     // Validate model integrity (SHA-256 check against EXPECTED_MODEL_HASH if set)
-    let new_model_sha256 = validation::validate_model(
-        &new_model_bytes,
-        state.expected_model_hash.as_deref(),
-    )
-    .map_err(|e| {
-        tracing::error!("Model validation failed during hot-reload: {}", e);
-        (StatusCode::BAD_REQUEST, format!("Model validation failed: {}", e))
-    })?;
+    let new_model_sha256 =
+        validation::validate_model(&new_model_bytes, state.expected_model_hash.as_deref())
+            .map_err(|e| {
+                tracing::error!("Model validation failed during hot-reload: {}", e);
+                (
+                    StatusCode::BAD_REQUEST,
+                    format!("Model validation failed: {}", e),
+                )
+            })?;
 
     let new_model_hash = keccak256(&new_model_bytes);
 
@@ -555,6 +599,133 @@ async fn reload_model(
 }
 
 // ---------------------------------------------------------------------------
+// Model registry handlers
+// ---------------------------------------------------------------------------
+
+/// List all models loaded in the registry.
+async fn list_models(State(state): State<Arc<AppState>>) -> Json<ListModelsResponse> {
+    let models: Vec<ModelInfoResponse> = state
+        .model_registry
+        .list_models()
+        .into_iter()
+        .map(|m| ModelInfoResponse {
+            model_id: m.model_id,
+            model_hash: m.model_hash,
+            size_bytes: m.size_bytes,
+        })
+        .collect();
+    let count = models.len();
+    Json(ListModelsResponse {
+        models,
+        count,
+        max_models: state.model_registry.max_models(),
+    })
+}
+
+/// Admin endpoint: load a new model into the registry.
+async fn load_model_handler(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<LoadModelRequest>,
+) -> Result<Json<LoadModelResponse>, (StatusCode, String)> {
+    // Check admin API key
+    let expected_key = match &state.admin_api_key {
+        Some(key) => key,
+        None => {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "Admin endpoint disabled: ADMIN_API_KEY not configured".to_string(),
+            ));
+        }
+    };
+
+    let provided_key = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .unwrap_or("");
+
+    if provided_key != expected_key {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "Invalid or missing admin API key".to_string(),
+        ));
+    }
+
+    state
+        .model_registry
+        .load_model(&req.model_id, &req.model_path, req.expected_hash.as_deref())
+        .map_err(|e| {
+            let status = match &e {
+                model_registry::RegistryError::CapacityExceeded { .. } => StatusCode::CONFLICT,
+                model_registry::RegistryError::DuplicateId(_) => StatusCode::CONFLICT,
+                model_registry::RegistryError::NotFound(_) => StatusCode::NOT_FOUND,
+                model_registry::RegistryError::IoError(_) => StatusCode::BAD_REQUEST,
+                model_registry::RegistryError::HashMismatch { .. } => StatusCode::BAD_REQUEST,
+            };
+            (status, e.to_string())
+        })?;
+
+    let loaded = state.model_registry.get_model(&req.model_id).unwrap();
+    tracing::info!(
+        "Model loaded into registry: id={}, hash={}, size={}",
+        loaded.model_id,
+        loaded.model_hash,
+        loaded.size_bytes,
+    );
+
+    Ok(Json(LoadModelResponse {
+        success: true,
+        model_id: loaded.model_id,
+        model_hash: loaded.model_hash,
+        size_bytes: loaded.size_bytes,
+    }))
+}
+
+/// Admin endpoint: unload a model from the registry by ID.
+async fn unload_model_handler(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Path(model_id): Path<String>,
+) -> Result<Json<UnloadModelResponse>, (StatusCode, String)> {
+    // Check admin API key
+    let expected_key = match &state.admin_api_key {
+        Some(key) => key,
+        None => {
+            return Err((
+                StatusCode::FORBIDDEN,
+                "Admin endpoint disabled: ADMIN_API_KEY not configured".to_string(),
+            ));
+        }
+    };
+
+    let provided_key = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .unwrap_or("");
+
+    if provided_key != expected_key {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "Invalid or missing admin API key".to_string(),
+        ));
+    }
+
+    state
+        .model_registry
+        .unload_model(&model_id)
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+
+    tracing::info!("Model unloaded from registry: id={}", model_id);
+
+    Ok(Json(UnloadModelResponse {
+        success: true,
+        model_id,
+    }))
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -569,11 +740,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| format!("Failed to read model file '{}': {}", config.model_path, e))?;
 
     // Validate model integrity (SHA-256 check against EXPECTED_MODEL_HASH if set)
-    let model_sha256 = validation::validate_model(
-        &model_bytes,
-        config.expected_model_hash.as_deref(),
-    )
-    .map_err(|e| format!("Model validation failed: {}", e))?;
+    let model_sha256 =
+        validation::validate_model(&model_bytes, config.expected_model_hash.as_deref())
+            .map_err(|e| format!("Model validation failed: {}", e))?;
     tracing::info!("Model SHA-256: {}", model_sha256);
 
     let model_hash = keccak256(&model_bytes);
@@ -647,7 +816,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Optionally spawn the background watchdog.
     let watchdog = if config.watchdog_enabled {
-        tracing::info!("Watchdog enabled (interval: {}s)", watchdog::DEFAULT_CHECK_INTERVAL_SECS);
+        tracing::info!(
+            "Watchdog enabled (interval: {}s)",
+            watchdog::DEFAULT_CHECK_INTERVAL_SECS
+        );
         Some(watchdog::spawn_watchdog(
             metrics.clone(),
             watchdog::DEFAULT_CHECK_INTERVAL_SECS,
@@ -656,6 +828,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("Watchdog disabled (WATCHDOG_ENABLED=false)");
         None
     };
+
+    // Initialize multi-model registry and register the initial model.
+    let model_registry = ModelRegistry::from_env();
+    if let Err(e) =
+        model_registry.load_model_from_bytes("default", &config.model_path, &model_bytes, None)
+    {
+        tracing::warn!("Failed to register initial model in registry: {}", e);
+    }
+    tracing::info!(
+        "Model registry initialized (max_models={})",
+        model_registry.max_models(),
+    );
 
     let state = Arc::new(AppState {
         model_state: std::sync::RwLock::new(ModelState {
@@ -673,6 +857,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         rate_limiter: RateLimiter::new(config.max_requests_per_minute),
         watchdog,
         expected_model_hash: config.expected_model_hash,
+        model_registry,
     });
 
     // Background attestation refresh (every 5 minutes)
@@ -719,6 +904,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/infer", post(infer))
         .route("/metrics", get(metrics_handler))
         .route("/admin/reload-model", post(reload_model))
+        .route("/models", get(list_models))
+        .route("/models/load", post(load_model_handler))
+        .route("/models/{model_id}", delete(unload_model_handler))
         .with_state(state);
 
     let addr = format!("0.0.0.0:{}", config.port);
@@ -727,9 +915,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await
         .map_err(|e| format!("Failed to bind to {}: {}", addr, e))?;
     axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
         .await
         .map_err(|e| format!("Server error: {}", e))?;
+    tracing::info!("Server shut down gracefully");
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = tokio::signal::ctrl_c();
+
+    #[cfg(unix)]
+    {
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler");
+        tokio::select! {
+            _ = ctrl_c => { tracing::info!("Received SIGINT, shutting down gracefully"); }
+            _ = sigterm.recv() => { tracing::info!("Received SIGTERM, shutting down gracefully"); }
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        ctrl_c.await.ok();
+        tracing::info!("Received SIGINT, shutting down gracefully");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -741,6 +951,7 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
+    use serial_test::serial;
     use tower::ServiceExt; // for `oneshot`
 
     /// Build a test AppState backed by the test model at `tee/test-model/model.json`.
@@ -764,6 +975,8 @@ mod tests {
         let metrics = Arc::new(Metrics::new());
         let watchdog = Some(Arc::new(Watchdog::new(metrics.clone())));
 
+        let model_registry = ModelRegistry::new(5);
+
         Arc::new(AppState {
             model_state: std::sync::RwLock::new(ModelState {
                 model,
@@ -780,6 +993,7 @@ mod tests {
             rate_limiter: RateLimiter::new(120), // generous limit for tests
             watchdog,
             expected_model_hash: None,
+            model_registry,
         })
     }
 
@@ -793,6 +1007,9 @@ mod tests {
             .route("/infer", post(infer))
             .route("/metrics", get(metrics_handler))
             .route("/admin/reload-model", post(reload_model))
+            .route("/models", get(list_models))
+            .route("/models/load", post(load_model_handler))
+            .route("/models/{model_id}", delete(unload_model_handler))
             .with_state(state)
     }
 
@@ -1131,7 +1348,7 @@ mod tests {
     /// Helper: get a path to a valid alternate model for reload testing.
     /// We write a minimal XGBoost model JSON to a temp file.
     fn write_alternate_model() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join("tee_reload_test");
+        let dir = std::env::temp_dir().join("tee_reload_test_alt");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("alternate_model.json");
         // Minimal XGBoost model with 2 features, 1 tree
@@ -1163,7 +1380,7 @@ mod tests {
 
     /// Helper: write an invalid model file for testing reload failure.
     fn write_invalid_model() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join("tee_reload_test");
+        let dir = std::env::temp_dir().join("tee_reload_test_invalid");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("invalid_model.json");
         std::fs::write(&path, r#"{"not": "a valid model"}"#).unwrap();
@@ -1171,6 +1388,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_reload_model_success() {
         let admin_key = "test-admin-key-12345".to_string();
         let state = test_app_state_with_admin_key(Some(admin_key.clone()));
@@ -1244,10 +1462,12 @@ mod tests {
         assert_eq!(snap.model_name, "alternate_model.json");
 
         // Cleanup
-        let _ = std::fs::remove_dir_all(std::env::temp_dir().join("tee_reload_test"));
+        let _ = std::fs::remove_dir_all(std::env::temp_dir().join("tee_reload_test_alt"));
+        let _ = std::fs::remove_dir_all(std::env::temp_dir().join("tee_reload_test_invalid"));
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_reload_model_invalid_preserves_old() {
         let admin_key = "test-admin-key-12345".to_string();
         let state = test_app_state_with_admin_key(Some(admin_key.clone()));
@@ -1296,10 +1516,12 @@ mod tests {
         assert_eq!(infer_resp.status(), StatusCode::OK);
 
         // Cleanup
-        let _ = std::fs::remove_dir_all(std::env::temp_dir().join("tee_reload_test"));
+        let _ = std::fs::remove_dir_all(std::env::temp_dir().join("tee_reload_test_alt"));
+        let _ = std::fs::remove_dir_all(std::env::temp_dir().join("tee_reload_test_invalid"));
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_reload_model_wrong_api_key() {
         let admin_key = "correct-key".to_string();
         let state = test_app_state_with_admin_key(Some(admin_key));
@@ -1342,10 +1564,12 @@ mod tests {
         }
 
         // Cleanup
-        let _ = std::fs::remove_dir_all(std::env::temp_dir().join("tee_reload_test"));
+        let _ = std::fs::remove_dir_all(std::env::temp_dir().join("tee_reload_test_alt"));
+        let _ = std::fs::remove_dir_all(std::env::temp_dir().join("tee_reload_test_invalid"));
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_reload_model_disabled_without_admin_key() {
         // No admin key configured
         let state = test_app_state_with_admin_key(None);
@@ -1375,6 +1599,7 @@ mod tests {
         }
 
         // Cleanup
-        let _ = std::fs::remove_dir_all(std::env::temp_dir().join("tee_reload_test"));
+        let _ = std::fs::remove_dir_all(std::env::temp_dir().join("tee_reload_test_alt"));
+        let _ = std::fs::remove_dir_all(std::env::temp_dir().join("tee_reload_test_invalid"));
     }
 }

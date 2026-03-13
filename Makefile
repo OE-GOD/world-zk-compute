@@ -125,9 +125,7 @@ lint-rust: ## Run Rust clippy on all crates
 # ── Deploy ───────────────────────────────────────────────────────────────────
 
 deploy-local: ## Deploy to local Anvil (start Anvil first)
-	DEPLOYER_PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
-	ARBITRUM_SEPOLIA_RPC=http://127.0.0.1:8545 \
-	bash scripts/deploy-sepolia.sh
+	bash scripts/deploy.sh --chain local --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 
 deploy-sepolia: ## Deploy to Arbitrum Sepolia (set DEPLOYER_PRIVATE_KEY)
 	bash scripts/deploy-sepolia.sh

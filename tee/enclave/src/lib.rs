@@ -6,5 +6,6 @@
 
 pub mod metrics;
 pub mod model_registry;
+pub mod tracing_setup;
 pub mod validation;
 pub mod watchdog;

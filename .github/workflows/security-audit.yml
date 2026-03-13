@@ -40,25 +40,10 @@ jobs:
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
 
-      - name: Audit sdk/
-        run: cargo audit --file sdk/Cargo.lock --deny warnings
+      - name: Audit workspace (root Cargo.lock)
+        run: cargo audit --deny warnings
 
-      - name: Audit services/operator/
-        run: cargo audit --file services/operator/Cargo.lock --deny warnings
-
-      - name: Audit tee/enclave/
-        run: cargo audit --file tee/enclave/Cargo.lock --deny warnings
-
-      - name: Audit services/admin-cli/
-        run: cargo audit --file services/admin-cli/Cargo.lock --deny warnings
-
-      - name: Audit services/indexer/
-        run: cargo audit --file services/indexer/Cargo.lock --deny warnings
-
-      - name: Audit crates/watcher/
-        run: cargo audit --file crates/watcher/Cargo.lock --deny warnings
-
-      - name: Audit examples/xgboost-remainder/
+      - name: Audit examples/xgboost-remainder/ (excluded from workspace)
         run: cargo audit --file examples/xgboost-remainder/Cargo.lock --deny warnings
 
   python-audit:

@@ -151,7 +151,10 @@ impl PgStorage {
         storage.init_tables().await?;
         storage.hydrate_last_indexed_block().await?;
 
-        tracing::info!("PgStorage connected to PostgreSQL (pool max={})", config.max_connections);
+        tracing::info!(
+            "PgStorage connected to PostgreSQL (pool max={})",
+            config.max_connections
+        );
         Ok(storage)
     }
 
@@ -241,15 +244,12 @@ impl PgStorage {
 
     /// Read the last indexed block from the database and cache it.
     async fn hydrate_last_indexed_block(&self) -> anyhow::Result<()> {
-        let row: Option<(String,)> = sqlx::query_as(
-            "SELECT value FROM indexer_state WHERE key = 'last_indexed_block'",
-        )
-        .fetch_optional(&self.pool)
-        .await?;
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT value FROM indexer_state WHERE key = 'last_indexed_block'")
+                .fetch_optional(&self.pool)
+                .await?;
 
-        let block = row
-            .and_then(|(v,)| v.parse::<u64>().ok())
-            .unwrap_or(0);
+        let block = row.and_then(|(v,)| v.parse::<u64>().ok()).unwrap_or(0);
 
         self.last_indexed_block.store(block, Ordering::SeqCst);
         Ok(())
@@ -294,10 +294,7 @@ impl PgStorage {
 
     /// Retrieve all events associated with a given `result_id`, ordered by
     /// block number ascending.
-    pub async fn get_events_by_result_id(
-        &self,
-        result_id: &str,
-    ) -> anyhow::Result<Vec<EventRow>> {
+    pub async fn get_events_by_result_id(&self, result_id: &str) -> anyhow::Result<Vec<EventRow>> {
         let rows = sqlx::query(
             "SELECT id, block_number, tx_hash, log_index, event_type, result_id, data,
                     created_at::text
@@ -349,12 +346,10 @@ impl PgStorage {
 
     /// Update the latest synced block in the `sync_state` table.
     pub async fn set_latest_block(&self, block_number: u64) -> anyhow::Result<()> {
-        sqlx::query(
-            "UPDATE sync_state SET last_block = $1, updated_at = NOW() WHERE id = 1",
-        )
-        .bind(block_number as i64)
-        .execute(&self.pool)
-        .await?;
+        sqlx::query("UPDATE sync_state SET last_block = $1, updated_at = NOW() WHERE id = 1")
+            .bind(block_number as i64)
+            .execute(&self.pool)
+            .await?;
 
         Ok(())
     }
@@ -394,14 +389,12 @@ impl PgStorage {
         challenger: Option<&str>,
     ) -> anyhow::Result<usize> {
         let result = if let Some(c) = challenger {
-            sqlx::query(
-                "UPDATE results SET status = $1, challenger = $2 WHERE id = $3",
-            )
-            .bind(status)
-            .bind(c)
-            .bind(id)
-            .execute(&self.pool)
-            .await?
+            sqlx::query("UPDATE results SET status = $1, challenger = $2 WHERE id = $3")
+                .bind(status)
+                .bind(c)
+                .bind(id)
+                .execute(&self.pool)
+                .await?
         } else {
             sqlx::query("UPDATE results SET status = $1 WHERE id = $2")
                 .bind(status)
@@ -572,8 +565,13 @@ impl Storage for PgStorage {
         block_number: u64,
     ) -> anyhow::Result<usize> {
         tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(self.insert_result_async(id, model_hash, input_hash, submitter, block_number))
+            tokio::runtime::Handle::current().block_on(self.insert_result_async(
+                id,
+                model_hash,
+                input_hash,
+                submitter,
+                block_number,
+            ))
         })
     }
 
@@ -591,22 +589,19 @@ impl Storage for PgStorage {
 
     fn get_result(&self, id: &str) -> anyhow::Result<Option<ResultRow>> {
         tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(self.get_result_async(id))
+            tokio::runtime::Handle::current().block_on(self.get_result_async(id))
         })
     }
 
     fn list_results(&self, filter: &ResultFilter) -> anyhow::Result<Vec<ResultRow>> {
         tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(self.list_results_async(filter))
+            tokio::runtime::Handle::current().block_on(self.list_results_async(filter))
         })
     }
 
     fn get_stats(&self) -> anyhow::Result<StatsResponse> {
         tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(self.get_stats_async())
+            tokio::runtime::Handle::current().block_on(self.get_stats_async())
         })
     }
 
@@ -616,15 +611,13 @@ impl Storage for PgStorage {
 
     fn set_last_indexed_block(&self, block: u64) -> anyhow::Result<()> {
         tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(self.set_last_indexed_block_async(block))
+            tokio::runtime::Handle::current().block_on(self.set_last_indexed_block_async(block))
         })
     }
 
     fn get_total_results(&self) -> u64 {
         tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(self.get_total_results_async())
+            tokio::runtime::Handle::current().block_on(self.get_total_results_async())
         })
     }
 
@@ -692,7 +685,14 @@ mod tests {
 
     #[test]
     fn test_db_type_recognises_postgres_variants() {
-        for variant in &["postgres", "postgresql", "pg", "POSTGRES", "PostgreSQL", "PG"] {
+        for variant in &[
+            "postgres",
+            "postgresql",
+            "pg",
+            "POSTGRES",
+            "PostgreSQL",
+            "PG",
+        ] {
             std::env::set_var("DB_TYPE", variant);
             assert_eq!(
                 DbType::from_env(),
@@ -883,7 +883,14 @@ mod tests {
 
         let data = serde_json::json!({"submitter": "0xalice"});
         let inserted = pg
-            .insert_event(100, "0xtxhash1", 0, "ResultSubmitted", Some("0xresult1"), &data)
+            .insert_event(
+                100,
+                "0xtxhash1",
+                0,
+                "ResultSubmitted",
+                Some("0xresult1"),
+                &data,
+            )
             .await
             .unwrap();
         assert_eq!(inserted, 1);
@@ -931,9 +938,15 @@ mod tests {
             .unwrap();
 
         let data = serde_json::json!({});
-        pg.insert_event(10, "0xt1", 0, "ResultSubmitted", Some("0xr1"), &data).await.unwrap();
-        pg.insert_event(20, "0xt2", 0, "ResultChallenged", Some("0xr2"), &data).await.unwrap();
-        pg.insert_event(30, "0xt3", 0, "ResultSubmitted", Some("0xr3"), &data).await.unwrap();
+        pg.insert_event(10, "0xt1", 0, "ResultSubmitted", Some("0xr1"), &data)
+            .await
+            .unwrap();
+        pg.insert_event(20, "0xt2", 0, "ResultChallenged", Some("0xr2"), &data)
+            .await
+            .unwrap();
+        pg.insert_event(30, "0xt3", 0, "ResultSubmitted", Some("0xr3"), &data)
+            .await
+            .unwrap();
 
         let submitted = pg.get_events_by_type("ResultSubmitted", 0).await.unwrap();
         assert_eq!(submitted.len(), 2);

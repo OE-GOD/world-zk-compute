@@ -179,6 +179,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_watchdog_enabled_from_env() {
         // Default is true (when env var not set)
         std::env::remove_var("WATCHDOG_ENABLED");
@@ -211,6 +212,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_model_format_from_env() {
         std::env::set_var("MODEL_FORMAT", "lightgbm");
         let config = Config::from_env();
@@ -230,6 +232,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_expected_model_hash_from_env() {
         let hash = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
         std::env::set_var("EXPECTED_MODEL_HASH", hash);

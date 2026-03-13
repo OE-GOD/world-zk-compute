@@ -4,14 +4,13 @@ World ZK Compute SDK - Client
 Synchronous and asynchronous clients for the TEE Indexer REST API.
 
 The indexer exposes:
+  GET /health                 -- health check (unversioned)
   GET /api/v1/results         -- list results (query: status, submitter, model_hash, limit)
   GET /api/v1/results/:id     -- get single result
   GET /api/v1/stats           -- aggregate statistics
-  GET /health                 -- health check
 """
 
 import time
-from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 try:
@@ -29,79 +28,16 @@ except ImportError:
     HAS_REQUESTS = False
 
 from .errors import ApiError, NetworkError, TimeoutError, WorldZKError
+from .models import IndexerHealthResponse, IndexerStatsResponse, ResultRow
 
 DEFAULT_BASE_URL = "http://localhost:8081"
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_MAX_RETRIES = 3
 
 
-# ---------------------------------------------------------------------------
-# Response types (matching the indexer JSON shapes)
-# ---------------------------------------------------------------------------
-
-@dataclass
-class ResultRow:
-    """A single indexed result from the TEE verifier contract."""
-
-    id: str
-    model_hash: str
-    input_hash: str
-    output: str
-    submitter: str
-    status: str
-    block_number: int
-    timestamp: int
-    challenger: Optional[str] = None
-
-    @staticmethod
-    def from_dict(d: Dict[str, Any]) -> "ResultRow":
-        return ResultRow(
-            id=d.get("id", ""),
-            model_hash=d.get("model_hash", ""),
-            input_hash=d.get("input_hash", ""),
-            output=d.get("output", ""),
-            submitter=d.get("submitter", ""),
-            status=d.get("status", ""),
-            block_number=d.get("block_number", 0),
-            timestamp=d.get("timestamp", 0),
-            challenger=d.get("challenger"),
-        )
-
-
-@dataclass
-class StatsResponse:
-    """Aggregate statistics from the indexer."""
-
-    total_submitted: int
-    total_challenged: int
-    total_finalized: int
-    total_resolved: int
-
-    @staticmethod
-    def from_dict(d: Dict[str, Any]) -> "StatsResponse":
-        return StatsResponse(
-            total_submitted=d.get("total_submitted", 0),
-            total_challenged=d.get("total_challenged", 0),
-            total_finalized=d.get("total_finalized", 0),
-            total_resolved=d.get("total_resolved", 0),
-        )
-
-
-@dataclass
-class HealthResponse:
-    """Health check response from the indexer."""
-
-    status: str
-    last_indexed_block: int
-    total_results: int
-
-    @staticmethod
-    def from_dict(d: Dict[str, Any]) -> "HealthResponse":
-        return HealthResponse(
-            status=d.get("status", "unknown"),
-            last_indexed_block=d.get("last_indexed_block", 0),
-            total_results=d.get("total_results", 0),
-        )
+# Re-export for backward compatibility
+HealthResponse = IndexerHealthResponse
+StatsResponse = IndexerStatsResponse
 
 
 # ---------------------------------------------------------------------------
@@ -253,15 +189,15 @@ class Client(BaseClient):
 
     # -- Indexer endpoints --
 
-    def health(self) -> HealthResponse:
+    def health(self) -> IndexerHealthResponse:
         """Check indexer health."""
         data = self._request("GET", "/health")
-        return HealthResponse.from_dict(data)
+        return IndexerHealthResponse.from_dict(data)
 
-    def stats(self) -> StatsResponse:
+    def stats(self) -> IndexerStatsResponse:
         """Get aggregate statistics."""
         data = self._request("GET", "/api/v1/stats")
-        return StatsResponse.from_dict(data)
+        return IndexerStatsResponse.from_dict(data)
 
     def list_results(
         self,
@@ -410,15 +346,15 @@ class AsyncClient(BaseClient):
 
     # -- Indexer endpoints --
 
-    async def health(self) -> HealthResponse:
+    async def health(self) -> IndexerHealthResponse:
         """Check indexer health."""
         data = await self._request("GET", "/health")
-        return HealthResponse.from_dict(data)
+        return IndexerHealthResponse.from_dict(data)
 
-    async def stats(self) -> StatsResponse:
+    async def stats(self) -> IndexerStatsResponse:
         """Get aggregate statistics."""
         data = await self._request("GET", "/api/v1/stats")
-        return StatsResponse.from_dict(data)
+        return IndexerStatsResponse.from_dict(data)
 
     async def list_results(
         self,

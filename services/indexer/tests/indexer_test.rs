@@ -20,9 +20,8 @@ use tower::ServiceExt;
 mod indexer;
 
 use indexer::{
-    build_app,
-    websocket::EventBroadcaster,
-    HealthResponse, ResultFilter, ResultRow, SqliteStorage, StatsResponse, Storage,
+    build_app, websocket::EventBroadcaster, HealthResponse, ResultFilter, ResultRow, SqliteStorage,
+    StatsResponse, Storage,
 };
 
 fn make_storage() -> Arc<dyn Storage> {
@@ -138,14 +137,8 @@ fn test_storage_stats_after_mixed_events() {
 
     // Insert 5 results
     for i in 0..5u8 {
-        s.insert_result(
-            &format!("0x{:02x}", i),
-            "0xm",
-            "0xi",
-            "0xa",
-            i as u64,
-        )
-        .unwrap();
+        s.insert_result(&format!("0x{:02x}", i), "0xm", "0xi", "0xa", i as u64)
+            .unwrap();
     }
 
     // Finalize 0x00, challenge 0x01, resolve 0x02

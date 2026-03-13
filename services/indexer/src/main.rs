@@ -1,4 +1,6 @@
 pub mod metrics;
+#[cfg(feature = "postgres")]
+pub mod pg_storage;
 pub mod routes;
 pub mod websocket;
 
@@ -23,6 +25,8 @@ pub struct Config {
     pub rpc_url: String,
     pub contract_address: Address,
     pub db_path: String,
+    pub db_type: String,
+    pub database_url: Option<String>,
     pub port: u16,
     pub poll_interval_secs: u64,
 }
@@ -36,6 +40,8 @@ impl Config {
             .parse()
             .map_err(|_| anyhow::anyhow!("invalid CONTRACT_ADDRESS"))?;
         let db_path = std::env::var("DB_PATH").unwrap_or_else(|_| "./indexer.db".to_string());
+        let db_type = std::env::var("DB_TYPE").unwrap_or_else(|_| "sqlite".to_string());
+        let database_url = std::env::var("DATABASE_URL").ok();
         let port: u16 = std::env::var("PORT")
             .unwrap_or_else(|_| "8081".to_string())
             .parse()
@@ -48,6 +54,8 @@ impl Config {
             rpc_url,
             contract_address,
             db_path,
+            db_type,
+            database_url,
             port,
             poll_interval_secs,
         })
@@ -500,7 +508,6 @@ pub struct HealthResponse {
     pub total_results: u64,
 }
 
-
 // ---------------------------------------------------------------------------
 // Shared state
 // ---------------------------------------------------------------------------
@@ -529,9 +536,8 @@ async fn shutdown_signal() {
 
     #[cfg(unix)]
     {
-        let mut sigterm =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                .expect("failed to install SIGTERM handler");
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler");
         tokio::select! {
             _ = ctrl_c => { info!("received SIGINT, shutting down"); }
             _ = sigterm.recv() => { info!("received SIGTERM, shutting down"); }
@@ -553,8 +559,7 @@ async fn shutdown_signal() {
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -563,16 +568,39 @@ async fn main() -> anyhow::Result<()> {
     info!("tee-indexer starting");
     info!("  rpc_url:          {}", config.rpc_url);
     info!("  contract_address: {:#x}", config.contract_address);
+    info!("  db_type:          {}", config.db_type);
     info!("  db_path:          {}", config.db_path);
     info!("  port:             {}", config.port);
 
-    let storage: Arc<dyn Storage> = Arc::new(SqliteStorage::open(&config.db_path)?);
+    let storage: Arc<dyn Storage> = match config.db_type.to_lowercase().as_str() {
+        "postgres" | "postgresql" | "pg" => {
+            let url = config
+                .database_url
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("DATABASE_URL is required when DB_TYPE=postgres"))?;
+            let redacted = &url[..url.find('@').unwrap_or(url.len()).min(30)];
+            info!("  database_url:     {}...", redacted);
+            #[cfg(feature = "postgres")]
+            {
+                Arc::new(pg_storage::PgStorage::new(url).await?) as Arc<dyn Storage>
+            }
+            #[cfg(not(feature = "postgres"))]
+            {
+                let _ = redacted;
+                anyhow::bail!(
+                    "Postgres backend requires the 'postgres' feature. \
+                     Rebuild with: cargo build --features postgres"
+                );
+            }
+        }
+        _ => {
+            info!("  storage backend:  sqlite ({})", config.db_path);
+            Arc::new(SqliteStorage::open(&config.db_path)?)
+        }
+    };
     let broadcaster = Arc::new(EventBroadcaster::new(256));
 
-    info!(
-        "  max_ws_connections: {}",
-        broadcaster.max_connections()
-    );
+    info!("  max_ws_connections: {}", broadcaster.max_connections());
 
     let app = build_app(storage.clone(), broadcaster.clone());
 
@@ -586,8 +614,13 @@ async fn main() -> anyhow::Result<()> {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(poll_interval));
         loop {
             interval.tick().await;
-            if let Err(e) =
-                poll_and_index(&poll_rpc, poll_addr, poll_storage.as_ref(), &poll_broadcaster).await
+            if let Err(e) = poll_and_index(
+                &poll_rpc,
+                poll_addr,
+                poll_storage.as_ref(),
+                &poll_broadcaster,
+            )
+            .await
             {
                 warn!("poll error: {}", e);
             }
@@ -955,10 +988,8 @@ mod tests {
     #[tokio::test]
     async fn test_list_results_endpoint() {
         let s = test_storage();
-        s.insert_result("0x01", "0xm", "0xi", "0xalice", 1)
-            .unwrap();
-        s.insert_result("0x02", "0xm", "0xi", "0xbob", 2)
-            .unwrap();
+        s.insert_result("0x01", "0xm", "0xi", "0xalice", 1).unwrap();
+        s.insert_result("0x02", "0xm", "0xi", "0xbob", 2).unwrap();
         s.update_result_status("0x02", "finalized", None).unwrap();
         let app = build_app(s, test_broadcaster());
 

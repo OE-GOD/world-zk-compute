@@ -4,10 +4,13 @@ use std::time::Instant;
 
 use axum::extract::State;
 use axum::http::header;
+use axum::middleware;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
 use serde::Serialize;
+
+use crate::routes::version_header_middleware;
 
 /// Shared metrics state, safe for concurrent access via atomics.
 pub struct MetricsState {
@@ -206,10 +209,20 @@ async fn json_metrics_handler(State(state): State<Arc<MetricsState>>) -> Json<Me
 ///
 /// It should be spawned as a background task via `tokio::spawn`.
 pub async fn serve_metrics(state: Arc<MetricsState>, port: u16) {
-    let app = Router::new()
+    // Versioned API routes under /api/v1/ with X-API-Version header
+    let versioned = Router::new()
         .route("/health", get(health_handler))
         .route("/metrics", get(prometheus_metrics_handler))
         .route("/metrics/json", get(json_metrics_handler))
+        .layer(middleware::from_fn(version_header_middleware));
+
+    let app = Router::new()
+        // Backward-compatible unversioned routes
+        .route("/health", get(health_handler))
+        .route("/metrics", get(prometheus_metrics_handler))
+        .route("/metrics/json", get(json_metrics_handler))
+        // Versioned routes
+        .nest("/api/v1", versioned)
         .with_state(state);
 
     let addr = format!("0.0.0.0:{}", port);

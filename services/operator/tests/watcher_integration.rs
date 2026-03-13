@@ -35,7 +35,15 @@ impl AnvilProc {
         };
 
         let child = Command::new("anvil")
-            .args(["--port", &port.to_string(), "--accounts", "1", "--balance", "10000", "--silent"])
+            .args([
+                "--port",
+                &port.to_string(),
+                "--accounts",
+                "1",
+                "--balance",
+                "10000",
+                "--silent",
+            ])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
@@ -122,7 +130,9 @@ async fn deploy_event_emitter(rpc_url: &str) -> Address {
         .trim();
     let bytecode = hex::decode(bytecode_hex).expect("invalid hex from solc");
 
-    let sender: Address = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266".parse().unwrap();
+    let sender: Address = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+        .parse()
+        .unwrap();
     let provider = ProviderBuilder::new().connect_http(rpc_url.parse().unwrap());
 
     let tx = TransactionRequest::default()
@@ -138,7 +148,9 @@ async fn deploy_event_emitter(rpc_url: &str) -> Address {
         .await
         .expect("deploy receipt failed");
 
-    receipt.contract_address.expect("no contract address in receipt")
+    receipt
+        .contract_address
+        .expect("no contract address in receipt")
 }
 
 // ---------------------------------------------------------------------------
@@ -218,10 +230,14 @@ fn input() -> B256 {
     B256::from([0xCC; 32])
 }
 fn submitter() -> Address {
-    "0x70997970C51812dc3A010C7d01b50e0d17dc79C8".parse().unwrap()
+    "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+        .parse()
+        .unwrap()
 }
 fn challenger_addr() -> Address {
-    "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC".parse().unwrap()
+    "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
+        .parse()
+        .unwrap()
 }
 
 // ===========================================================================

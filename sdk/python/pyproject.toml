@@ -48,6 +48,7 @@ requests = [
 ]
 web3 = [
     "web3>=6.0",
+    "eth-account>=0.8",
 ]
 
 [project.scripts]

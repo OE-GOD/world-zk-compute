@@ -4,9 +4,12 @@
 //! `eth_getLogs`, along with the [`TEEEvent`] enum and log-parsing helpers.
 //! Used by both the operator service and the indexer service.
 
-use alloy::primitives::{keccak256, Address, B256};
+use alloy::primitives::{Address, B256};
 use alloy::providers::{Provider, ProviderBuilder};
 use alloy::rpc::types::{Filter, Log};
+
+/// Re-export the low-level, serde-compatible event types from `tee-events`.
+pub use tee_events;
 
 // ---------------------------------------------------------------------------
 // Event types
@@ -56,28 +59,29 @@ pub struct TaggedEvent {
 // ---------------------------------------------------------------------------
 
 /// Keccak-256 topic hash for `ResultSubmitted(bytes32,bytes32,bytes32,address)`.
+/// Uses the compile-time constant from `tee-events` as single source of truth.
 pub fn topic_result_submitted() -> B256 {
-    keccak256("ResultSubmitted(bytes32,bytes32,bytes32,address)")
+    B256::from(tee_events::TOPIC_RESULT_SUBMITTED)
 }
 
 /// Keccak-256 topic hash for `ResultChallenged(bytes32,address)`.
 pub fn topic_result_challenged() -> B256 {
-    keccak256("ResultChallenged(bytes32,address)")
+    B256::from(tee_events::TOPIC_RESULT_CHALLENGED)
 }
 
 /// Keccak-256 topic hash for `ResultFinalized(bytes32)`.
 pub fn topic_result_finalized() -> B256 {
-    keccak256("ResultFinalized(bytes32)")
+    B256::from(tee_events::TOPIC_RESULT_FINALIZED)
 }
 
 /// Keccak-256 topic hash for `ResultExpired(bytes32)`.
 pub fn topic_result_expired() -> B256 {
-    keccak256("ResultExpired(bytes32)")
+    B256::from(tee_events::TOPIC_RESULT_EXPIRED)
 }
 
 /// Keccak-256 topic hash for `DisputeResolved(bytes32,bool)`.
 pub fn topic_dispute_resolved() -> B256 {
-    keccak256("DisputeResolved(bytes32,bool)")
+    B256::from(tee_events::TOPIC_DISPUTE_RESOLVED)
 }
 
 // ---------------------------------------------------------------------------
@@ -306,6 +310,57 @@ impl EventWatcher {
             }
         }
         Ok(results)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Conversion to serde-compatible tee_events types
+// ---------------------------------------------------------------------------
+
+impl From<&TEEEvent> for tee_events::TEEEvent {
+    fn from(event: &TEEEvent) -> Self {
+        match event {
+            TEEEvent::ResultSubmitted {
+                result_id,
+                model_hash,
+                input_hash,
+                submitter,
+                ..
+            } => tee_events::TEEEvent::ResultSubmitted(tee_events::ResultSubmitted {
+                result_id: result_id.0,
+                submitter: submitter.0 .0,
+                model_hash: model_hash.0,
+                input_hash: input_hash.0,
+                result: Vec::new(),
+                stake: 0,
+            }),
+            TEEEvent::ResultChallenged {
+                result_id,
+                challenger,
+            } => tee_events::TEEEvent::ResultChallenged(tee_events::ResultChallenged {
+                result_id: result_id.0,
+                challenger: challenger.0 .0,
+                bond: 0,
+            }),
+            TEEEvent::ResultFinalized { result_id } => {
+                tee_events::TEEEvent::ResultFinalized(tee_events::ResultFinalized {
+                    result_id: result_id.0,
+                    is_valid: true,
+                })
+            }
+            TEEEvent::ResultExpired { result_id } => {
+                tee_events::TEEEvent::ResultExpired(tee_events::ResultExpired {
+                    result_id: result_id.0,
+                })
+            }
+            TEEEvent::DisputeResolved {
+                result_id,
+                prover_won,
+            } => tee_events::TEEEvent::DisputeResolved(tee_events::DisputeResolved {
+                result_id: result_id.0,
+                prover_won: *prover_won,
+            }),
+        }
     }
 }
 
