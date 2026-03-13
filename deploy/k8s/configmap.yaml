@@ -1,0 +1,44 @@
+---
+# ConfigMap for non-secret configuration shared across operator and indexer.
+# Update these values for your target environment (dev/staging/prod).
+#
+# Secrets (OPERATOR_PRIVATE_KEY, etc.) are stored in the world-zk-secrets Secret
+# and must be created separately:
+#
+#   kubectl -n world-zk create secret generic world-zk-secrets \
+#     --from-literal=OPERATOR_PRIVATE_KEY=0x... \
+#     --from-literal=ENCLAVE_PRIVATE_KEY=0x... \
+#     --from-literal=TEE_VERIFIER_ADDRESS=0x...
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: world-zk-config
+  labels:
+    app.kubernetes.io/part-of: world-zk-compute
+data:
+  # Ethereum JSON-RPC endpoint.
+  # For production, use a reliable provider (Alchemy, Infura, QuickNode).
+  OPERATOR_RPC_URL: "http://localhost:8545"
+
+  # TEEMLVerifier contract address (deployed on the target chain).
+  # Override via kustomize overlay or kubectl patch for each environment.
+  TEE_VERIFIER_ADDRESS: "0x0000000000000000000000000000000000000000"
+
+  # Target chain ID.
+  #   31337       = localhost (Anvil)
+  #   11155111    = Sepolia
+  #   421614      = Arbitrum Sepolia
+  #   1           = Ethereum Mainnet
+  CHAIN_ID: "31337"
+
+  # Rust log filter (trace, debug, info, warn, error).
+  # Supports per-module filters, e.g. "info,operator=debug".
+  RUST_LOG: "info"
+
+  # TEE enclave service URL.
+  # In-cluster: "http://worldzk-enclave:8080"
+  ENCLAVE_URL: "http://worldzk-enclave:8080"
+
+  # Event polling interval in seconds.
+  # 12 seconds matches Ethereum L1 block time.
+  POLL_INTERVAL_SECS: "12"

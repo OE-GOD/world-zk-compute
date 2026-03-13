@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'vitest';
-import { BatchVerifier, ProgressTracker, BatchVerificationCancelledError } from '../batch-verifier';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { BatchVerifier, DAGBatchVerifier, ProgressTracker, BatchVerificationCancelledError } from '../batch-verifier';
 import type { ProgressEvent } from '../batch-verifier-types';
+import type { PublicClient, WalletClient, Transport, Chain } from 'viem';
 
 // ─── ProgressTracker unit tests ───
 
@@ -396,5 +397,354 @@ describe('ETA estimation integration', () => {
     // Average = 600ms / 3 = 200ms per step
     const eta = tracker.estimateRemainingMs(5);
     expect(eta).toBe(1000); // 5 * 200ms
+  });
+});
+
+// ---- DAGBatchVerifier tests ----
+
+type Hex = `0x${string}`;
+
+const MOCK_CONTRACT: Hex = '0x1111111111111111111111111111111111111111';
+const MOCK_CIRCUIT_HASH: Hex = '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const MOCK_PROOF: Hex = '0xdeadbeef';
+const MOCK_TX_HASH: Hex = '0x0000000000000000000000000000000000000000000000000000000000001234';
+const MOCK_SESSION_ID: Hex = '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+const MOCK_SENDER: Hex = '0x2222222222222222222222222222222222222222';
+const ZERO_HASH: Hex = `0x${'0'.repeat(64)}` as Hex;
+
+function createMockClients() {
+  const writeContractFn = vi.fn();
+  const readContractFn = vi.fn();
+  const waitForTransactionReceiptFn = vi.fn();
+  const getTransactionReceiptFn = vi.fn();
+
+  const publicClient = {
+    readContract: readContractFn,
+    waitForTransactionReceipt: waitForTransactionReceiptFn,
+    getTransactionReceipt: getTransactionReceiptFn,
+  } as unknown as PublicClient<Transport, Chain>;
+
+  const walletClient = {
+    writeContract: writeContractFn,
+    account: { address: MOCK_SENDER },
+  } as unknown as WalletClient<Transport, Chain>;
+
+  return {
+    publicClient,
+    walletClient,
+    writeContractFn,
+    readContractFn,
+    waitForTransactionReceiptFn,
+    getTransactionReceiptFn,
+  };
+}
+
+function makeReceipt(hash: Hex, gasUsed = 1_000_000n, sessionId?: Hex) {
+  const logs = sessionId
+    ? [
+        {
+          address: MOCK_CONTRACT,
+          topics: [
+            '0xevent_sig' as Hex,
+            sessionId,
+            MOCK_CIRCUIT_HASH,
+          ],
+          data: '0x' as Hex,
+        },
+      ]
+    : [];
+  return {
+    transactionHash: hash,
+    status: 'success' as const,
+    gasUsed,
+    blockNumber: 42n,
+    logs,
+  };
+}
+
+describe('DAGBatchVerifier', () => {
+  let mocks: ReturnType<typeof createMockClients>;
+  let verifier: DAGBatchVerifier;
+
+  beforeEach(() => {
+    mocks = createMockClients();
+    verifier = new DAGBatchVerifier(
+      mocks.publicClient,
+      mocks.walletClient,
+      MOCK_CONTRACT,
+    );
+  });
+
+  it('constructor stores client, walletClient, and contractAddress', () => {
+    // The verifier should be created without errors.
+    expect(verifier).toBeDefined();
+    expect(verifier).toBeInstanceOf(DAGBatchVerifier);
+  });
+
+  it('startVerification returns sessionId and txHash', async () => {
+    mocks.writeContractFn.mockResolvedValueOnce(MOCK_TX_HASH);
+    mocks.waitForTransactionReceiptFn.mockResolvedValueOnce(
+      makeReceipt(MOCK_TX_HASH, 5_000_000n, MOCK_SESSION_ID),
+    );
+
+    const result = await verifier.startVerification(MOCK_CIRCUIT_HASH, MOCK_PROOF);
+
+    expect(result.sessionId).toBe(MOCK_SESSION_ID);
+    expect(result.txHash).toBe(MOCK_TX_HASH);
+    expect(mocks.writeContractFn).toHaveBeenCalledOnce();
+    expect(mocks.waitForTransactionReceiptFn).toHaveBeenCalledWith({ hash: MOCK_TX_HASH });
+  });
+
+  it('startVerification throws on reverted transaction', async () => {
+    mocks.writeContractFn.mockResolvedValueOnce(MOCK_TX_HASH);
+    mocks.waitForTransactionReceiptFn.mockResolvedValueOnce({
+      ...makeReceipt(MOCK_TX_HASH, 0n, MOCK_SESSION_ID),
+      status: 'reverted',
+    });
+
+    await expect(
+      verifier.startVerification(MOCK_CIRCUIT_HASH, MOCK_PROOF),
+    ).rejects.toThrow('startVerification reverted');
+  });
+
+  it('continueVerification increments batch index', async () => {
+    // getSession called inside continueVerification to read current batchIdx
+    mocks.readContractFn.mockResolvedValueOnce([
+      MOCK_CIRCUIT_HASH,
+      2n,   // nextBatchIdx = 2
+      11n,  // totalBatches
+      false,
+      0n,
+      0n,
+    ]);
+    const continueTxHash: Hex = '0x0000000000000000000000000000000000000000000000000000000000005678';
+    mocks.writeContractFn.mockResolvedValueOnce(continueTxHash);
+    mocks.waitForTransactionReceiptFn.mockResolvedValueOnce(
+      makeReceipt(continueTxHash, 20_000_000n),
+    );
+
+    const result = await verifier.continueVerification(MOCK_SESSION_ID, MOCK_PROOF);
+
+    expect(result.txHash).toBe(continueTxHash);
+    expect(result.batchIdx).toBe(2);
+  });
+
+  it('continueVerification throws for non-existent session', async () => {
+    // Return zero circuit hash to indicate non-existent session
+    mocks.readContractFn.mockResolvedValueOnce([
+      ZERO_HASH,
+      0n,
+      0n,
+      false,
+      0n,
+      0n,
+    ]);
+
+    await expect(
+      verifier.continueVerification(MOCK_SESSION_ID, MOCK_PROOF),
+    ).rejects.toThrow('does not exist');
+  });
+
+  it('finalizeVerification returns completion status', async () => {
+    const finalizeTxHash: Hex = '0x0000000000000000000000000000000000000000000000000000000000009abc';
+    mocks.writeContractFn.mockResolvedValueOnce(finalizeTxHash);
+    mocks.waitForTransactionReceiptFn.mockResolvedValueOnce(
+      makeReceipt(finalizeTxHash, 15_000_000n),
+    );
+    // getSession after finalize to check completion
+    mocks.readContractFn.mockResolvedValueOnce([
+      MOCK_CIRCUIT_HASH,
+      11n,
+      11n,
+      true, // finalized
+      34n,
+      34n,
+    ]);
+
+    const result = await verifier.finalizeVerification(MOCK_SESSION_ID, MOCK_PROOF);
+
+    expect(result.txHash).toBe(finalizeTxHash);
+    expect(result.isComplete).toBe(true);
+  });
+
+  it('finalizeVerification returns isComplete=false when not done', async () => {
+    const finalizeTxHash: Hex = '0x0000000000000000000000000000000000000000000000000000000000009abc';
+    mocks.writeContractFn.mockResolvedValueOnce(finalizeTxHash);
+    mocks.waitForTransactionReceiptFn.mockResolvedValueOnce(
+      makeReceipt(finalizeTxHash, 15_000_000n),
+    );
+    // getSession shows NOT finalized yet
+    mocks.readContractFn.mockResolvedValueOnce([
+      MOCK_CIRCUIT_HASH,
+      11n,
+      11n,
+      false, // not finalized
+      16n,
+      16n,
+    ]);
+
+    const result = await verifier.finalizeVerification(MOCK_SESSION_ID, MOCK_PROOF);
+
+    expect(result.isComplete).toBe(false);
+  });
+
+  it('getSession returns session data for existing session', async () => {
+    mocks.readContractFn.mockResolvedValueOnce([
+      MOCK_CIRCUIT_HASH,
+      5n,   // nextBatchIdx
+      11n,  // totalBatches
+      false,
+      0n,
+      0n,
+    ]);
+
+    const session = await verifier.getSession(MOCK_SESSION_ID);
+
+    expect(session).not.toBeNull();
+    expect(session!.circuitHash).toBe(MOCK_CIRCUIT_HASH);
+    expect(session!.sender).toBe(MOCK_SENDER);
+    expect(session!.nextBatchIdx).toBe(5);
+    expect(session!.finalized).toBe(false);
+  });
+
+  it('getSession returns null for unknown session', async () => {
+    mocks.readContractFn.mockResolvedValueOnce([
+      ZERO_HASH,
+      0n,
+      0n,
+      false,
+      0n,
+      0n,
+    ]);
+
+    const session = await verifier.getSession(MOCK_SESSION_ID);
+    expect(session).toBeNull();
+  });
+
+  it('runFullVerification chains start, continue, and finalize steps', async () => {
+    const progressCalls: Array<{ step: string; batchIdx: number }> = [];
+    const onProgress = (step: string, batchIdx: number) => {
+      progressCalls.push({ step, batchIdx });
+    };
+
+    // --- Start ---
+    mocks.writeContractFn.mockResolvedValueOnce(MOCK_TX_HASH);
+    mocks.waitForTransactionReceiptFn.mockResolvedValueOnce(
+      makeReceipt(MOCK_TX_HASH, 5_000_000n, MOCK_SESSION_ID),
+    );
+    // getTransactionReceipt for gas accounting after start
+    mocks.getTransactionReceiptFn.mockResolvedValueOnce(
+      makeReceipt(MOCK_TX_HASH, 5_000_000n, MOCK_SESSION_ID),
+    );
+
+    // getRawSession after start (to get totalBatches)
+    mocks.readContractFn.mockResolvedValueOnce([
+      MOCK_CIRCUIT_HASH,
+      0n,   // nextBatchIdx starts at 0
+      2n,   // totalBatches = 2 (for a quick test)
+      false,
+      0n,
+      0n,
+    ]);
+
+    // --- Continue batch 0 ---
+    // getSession inside continueVerification (to read batchIdx)
+    mocks.readContractFn.mockResolvedValueOnce([
+      MOCK_CIRCUIT_HASH, 0n, 2n, false, 0n, 0n,
+    ]);
+    const continueTx0: Hex = '0x0000000000000000000000000000000000000000000000000000000000000c01';
+    mocks.writeContractFn.mockResolvedValueOnce(continueTx0);
+    mocks.waitForTransactionReceiptFn.mockResolvedValueOnce(
+      makeReceipt(continueTx0, 20_000_000n),
+    );
+    mocks.getTransactionReceiptFn.mockResolvedValueOnce(
+      makeReceipt(continueTx0, 20_000_000n),
+    );
+
+    // --- Continue batch 1 ---
+    mocks.readContractFn.mockResolvedValueOnce([
+      MOCK_CIRCUIT_HASH, 1n, 2n, false, 0n, 0n,
+    ]);
+    const continueTx1: Hex = '0x0000000000000000000000000000000000000000000000000000000000000c02';
+    mocks.writeContractFn.mockResolvedValueOnce(continueTx1);
+    mocks.waitForTransactionReceiptFn.mockResolvedValueOnce(
+      makeReceipt(continueTx1, 20_000_000n),
+    );
+    mocks.getTransactionReceiptFn.mockResolvedValueOnce(
+      makeReceipt(continueTx1, 20_000_000n),
+    );
+
+    // --- Finalize (one call, completes immediately) ---
+    const finalizeTx: Hex = '0x0000000000000000000000000000000000000000000000000000000000000f01';
+    mocks.writeContractFn.mockResolvedValueOnce(finalizeTx);
+    mocks.waitForTransactionReceiptFn.mockResolvedValueOnce(
+      makeReceipt(finalizeTx, 10_000_000n),
+    );
+    // getSession after finalize
+    mocks.readContractFn.mockResolvedValueOnce([
+      MOCK_CIRCUIT_HASH, 2n, 2n, true, 34n, 34n,
+    ]);
+    mocks.getTransactionReceiptFn.mockResolvedValueOnce(
+      makeReceipt(finalizeTx, 10_000_000n),
+    );
+
+    const result = await verifier.runFullVerification(
+      MOCK_CIRCUIT_HASH,
+      MOCK_PROOF,
+      onProgress,
+    );
+
+    // Check transaction hashes collected
+    expect(result.txHashes).toHaveLength(4); // start + 2 continue + 1 finalize
+    expect(result.txHashes[0]).toBe(MOCK_TX_HASH);
+    expect(result.txHashes[1]).toBe(continueTx0);
+    expect(result.txHashes[2]).toBe(continueTx1);
+    expect(result.txHashes[3]).toBe(finalizeTx);
+
+    // Check gas accounting: 5M + 20M + 20M + 10M = 55M
+    expect(result.gasUsed).toBe(55_000_000n);
+
+    // Check progress callbacks were fired
+    expect(progressCalls).toEqual([
+      { step: 'start', batchIdx: 0 },
+      { step: 'continue', batchIdx: 0 },
+      { step: 'continue', batchIdx: 1 },
+      { step: 'finalize', batchIdx: 0 },
+    ]);
+  });
+
+  it('runFullVerification works without onProgress callback', async () => {
+    // Start
+    mocks.writeContractFn.mockResolvedValueOnce(MOCK_TX_HASH);
+    mocks.waitForTransactionReceiptFn.mockResolvedValueOnce(
+      makeReceipt(MOCK_TX_HASH, 5_000_000n, MOCK_SESSION_ID),
+    );
+    mocks.getTransactionReceiptFn.mockResolvedValueOnce(
+      makeReceipt(MOCK_TX_HASH, 5_000_000n, MOCK_SESSION_ID),
+    );
+
+    // getRawSession: 0 totalBatches (skip continue phase)
+    mocks.readContractFn.mockResolvedValueOnce([
+      MOCK_CIRCUIT_HASH, 0n, 0n, false, 0n, 0n,
+    ]);
+
+    // Finalize
+    const finalizeTx: Hex = '0x0000000000000000000000000000000000000000000000000000000000000f01';
+    mocks.writeContractFn.mockResolvedValueOnce(finalizeTx);
+    mocks.waitForTransactionReceiptFn.mockResolvedValueOnce(
+      makeReceipt(finalizeTx, 10_000_000n),
+    );
+    mocks.readContractFn.mockResolvedValueOnce([
+      MOCK_CIRCUIT_HASH, 0n, 0n, true, 0n, 0n,
+    ]);
+    mocks.getTransactionReceiptFn.mockResolvedValueOnce(
+      makeReceipt(finalizeTx, 10_000_000n),
+    );
+
+    // Should not throw even without progress callback
+    const result = await verifier.runFullVerification(MOCK_CIRCUIT_HASH, MOCK_PROOF);
+
+    expect(result.txHashes).toHaveLength(2); // start + finalize
+    expect(result.gasUsed).toBe(15_000_000n);
   });
 });

@@ -318,6 +318,11 @@ class XGBoostConverter:
     """
 
     def __init__(self, model: XGBoostModel) -> None:
+        """Create a converter from a parsed XGBoostModel.
+
+        Args:
+            model: A parsed XGBoostModel instance.
+        """
         self._model = model
         self._samples: List[Sample] = []
         self._threshold: float = 0.5

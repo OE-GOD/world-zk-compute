@@ -1,0 +1,54 @@
+{{- if and .Values.networkPolicy.enabled .Values.operator.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "worldzk.operator.fullname" . }}-netpol
+  labels:
+    {{- include "worldzk.operator.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "worldzk.operator.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Egress
+    - Ingress
+  ingress:
+    # Allow inbound health checks and metrics scraping
+    - ports:
+        - port: {{ .Values.operator.port }}
+          protocol: TCP
+  egress:
+    # DNS resolution (kube-dns)
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Ethereum RPC endpoint (HTTPS or local)
+    - ports:
+        - port: 443
+          protocol: TCP
+        - port: 8545
+          protocol: TCP
+    # TEE enclave service (in-cluster)
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: enclave
+      ports:
+        - port: 8080
+          protocol: TCP
+    # Warm prover service (in-cluster)
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prover
+      ports:
+        - port: 3000
+          protocol: TCP
+{{- end }}

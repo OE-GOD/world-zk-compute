@@ -1,0 +1,136 @@
+---
+# Indexer Deployment
+# Polls on-chain events and indexes TEE result submissions, challenges,
+# finalizations, and dispute resolutions into a local SQLite database.
+# Exposes a REST API on port 8081 for querying indexed data.
+#
+# Uses a PersistentVolumeClaim for durable SQLite storage so data
+# survives pod restarts. Single replica only because SQLite does not
+# support concurrent writers.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worldzk-indexer
+  labels:
+    app: worldzk-indexer
+    app.kubernetes.io/name: indexer
+    app.kubernetes.io/component: indexer
+    app.kubernetes.io/part-of: world-zk-compute
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worldzk-indexer
+  strategy:
+    # Recreate strategy since SQLite does not support concurrent writers.
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: worldzk-indexer
+        app.kubernetes.io/name: indexer
+        app.kubernetes.io/component: indexer
+        app.kubernetes.io/part-of: world-zk-compute
+    spec:
+      serviceAccountName: worldzk-indexer
+      terminationGracePeriodSeconds: 15
+      containers:
+        - name: indexer
+          image: world-zk-compute/indexer:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8081
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: world-zk-config
+          env:
+            - name: DB_PATH
+              value: "/data/indexer.db"
+            - name: PORT
+              value: "8081"
+            - name: CONTRACT_ADDRESS
+              valueFrom:
+                secretKeyRef:
+                  name: world-zk-secrets
+                  key: TEE_VERIFIER_ADDRESS
+                  optional: true
+            - name: RPC_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: world-zk-config
+                  key: OPERATOR_RPC_URL
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "250m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          volumeMounts:
+            - name: indexer-data
+              mountPath: /data
+      volumes:
+        - name: indexer-data
+          persistentVolumeClaim:
+            claimName: worldzk-indexer-data
+---
+# PersistentVolumeClaim for Indexer SQLite database
+# 1Gi is sufficient for millions of indexed events.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: worldzk-indexer-data
+  labels:
+    app: worldzk-indexer
+    app.kubernetes.io/part-of: world-zk-compute
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+# Service for Indexer REST API
+apiVersion: v1
+kind: Service
+metadata:
+  name: worldzk-indexer
+  labels:
+    app: worldzk-indexer
+    app.kubernetes.io/part-of: world-zk-compute
+spec:
+  selector:
+    app: worldzk-indexer
+  ports:
+    - name: http
+      port: 8081
+      targetPort: 8081
+      protocol: TCP
+  type: ClusterIP
+---
+# ServiceAccount for Indexer
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: worldzk-indexer
+  labels:
+    app: worldzk-indexer
+    app.kubernetes.io/part-of: world-zk-compute

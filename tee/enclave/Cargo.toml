@@ -3,6 +3,14 @@ name = "tee-enclave"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "tee_enclave"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tee-enclave"
+path = "src/main.rs"
+
 [features]
 default = []
 nitro = ["aws-nitro-enclaves-nsm-api"]
@@ -19,12 +27,14 @@ alloy-primitives = "1.0"
 alloy-signer = "1.0"
 alloy-signer-local = "1.0"
 hex = "0.4"
+sha2 = "0.10"
 tower-http = { version = "0.5", features = ["cors"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 
 [dev-dependencies]
 tower = "0.5"
+serial_test = "3"
 
 # NSM API is only available on Linux (Nitro enclaves).
 # This dep is resolved but not compiled on non-Linux platforms.

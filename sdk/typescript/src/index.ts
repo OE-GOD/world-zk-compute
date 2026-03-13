@@ -22,7 +22,8 @@
  */
 
 export { Client } from './client';
-export { BatchVerifier, ProgressTracker, BatchVerificationCancelledError } from './batch-verifier';
+export { BatchVerifier, DAGBatchVerifier, ProgressTracker, BatchVerificationCancelledError } from './batch-verifier';
+export type { DAGBatchSession } from './batch-verifier';
 export { TEEVerifier } from './tee-verifier';
 export type { TEEVerifierConfig } from './tee-verifier';
 export { TEEEventWatcher } from './tee-event-watcher';
@@ -36,8 +37,20 @@ export type {
   DisputeResolvedEvent,
   EnclaveRegisteredEvent,
   EnclaveRevokedEvent,
+  WatchEventsOptions,
+  WatchEventsCallback,
+  WatchEventsErrorCallback,
+  EventSubscription,
 } from './tee-event-watcher';
 export { teeMLVerifierAbi } from './tee-verifier-abi';
+export {
+  teeMLVerifierAbi as generatedTeeMLVerifierAbi,
+  executionEngineAbi,
+  programRegistryAbi,
+  remainderVerifierAbi,
+  proverRegistryAbi,
+  proverReputationAbi,
+} from './abi';
 export {
   computeModelHash,
   computeInputHash,

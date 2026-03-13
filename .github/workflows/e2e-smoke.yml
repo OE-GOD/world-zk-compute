@@ -1,0 +1,194 @@
+name: E2E Smoke Test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'contracts/**'
+      - 'sdk/**'
+      - 'services/**'
+  pull_request:
+    paths:
+      - 'contracts/**'
+      - 'sdk/**'
+      - 'services/**'
+  workflow_dispatch:
+
+env:
+  DEPLOYER_PRIVATE_KEY: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+  DEPLOYER_ADDR: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+  # Account #1 used as enclave signer
+  ENCLAVE_KEY: "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
+  ENCLAVE_ADDR: "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+  RPC_URL: "http://127.0.0.1:8545"
+
+jobs:
+  e2e-smoke:
+    name: Deploy + Submit + Challenge + Finalize
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Install Foundry dependencies
+        run: |
+          cd contracts
+          [ -d lib/forge-std ] || forge install foundry-rs/forge-std --no-git
+          [ -d lib/risc0-ethereum ] || forge install risc0/risc0-ethereum --no-git
+
+      - name: Build contracts
+        run: cd contracts && forge build
+
+      - name: Start Anvil
+        run: |
+          anvil --block-time 1 --port 8545 &
+          sleep 2
+          cast block-number --rpc-url $RPC_URL
+
+      - name: Deploy contracts
+        id: deploy
+        run: |
+          cd contracts
+
+          # Deploy MockRiscZeroVerifier
+          MOCK_DEPLOY=$(forge create src/MockRiscZeroVerifier.sol:MockRiscZeroVerifier \
+            --rpc-url $RPC_URL \
+            --private-key $DEPLOYER_PRIVATE_KEY \
+            --json)
+          MOCK_ADDR=$(echo "$MOCK_DEPLOY" | jq -r '.deployedTo')
+          echo "mock_verifier=$MOCK_ADDR" >> "$GITHUB_OUTPUT"
+
+          # Deploy ProgramRegistry
+          REGISTRY_DEPLOY=$(forge create src/ProgramRegistry.sol:ProgramRegistry \
+            --rpc-url $RPC_URL \
+            --private-key $DEPLOYER_PRIVATE_KEY \
+            --constructor-args $DEPLOYER_ADDR \
+            --json)
+          REGISTRY_ADDR=$(echo "$REGISTRY_DEPLOY" | jq -r '.deployedTo')
+          echo "registry=$REGISTRY_ADDR" >> "$GITHUB_OUTPUT"
+
+          # Deploy TEEMLVerifier (admin, remainderVerifier=zero)
+          TEE_DEPLOY=$(forge create src/tee/TEEMLVerifier.sol:TEEMLVerifier \
+            --rpc-url $RPC_URL \
+            --private-key $DEPLOYER_PRIVATE_KEY \
+            --constructor-args $DEPLOYER_ADDR 0x0000000000000000000000000000000000000000 \
+            --json)
+          TEE_ADDR=$(echo "$TEE_DEPLOY" | jq -r '.deployedTo')
+          echo "tee_verifier=$TEE_ADDR" >> "$GITHUB_OUTPUT"
+
+          echo "Deployed: Mock=$MOCK_ADDR, Registry=$REGISTRY_ADDR, TEE=$TEE_ADDR"
+
+      - name: Register enclave
+        run: |
+          TEE_ADDR="${{ steps.deploy.outputs.tee_verifier }}"
+          IMAGE_HASH="0x0000000000000000000000000000000000000000000000000000000000000001"
+
+          cast send "$TEE_ADDR" \
+            "registerEnclave(address,bytes32)" \
+            "$ENCLAVE_ADDR" "$IMAGE_HASH" \
+            --rpc-url $RPC_URL \
+            --private-key $DEPLOYER_PRIVATE_KEY
+
+          # Verify enclave is registered (enclaves mapping returns struct)
+          REGISTERED=$(cast call "$TEE_ADDR" \
+            "enclaves(address)(bool,bool,bytes32,uint256)" \
+            "$ENCLAVE_ADDR" \
+            --rpc-url $RPC_URL | head -1)
+          echo "Enclave registered: $REGISTERED"
+
+      - name: Submit result
+        id: submit
+        run: |
+          TEE_ADDR="${{ steps.deploy.outputs.tee_verifier }}"
+
+          # Get prover stake amount
+          STAKE=$(cast call "$TEE_ADDR" "proverStake()(uint256)" --rpc-url $RPC_URL)
+          echo "Required stake: $STAKE"
+
+          MODEL_HASH="0x0000000000000000000000000000000000000000000000000000000000000002"
+          INPUT_HASH="0x0000000000000000000000000000000000000000000000000000000000000003"
+          RESULT="0x0004"  # bytes calldata (raw result data)
+
+          # Attestation: sign(keccak256(abi.encodePacked(modelHash, inputHash, keccak256(result))))
+          RESULT_HASH=$(cast keccak "$RESULT")
+          MSG=$(cast keccak "$(cast abi-encode --packed 'f(bytes32,bytes32,bytes32)' \
+            "$MODEL_HASH" "$INPUT_HASH" "$RESULT_HASH")")
+          ATTESTATION=$(cast wallet sign --private-key "$ENCLAVE_KEY" "$MSG")
+
+          # Submit result: submitResult(bytes32, bytes32, bytes, bytes)
+          TX_HASH=$(cast send "$TEE_ADDR" \
+            "submitResult(bytes32,bytes32,bytes,bytes)" \
+            "$MODEL_HASH" "$INPUT_HASH" "$RESULT" "$ATTESTATION" \
+            --value "$STAKE" \
+            --rpc-url $RPC_URL \
+            --private-key $DEPLOYER_PRIVATE_KEY \
+            --json | jq -r '.transactionHash')
+          echo "Submit tx: $TX_HASH"
+
+          # Get block number of the submit tx to compute result ID
+          BLOCK=$(cast receipt "$TX_HASH" --rpc-url $RPC_URL --json | jq -r '.blockNumber' | xargs printf '%d')
+
+          # resultId = keccak256(abi.encodePacked(msg.sender, modelHash, inputHash, blockNumber))
+          RESULT_ID=$(cast keccak "$(cast abi-encode --packed 'f(address,bytes32,bytes32,uint256)' \
+            "$DEPLOYER_ADDR" "$MODEL_HASH" "$INPUT_HASH" "$BLOCK")")
+          echo "result_id=$RESULT_ID" >> "$GITHUB_OUTPUT"
+          echo "Result ID: $RESULT_ID"
+
+      - name: Verify result is pending
+        run: |
+          TEE_ADDR="${{ steps.deploy.outputs.tee_verifier }}"
+          RESULT_ID="${{ steps.submit.outputs.result_id }}"
+
+          IS_VALID=$(cast call "$TEE_ADDR" \
+            "isResultValid(bytes32)(bool)" \
+            "$RESULT_ID" \
+            --rpc-url $RPC_URL)
+          echo "Result valid (should be false): $IS_VALID"
+
+      - name: Fast-forward time and finalize
+        run: |
+          TEE_ADDR="${{ steps.deploy.outputs.tee_verifier }}"
+          RESULT_ID="${{ steps.submit.outputs.result_id }}"
+
+          # Get challenge window (constant)
+          WINDOW=$(cast call "$TEE_ADDR" "CHALLENGE_WINDOW()(uint256)" --rpc-url $RPC_URL)
+          echo "Challenge window: $WINDOW seconds"
+
+          # Fast-forward time past the challenge window
+          cast rpc anvil_increaseTime "$((WINDOW + 1))" --rpc-url $RPC_URL
+          cast rpc anvil_mine 1 --rpc-url $RPC_URL
+
+          # Finalize the result (function is finalize, not finalizeResult)
+          cast send "$TEE_ADDR" \
+            "finalize(bytes32)" \
+            "$RESULT_ID" \
+            --rpc-url $RPC_URL \
+            --private-key $DEPLOYER_PRIVATE_KEY
+
+          # Verify result is now valid
+          IS_VALID=$(cast call "$TEE_ADDR" \
+            "isResultValid(bytes32)(bool)" \
+            "$RESULT_ID" \
+            --rpc-url $RPC_URL)
+          echo "Result valid after finalize (should be true): $IS_VALID"
+
+          if [ "$IS_VALID" != "true" ]; then
+            echo "ERROR: Result should be valid after finalization"
+            exit 1
+          fi
+
+      - name: Smoke test summary
+        run: |
+          echo "=== E2E Smoke Test Results ==="
+          echo "Deploy:    PASS"
+          echo "Register:  PASS"
+          echo "Submit:    PASS"
+          echo "Finalize:  PASS"
+          echo "=== All smoke tests passed ==="

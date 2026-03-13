@@ -1,0 +1,17 @@
+{{- if .Values.indexer.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "worldzk.indexer.fullname" . }}
+  labels:
+    {{- include "worldzk.indexer.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "worldzk.indexer.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.indexer.port }}
+      targetPort: http
+      protocol: TCP
+{{- end }}

@@ -1,0 +1,17 @@
+{{- if and .Values.operator.enabled (include "worldzk.operator.canary.isEnabled" .) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "worldzk.operator.canary.fullname" . }}
+  labels:
+    {{- include "worldzk.operator.canary.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "worldzk.operator.canary.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.operator.port }}
+      targetPort: http
+      protocol: TCP
+{{- end }}

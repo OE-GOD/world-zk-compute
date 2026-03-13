@@ -38,6 +38,10 @@ dev = [
     "ruff>=0.1",
     "respx>=0.20",
     "web3>=6.0",
+    "pdoc3>=0.11",
+]
+docs = [
+    "pdoc3>=0.11",
 ]
 requests = [
     "requests>=2.28",
@@ -45,6 +49,9 @@ requests = [
 web3 = [
     "web3>=6.0",
 ]
+
+[project.scripts]
+worldzk = "worldzk.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/OE-GOD/world-zk-compute"

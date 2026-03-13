@@ -1,0 +1,111 @@
+name: Security Audit
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # Every Monday at 6:00 UTC
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.92.0"
+
+jobs:
+  rust-audit:
+    name: Rust Dependency Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-audit-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-audit-registry-
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit sdk/
+        run: cargo audit --file sdk/Cargo.lock --deny warnings
+
+      - name: Audit services/operator/
+        run: cargo audit --file services/operator/Cargo.lock --deny warnings
+
+      - name: Audit tee/enclave/
+        run: cargo audit --file tee/enclave/Cargo.lock --deny warnings
+
+      - name: Audit services/admin-cli/
+        run: cargo audit --file services/admin-cli/Cargo.lock --deny warnings
+
+      - name: Audit services/indexer/
+        run: cargo audit --file services/indexer/Cargo.lock --deny warnings
+
+      - name: Audit crates/watcher/
+        run: cargo audit --file crates/watcher/Cargo.lock --deny warnings
+
+      - name: Audit examples/xgboost-remainder/
+        run: cargo audit --file examples/xgboost-remainder/Cargo.lock --deny warnings
+
+  python-audit:
+    name: Python Dependency Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: Install Python SDK dependencies
+        run: |
+          cd sdk/python
+          pip install -e '.[web3]'
+
+      - name: Run pip-audit
+        run: |
+          cd sdk/python
+          pip-audit --strict --desc on
+
+  npm-audit:
+    name: NPM Dependency Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: sdk/typescript/package-lock.json
+
+      - name: Install dependencies
+        run: cd sdk/typescript && npm ci
+
+      - name: Run npm audit
+        run: cd sdk/typescript && npm audit --audit-level=high

@@ -1,0 +1,49 @@
+{
+  "version": "1.0.0",
+  "lastUpdated": "",
+  "deployments": [
+    {
+      "chainId": 31337,
+      "chainName": "localhost",
+      "deployedAt": "",
+      "deployer": "",
+      "contracts": {
+        "TEEMLVerifier": {
+          "address": "",
+          "implementationAddress": "",
+          "version": "1.0.0",
+          "deployTxHash": "",
+          "blockNumber": 0,
+          "verified": false
+        },
+        "ExecutionEngine": {
+          "address": "",
+          "implementationAddress": "",
+          "version": "1.0.0",
+          "deployTxHash": "",
+          "blockNumber": 0,
+          "verified": false
+        },
+        "ProgramRegistry": {
+          "address": "",
+          "version": "1.0.0",
+          "deployTxHash": "",
+          "blockNumber": 0,
+          "verified": false
+        },
+        "RemainderVerifier": {
+          "address": "",
+          "version": "1.0.0",
+          "deployTxHash": "",
+          "blockNumber": 0,
+          "verified": false
+        }
+      },
+      "wiring": {
+        "executionEngine.verifier": "",
+        "executionEngine.programRegistry": ""
+      },
+      "notes": "Local development. Re-deployed on each anvil restart."
+    }
+  ]
+}

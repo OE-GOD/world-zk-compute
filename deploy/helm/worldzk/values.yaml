@@ -1,0 +1,190 @@
+# -- Global configuration shared across all components
+global:
+  # -- Ethereum JSON-RPC endpoint
+  rpcUrl: "http://localhost:8545"
+  # -- TEEMLVerifier contract address
+  contractAddress: "0x0000000000000000000000000000000000000000"
+  # -- Target chain ID (31337=Anvil, 11155111=Sepolia, 1=Mainnet)
+  chainId: "31337"
+  # -- Rust log filter (trace, debug, info, warn, error)
+  logLevel: "info"
+  # -- TEE enclave service URL
+  enclaveUrl: "http://worldzk-enclave:8080"
+  # -- Event polling interval in seconds
+  pollIntervalSecs: "12"
+
+# -- Operator component configuration
+operator:
+  # -- Enable the operator deployment
+  enabled: true
+  # -- Number of operator replicas
+  replicaCount: 2
+  image:
+    # -- Operator container image repository
+    repository: world-zk-compute/operator
+    # -- Operator container image tag
+    tag: latest
+    # -- Image pull policy
+    pullPolicy: IfNotPresent
+  # -- Operator service port
+  port: 8080
+  # -- Additional environment variables for the operator
+  env:
+    RUST_LOG_FORMAT: "json"
+  # -- Resource requests and limits
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "250m"
+    limits:
+      memory: "256Mi"
+      cpu: "500m"
+  # -- Liveness probe configuration
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  # -- Readiness probe configuration
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+  # -- Size limit for the ephemeral proof storage volume
+  proofStorageSizeLimit: 1Gi
+  # -- Termination grace period in seconds
+  terminationGracePeriodSeconds: 30
+
+# -- Indexer component configuration
+indexer:
+  # -- Enable the indexer deployment
+  enabled: true
+  # -- Number of indexer replicas (must be 1 for SQLite)
+  replicaCount: 1
+  image:
+    # -- Indexer container image repository
+    repository: world-zk-compute/indexer
+    # -- Indexer container image tag
+    tag: latest
+    # -- Image pull policy
+    pullPolicy: IfNotPresent
+  # -- Indexer service port
+  port: 8081
+  # -- Additional environment variables for the indexer
+  env:
+    DB_PATH: "/data/indexer.db"
+  # -- Resource requests and limits
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "250m"
+    limits:
+      memory: "256Mi"
+      cpu: "500m"
+  # -- Liveness probe configuration
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 10
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 3
+  # -- Readiness probe configuration
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+  # -- Persistent volume claim configuration for SQLite storage
+  persistence:
+    # -- Enable persistent storage
+    enabled: true
+    # -- Storage class name (empty string uses cluster default)
+    storageClassName: ""
+    # -- Access modes for the PVC
+    accessModes:
+      - ReadWriteOnce
+    # -- Storage size
+    size: 1Gi
+    # -- Annotations for the PVC
+    annotations: {}
+  # -- Termination grace period in seconds
+  terminationGracePeriodSeconds: 15
+
+# -- Secrets configuration
+secrets:
+  # -- Create the secret resource (set to false if managing secrets externally)
+  create: true
+  # -- Name override for the secret (defaults to release fullname + "-secrets")
+  nameOverride: ""
+  # -- Operator private key (hex with 0x prefix)
+  operatorPrivateKey: ""
+  # -- Enclave private key (hex with 0x prefix)
+  enclavePrivateKey: ""
+  # -- TEE verifier contract address (can also be set via global.contractAddress)
+  teeVerifierAddress: ""
+
+# -- Service account configuration
+serviceAccount:
+  # -- Create service accounts
+  create: true
+  # -- Annotations to add to the service accounts
+  annotations: {}
+
+# -- HorizontalPodAutoscaler configuration for the operator
+autoscaling:
+  # -- Enable HPA for operator
+  enabled: true
+  # -- Minimum number of replicas
+  minReplicas: 2
+  # -- Maximum number of replicas
+  maxReplicas: 5
+  # -- Target CPU utilization percentage
+  targetCPUUtilizationPercentage: 70
+  # -- Scale-down stabilization window in seconds
+  scaleDownStabilizationSeconds: 300
+  # -- Scale-up stabilization window in seconds
+  scaleUpStabilizationSeconds: 60
+
+# -- PodDisruptionBudget configuration
+podDisruptionBudget:
+  # -- Enable PDB for operator
+  enabled: true
+  # -- Minimum number of available pods
+  minAvailable: 1
+
+# -- NetworkPolicy configuration
+networkPolicy:
+  # -- Enable network policy
+  enabled: true
+
+# -- Image pull secrets for private registries
+imagePullSecrets: []
+
+# -- Override the release name
+nameOverride: ""
+# -- Override the full release name
+fullnameOverride: ""
+
+# -- Pod annotations applied to all pods
+podAnnotations: {}
+
+# -- Node selector applied to all pods
+nodeSelector: {}
+
+# -- Tolerations applied to all pods
+tolerations: []
+
+# -- Affinity rules applied to all pods
+affinity: {}

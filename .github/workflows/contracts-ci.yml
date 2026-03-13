@@ -19,6 +19,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
@@ -26,8 +28,8 @@ jobs:
       - name: Install dependencies
         run: |
           cd contracts
-          forge install foundry-rs/forge-std --no-git
-          forge install risc0/risc0-ethereum --no-git
+          [ -d lib/forge-std ] || forge install foundry-rs/forge-std --no-git
+          [ -d lib/risc0-ethereum ] || forge install risc0/risc0-ethereum --no-git
 
       - name: Build contracts
         run: |
@@ -44,7 +46,93 @@ jobs:
           cd contracts
           forge test -vv
 
-      - name: Check contract sizes
+      - name: Check contract sizes (EIP-170)
+        run: bash scripts/check-contract-sizes.sh
+
+      - name: Gas snapshot check
         run: |
           cd contracts
-          forge build --sizes 2>&1 | head -50
+          forge snapshot --check || echo "::warning::Gas snapshot has changed — update with 'forge snapshot'"
+
+  slither-analysis:
+    name: Slither Static Analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    needs: build-and-test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Install dependencies
+        run: |
+          cd contracts
+          [ -d lib/forge-std ] || forge install foundry-rs/forge-std --no-git
+          [ -d lib/risc0-ethereum ] || forge install risc0/risc0-ethereum --no-git
+
+      - name: Build contracts (Slither needs compiled artifacts)
+        run: |
+          cd contracts
+          forge build
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Slither
+        run: pip install slither-analyzer
+
+      - name: Run Slither (fail on high severity + checklist report)
+        id: slither-check
+        run: |
+          cd contracts
+          slither . \
+            --config-file slither.config.json \
+            --fail-on high \
+            --checklist \
+            2>&1 | tee slither-report.md
+          exit_code=${PIPESTATUS[0]}
+          if [ "$exit_code" -ne 0 ]; then
+            echo "::error::Slither found high-severity issues. See slither-report artifact for details."
+          fi
+          exit $exit_code
+
+      - name: Run Slither (SARIF output for GitHub Security)
+        if: always()
+        run: |
+          cd contracts
+          slither . \
+            --config-file slither.config.json \
+            --sarif slither-results.sarif \
+            2>&1 || true
+
+      - name: Upload Slither SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        continue-on-error: true
+        with:
+          sarif_file: contracts/slither-results.sarif
+
+      - name: Upload Slither report as artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: slither-report
+          path: |
+            contracts/slither-report.md
+            contracts/slither-results.sarif
+          retention-days: 30
+
+      - name: Annotate PR with high-severity findings
+        if: always() && github.event_name == 'pull_request'
+        run: |
+          if [ -f contracts/slither-report.md ] && grep -qi "high" contracts/slither-report.md; then
+            echo "::warning::Slither detected findings. Review the slither-report artifact for details."
+          fi

@@ -653,6 +653,265 @@ export class BatchVerifier {
   }
 }
 
+/**
+ * Session state for a DAG batch verification, as returned by getSession().
+ */
+export interface DAGBatchSession {
+  circuitHash: Hex;
+  sender: Hex;
+  nextBatchIdx: number;
+  finalized: boolean;
+}
+
+/**
+ * A viem-native DAG batch verifier that accepts PublicClient and WalletClient directly.
+ *
+ * This class provides fine-grained control over each verification step (start, continue,
+ * finalize) as well as a convenience method (runFullVerification) that chains them all.
+ *
+ * @example
+ * ```typescript
+ * import { createPublicClient, createWalletClient, http } from 'viem';
+ * import { privateKeyToAccount } from 'viem/accounts';
+ * import { DAGBatchVerifier } from '@worldzk/sdk';
+ *
+ * const publicClient = createPublicClient({ chain, transport: http(rpcUrl) });
+ * const walletClient = createWalletClient({ chain, transport: http(rpcUrl), account });
+ *
+ * const verifier = new DAGBatchVerifier(publicClient, walletClient, contractAddress);
+ *
+ * const result = await verifier.runFullVerification(circuitHash, proof, (step, idx) => {
+ *   console.log(`${step} batch ${idx}`);
+ * });
+ * console.log(`Gas used: ${result.gasUsed}`);
+ * ```
+ */
+export class DAGBatchVerifier {
+  private client: PublicClient<Transport, Chain>;
+  private walletClient: WalletClient<Transport, Chain>;
+  private contractAddress: Hex;
+
+  constructor(
+    client: PublicClient<Transport, Chain>,
+    walletClient: WalletClient<Transport, Chain>,
+    contractAddress: Hex,
+  ) {
+    this.client = client;
+    this.walletClient = walletClient;
+    this.contractAddress = contractAddress;
+  }
+
+  /**
+   * Start a new DAG batch verification session.
+   *
+   * Sends the startDAGBatchVerify transaction and extracts the session ID
+   * from the emitted DAGBatchSessionStarted event.
+   */
+  async startVerification(
+    circuitHash: Hex,
+    proof: Hex,
+  ): Promise<{ sessionId: Hex; txHash: Hex }> {
+    const hash = await this.walletClient.writeContract({
+      address: this.contractAddress,
+      abi: batchVerifierAbi,
+      functionName: 'startDAGBatchVerify',
+      args: [proof, circuitHash, '0x' as Hex, '0x' as Hex],
+    } as any);
+
+    const receipt = await this.client.waitForTransactionReceipt({ hash });
+    if (receipt.status === 'reverted') {
+      throw new Error(`startVerification reverted: ${hash}`);
+    }
+
+    const sessionId = this.extractSessionId(receipt);
+    return { sessionId, txHash: hash };
+  }
+
+  /**
+   * Continue a DAG batch verification session by processing the next batch of layers.
+   *
+   * Returns the transaction hash and the batch index that was processed.
+   */
+  async continueVerification(
+    sessionId: Hex,
+    proof: Hex,
+  ): Promise<{ txHash: Hex; batchIdx: number }> {
+    // Read current batch index before sending the transaction.
+    const sessionBefore = await this.getSession(sessionId);
+    if (!sessionBefore) {
+      throw new Error(`Session ${sessionId} does not exist`);
+    }
+    const batchIdx = sessionBefore.nextBatchIdx;
+
+    const hash = await this.walletClient.writeContract({
+      address: this.contractAddress,
+      abi: batchVerifierAbi,
+      functionName: 'continueDAGBatchVerify',
+      args: [sessionId, proof, '0x' as Hex, '0x' as Hex],
+    } as any);
+
+    const receipt = await this.client.waitForTransactionReceipt({ hash });
+    if (receipt.status === 'reverted') {
+      throw new Error(`continueVerification reverted at batch ${batchIdx}: ${hash}`);
+    }
+
+    return { txHash: hash, batchIdx };
+  }
+
+  /**
+   * Finalize a DAG batch verification session (may need multiple calls).
+   *
+   * Returns the transaction hash and whether the finalization is complete.
+   */
+  async finalizeVerification(
+    sessionId: Hex,
+    proof: Hex,
+  ): Promise<{ txHash: Hex; isComplete: boolean }> {
+    const hash = await this.walletClient.writeContract({
+      address: this.contractAddress,
+      abi: batchVerifierAbi,
+      functionName: 'finalizeDAGBatchVerify',
+      args: [sessionId, proof, '0x' as Hex, '0x' as Hex],
+    } as any);
+
+    const receipt = await this.client.waitForTransactionReceipt({ hash });
+    if (receipt.status === 'reverted') {
+      throw new Error(`finalizeVerification reverted: ${hash}`);
+    }
+
+    // Check session state to determine if finalization is complete.
+    const session = await this.getSession(sessionId);
+    const isComplete = session ? session.finalized : true;
+
+    return { txHash: hash, isComplete };
+  }
+
+  /**
+   * Query the on-chain state for a batch verification session.
+   *
+   * Returns null if the session does not exist (all-zero circuitHash).
+   */
+  async getSession(sessionId: Hex): Promise<DAGBatchSession | null> {
+    const result = (await this.client.readContract({
+      address: this.contractAddress,
+      abi: batchVerifierAbi,
+      functionName: 'getDAGBatchSession',
+      args: [sessionId],
+    })) as [Hex, bigint, bigint, boolean, bigint, bigint];
+
+    const circuitHash = result[0];
+
+    // A zero circuit hash means the session does not exist.
+    if (circuitHash === ('0x' + '0'.repeat(64))) {
+      return null;
+    }
+
+    return {
+      circuitHash,
+      sender: this.walletClient.account?.address as Hex ?? '0x0' as Hex,
+      nextBatchIdx: Number(result[1]),
+      finalized: result[3],
+    };
+  }
+
+  /**
+   * Run a full verification from start through all continue and finalize steps.
+   *
+   * The optional onProgress callback is invoked before each step with a description
+   * string and the current batch index.
+   */
+  async runFullVerification(
+    circuitHash: Hex,
+    proof: Hex,
+    onProgress?: (step: string, batchIdx: number) => void,
+  ): Promise<{ txHashes: Hex[]; gasUsed: bigint }> {
+    const txHashes: Hex[] = [];
+    let totalGas = 0n;
+
+    // Step 1: Start
+    onProgress?.('start', 0);
+    const { sessionId, txHash: startHash } = await this.startVerification(circuitHash, proof);
+    txHashes.push(startHash);
+    const startReceipt = await this.client.getTransactionReceipt({ hash: startHash });
+    totalGas += startReceipt.gasUsed;
+
+    // Step 2: Read session to determine how many continue batches are needed.
+    const sessionState = await this.getRawSession(sessionId);
+    const totalBatches = sessionState ? Number(sessionState.totalBatches) : 0;
+    const startBatchIdx = sessionState ? Number(sessionState.nextBatchIdx) : 0;
+
+    for (let i = startBatchIdx; i < totalBatches; i++) {
+      onProgress?.('continue', i);
+      const continueResult = await this.continueVerification(sessionId, proof);
+      txHashes.push(continueResult.txHash);
+      const continueReceipt = await this.client.getTransactionReceipt({ hash: continueResult.txHash });
+      totalGas += continueReceipt.gasUsed;
+    }
+
+    // Step 3: Finalize until complete.
+    let isComplete = false;
+    let finalizeIdx = 0;
+    while (!isComplete) {
+      onProgress?.('finalize', finalizeIdx);
+      const finalizeResult = await this.finalizeVerification(sessionId, proof);
+      txHashes.push(finalizeResult.txHash);
+      const finalizeReceipt = await this.client.getTransactionReceipt({ hash: finalizeResult.txHash });
+      totalGas += finalizeReceipt.gasUsed;
+      isComplete = finalizeResult.isComplete;
+      finalizeIdx++;
+    }
+
+    return { txHashes, gasUsed: totalGas };
+  }
+
+  /**
+   * Read the raw session data including totalBatches (internal helper).
+   */
+  private async getRawSession(
+    sessionId: Hex,
+  ): Promise<{
+    circuitHash: Hex;
+    nextBatchIdx: bigint;
+    totalBatches: bigint;
+    finalized: boolean;
+    finalizeInputIdx: bigint;
+    finalizeGroupsDone: bigint;
+  } | null> {
+    const result = (await this.client.readContract({
+      address: this.contractAddress,
+      abi: batchVerifierAbi,
+      functionName: 'getDAGBatchSession',
+      args: [sessionId],
+    })) as [Hex, bigint, bigint, boolean, bigint, bigint];
+
+    const circuitHash = result[0];
+    if (circuitHash === ('0x' + '0'.repeat(64))) {
+      return null;
+    }
+
+    return {
+      circuitHash,
+      nextBatchIdx: result[1],
+      totalBatches: result[2],
+      finalized: result[3],
+      finalizeInputIdx: result[4],
+      finalizeGroupsDone: result[5],
+    };
+  }
+
+  private extractSessionId(receipt: TransactionReceipt): Hex {
+    for (const log of receipt.logs) {
+      if (
+        log.topics.length === 3 &&
+        log.address.toLowerCase() === this.contractAddress.toLowerCase()
+      ) {
+        return log.topics[1] as Hex;
+      }
+    }
+    throw new Error('DAGBatchSessionStarted event not found in transaction receipt');
+  }
+}
+
 export class BatchVerificationCancelledError extends Error {
   constructor() {
     super('Batch verification was cancelled');

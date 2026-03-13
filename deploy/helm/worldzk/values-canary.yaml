@@ -1,0 +1,56 @@
+# -- Canary deployment override values
+# Usage: helm upgrade worldzk ./deploy/helm/worldzk -f values.yaml -f values-canary.yaml
+
+operator:
+  canary:
+    # -- Enable canary deployment alongside the main operator
+    enabled: true
+    # -- Number of canary replicas (keep low for gradual rollout)
+    replicas: 1
+    # -- Percentage of traffic routed to canary pods (used by Istio/Nginx)
+    weight: 10
+    image:
+      # -- Canary image repository (defaults to main operator repository if empty)
+      repository: ""
+      # -- Canary image tag
+      tag: "canary"
+      # -- Canary image pull policy
+      pullPolicy: IfNotPresent
+    # -- Annotations for canary pods (traffic splitting, monitoring)
+    annotations:
+      # Nginx ingress canary annotations
+      nginx.ingress.kubernetes.io/canary: "true"
+      nginx.ingress.kubernetes.io/canary-weight: "10"
+      # Istio traffic splitting annotations
+      traffic.sidecar.istio.io/canary: "true"
+    # -- Resource requests and limits for canary pods
+    # Defaults to the same as the main operator if not set
+    resources:
+      requests:
+        memory: "128Mi"
+        cpu: "250m"
+      limits:
+        memory: "256Mi"
+        cpu: "500m"
+    # -- Additional environment variables specific to the canary
+    env: {}
+    # -- Termination grace period for canary pods
+    terminationGracePeriodSeconds: 30
+    # -- Size limit for ephemeral proof storage on canary pods
+    proofStorageSizeLimit: 1Gi
+    # -- Flagger Canary CRD configuration
+    flagger:
+      # -- Enable Flagger Canary analysis resource
+      enabled: false
+      # -- Analysis interval
+      interval: "1m"
+      # -- Number of analysis iterations before promotion
+      iterations: 10
+      # -- Traffic weight increment per step
+      stepWeight: 10
+      # -- Maximum traffic weight before full promotion
+      maxWeight: 50
+      # -- Promotion threshold: minimum request success rate (percentage)
+      successRateThreshold: 99
+      # -- Promotion threshold: maximum request duration (milliseconds)
+      latencyThreshold: 500

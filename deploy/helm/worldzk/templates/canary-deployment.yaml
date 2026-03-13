@@ -1,0 +1,97 @@
+{{- if and .Values.operator.enabled (include "worldzk.operator.canary.isEnabled" .) }}
+{{- $canary := .Values.operator.canary }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "worldzk.operator.canary.fullname" . }}
+  labels:
+    {{- include "worldzk.operator.canary.labels" . | nindent 4 }}
+spec:
+  replicas: {{ $canary.replicas | default 1 }}
+  selector:
+    matchLabels:
+      {{- include "worldzk.operator.canary.selectorLabels" . | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- with $canary.annotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "worldzk.operator.canary.labels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "worldzk.operator.serviceAccountName" . }}
+      terminationGracePeriodSeconds: {{ $canary.terminationGracePeriodSeconds | default .Values.operator.terminationGracePeriodSeconds }}
+      containers:
+        - name: operator
+          image: "{{ $canary.image.repository | default .Values.operator.image.repository }}:{{ $canary.image.tag | default "canary" }}"
+          imagePullPolicy: {{ $canary.image.pullPolicy | default .Values.operator.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.operator.port }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "worldzk.configMapName" . }}
+            - secretRef:
+                name: {{ include "worldzk.secretName" . }}
+          {{- $mergedEnv := merge ($canary.env | default dict) (.Values.operator.env | default dict) }}
+          {{- if $mergedEnv }}
+          env:
+            {{- range $key, $value := $mergedEnv }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            - name: WORLDZK_CANARY
+              value: "true"
+          {{- else }}
+          env:
+            - name: WORLDZK_CANARY
+              value: "true"
+          {{- end }}
+          {{- with ($canary.resources | default .Values.operator.resources) }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.operator.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.operator.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: proof-storage
+              mountPath: /app/proofs
+      volumes:
+        - name: proof-storage
+          emptyDir:
+            sizeLimit: {{ $canary.proofStorageSizeLimit | default .Values.operator.proofStorageSizeLimit }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

@@ -9,6 +9,8 @@ mod config;
 mod metrics;
 mod model;
 mod nitro;
+mod validation;
+mod watchdog;
 
 use std::sync::Arc;
 
@@ -24,6 +26,7 @@ use config::Config;
 use metrics::{Metrics, MetricsSnapshot};
 use model::XgboostModel;
 use nitro::{AttestationDocument, NitroAttestor};
+use watchdog::{DetailedHealth, Watchdog};
 
 // ---------------------------------------------------------------------------
 // Shared application state
@@ -39,6 +42,8 @@ struct ModelState {
     model_bytes: Vec<u8>,
     /// Human-readable model name (derived from the model file path).
     model_name: String,
+    /// SHA-256 hex digest of the raw model bytes (for integrity verification).
+    model_sha256: String,
 }
 
 /// Simple sliding-window rate limiter.
@@ -103,12 +108,18 @@ struct AppState {
     attestor: Attestor,
     nitro_attestor: std::sync::Mutex<NitroAttestor>,
     enclave_address: alloy_primitives::Address,
-    /// Metrics counters (lock-free atomics).
-    metrics: Metrics,
+    /// Metrics counters (lock-free atomics). Wrapped in `Arc` so the
+    /// watchdog background task can hold a reference independently.
+    metrics: Arc<Metrics>,
     /// Optional admin API key. If `None`, admin endpoints return 403.
     admin_api_key: Option<String>,
     /// Rate limiter for POST /infer endpoint.
     rate_limiter: RateLimiter,
+    /// Optional watchdog for background health monitoring.
+    /// `None` when WATCHDOG_ENABLED=false.
+    watchdog: Option<Arc<Watchdog>>,
+    /// Optional expected SHA-256 hash for model validation (from EXPECTED_MODEL_HASH env var).
+    expected_model_hash: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -150,6 +161,8 @@ struct InferResponse {
 struct HealthResponse {
     status: String,
     model_loaded: bool,
+    /// SHA-256 hex digest of the loaded model bytes.
+    model_hash: String,
 }
 
 #[derive(Serialize)]
@@ -183,6 +196,8 @@ struct ReloadModelResponse {
     num_trees: usize,
     num_features: usize,
     model_hash: String,
+    /// SHA-256 hex digest of the new model bytes.
+    model_sha256: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -205,11 +220,30 @@ fn lock_error(name: &str) -> (StatusCode, String) {
 // Handlers
 // ---------------------------------------------------------------------------
 
-async fn health() -> Json<HealthResponse> {
-    Json(HealthResponse {
+async fn health(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<HealthResponse>, (StatusCode, String)> {
+    let ms = state
+        .model_state
+        .read()
+        .map_err(|_| lock_error("model_state"))?;
+    Ok(Json(HealthResponse {
         status: "ok".to_string(),
         model_loaded: true,
-    })
+        model_hash: ms.model_sha256.clone(),
+    }))
+}
+
+async fn health_detailed(
+    State(state): State<Arc<AppState>>,
+) -> Json<DetailedHealth> {
+    match &state.watchdog {
+        Some(wd) => Json(wd.detailed_health()),
+        None => {
+            // Watchdog disabled -- compute a one-shot health evaluation.
+            Json(Watchdog::evaluate_health(&state.metrics))
+        }
+    }
 }
 
 async fn info(
@@ -449,6 +483,16 @@ async fn reload_model(
         )
     })?;
 
+    // Validate model integrity (SHA-256 check against EXPECTED_MODEL_HASH if set)
+    let new_model_sha256 = validation::validate_model(
+        &new_model_bytes,
+        state.expected_model_hash.as_deref(),
+    )
+    .map_err(|e| {
+        tracing::error!("Model validation failed during hot-reload: {}", e);
+        (StatusCode::BAD_REQUEST, format!("Model validation failed: {}", e))
+    })?;
+
     let new_model_hash = keccak256(&new_model_bytes);
 
     let new_model = model::load_model_with_format(&req.model_path, format).map_err(|e| {
@@ -492,11 +536,13 @@ async fn reload_model(
         ms.model_hash = new_model_hash;
         ms.model_bytes = new_model_bytes;
         ms.model_name = new_model_name;
+        ms.model_sha256 = new_model_sha256.clone();
     }
 
     tracing::info!(
-        "Model hot-reload complete. New hash: 0x{}",
-        hex::encode(new_model_hash)
+        "Model hot-reload complete. New hash: 0x{}, SHA-256: {}",
+        hex::encode(new_model_hash),
+        new_model_sha256,
     );
 
     Ok(Json(ReloadModelResponse {
@@ -504,6 +550,7 @@ async fn reload_model(
         num_trees,
         num_features,
         model_hash: format!("0x{}", hex::encode(new_model_hash)),
+        model_sha256: new_model_sha256,
     }))
 }
 
@@ -520,6 +567,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load model (auto-detects XGBoost vs LightGBM unless MODEL_FORMAT is set)
     let model_bytes = std::fs::read(&config.model_path)
         .map_err(|e| format!("Failed to read model file '{}': {}", config.model_path, e))?;
+
+    // Validate model integrity (SHA-256 check against EXPECTED_MODEL_HASH if set)
+    let model_sha256 = validation::validate_model(
+        &model_bytes,
+        config.expected_model_hash.as_deref(),
+    )
+    .map_err(|e| format!("Model validation failed: {}", e))?;
+    tracing::info!("Model SHA-256: {}", model_sha256);
+
     let model_hash = keccak256(&model_bytes);
     let model = model::load_model_with_format(&config.model_path, config.model_format)
         .map_err(|e| format!("Failed to parse model '{}': {}", config.model_path, e))?;
@@ -587,19 +643,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or("unknown")
         .to_string();
 
+    let metrics = Arc::new(Metrics::new());
+
+    // Optionally spawn the background watchdog.
+    let watchdog = if config.watchdog_enabled {
+        tracing::info!("Watchdog enabled (interval: {}s)", watchdog::DEFAULT_CHECK_INTERVAL_SECS);
+        Some(watchdog::spawn_watchdog(
+            metrics.clone(),
+            watchdog::DEFAULT_CHECK_INTERVAL_SECS,
+        ))
+    } else {
+        tracing::info!("Watchdog disabled (WATCHDOG_ENABLED=false)");
+        None
+    };
+
     let state = Arc::new(AppState {
         model_state: std::sync::RwLock::new(ModelState {
             model,
             model_hash,
             model_bytes,
             model_name,
+            model_sha256,
         }),
         attestor,
         nitro_attestor: std::sync::Mutex::new(nitro_attestor),
         enclave_address,
-        metrics: Metrics::new(),
+        metrics,
         admin_api_key: config.admin_api_key,
         rate_limiter: RateLimiter::new(config.max_requests_per_minute),
+        watchdog,
+        expected_model_hash: config.expected_model_hash,
     });
 
     // Background attestation refresh (every 5 minutes)
@@ -640,6 +713,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app = Router::new()
         .route("/health", get(health))
+        .route("/health/detailed", get(health_detailed))
         .route("/info", get(info))
         .route("/attestation", get(attestation))
         .route("/infer", post(infer))
@@ -680,11 +754,15 @@ mod tests {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-model/model.json");
         let model_path_str = model_path.to_str().unwrap();
         let model_bytes = std::fs::read(model_path_str).unwrap();
+        let model_sha256 = validation::compute_model_hash(&model_bytes);
         let model_hash = keccak256(&model_bytes);
         let model = model::load_model(model_path_str).unwrap();
         let attestor = Attestor::random();
         let enclave_address = attestor.address();
         let nitro_attestor = NitroAttestor::new(false, enclave_address, model_hash).unwrap();
+
+        let metrics = Arc::new(Metrics::new());
+        let watchdog = Some(Arc::new(Watchdog::new(metrics.clone())));
 
         Arc::new(AppState {
             model_state: std::sync::RwLock::new(ModelState {
@@ -692,13 +770,16 @@ mod tests {
                 model_hash,
                 model_bytes,
                 model_name: "model.json".to_string(),
+                model_sha256,
             }),
             attestor,
             nitro_attestor: std::sync::Mutex::new(nitro_attestor),
             enclave_address,
-            metrics: Metrics::new(),
+            metrics,
             admin_api_key,
             rate_limiter: RateLimiter::new(120), // generous limit for tests
+            watchdog,
+            expected_model_hash: None,
         })
     }
 
@@ -706,6 +787,7 @@ mod tests {
     fn test_app(state: Arc<AppState>) -> Router {
         Router::new()
             .route("/health", get(health))
+            .route("/health/detailed", get(health_detailed))
             .route("/info", get(info))
             .route("/attestation", get(attestation))
             .route("/infer", post(infer))
@@ -940,6 +1022,106 @@ mod tests {
         // model_hash should be a 0x-prefixed 64 hex chars (32 bytes)
         assert!(snap.model_hash.starts_with("0x"));
         assert_eq!(snap.model_hash.len(), 66); // "0x" + 64 hex chars
+    }
+
+    // -----------------------------------------------------------------------
+    // Watchdog / health/detailed tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_health_detailed_endpoint_initial() {
+        let state = test_app_state();
+        let app = test_app(state);
+
+        let req = Request::builder()
+            .uri("/health/detailed")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let health: DetailedHealth = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(health.status, watchdog::HealthStatus::Healthy);
+        assert_eq!(health.error_rate, 0.0);
+        assert_eq!(health.avg_latency_ms, 0.0);
+        assert_eq!(health.checks.error_rate, watchdog::CheckResult::Ok);
+        assert_eq!(health.checks.latency, watchdog::CheckResult::Ok);
+    }
+
+    #[tokio::test]
+    async fn test_health_detailed_reflects_errors() {
+        let state = test_app_state();
+
+        // Trigger some failed inferences to raise error rate
+        for _ in 0..5 {
+            let app = test_app(state.clone());
+            let req = Request::builder()
+                .method("POST")
+                .uri("/infer")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"features":[1.0]}"#)) // wrong count
+                .unwrap();
+            let _ = app.oneshot(req).await.unwrap();
+        }
+
+        // Trigger one successful inference
+        let app = test_app(state.clone());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/infer")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"features":[5.0,3.5,1.5,0.3]}"#))
+            .unwrap();
+        let _ = app.oneshot(req).await.unwrap();
+
+        // Manually trigger a watchdog check so the snapshot updates
+        if let Some(wd) = &state.watchdog {
+            wd.check();
+        }
+
+        // Query /health/detailed
+        let app = test_app(state);
+        let req = Request::builder()
+            .uri("/health/detailed")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let health: DetailedHealth = serde_json::from_slice(&body).unwrap();
+
+        // 5 errors, 1 success = 83% error rate => unhealthy
+        assert_eq!(health.status, watchdog::HealthStatus::Unhealthy);
+        assert_eq!(health.checks.error_rate, watchdog::CheckResult::Critical);
+        assert!(health.error_rate > 0.5);
+    }
+
+    #[tokio::test]
+    async fn test_health_detailed_json_has_expected_fields() {
+        let state = test_app_state();
+        let app = test_app(state);
+
+        let req = Request::builder()
+            .uri("/health/detailed")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body.to_vec()).unwrap();
+
+        assert!(body_str.contains("\"status\""));
+        assert!(body_str.contains("\"error_rate\""));
+        assert!(body_str.contains("\"avg_latency_ms\""));
+        assert!(body_str.contains("\"uptime_secs\""));
+        assert!(body_str.contains("\"total_rate_limited\""));
+        assert!(body_str.contains("\"checks\""));
     }
 
     // -----------------------------------------------------------------------

@@ -1,0 +1,63 @@
+World ZK Compute has been deployed.
+
+{{- if .Values.operator.enabled }}
+
+OPERATOR
+--------
+  Deployment: {{ include "worldzk.operator.fullname" . }}
+  Service:    {{ include "worldzk.operator.fullname" . }}:{{ .Values.operator.port }}
+  Replicas:   {{ .Values.operator.replicaCount }}
+
+  Check operator status:
+    kubectl get pods -l "{{ include "worldzk.operator.selectorLabels" . | replace ": " "=" | replace "\n" "," }}" -n {{ .Release.Namespace }}
+
+  View operator logs:
+    kubectl logs -l "app.kubernetes.io/name=operator,app.kubernetes.io/instance={{ .Release.Name }}" -n {{ .Release.Namespace }} -f
+{{- end }}
+
+{{- if .Values.indexer.enabled }}
+
+INDEXER
+-------
+  Deployment: {{ include "worldzk.indexer.fullname" . }}
+  Service:    {{ include "worldzk.indexer.fullname" . }}:{{ .Values.indexer.port }}
+  Replicas:   {{ .Values.indexer.replicaCount }}
+
+  Check indexer status:
+    kubectl get pods -l "{{ include "worldzk.indexer.selectorLabels" . | replace ": " "=" | replace "\n" "," }}" -n {{ .Release.Namespace }}
+
+  View indexer logs:
+    kubectl logs -l "app.kubernetes.io/name=indexer,app.kubernetes.io/instance={{ .Release.Name }}" -n {{ .Release.Namespace }} -f
+{{- end }}
+
+CONFIGURATION
+-------------
+  RPC URL:          {{ .Values.global.rpcUrl }}
+  Chain ID:         {{ .Values.global.chainId }}
+  Contract Address: {{ .Values.global.contractAddress }}
+  Log Level:        {{ .Values.global.logLevel }}
+
+{{- if .Values.secrets.create }}
+
+SECRETS
+-------
+  Secret "{{ include "worldzk.secretName" . }}" was created.
+  {{- if not .Values.secrets.operatorPrivateKey }}
+
+  WARNING: No operator private key was provided. Set it with:
+    kubectl -n {{ .Release.Namespace }} patch secret {{ include "worldzk.secretName" . }} \
+      -p '{"data":{"OPERATOR_PRIVATE_KEY":"'"$(echo -n '0xYOUR_KEY' | base64)"'"}}'
+  {{- end }}
+{{- else }}
+
+  Using externally managed secret: {{ include "worldzk.secretName" . }}
+  Ensure it exists in namespace {{ .Release.Namespace }} before the pods start.
+{{- end }}
+
+USEFUL COMMANDS
+---------------
+  Upgrade:
+    helm upgrade {{ .Release.Name }} deploy/helm/worldzk -n {{ .Release.Namespace }} -f your-values.yaml
+
+  Uninstall:
+    helm uninstall {{ .Release.Name }} -n {{ .Release.Namespace }}

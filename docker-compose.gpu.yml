@@ -13,7 +13,7 @@
 #   - .env file with PRIVATE_KEY, RPC_URL, ENGINE_ADDRESS
 
 services:
-  # ── risc0 ZK Prover (CUDA) ────────────────────────────────────────────────
+  # -- risc0 ZK Prover (CUDA) ---------------------------------------------------
   prover:
     build:
       context: .
@@ -46,14 +46,34 @@ services:
       - prover-data:/app/data
       - ./programs:/app/programs:ro
     restart: unless-stopped
+    mem_limit: 4g
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8081/health"]
       interval: 30s
       timeout: 10s
       start_period: 10s
       retries: 3
+    # Security hardening
+    # Note: no read_only -- prover writes to cache and data volumes
+    # Note: no user -- GPU device access may require root in some configurations
+    tmpfs:
+      - /tmp:noexec,nosuid,size=128m
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    pids_limit: 200
+    networks:
+      - backend
 
-  # ── XGBoost Remainder Warm Prover (GPU-accelerated) ────────────────────────
+  # -- XGBoost Remainder Warm Prover (GPU-accelerated) ---------------------------
   #
   # Serves GKR/Hyrax proofs for XGBoost decision tree inference.
   # GPU environment is set for future ICICLE integration (v3.8+) which can
@@ -78,12 +98,36 @@ services:
     ports:
       - "${WARM_PROVER_PORT:-3000}:3000"
     restart: unless-stopped
+    mem_limit: 4g
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:3000/health || exit 1"]
       interval: 15s
       timeout: 5s
       start_period: 60s
       retries: 5
+    # Security hardening
+    # Note: no user -- GPU device access may require root in some configurations
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=256m
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    pids_limit: 200
+    networks:
+      - backend
+
+networks:
+  backend:
+    driver: bridge
 
 volumes:
   prover-cache:

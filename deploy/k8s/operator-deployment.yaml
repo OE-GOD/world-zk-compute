@@ -1,0 +1,229 @@
+---
+# Operator Deployment
+# Watches on-chain events, detects challenges, and submits ZK dispute proofs.
+# Runs 2 replicas for high availability with a PodDisruptionBudget.
+#
+# The operator connects to:
+#   - An Ethereum RPC endpoint (OPERATOR_RPC_URL)
+#   - A TEE enclave for attestation-based inference (ENCLAVE_URL)
+#   - A warm prover for ZK proof generation (PROVER_URL)
+#
+# Sensitive values (private keys, RPC URLs with API keys) are loaded
+# from the Secret "world-zk-secrets".
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worldzk-operator
+  labels:
+    app: worldzk-operator
+    app.kubernetes.io/name: operator
+    app.kubernetes.io/component: operator
+    app.kubernetes.io/part-of: world-zk-compute
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: worldzk-operator
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: worldzk-operator
+        app.kubernetes.io/name: operator
+        app.kubernetes.io/component: operator
+        app.kubernetes.io/part-of: world-zk-compute
+    spec:
+      serviceAccountName: worldzk-operator
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: operator
+          image: world-zk-compute/operator:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: world-zk-config
+            - secretRef:
+                name: world-zk-secrets
+          env:
+            - name: RUST_LOG_FORMAT
+              value: "json"
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "250m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          volumeMounts:
+            - name: proof-storage
+              mountPath: /app/proofs
+      volumes:
+        - name: proof-storage
+          emptyDir:
+            sizeLimit: 1Gi
+---
+# Service for Operator health/metrics endpoint
+apiVersion: v1
+kind: Service
+metadata:
+  name: worldzk-operator
+  labels:
+    app: worldzk-operator
+    app.kubernetes.io/part-of: world-zk-compute
+spec:
+  selector:
+    app: worldzk-operator
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+  type: ClusterIP
+---
+# ServiceAccount for Operator
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: worldzk-operator
+  labels:
+    app: worldzk-operator
+    app.kubernetes.io/part-of: world-zk-compute
+---
+# PodDisruptionBudget for Operator
+# Ensures at least 1 operator pod remains available during voluntary disruptions
+# (node drains, cluster upgrades, etc.)
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: worldzk-operator-pdb
+  labels:
+    app: worldzk-operator
+    app.kubernetes.io/part-of: world-zk-compute
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: worldzk-operator
+---
+# NetworkPolicy for Operator
+# Restricts egress to only the necessary destinations:
+#   - DNS resolution (kube-dns, port 53)
+#   - Ethereum RPC endpoint (HTTPS port 443, local RPC port 8545)
+#   - TEE enclave service (port 8080)
+#   - Warm prover service (port 3000)
+# Allows all ingress to the operator HTTP port for health checks and metrics.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: worldzk-operator-netpol
+  labels:
+    app: worldzk-operator
+    app.kubernetes.io/part-of: world-zk-compute
+spec:
+  podSelector:
+    matchLabels:
+      app: worldzk-operator
+  policyTypes:
+    - Egress
+    - Ingress
+  ingress:
+    # Allow inbound health checks and metrics scraping
+    - ports:
+        - port: 8080
+          protocol: TCP
+  egress:
+    # DNS resolution (kube-dns)
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Ethereum RPC endpoint (HTTPS or local)
+    - ports:
+        - port: 443
+          protocol: TCP
+        - port: 8545
+          protocol: TCP
+    # TEE enclave service (in-cluster)
+    - to:
+        - podSelector:
+            matchLabels:
+              app: worldzk-enclave
+      ports:
+        - port: 8080
+          protocol: TCP
+    # Warm prover service (in-cluster)
+    - to:
+        - podSelector:
+            matchLabels:
+              app: worldzk-prover
+      ports:
+        - port: 3000
+          protocol: TCP
+---
+# HorizontalPodAutoscaler for Operator
+# Scales operator pods based on CPU utilization.
+# Min 2 replicas (matches PDB), max 5 for burst handling.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: worldzk-operator-hpa
+  labels:
+    app: worldzk-operator
+    app.kubernetes.io/part-of: world-zk-compute
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: worldzk-operator
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60

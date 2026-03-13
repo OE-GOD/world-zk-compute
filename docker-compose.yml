@@ -1,19 +1,19 @@
-# ═══════════════════════════════════════════════════════════════════════════════
-# TEE + ZK Dispute System — Full Stack (Local Demo)
+# ===============================================================================
+# TEE + ZK Dispute System -- Full Stack (Local Demo)
 #
 # One-command local demo with all components:
-#   anvil (local chain) → deployer (contracts) → enclave (TEE) → warm-prover (ZK) → operator
+#   anvil (local chain) -> deployer (contracts) -> enclave (TEE) -> warm-prover (ZK) -> operator
 #
 # Usage:
 #   docker compose build
 #   docker compose up
 #   docker compose down -v
-# ═══════════════════════════════════════════════════════════════════════════════
+# ===============================================================================
 
 services:
-  # ── Local Ethereum Node ──────────────────────────────────────────────────────
+  # -- Local Ethereum Node -------------------------------------------------------
   anvil:
-    image: ghcr.io/foundry-rs/foundry:latest
+    image: ghcr.io/foundry-rs/foundry:v1.0.0
     entrypoint:
       - anvil
       - --host
@@ -29,10 +29,24 @@ services:
       interval: 2s
       timeout: 5s
       retries: 10
+    # Security hardening
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=64m
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    user: "1000:1000"
+    pids_limit: 100
+    networks:
+      - backend
 
-  # ── Contract Deployer (runs once, exits) ─────────────────────────────────────
+  # -- Contract Deployer (runs once, exits) ---------------------------------------
   deployer:
-    image: ghcr.io/foundry-rs/foundry:latest
+    image: ghcr.io/foundry-rs/foundry:v1.0.0
     volumes:
       - ./contracts:/contracts
       - deployment-data:/deployment
@@ -84,8 +98,20 @@ services:
         echo "  TEEMLVerifier:     $$TEE"
         cat /deployment/addresses.json
     restart: "no"
+    # Security hardening
+    # Note: deployer needs write access to /contracts (broadcast) and /deployment, so no read_only
+    tmpfs:
+      - /tmp:noexec,nosuid,size=64m
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    user: "1000:1000"
+    pids_limit: 100
+    networks:
+      - backend
 
-  # ── TEE Enclave ──────────────────────────────────────────────────────────────
+  # -- TEE Enclave ----------------------------------------------------------------
   enclave:
     build:
       context: ./tee
@@ -94,15 +120,37 @@ services:
     environment:
       MODEL_PATH: /app/model/model.json
       PORT: "8080"
-      # Anvil account #1 — enclave signer
+      # Anvil account #1 -- enclave signer
       ENCLAVE_PRIVATE_KEY: "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
       interval: 5s
       timeout: 3s
       retries: 5
+    restart: unless-stopped
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # Security hardening
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=64m
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    user: "1000:1000"
+    pids_limit: 100
+    networks:
+      - frontend
+      - backend
 
-  # ── Warm Prover (ZK Proof Server) ───────────────────────────────────────────
+  # -- Warm Prover (ZK Proof Server) ---------------------------------------------
   warm-prover:
     build:
       context: ./examples/xgboost-remainder
@@ -113,8 +161,29 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    restart: unless-stopped
+    mem_limit: 2g
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # Security hardening
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=256m
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    user: "1000:1000"
+    pids_limit: 100
+    networks:
+      - backend
 
-  # ── Operator Service ─────────────────────────────────────────────────────────
+  # -- Operator Service -----------------------------------------------------------
   operator:
     build:
       context: .
@@ -130,7 +199,7 @@ services:
       - "9090:9090"
     environment:
       OPERATOR_RPC_URL: "http://anvil:8545"
-      # Anvil account #0 — admin + operator
+      # Anvil account #0 -- admin + operator
       OPERATOR_PRIVATE_KEY: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
       ENCLAVE_URL: "http://enclave:8080"
       PROVER_URL: "http://warm-prover:3000"
@@ -145,9 +214,35 @@ services:
       timeout: 5s
       retries: 5
       start_period: 60s
+    restart: unless-stopped
+    mem_limit: 1g
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     volumes:
       - deployment-data:/deployment:ro
       - proof-storage:/app/proofs
+    # Security hardening
+    tmpfs:
+      - /tmp:noexec,nosuid,size=64m
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    user: "1000:1000"
+    pids_limit: 100
+    networks:
+      - backend
+
+networks:
+  frontend:
+    driver: bridge
+  backend:
+    driver: bridge
 
 volumes:
   deployment-data:

@@ -1,0 +1,9 @@
+[package]
+name = "tee-watcher"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+alloy = { version = "1.0", features = ["full"] }
+tracing = "0.1"
+anyhow = "1"

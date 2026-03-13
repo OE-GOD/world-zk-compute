@@ -18,6 +18,7 @@ use std::time::Instant;
 
 use config::{Config, ModelConfig};
 use prover::ProofManager;
+use store::StateStore;
 use watcher::{EventWatcher, TEEEvent};
 
 /// Cached attestation verification result with TTL.
@@ -451,9 +452,13 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
         });
     }
 
+    // Load persistent state for crash recovery
+    let state_store = StateStore::new(&config.state_file);
+    let mut op_state = state_store.load_or_default();
+
     tracing::info!("Watching for events on {}...", config.tee_verifier_address);
 
-    let mut from_block = 0u64;
+    let mut from_block = op_state.last_polled_block;
     let mut finalize_counter = 0u64;
 
     while !shutdown.is_shutting_down() {
@@ -485,6 +490,17 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
                     result_id,
                     challenger,
                 } => {
+                    let rid_hex = format!("0x{}", hex::encode(result_id));
+
+                    // Dedup: skip events already processed in a prior session
+                    if op_state.processed_event_ids.contains(&rid_hex) {
+                        tracing::debug!(
+                            result_id = %result_id,
+                            "Skipping already-processed challenge event"
+                        );
+                        continue;
+                    }
+
                     metrics_state
                         .total_challenges
                         .fetch_add(1, Ordering::Relaxed);
@@ -494,22 +510,31 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
                         "Challenge detected"
                     );
 
-                    // Fire-and-forget webhook notification
+                    // Track the dispute deadline in persisted state
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_secs();
+                    let deadline = now + 86400; // 24h dispute window
+                    op_state
+                        .active_disputes
+                        .insert(rid_hex.clone(), deadline);
+
+                    // Fire-and-forget webhook notification
                     notifications::maybe_notify_challenge(
                         &notifier,
-                        &format!("0x{}", hex::encode(result_id)),
+                        &rid_hex,
                         &format!("{}", challenger),
                         now,
-                        now + 3600, // 1-hour deadline estimate
+                        deadline,
                     );
 
                     shutdown.track_task_start();
                     handle_challenge(&chain_client, &proof_mgr, *result_id).await;
                     shutdown.track_task_done();
+
+                    // Mark as processed after successful handling
+                    op_state.processed_event_ids.insert(rid_hex);
                 }
                 TEEEvent::ResultSubmitted { result_id, .. } => {
                     metrics_state
@@ -521,12 +546,35 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
                     metrics_state
                         .total_finalizations
                         .fetch_add(1, Ordering::Relaxed);
+                    // Remove from active disputes if present
+                    let rid_hex = format!("0x{}", hex::encode(result_id));
+                    op_state.active_disputes.remove(&rid_hex);
                     tracing::info!(result_id = %result_id, "Result finalized");
                 }
                 TEEEvent::ResultExpired { result_id } => {
+                    let rid_hex = format!("0x{}", hex::encode(result_id));
+                    op_state.active_disputes.remove(&rid_hex);
                     tracing::info!(result_id = %result_id, "Result expired (unchallenged finalize)");
                 }
+                TEEEvent::DisputeResolved {
+                    result_id,
+                    prover_won,
+                } => {
+                    let rid_hex = format!("0x{}", hex::encode(result_id));
+                    op_state.active_disputes.remove(&rid_hex);
+                    tracing::info!(
+                        result_id = %result_id,
+                        prover_won = %prover_won,
+                        "Dispute resolved"
+                    );
+                }
             }
+        }
+
+        // Persist state after each poll cycle for crash recovery
+        op_state.last_polled_block = from_block;
+        if let Err(e) = state_store.save(&op_state) {
+            tracing::warn!("Failed to persist watcher state: {}", e);
         }
 
         // Every ~60 seconds (12 iterations * 5s), check for finalizeable results
@@ -567,6 +615,18 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
                 "Shutdown timeout — exiting with in-flight tasks"
             );
         }
+    }
+
+    // Final state save before shutdown
+    op_state.last_polled_block = from_block;
+    if let Err(e) = state_store.save(&op_state) {
+        tracing::warn!("Failed to save state on shutdown: {}", e);
+    } else {
+        tracing::info!(
+            last_polled_block = from_block,
+            "Watcher state saved to {:?}",
+            state_store.path()
+        );
     }
 
     tracing::info!("Shutdown complete");

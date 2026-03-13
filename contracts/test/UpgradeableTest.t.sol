@@ -117,8 +117,7 @@ contract UpgradeableTest is Test {
 
         // Deploy proxy with initialization
         bytes memory initData = abi.encodeCall(
-            UpgradeableExecutionEngine.initialize,
-            (registry, address(mockVerifier), feeRecipient, admin)
+            UpgradeableExecutionEngine.initialize, (registry, address(mockVerifier), feeRecipient, admin)
         );
         proxy = new UUPSProxy(address(impl), initData);
 
@@ -148,10 +147,7 @@ contract UpgradeableTest is Test {
     }
 
     function test_proxiableUUID() public view {
-        assertEq(
-            engine.proxiableUUID(),
-            0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc
-        );
+        assertEq(engine.proxiableUUID(), 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc);
     }
 
     // ========================================================================
@@ -165,9 +161,8 @@ contract UpgradeableTest is Test {
 
         vm.deal(user1, 1 ether);
         vm.prank(user1);
-        uint256 requestId = engine.requestExecution{value: 0.01 ether}(
-            imageId, inputDigest, "https://input.url", address(0), 3600
-        );
+        uint256 requestId =
+            engine.requestExecution{value: 0.01 ether}(imageId, inputDigest, "https://input.url", address(0), 3600);
         assertEq(requestId, 1);
         assertEq(engine.nextRequestId(), 2);
     }
@@ -197,9 +192,7 @@ contract UpgradeableTest is Test {
     function test_upgradeToAndCall() public {
         UpgradeableExecutionEngineV2 implV2 = new UpgradeableExecutionEngineV2();
 
-        bytes memory callData = abi.encodeCall(
-            UpgradeableExecutionEngineV2.initializeV2, (999)
-        );
+        bytes memory callData = abi.encodeCall(UpgradeableExecutionEngineV2.initializeV2, (999));
 
         engine.upgradeToAndCall(address(implV2), callData);
 
@@ -214,9 +207,7 @@ contract UpgradeableTest is Test {
         // Set some state via V1
         vm.deal(user1, 1 ether);
         vm.prank(user1);
-        engine.requestExecution{value: 0.01 ether}(
-            bytes32(uint256(1)), bytes32(uint256(2)), "url", address(0), 3600
-        );
+        engine.requestExecution{value: 0.01 ether}(bytes32(uint256(1)), bytes32(uint256(2)), "url", address(0), 3600);
         assertEq(engine.nextRequestId(), 2);
 
         // Upgrade
@@ -332,8 +323,7 @@ contract UpgradeableTest is Test {
     function test_initializeRejectsZeroRegistry() public {
         UpgradeableExecutionEngine freshImpl = new UpgradeableExecutionEngine();
         bytes memory initData = abi.encodeCall(
-            UpgradeableExecutionEngine.initialize,
-            (address(0), address(mockVerifier), feeRecipient, admin)
+            UpgradeableExecutionEngine.initialize, (address(0), address(mockVerifier), feeRecipient, admin)
         );
         vm.expectRevert("Invalid registry");
         new UUPSProxy(address(freshImpl), initData);
@@ -341,20 +331,16 @@ contract UpgradeableTest is Test {
 
     function test_initializeRejectsZeroVerifier() public {
         UpgradeableExecutionEngine freshImpl = new UpgradeableExecutionEngine();
-        bytes memory initData = abi.encodeCall(
-            UpgradeableExecutionEngine.initialize,
-            (registry, address(0), feeRecipient, admin)
-        );
+        bytes memory initData =
+            abi.encodeCall(UpgradeableExecutionEngine.initialize, (registry, address(0), feeRecipient, admin));
         vm.expectRevert("Invalid verifier");
         new UUPSProxy(address(freshImpl), initData);
     }
 
     function test_initializeRejectsZeroFeeRecipient() public {
         UpgradeableExecutionEngine freshImpl = new UpgradeableExecutionEngine();
-        bytes memory initData = abi.encodeCall(
-            UpgradeableExecutionEngine.initialize,
-            (registry, address(mockVerifier), address(0), admin)
-        );
+        bytes memory initData =
+            abi.encodeCall(UpgradeableExecutionEngine.initialize, (registry, address(mockVerifier), address(0), admin));
         vm.expectRevert("Invalid fee recipient");
         new UUPSProxy(address(freshImpl), initData);
     }
@@ -362,8 +348,7 @@ contract UpgradeableTest is Test {
     function test_initializeRejectsZeroAdmin() public {
         UpgradeableExecutionEngine freshImpl = new UpgradeableExecutionEngine();
         bytes memory initData = abi.encodeCall(
-            UpgradeableExecutionEngine.initialize,
-            (registry, address(mockVerifier), feeRecipient, address(0))
+            UpgradeableExecutionEngine.initialize, (registry, address(mockVerifier), feeRecipient, address(0))
         );
         vm.expectRevert("Invalid admin");
         new UUPSProxy(address(freshImpl), initData);
@@ -379,9 +364,7 @@ contract UpgradeableTest is Test {
 
         vm.deal(user1, 1 ether);
         vm.prank(user1);
-        uint256 requestId = engine.requestExecution{value: 0.01 ether}(
-            imageId, inputDigest, "url", address(0), 3600
-        );
+        uint256 requestId = engine.requestExecution{value: 0.01 ether}(imageId, inputDigest, "url", address(0), 3600);
 
         vm.prank(user2);
         engine.claimExecution(requestId);
@@ -397,9 +380,7 @@ contract UpgradeableTest is Test {
 
         vm.deal(user1, 1 ether);
         vm.prank(user1);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(
-            imageId, inputDigest, "url", address(0), 3600
-        );
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, "url", address(0), 3600);
 
         vm.prank(user2);
         engine.claimExecution(requestId);
@@ -488,13 +469,7 @@ contract UpgradeableTest is Test {
 
     function test_storageSlotConstants() public pure {
         // Verify EIP-1967 slot computation
-        assertEq(
-            StorageSlot.IMPLEMENTATION_SLOT,
-            bytes32(uint256(keccak256("eip1967.proxy.implementation")) - 1)
-        );
-        assertEq(
-            StorageSlot.ADMIN_SLOT,
-            bytes32(uint256(keccak256("eip1967.proxy.admin")) - 1)
-        );
+        assertEq(StorageSlot.IMPLEMENTATION_SLOT, bytes32(uint256(keccak256("eip1967.proxy.implementation")) - 1));
+        assertEq(StorageSlot.ADMIN_SLOT, bytes32(uint256(keccak256("eip1967.proxy.admin")) - 1));
     }
 }

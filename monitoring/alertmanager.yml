@@ -1,0 +1,127 @@
+# Alertmanager configuration for world-zk-compute.
+#
+# IMPORTANT: Replace all placeholder values marked with <REPLACE_...> before use.
+#
+# Usage:
+#   alertmanager --config.file=alertmanager.yml
+
+global:
+  resolve_timeout: 5m
+  # Uncomment and configure if using a shared SMTP relay for email notifications:
+  # smtp_smarthost: 'smtp.example.com:587'
+  # smtp_from: 'alertmanager@example.com'
+  # smtp_auth_username: 'alertmanager'
+  # smtp_auth_password: '<REPLACE_SMTP_PASSWORD>'
+
+# ---------------------------------------------------------------------------
+# Route tree
+# ---------------------------------------------------------------------------
+route:
+  # Default receiver for unmatched alerts.
+  receiver: slack-warnings
+  # Group alerts by alertname and service so related alerts are batched.
+  group_by: ['alertname', 'service']
+  # Wait 30s to buffer alerts before sending the first notification.
+  group_wait: 30s
+  # Wait 5m before sending updates for an existing alert group.
+  group_interval: 5m
+  # Wait 4h before resending a notification for an already-firing alert.
+  repeat_interval: 4h
+
+  routes:
+    # Critical alerts go to PagerDuty for immediate response.
+    - match:
+        severity: critical
+      receiver: pagerduty-critical
+      group_wait: 10s
+      repeat_interval: 1h
+      continue: false
+
+    # Warning alerts go to the warnings Slack channel.
+    - match:
+        severity: warning
+      receiver: slack-warnings
+      continue: false
+
+    # Info alerts go to a separate low-priority Slack channel.
+    - match:
+        severity: info
+      receiver: slack-info
+      continue: false
+
+# ---------------------------------------------------------------------------
+# Inhibition rules
+# ---------------------------------------------------------------------------
+inhibit_rules:
+  # If a critical alert is firing, suppress warning alerts for the same alertname.
+  # This prevents duplicate noise when a critical issue also triggers warnings.
+  - source_match:
+      severity: critical
+    target_match:
+      severity: warning
+    equal: ['alertname']
+
+  # If the operator is down, suppress all operator-specific metric alerts.
+  - source_match:
+      alertname: OperatorDown
+    target_match:
+      service: operator
+    equal: ['instance']
+
+  # If the enclave is down, suppress all enclave-specific metric alerts.
+  - source_match:
+      alertname: EnclaveDown
+    target_match:
+      service: enclave
+    equal: ['instance']
+
+# ---------------------------------------------------------------------------
+# Receivers
+# ---------------------------------------------------------------------------
+receivers:
+  # PagerDuty for critical alerts (OperatorDown, EnclaveDown, DisputeResolutionFailed).
+  - name: pagerduty-critical
+    pagerduty_configs:
+      - service_key: '<REPLACE_PAGERDUTY_SERVICE_KEY>'
+        description: '{{ .CommonAnnotations.summary }}'
+        details:
+          severity: '{{ .CommonLabels.severity }}'
+          service: '{{ .CommonLabels.service }}'
+          description: '{{ .CommonAnnotations.description }}'
+          runbook_url: '{{ .CommonAnnotations.runbook_url }}'
+          firing: '{{ .Alerts.Firing | len }}'
+          resolved: '{{ .Alerts.Resolved | len }}'
+
+  # Slack channel for warning-level alerts.
+  - name: slack-warnings
+    slack_configs:
+      - api_url: '<REPLACE_SLACK_WEBHOOK_URL_WARNINGS>'
+        channel: '#world-zk-alerts'
+        send_resolved: true
+        title: '[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}'
+        text: >-
+          *Summary:* {{ .CommonAnnotations.summary }}
+
+          *Description:* {{ .CommonAnnotations.description }}
+
+          *Severity:* {{ .CommonLabels.severity }}
+
+          *Service:* {{ .CommonLabels.service }}
+
+          *Runbook:* {{ .CommonAnnotations.runbook_url }}
+        color: '{{ if eq .Status "firing" }}warning{{ else }}good{{ end }}'
+
+  # Slack channel for info-level alerts (low priority).
+  - name: slack-info
+    slack_configs:
+      - api_url: '<REPLACE_SLACK_WEBHOOK_URL_INFO>'
+        channel: '#world-zk-info'
+        send_resolved: true
+        title: '[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}'
+        text: >-
+          *Summary:* {{ .CommonAnnotations.summary }}
+
+          *Description:* {{ .CommonAnnotations.description }}
+
+          *Runbook:* {{ .CommonAnnotations.runbook_url }}
+        color: '{{ if eq .Status "firing" }}#439FE0{{ else }}good{{ end }}'

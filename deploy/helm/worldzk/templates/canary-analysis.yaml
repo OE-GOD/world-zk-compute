@@ -1,0 +1,40 @@
+{{- if and .Values.operator.enabled (include "worldzk.operator.canary.isEnabled" .) }}
+{{- if (include "worldzk.operator.canary.flagger.isEnabled" .) }}
+{{- $canary := .Values.operator.canary }}
+{{- $flagger := $canary.flagger }}
+apiVersion: flagger.app/v1beta1
+kind: Canary
+metadata:
+  name: {{ include "worldzk.operator.fullname" . }}
+  labels:
+    {{- include "worldzk.operator.labels" . | nindent 4 }}
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "worldzk.operator.fullname" . }}
+  service:
+    name: {{ include "worldzk.operator.fullname" . }}
+    port: {{ .Values.operator.port }}
+    targetPort: http
+  analysis:
+    # -- Analysis interval between metric checks
+    interval: {{ $flagger.interval | default "1m" }}
+    # -- Number of successful analysis iterations before promotion
+    iterations: {{ $flagger.iterations | default 10 }}
+    # -- Traffic weight increment per successful analysis step
+    stepWeight: {{ $flagger.stepWeight | default 10 }}
+    # -- Maximum traffic weight the canary can receive before full promotion
+    maxWeight: {{ $flagger.maxWeight | default 50 }}
+    # -- Metric thresholds that must pass for promotion
+    metrics:
+      - name: request-success-rate
+        thresholdRange:
+          min: {{ $flagger.successRateThreshold | default 99 }}
+        interval: {{ $flagger.interval | default "1m" }}
+      - name: request-duration
+        thresholdRange:
+          max: {{ $flagger.latencyThreshold | default 500 }}
+        interval: {{ $flagger.interval | default "1m" }}
+{{- end }}
+{{- end }}

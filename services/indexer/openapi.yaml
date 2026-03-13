@@ -1,0 +1,306 @@
+openapi: 3.0.3
+info:
+  title: TEE Indexer Service API
+  description: >
+    HTTP API exposed by the TEE Indexer service. The indexer polls on-chain
+    events from the TEEMLVerifier contract, stores them in a local SQLite
+    database, and serves them via a REST API for querying inference results,
+    disputes, and aggregate statistics.
+  version: 1.0.0
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8081
+    description: Local indexer server (default port)
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      description: >
+        Returns the current health status of the indexer, including the last
+        indexed block number and total number of results tracked.
+      operationId: getHealth
+      tags:
+        - Health
+      responses:
+        "200":
+          description: Indexer is healthy and running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              example:
+                status: ok
+                last_indexed_block: 19542100
+                total_results: 256
+
+  /results:
+    get:
+      summary: List inference results
+      description: >
+        Returns a list of indexed inference results, ordered by block number
+        descending (most recent first). Supports optional query parameters to
+        filter by status, submitter address, model hash, and to limit the
+        number of returned rows.
+      operationId: listResults
+      tags:
+        - Results
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: >
+            Filter results by status. Valid values are "submitted",
+            "challenged", "finalized", and "resolved".
+          schema:
+            type: string
+            enum:
+              - submitted
+              - challenged
+              - finalized
+              - resolved
+          example: finalized
+        - name: submitter
+          in: query
+          required: false
+          description: Filter results by submitter address (hex string with 0x prefix).
+          schema:
+            type: string
+          example: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+        - name: model_hash
+          in: query
+          required: false
+          description: Filter results by model hash (hex string with 0x prefix).
+          schema:
+            type: string
+          example: "0x8e7c338859ba0bcb6911e6b68794f5449c0bb36a0e2ce47cb5dc96e8eb56e909"
+        - name: limit
+          in: query
+          required: false
+          description: >
+            Maximum number of results to return. Defaults to 50, capped at 1000.
+          schema:
+            type: integer
+            format: uint32
+            minimum: 1
+            maximum: 1000
+            default: 50
+          example: 20
+      responses:
+        "200":
+          description: A JSON array of inference result rows.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ResultRow"
+        "500":
+          description: Internal server error (database query failed).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "storage lock poisoned"
+
+  /results/{id}:
+    get:
+      summary: Get a single inference result
+      description: >
+        Returns a single inference result by its on-chain result ID (hex
+        string). Returns 404 if the result has not been indexed.
+      operationId: getResult
+      tags:
+        - Results
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The result ID (hex string, typically with 0x prefix).
+          schema:
+            type: string
+          example: "0x0101010101010101010101010101010101010101010101010101010101010101"
+      responses:
+        "200":
+          description: The requested inference result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResultRow"
+        "404":
+          description: Result not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "result not found"
+        "500":
+          description: Internal server error (database query failed).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "storage lock poisoned"
+
+  /stats:
+    get:
+      summary: Aggregate statistics
+      description: >
+        Returns aggregate counts of results grouped by status. Useful for
+        dashboards and monitoring.
+      operationId: getStats
+      tags:
+        - Statistics
+      responses:
+        "200":
+          description: Aggregate statistics across all indexed results.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatsResponse"
+              example:
+                total_submitted: 100
+                total_challenged: 5
+                total_finalized: 90
+                total_resolved: 3
+        "500":
+          description: Internal server error (database query failed).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "storage lock poisoned"
+
+components:
+  schemas:
+    HealthResponse:
+      type: object
+      required:
+        - status
+        - last_indexed_block
+        - total_results
+      properties:
+        status:
+          type: string
+          description: Health status indicator. Always "ok" when the server is responding.
+          example: ok
+        last_indexed_block:
+          type: integer
+          format: uint64
+          description: The most recent block number that has been indexed.
+          example: 19542100
+        total_results:
+          type: integer
+          format: uint64
+          description: Total number of inference results stored in the database.
+          example: 256
+
+    ResultRow:
+      type: object
+      required:
+        - id
+        - model_hash
+        - input_hash
+        - output
+        - submitter
+        - status
+        - block_number
+        - timestamp
+      properties:
+        id:
+          type: string
+          description: On-chain result ID (hex string with 0x prefix).
+          example: "0x0101010101010101010101010101010101010101010101010101010101010101"
+        model_hash:
+          type: string
+          description: Hash of the model used for inference (hex string with 0x prefix).
+          example: "0x8e7c338859ba0bcb6911e6b68794f5449c0bb36a0e2ce47cb5dc96e8eb56e909"
+        input_hash:
+          type: string
+          description: Hash of the input data (hex string with 0x prefix).
+          example: "0x0303030303030303030303030303030303030303030303030303030303030303"
+        output:
+          type: string
+          description: >
+            Inference output data. May be empty if the output was not stored
+            on-chain or has not been indexed yet.
+          example: ""
+        submitter:
+          type: string
+          description: Ethereum address of the result submitter (hex string with 0x prefix).
+          example: "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+        status:
+          type: string
+          description: >
+            Current lifecycle status of the result. One of "submitted",
+            "challenged", "finalized", or "resolved".
+          enum:
+            - submitted
+            - challenged
+            - finalized
+            - resolved
+          example: submitted
+        block_number:
+          type: integer
+          format: int64
+          description: Block number at which the result was submitted.
+          example: 19542050
+        timestamp:
+          type: integer
+          format: int64
+          description: >
+            Unix timestamp of the result. Defaults to 0 if not set by the
+            indexer.
+          example: 0
+        challenger:
+          type: string
+          nullable: true
+          description: >
+            Ethereum address of the challenger, if the result was challenged.
+            Null if the result has not been challenged.
+          example: null
+
+    StatsResponse:
+      type: object
+      required:
+        - total_submitted
+        - total_challenged
+        - total_finalized
+        - total_resolved
+      properties:
+        total_submitted:
+          type: integer
+          format: uint64
+          description: Number of results currently in "submitted" status.
+          example: 100
+        total_challenged:
+          type: integer
+          format: uint64
+          description: Number of results currently in "challenged" status.
+          example: 5
+        total_finalized:
+          type: integer
+          format: uint64
+          description: Number of results currently in "finalized" status.
+          example: 90
+        total_resolved:
+          type: integer
+          format: uint64
+          description: Number of results currently in "resolved" status.
+          example: 3
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          description: A human-readable error message describing what went wrong.
+          example: "result not found"

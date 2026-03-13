@@ -51,6 +51,14 @@ pub struct ConfigFile {
     pub models: Vec<ModelConfig>,
     /// Dry-run mode: simulate the full flow without sending on-chain transactions.
     pub dry_run: Option<bool>,
+    /// Path to the operator state file for crash recovery.
+    /// Default: `./operator-state.json`.
+    pub state_file: Option<String>,
+    /// Multiple TEEMLVerifier contract addresses to watch.
+    /// In TOML: `contracts = ["0x...", "0x..."]`
+    /// When set, takes precedence over `tee_verifier_address` for multi-contract watching.
+    #[serde(default)]
+    pub contracts: Vec<String>,
 }
 
 impl ConfigFile {
@@ -112,6 +120,15 @@ pub struct Config {
     /// Useful for testing operator configuration against a real chain without spending gas.
     #[allow(dead_code)]
     pub dry_run: bool,
+    /// Path to the operator state file for crash recovery.
+    /// The watcher persists its progress here after each poll cycle so that it
+    /// can resume from the same block after a restart.
+    pub state_file: String,
+    /// All TEEMLVerifier contract addresses to watch.
+    /// Always contains at least one address (the primary `tee_verifier_address`).
+    /// Built from: `CONTRACT_ADDRESSES` env var (comma-separated),
+    /// or `contracts` array in TOML, falling back to `tee_verifier_address`.
+    pub contract_addresses: Vec<String>,
 }
 
 impl Config {
@@ -223,6 +240,33 @@ impl Config {
             .or(file_cfg.dry_run)
             .unwrap_or(false);
 
+        let state_file = std::env::var("STATE_FILE")
+            .ok()
+            .or(file_cfg.state_file)
+            .unwrap_or_else(|| "./operator-state.json".to_string());
+
+        // Build the contract addresses list.
+        // Priority: CONTRACT_ADDRESSES env var > contracts array in TOML > tee_verifier_address.
+        let contract_addresses = if let Ok(addrs_str) = std::env::var("CONTRACT_ADDRESSES") {
+            // Comma-separated list of addresses from env var
+            let parsed: Vec<String> = addrs_str
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if parsed.is_empty() {
+                vec![tee_verifier_address.clone()]
+            } else {
+                parsed
+            }
+        } else if !file_cfg.contracts.is_empty() {
+            // Array from TOML config
+            file_cfg.contracts
+        } else {
+            // Fall back to single tee_verifier_address
+            vec![tee_verifier_address.clone()]
+        };
+
         // Build the model registry.
         // Priority: [[models]] section in TOML > MODEL_PATH env var / model_path config.
         // If [[models]] is empty, create a single default entry from model_path.
@@ -256,7 +300,15 @@ impl Config {
             webhook_url,
             models,
             dry_run,
+            state_file,
+            contract_addresses,
         })
+    }
+
+    /// Returns the primary contract address (the first one) for backward compatibility.
+    #[allow(dead_code)]
+    pub fn contract_address(&self) -> &str {
+        &self.contract_addresses[0]
     }
 
     /// Look up a model by name. If `name` is None, returns the first model.
@@ -359,6 +411,8 @@ mod tests {
             "PROOF_RETRY_DELAY_SECS",
             "WEBHOOK_URL",
             "DRY_RUN",
+            "STATE_FILE",
+            "CONTRACT_ADDRESSES",
         ] {
             std::env::remove_var(var);
         }
@@ -1205,5 +1259,259 @@ dry_run = true
         assert!(!config.dry_run);
 
         clear_all_env_vars();
+    }
+
+    // ======================== Multi-contract config tests ========================
+
+    #[test]
+    fn test_single_contract_address_backward_compat() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_all_env_vars();
+
+        // When only TEE_VERIFIER_ADDRESS is set (no CONTRACT_ADDRESSES),
+        // contract_addresses should contain just that one address.
+        std::env::set_var("OPERATOR_PRIVATE_KEY", "0xkey");
+        std::env::set_var(
+            "TEE_VERIFIER_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
+
+        let config = Config::from_env(None).unwrap();
+        assert_eq!(config.contract_addresses.len(), 1);
+        assert_eq!(
+            config.contract_addresses[0],
+            "0x1111111111111111111111111111111111111111"
+        );
+        // contract_address() helper returns the same
+        assert_eq!(
+            config.contract_address(),
+            "0x1111111111111111111111111111111111111111"
+        );
+
+        clear_all_env_vars();
+    }
+
+    #[test]
+    fn test_contract_addresses_env_var_comma_separated() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_all_env_vars();
+
+        std::env::set_var("OPERATOR_PRIVATE_KEY", "0xkey");
+        std::env::set_var(
+            "TEE_VERIFIER_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
+        std::env::set_var(
+            "CONTRACT_ADDRESSES",
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        );
+
+        let config = Config::from_env(None).unwrap();
+        assert_eq!(config.contract_addresses.len(), 2);
+        assert_eq!(
+            config.contract_addresses[0],
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        assert_eq!(
+            config.contract_addresses[1],
+            "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        );
+        // contract_address() returns the first
+        assert_eq!(
+            config.contract_address(),
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        // tee_verifier_address is still the original one
+        assert_eq!(
+            config.tee_verifier_address,
+            "0x1111111111111111111111111111111111111111"
+        );
+
+        clear_all_env_vars();
+    }
+
+    #[test]
+    fn test_contract_addresses_env_var_with_spaces() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_all_env_vars();
+
+        std::env::set_var("OPERATOR_PRIVATE_KEY", "0xkey");
+        std::env::set_var(
+            "TEE_VERIFIER_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
+        // Extra spaces around addresses should be trimmed
+        std::env::set_var(
+            "CONTRACT_ADDRESSES",
+            " 0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa , 0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb , 0xcccccccccccccccccccccccccccccccccccccccc ",
+        );
+
+        let config = Config::from_env(None).unwrap();
+        assert_eq!(config.contract_addresses.len(), 3);
+        assert_eq!(
+            config.contract_addresses[0],
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        assert_eq!(
+            config.contract_addresses[1],
+            "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        );
+        assert_eq!(
+            config.contract_addresses[2],
+            "0xcccccccccccccccccccccccccccccccccccccccc"
+        );
+
+        clear_all_env_vars();
+    }
+
+    #[test]
+    fn test_contract_addresses_env_var_empty_falls_back() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_all_env_vars();
+
+        std::env::set_var("OPERATOR_PRIVATE_KEY", "0xkey");
+        std::env::set_var(
+            "TEE_VERIFIER_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
+        // Empty CONTRACT_ADDRESSES should fall back to tee_verifier_address
+        std::env::set_var("CONTRACT_ADDRESSES", "");
+
+        let config = Config::from_env(None).unwrap();
+        assert_eq!(config.contract_addresses.len(), 1);
+        assert_eq!(
+            config.contract_addresses[0],
+            "0x1111111111111111111111111111111111111111"
+        );
+
+        clear_all_env_vars();
+    }
+
+    #[test]
+    fn test_contracts_toml_array() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_all_env_vars();
+
+        let toml_str = r#"
+private_key = "0xkey"
+tee_verifier_address = "0x1111111111111111111111111111111111111111"
+contracts = [
+    "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "0xcccccccccccccccccccccccccccccccccccccccc"
+]
+"#;
+        let mut tmpfile = tempfile::NamedTempFile::new().unwrap();
+        tmpfile.write_all(toml_str.as_bytes()).unwrap();
+        let path = tmpfile.path().to_str().unwrap().to_string();
+
+        let config = Config::from_env(Some(&path)).unwrap();
+        assert_eq!(config.contract_addresses.len(), 3);
+        assert_eq!(
+            config.contract_addresses[0],
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        assert_eq!(
+            config.contract_addresses[1],
+            "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        );
+        assert_eq!(
+            config.contract_addresses[2],
+            "0xcccccccccccccccccccccccccccccccccccccccc"
+        );
+        // Legacy field still populated
+        assert_eq!(
+            config.tee_verifier_address,
+            "0x1111111111111111111111111111111111111111"
+        );
+
+        clear_all_env_vars();
+    }
+
+    #[test]
+    fn test_contract_addresses_env_overrides_toml_contracts() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_all_env_vars();
+
+        let toml_str = r#"
+private_key = "0xkey"
+tee_verifier_address = "0x1111111111111111111111111111111111111111"
+contracts = [
+    "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+]
+"#;
+        let mut tmpfile = tempfile::NamedTempFile::new().unwrap();
+        tmpfile.write_all(toml_str.as_bytes()).unwrap();
+        let path = tmpfile.path().to_str().unwrap().to_string();
+
+        // Env var should override TOML contracts array
+        std::env::set_var(
+            "CONTRACT_ADDRESSES",
+            "0xdddddddddddddddddddddddddddddddddddddddd",
+        );
+
+        let config = Config::from_env(Some(&path)).unwrap();
+        assert_eq!(config.contract_addresses.len(), 1);
+        assert_eq!(
+            config.contract_addresses[0],
+            "0xdddddddddddddddddddddddddddddddddddddddd"
+        );
+
+        clear_all_env_vars();
+    }
+
+    #[test]
+    fn test_contracts_toml_empty_falls_back_to_single() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_all_env_vars();
+
+        // Empty contracts array in TOML should fall back to tee_verifier_address
+        let toml_str = r#"
+private_key = "0xkey"
+tee_verifier_address = "0x1111111111111111111111111111111111111111"
+contracts = []
+"#;
+        let mut tmpfile = tempfile::NamedTempFile::new().unwrap();
+        tmpfile.write_all(toml_str.as_bytes()).unwrap();
+        let path = tmpfile.path().to_str().unwrap().to_string();
+
+        let config = Config::from_env(Some(&path)).unwrap();
+        assert_eq!(config.contract_addresses.len(), 1);
+        assert_eq!(
+            config.contract_addresses[0],
+            "0x1111111111111111111111111111111111111111"
+        );
+
+        clear_all_env_vars();
+    }
+
+    #[test]
+    fn test_config_file_contracts_deserialization() {
+        let toml_str = r#"
+contracts = [
+    "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+]
+"#;
+        let cf = ConfigFile::from_toml_str(toml_str).unwrap();
+        assert_eq!(cf.contracts.len(), 2);
+        assert_eq!(
+            cf.contracts[0],
+            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        assert_eq!(
+            cf.contracts[1],
+            "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        );
+    }
+
+    #[test]
+    fn test_config_file_no_contracts_defaults_empty() {
+        let toml_str = r#"
+rpc_url = "https://rpc.example.com"
+"#;
+        let cf = ConfigFile::from_toml_str(toml_str).unwrap();
+        assert!(cf.contracts.is_empty());
     }
 }

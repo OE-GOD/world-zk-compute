@@ -1,0 +1,371 @@
+name: SDK Publish (npm + PyPI + crates.io)
+
+on:
+  push:
+    tags:
+      - 'sdk-v*'
+  pull_request:
+    paths:
+      - 'sdk/**'
+      - '.github/workflows/sdk-publish.yml'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (no actual publish)'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+env:
+  RUST_VERSION: "1.92.0"
+  NODE_VERSION: "20"
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  # -------------------------------------------------------------------
+  # Step 1: Validate version consistency across all three SDKs
+  # -------------------------------------------------------------------
+  version-check:
+    name: Version Consistency Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sdk_version: ${{ steps.versions.outputs.sdk_version }}
+      is_dry_run: ${{ steps.check-mode.outputs.is_dry_run }}
+      changelog: ${{ steps.changelog.outputs.changelog }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine publish mode
+        id: check-mode
+        run: |
+          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref_type }}" == "tag" ]]; then
+            echo "is_dry_run=false" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.dry_run }}" == "false" ]]; then
+            echo "is_dry_run=false" >> "$GITHUB_OUTPUT"
+          else
+            # PRs and other triggers are always dry-run
+            echo "is_dry_run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Extract and compare SDK versions
+        id: versions
+        run: |
+          set -euo pipefail
+
+          # Extract version from TypeScript package.json
+          TS_VERSION=$(jq -r '.version' sdk/typescript/package.json)
+          echo "TypeScript SDK version: $TS_VERSION"
+
+          # Extract version from Python pyproject.toml
+          PY_VERSION=$(grep '^version' sdk/python/pyproject.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          echo "Python SDK version:     $PY_VERSION"
+
+          # Extract version from Rust Cargo.toml
+          RS_VERSION=$(grep '^version' sdk/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          echo "Rust SDK version:       $RS_VERSION"
+
+          # Store individual versions
+          echo "ts_version=$TS_VERSION" >> "$GITHUB_OUTPUT"
+          echo "py_version=$PY_VERSION" >> "$GITHUB_OUTPUT"
+          echo "rs_version=$RS_VERSION" >> "$GITHUB_OUTPUT"
+
+          # Check consistency: all three must match
+          if [[ "$TS_VERSION" != "$PY_VERSION" || "$TS_VERSION" != "$RS_VERSION" ]]; then
+            echo "::error::SDK version mismatch detected!"
+            echo "  TypeScript: $TS_VERSION"
+            echo "  Python:     $PY_VERSION"
+            echo "  Rust:       $RS_VERSION"
+            echo ""
+            echo "All three SDKs must have the same version before publishing."
+            echo "Update the mismatched versions and try again."
+            exit 1
+          fi
+
+          echo "sdk_version=$TS_VERSION" >> "$GITHUB_OUTPUT"
+          echo "All SDK versions match: $TS_VERSION"
+
+      - name: Validate tag matches SDK version
+        if: github.ref_type == 'tag'
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#sdk-v}"
+          SDK_VERSION="${{ steps.versions.outputs.sdk_version }}"
+          if [[ "$TAG_VERSION" != "$SDK_VERSION" ]]; then
+            echo "::error::Tag version ($TAG_VERSION) does not match SDK version ($SDK_VERSION)"
+            echo "Tag: ${{ github.ref_name }} -> $TAG_VERSION"
+            echo "SDKs report: $SDK_VERSION"
+            exit 1
+          fi
+          echo "Tag version matches SDK version: $TAG_VERSION"
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          set -euo pipefail
+
+          # Find the previous sdk-v* tag
+          PREV_TAG=$(git tag --list 'sdk-v*' --sort=-version:refname | grep -v "^${GITHUB_REF_NAME}$" | head -1 || true)
+
+          if [[ -z "$PREV_TAG" ]]; then
+            echo "No previous sdk-v* tag found. Generating full changelog."
+            RANGE="HEAD"
+          else
+            echo "Previous tag: $PREV_TAG"
+            RANGE="${PREV_TAG}..HEAD"
+          fi
+
+          # Generate changelog limited to sdk/ directory changes
+          CHANGELOG=$(git log "$RANGE" --pretty=format:"- %s (%h)" -- sdk/ 2>/dev/null || echo "- Initial release")
+
+          if [[ -z "$CHANGELOG" ]]; then
+            CHANGELOG="- No SDK-specific changes since $PREV_TAG"
+          fi
+
+          echo "## Changelog (since ${PREV_TAG:-initial})"
+          echo ""
+          echo "$CHANGELOG"
+
+          # Store as output (escape newlines for GitHub Actions)
+          {
+            echo "changelog<<CHANGELOG_EOF"
+            echo "## Changes since ${PREV_TAG:-initial}"
+            echo ""
+            echo "$CHANGELOG"
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+  # -------------------------------------------------------------------
+  # Step 2: Publish TypeScript SDK to npm
+  # -------------------------------------------------------------------
+  publish-npm:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: version-check
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: sdk/typescript/package-lock.json
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: cd sdk/typescript && npm ci
+
+      - name: Type check
+        run: cd sdk/typescript && npx tsc --noEmit
+
+      - name: Run tests
+        run: cd sdk/typescript && npx vitest run
+
+      - name: Build
+        run: cd sdk/typescript && npm run build
+
+      - name: Verify package contents
+        run: |
+          cd sdk/typescript
+          echo "=== Package contents ==="
+          npm pack --dry-run 2>&1
+          echo ""
+          echo "=== Package size ==="
+          npm pack --dry-run 2>&1 | tail -1
+
+      - name: Publish (dry-run)
+        if: needs.version-check.outputs.is_dry_run == 'true'
+        run: |
+          cd sdk/typescript
+          npm publish --dry-run
+          echo "Dry-run complete. Package would be published as @worldzk/sdk@${{ needs.version-check.outputs.sdk_version }}"
+
+      - name: Publish to npm
+        if: needs.version-check.outputs.is_dry_run == 'false'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          cd sdk/typescript
+          npm publish --access public
+          echo "Published @worldzk/sdk@${{ needs.version-check.outputs.sdk_version }} to npm"
+
+  # -------------------------------------------------------------------
+  # Step 3: Publish Python SDK to PyPI
+  # -------------------------------------------------------------------
+  publish-pypi:
+    name: Publish to PyPI
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: version-check
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install build tools
+        run: pip install build twine
+
+      - name: Install dev dependencies and package
+        run: |
+          cd sdk/python
+          pip install -e '.[dev]'
+
+      - name: Run linter
+        run: |
+          cd sdk/python
+          ruff check .
+
+      - name: Run tests
+        run: |
+          cd sdk/python
+          pytest tests/ -v --ignore=tests/test_anvil_integration.py
+
+      - name: Build distribution
+        run: |
+          cd sdk/python
+          python -m build
+          echo "=== Built artifacts ==="
+          ls -lh dist/
+
+      - name: Verify distribution
+        run: |
+          cd sdk/python
+          twine check dist/*
+
+      - name: Publish (dry-run)
+        if: needs.version-check.outputs.is_dry_run == 'true'
+        run: |
+          cd sdk/python
+          echo "Dry-run: would upload the following to PyPI:"
+          ls -lh dist/
+          echo ""
+          echo "Package: worldzk==${{ needs.version-check.outputs.sdk_version }}"
+          # twine does not have a --dry-run flag, so we use --repository testpypi without credentials
+          # to simulate. Instead, just verify the package is valid.
+          twine check dist/*
+
+      - name: Publish to PyPI
+        if: needs.version-check.outputs.is_dry_run == 'false'
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        run: |
+          cd sdk/python
+          twine upload dist/*
+          echo "Published worldzk==${{ needs.version-check.outputs.sdk_version }} to PyPI"
+
+  # -------------------------------------------------------------------
+  # Step 4: Publish Rust SDK to crates.io
+  # -------------------------------------------------------------------
+  publish-crates:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: version-check
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy, rustfmt
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            sdk/target
+          key: ${{ runner.os }}-cargo-sdk-publish-${{ hashFiles('sdk/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-sdk-publish-
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path sdk/Cargo.toml --check
+
+      - name: Run Clippy
+        run: cargo clippy --manifest-path sdk/Cargo.toml -- -D warnings
+
+      - name: Run tests
+        run: cargo test --manifest-path sdk/Cargo.toml
+
+      - name: Verify package
+        run: |
+          cd sdk
+          cargo package --list
+          echo ""
+          echo "=== Package metadata ==="
+          cargo package --no-verify 2>&1 | head -20
+
+      - name: Publish (dry-run)
+        if: needs.version-check.outputs.is_dry_run == 'true'
+        run: |
+          cd sdk
+          cargo publish --dry-run
+          echo "Dry-run complete. Package would be published as world-zk-sdk@${{ needs.version-check.outputs.sdk_version }}"
+
+      - name: Publish to crates.io
+        if: needs.version-check.outputs.is_dry_run == 'false'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          cd sdk
+          cargo publish
+          echo "Published world-zk-sdk@${{ needs.version-check.outputs.sdk_version }} to crates.io"
+
+  # -------------------------------------------------------------------
+  # Step 5: Create GitHub Release with changelog
+  # -------------------------------------------------------------------
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [version-check, publish-npm, publish-pypi, publish-crates]
+    if: needs.version-check.outputs.is_dry_run == 'false'
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "SDK ${{ needs.version-check.outputs.sdk_version }}"
+          body: |
+            ## SDK ${{ needs.version-check.outputs.sdk_version }}
+
+            ### Published Packages
+
+            | Package | Registry | Install |
+            |---------|----------|---------|
+            | `@worldzk/sdk` | [npm](https://www.npmjs.com/package/@worldzk/sdk) | `npm install @worldzk/sdk@${{ needs.version-check.outputs.sdk_version }}` |
+            | `worldzk` | [PyPI](https://pypi.org/project/worldzk/) | `pip install worldzk==${{ needs.version-check.outputs.sdk_version }}` |
+            | `world-zk-sdk` | [crates.io](https://crates.io/crates/world-zk-sdk) | `cargo add world-zk-sdk@${{ needs.version-check.outputs.sdk_version }}` |
+
+            ${{ needs.version-check.outputs.changelog }}
+          draft: false
+          prerelease: ${{ contains(needs.version-check.outputs.sdk_version, '-') }}

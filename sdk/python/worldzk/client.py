@@ -87,6 +87,14 @@ class Client(BaseClient):
         timeout: float = DEFAULT_TIMEOUT,
         max_retries: int = DEFAULT_MAX_RETRIES,
     ):
+        """Create a synchronous API client.
+
+        Args:
+            base_url: Base URL for the World ZK Compute API.
+            api_key: Optional API key for authentication.
+            timeout: Request timeout in seconds.
+            max_retries: Maximum number of retry attempts for failed requests.
+        """
         super().__init__(base_url, api_key, timeout, max_retries)
 
         if HAS_HTTPX:
@@ -423,6 +431,14 @@ class AsyncClient(BaseClient):
         timeout: float = DEFAULT_TIMEOUT,
         max_retries: int = DEFAULT_MAX_RETRIES,
     ):
+        """Create an asynchronous API client.
+
+        Args:
+            base_url: Base URL for the World ZK Compute API.
+            api_key: Optional API key for authentication.
+            timeout: Request timeout in seconds.
+            max_retries: Maximum number of retry attempts for failed requests.
+        """
         super().__init__(base_url, api_key, timeout, max_retries)
 
         if not HAS_HTTPX:

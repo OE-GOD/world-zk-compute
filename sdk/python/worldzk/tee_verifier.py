@@ -320,6 +320,14 @@ class TEEVerifier:
         contract_address: str,
         gas_limit: int = 500_000,
     ):
+        """Create a new TEEVerifier.
+
+        Args:
+            rpc_url: JSON-RPC endpoint URL.
+            private_key: Hex-encoded private key for signing transactions.
+            contract_address: Deployed TEEMLVerifier contract address.
+            gas_limit: Maximum gas per transaction (default 500000).
+        """
         self._w3 = Web3(Web3.HTTPProvider(rpc_url))
         self._account: LocalAccount = Account.from_key(private_key)
         self._contract: Contract = self._w3.eth.contract(

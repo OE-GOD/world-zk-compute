@@ -398,7 +398,9 @@ contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
     // VIEW FUNCTIONS
     // ========================================================================
 
-    /// @notice Get current tip for a request (decreases over time)
+    /// @notice Get current tip for a request (decreases over time via linear decay)
+    /// @param requestId The request to query
+    /// @return The current tip amount in wei (0 if request is completed/cancelled)
     function getCurrentTip(uint256 requestId) public view returns (uint256) {
         ExecutionRequest storage req = requests[requestId];
         if (req.id == 0) return 0;
@@ -410,6 +412,9 @@ contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
     }
 
     /// @notice Calculate payout with tip decay
+    /// @dev Linear decay from maxTip to maxTip/2 over TIP_DECAY_PERIOD, then flat at maxTip/2
+    /// @param req The execution request (storage reference)
+    /// @return The current payout amount in wei
     function calculatePayout(ExecutionRequest storage req) internal view returns (uint256) {
         uint256 elapsed = block.timestamp - req.createdAt;
 
@@ -424,6 +429,9 @@ contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
     }
 
     /// @notice Get pending requests (for prover to find work)
+    /// @param offset Number of matching requests to skip before returning
+    /// @param limit Maximum number of request IDs to return
+    /// @return Array of request IDs that are currently Pending and not expired
     function getPendingRequests(uint256 offset, uint256 limit) external view returns (uint256[] memory) {
         uint256[] memory pending = new uint256[](limit);
         uint256 count = 0;
@@ -450,12 +458,17 @@ contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
     }
 
     /// @notice Get request details
+    /// @param requestId The request to query
+    /// @return The full ExecutionRequest struct
     function getRequest(uint256 requestId) external view returns (ExecutionRequest memory) {
         if (requests[requestId].id == 0) revert RequestNotFound();
         return requests[requestId];
     }
 
     /// @notice Get prover statistics
+    /// @param prover The prover address to query
+    /// @return completed Number of proofs successfully submitted
+    /// @return earnings Total ETH earned from payouts
     function getProverStats(address prover) external view returns (uint256 completed, uint256 earnings) {
         return (proverCompletedCount[prover], proverEarnings[prover]);
     }
@@ -498,6 +511,7 @@ contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
     }
 
     /// @notice Update the protocol fee in basis points (max 10%)
+    /// @param _feeBps New fee in basis points (100 = 1%, max 1000 = 10%)
     function setProtocolFee(uint256 _feeBps) external onlyOwner {
         require(_feeBps <= 1000, "Fee too high"); // Max 10%
         uint256 oldFeeBps = protocolFeeBps;
@@ -506,6 +520,7 @@ contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
     }
 
     /// @notice Update the fee recipient address
+    /// @param _recipient New address to receive protocol fees (must be non-zero)
     function setFeeRecipient(address _recipient) external onlyOwner {
         if (_recipient == address(0)) revert ZeroAddress();
         address oldRecipient = feeRecipient;
@@ -514,6 +529,7 @@ contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
     }
 
     /// @notice Set or update the reputation contract
+    /// @param _reputation ProverReputation contract address (0x0 to disable)
     function setReputation(address _reputation) external onlyOwner {
         reputation = ProverReputation(_reputation);
         emit ReputationContractSet(_reputation);

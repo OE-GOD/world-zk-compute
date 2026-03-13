@@ -97,3 +97,11 @@ path = "src/bin/gen_dag_groth16_witness.rs"
 name = "precompute_proof"
 path = "src/bin/precompute_proof.rs"
 
+[dev-dependencies]
+reqwest = { version = "0.12", features = ["json"] }
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "prover_bench"
+harness = false
+

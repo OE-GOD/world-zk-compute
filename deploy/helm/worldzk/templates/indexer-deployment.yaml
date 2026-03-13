@@ -1,0 +1,118 @@
+{{- if .Values.indexer.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "worldzk.indexer.fullname" . }}
+  labels:
+    {{- include "worldzk.indexer.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.indexer.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "worldzk.indexer.selectorLabels" . | nindent 6 }}
+  strategy:
+    # Recreate strategy because SQLite does not support concurrent writers
+    type: Recreate
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "worldzk.indexer.labels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "worldzk.indexer.serviceAccountName" . }}
+      terminationGracePeriodSeconds: {{ .Values.indexer.terminationGracePeriodSeconds }}
+      containers:
+        - name: indexer
+          image: "{{ .Values.indexer.image.repository }}:{{ .Values.indexer.image.tag }}"
+          imagePullPolicy: {{ .Values.indexer.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.indexer.port }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "worldzk.configMapName" . }}
+          env:
+            - name: PORT
+              value: {{ .Values.indexer.port | quote }}
+            - name: CONTRACT_ADDRESS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "worldzk.secretName" . }}
+                  key: TEE_VERIFIER_ADDRESS
+                  optional: true
+            - name: RPC_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "worldzk.configMapName" . }}
+                  key: OPERATOR_RPC_URL
+            {{- range $key, $value := .Values.indexer.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          {{- with .Values.indexer.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.indexer.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.indexer.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: indexer-data
+              mountPath: /data
+      volumes:
+        - name: indexer-data
+          {{- if .Values.indexer.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "worldzk.indexer.fullname" . }}-data
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- if .Values.indexer.persistence.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "worldzk.indexer.fullname" . }}-data
+  labels:
+    {{- include "worldzk.indexer.labels" . | nindent 4 }}
+  {{- with .Values.indexer.persistence.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  accessModes:
+    {{- toYaml .Values.indexer.persistence.accessModes | nindent 4 }}
+  {{- if .Values.indexer.persistence.storageClassName }}
+  storageClassName: {{ .Values.indexer.persistence.storageClassName | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.indexer.persistence.size }}
+{{- end }}
+{{- end }}

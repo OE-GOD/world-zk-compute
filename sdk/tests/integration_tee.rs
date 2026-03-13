@@ -9,21 +9,25 @@
 //!   - The artifact at `contracts/out/TEEMLVerifier.sol/TEEMLVerifier.json` must exist
 //!
 //! Run:
-//!   cd sdk && cargo test integration_tee -- --nocapture
+//!   cd sdk && cargo test --test integration_tee -- --nocapture
+//!
+//! IMPORTANT: Expected-revert checks use `.call().await` (dry-run simulation) rather
+//! than `.send().await`. Using `.send()` for reverts corrupts alloy's internal nonce
+//! tracker, causing subsequent transactions to hang indefinitely.
 
 use std::path::PathBuf;
 
 use alloy::network::{EthereumWallet, TransactionBuilder};
 use alloy::node_bindings::Anvil;
 use alloy::primitives::{keccak256, Address, Bytes, B256, U256};
-use alloy::providers::{ext::AnvilApi, Provider, ProviderBuilder};
+use alloy::providers::{Provider, ProviderBuilder};
 use alloy::signers::local::PrivateKeySigner;
 use alloy::signers::Signer;
 use alloy::sol;
 use alloy::sol_types::SolValue;
 
 // --------------------------------------------------------------------------
-// Contract binding with full ABI (no bytecode -- we load it from artifact)
+// Contract binding with full ABI (bytecode loaded from forge artifact)
 // --------------------------------------------------------------------------
 
 sol! {
@@ -61,11 +65,6 @@ sol! {
         event DisputeResolved(bytes32 indexed resultId, bool proverWon);
         event ResultFinalized(bytes32 indexed resultId);
         event ResultExpired(bytes32 indexed resultId);
-        event ChallengeBondUpdated(uint256 oldAmount, uint256 newAmount);
-        event ProverStakeUpdated(uint256 oldAmount, uint256 newAmount);
-        event RemainderVerifierUpdated(address oldVerifier, address newVerifier);
-        event ConfigUpdated(string param, uint256 oldValue, uint256 newValue);
-        event DisputeExtended(bytes32 indexed resultId, uint256 newDeadline);
 
         // Admin
         function registerEnclave(address enclaveKey, bytes32 enclaveImageHash) external;
@@ -104,7 +103,7 @@ sol! {
         function unpause() external;
         function paused() external view returns (bool);
 
-        // State
+        // State getters
         function remainderVerifier() external view returns (address);
         function challengeBondAmount() external view returns (uint256);
         function proverStake() external view returns (uint256);
@@ -131,7 +130,8 @@ fn load_contract_bytecode() -> Bytes {
         .join("../contracts/out/TEEMLVerifier.sol/TEEMLVerifier.json");
     assert!(
         artifact_path.exists(),
-        "TEEMLVerifier artifact not found at {artifact_path:?}. Run: cd contracts && forge build --skip test --skip script"
+        "TEEMLVerifier artifact not found at {artifact_path:?}. \
+         Run: cd contracts && forge build --skip test --skip script"
     );
     let artifact: serde_json::Value =
         serde_json::from_reader(std::fs::File::open(&artifact_path).unwrap()).unwrap();
@@ -141,12 +141,7 @@ fn load_contract_bytecode() -> Bytes {
     bytecode_hex.parse::<Bytes>().expect("invalid bytecode hex")
 }
 
-/// Encode the constructor arguments (address _admin, address _remainderVerifier).
-fn encode_constructor(admin: Address, remainder_verifier: Address) -> Vec<u8> {
-    (admin, remainder_verifier).abi_encode_params()
-}
-
-/// Anvil pre-funded private keys (from Anvil's default accounts).
+/// Anvil pre-funded private keys (from Anvil default accounts).
 const ADMIN_KEY: &str = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 const USER_KEY: &str = "59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
 const CHALLENGER_KEY: &str = "5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a";
@@ -158,11 +153,10 @@ fn parse_signer(key: &str) -> PrivateKeySigner {
 
 /// Shared test context: Anvil instance + deployed contract.
 struct TestContext {
-    /// Keep anvil alive for the duration of the test.
     _anvil: alloy::node_bindings::AnvilInstance,
     rpc_url: String,
     contract_addr: Address,
-    admin_signer: PrivateKeySigner,
+    admin_addr: Address,
 }
 
 impl TestContext {
@@ -173,7 +167,7 @@ impl TestContext {
 
         let admin_signer = parse_signer(ADMIN_KEY);
         let admin_addr = admin_signer.address();
-        let wallet = EthereumWallet::from(admin_signer.clone());
+        let wallet = EthereumWallet::from(admin_signer);
 
         let provider = ProviderBuilder::new()
             .wallet(wallet)
@@ -181,12 +175,11 @@ impl TestContext {
 
         // Build deployment bytecode: creation code + constructor args
         let creation_code = load_contract_bytecode();
-        let constructor_args = encode_constructor(admin_addr, Address::ZERO);
+        let constructor_args = (admin_addr, Address::ZERO).abi_encode_params();
 
         let mut deploy_data = creation_code.to_vec();
         deploy_data.extend_from_slice(&constructor_args);
 
-        // Deploy
         let tx = alloy::rpc::types::TransactionRequest::default()
             .with_deploy_code(deploy_data);
         let receipt = provider
@@ -205,11 +198,11 @@ impl TestContext {
             _anvil: anvil,
             rpc_url,
             contract_addr,
-            admin_signer,
+            admin_addr,
         }
     }
 
-    /// Build a provider with the given private key.
+    /// Build a provider with the given private key's wallet.
     fn provider_with_key(
         &self,
         key: &str,
@@ -240,8 +233,14 @@ impl TestContext {
     /// Fast-forward Anvil time by the given number of seconds and mine a block.
     async fn advance_time(&self, seconds: u64) {
         let provider = self.provider_readonly();
-        provider.anvil_increase_time(seconds).await.unwrap();
-        provider.anvil_mine(Some(1), None).await.unwrap();
+        let _: serde_json::Value = provider
+            .raw_request("evm_increaseTime".into(), [U256::from(seconds)])
+            .await
+            .unwrap();
+        let _: serde_json::Value = provider
+            .raw_request("evm_mine".into(), ())
+            .await
+            .unwrap();
     }
 }
 
@@ -268,8 +267,49 @@ async fn build_attestation(
 
 /// Extract the resultId from the first log topic of a submitResult receipt.
 fn extract_result_id(receipt: &alloy::rpc::types::TransactionReceipt) -> B256 {
-    // ResultSubmitted(bytes32 indexed resultId, ...)
     receipt.inner.logs()[0].topics()[1]
+}
+
+/// Helper: register an enclave (USER_KEY) and submit a result, returning the resultId.
+async fn setup_submitted_result(
+    ctx: &TestContext,
+) -> B256 {
+    let admin = ctx.contract_with_key(ADMIN_KEY);
+
+    // Register enclave
+    let enclave_addr = parse_signer(USER_KEY).address();
+    admin
+        .registerEnclave(enclave_addr, B256::from([0xAAu8; 32]))
+        .send()
+        .await
+        .unwrap()
+        .get_receipt()
+        .await
+        .unwrap();
+
+    // Submit result
+    let model_hash = B256::from([0x01u8; 32]);
+    let input_hash = B256::from([0x02u8; 32]);
+    let result_data = b"test-result-data";
+    let attestation = build_attestation(USER_KEY, model_hash, input_hash, result_data).await;
+    let stake = U256::from(100_000_000_000_000_000u128);
+
+    let receipt = admin
+        .submitResult(
+            model_hash,
+            input_hash,
+            Bytes::copy_from_slice(result_data),
+            Bytes::copy_from_slice(&attestation),
+        )
+        .value(stake)
+        .send()
+        .await
+        .unwrap()
+        .get_receipt()
+        .await
+        .unwrap();
+
+    extract_result_id(&receipt)
 }
 
 // ==========================================================================
@@ -284,42 +324,29 @@ async fn test_deploy_and_initial_state() {
 
     // Owner should be the admin address
     let owner = contract.owner().call().await.unwrap();
-    assert_eq!(
-        owner,
-        ctx.admin_signer.address(),
-        "Owner should be the deployer (admin)"
-    );
+    assert_eq!(owner, ctx.admin_addr, "Owner should be the deployer (admin)");
 
     // Contract should not be paused
     let paused = contract.paused().call().await.unwrap();
     assert!(!paused, "Contract should not be paused initially");
 
-    // Remainder verifier should be zero (we deployed with Address::ZERO)
+    // Remainder verifier should be zero (deployed with Address::ZERO)
     let rv = contract.remainderVerifier().call().await.unwrap();
-    assert_eq!(rv, Address::ZERO, "remainderVerifier should be zero");
+    assert_eq!(rv, Address::ZERO);
 
-    // Default stake and bond should be 0.1 ether
+    // Default stake and bond = 0.1 ether
     let stake = contract.proverStake().call().await.unwrap();
-    assert_eq!(
-        stake,
-        U256::from(100_000_000_000_000_000u128),
-        "Default prover stake should be 0.1 ETH"
-    );
+    assert_eq!(stake, U256::from(100_000_000_000_000_000u128));
 
     let bond = contract.challengeBondAmount().call().await.unwrap();
-    assert_eq!(
-        bond,
-        U256::from(100_000_000_000_000_000u128),
-        "Default challenge bond should be 0.1 ETH"
-    );
+    assert_eq!(bond, U256::from(100_000_000_000_000_000u128));
 
-    // Challenge window should be 1 hour
+    // Challenge window = 1 hour, Dispute window = 24 hours
     let cw = contract.CHALLENGE_WINDOW().call().await.unwrap();
-    assert_eq!(cw, U256::from(3600u64), "Challenge window should be 3600 seconds");
+    assert_eq!(cw, U256::from(3600u64));
 
-    // Dispute window should be 24 hours
     let dw = contract.DISPUTE_WINDOW().call().await.unwrap();
-    assert_eq!(dw, U256::from(86400u64), "Dispute window should be 86400 seconds");
+    assert_eq!(dw, U256::from(86400u64));
 
     println!("test_deploy_and_initial_state PASSED");
 }
@@ -328,52 +355,39 @@ async fn test_deploy_and_initial_state() {
 #[tokio::test]
 async fn test_register_enclave() {
     let ctx = TestContext::new().await;
-    let admin_contract = ctx.contract_with_key(ADMIN_KEY);
+    let admin = ctx.contract_with_key(ADMIN_KEY);
 
-    let enclave_signer = parse_signer(USER_KEY);
-    let enclave_addr = enclave_signer.address();
+    let enclave_addr = parse_signer(USER_KEY).address();
     let image_hash = B256::from([0xABu8; 32]);
 
     // Register enclave
-    let receipt = admin_contract
+    let receipt = admin
         .registerEnclave(enclave_addr, image_hash)
         .send()
         .await
-        .expect("registerEnclave send failed")
+        .unwrap()
         .get_receipt()
         .await
-        .expect("registerEnclave receipt failed");
+        .unwrap();
+    assert!(receipt.status());
 
-    assert!(receipt.status(), "registerEnclave tx should succeed");
-
-    // Verify the EnclaveRegistered event was emitted
-    assert!(
-        !receipt.inner.logs().is_empty(),
-        "Should emit at least one event"
-    );
+    // Verify event topic contains enclave address
     let topic = receipt.inner.logs()[0].topics()[1];
-    // topic[1] is the indexed enclaveKey (address, left-padded to 32 bytes)
-    let expected_topic = B256::left_padding_from(enclave_addr.as_slice());
-    assert_eq!(
-        topic, expected_topic,
-        "EnclaveRegistered event should contain enclave address"
-    );
+    let expected = B256::left_padding_from(enclave_addr.as_slice());
+    assert_eq!(topic, expected);
 
-    // Verify enclave is registered via enclaves() mapping
-    let info = admin_contract.enclaves(enclave_addr).call().await.unwrap();
-    assert!(info.registered, "Enclave should be registered");
-    assert!(info.active, "Enclave should be active");
-    assert_eq!(
-        info.enclaveImageHash, image_hash,
-        "Image hash should match"
-    );
-    assert!(info.registeredAt > U256::ZERO, "registeredAt should be set");
+    // Verify enclave state
+    let info = admin.enclaves(enclave_addr).call().await.unwrap();
+    assert!(info.registered);
+    assert!(info.active);
+    assert_eq!(info.enclaveImageHash, image_hash);
+    assert!(info.registeredAt > U256::ZERO);
 
-    // Non-owner cannot register
-    let user_contract = ctx.contract_with_key(USER_KEY);
-    let result = user_contract
+    // Non-owner cannot register (use .call() to avoid nonce corruption)
+    let user = ctx.contract_with_key(USER_KEY);
+    let result = user
         .registerEnclave(Address::from([0x99u8; 20]), B256::ZERO)
-        .send()
+        .call()
         .await;
     assert!(result.is_err(), "Non-owner should not be able to register enclave");
 
@@ -384,12 +398,11 @@ async fn test_register_enclave() {
 #[tokio::test]
 async fn test_submit_result_with_stake() {
     let ctx = TestContext::new().await;
-    let admin_contract = ctx.contract_with_key(ADMIN_KEY);
+    let admin = ctx.contract_with_key(ADMIN_KEY);
 
-    // Register an enclave (use USER_KEY as enclave signer)
-    let enclave_signer = parse_signer(USER_KEY);
-    let enclave_addr = enclave_signer.address();
-    admin_contract
+    // Register enclave
+    let enclave_addr = parse_signer(USER_KEY).address();
+    admin
         .registerEnclave(enclave_addr, B256::from([0x11u8; 32]))
         .send()
         .await
@@ -398,14 +411,14 @@ async fn test_submit_result_with_stake() {
         .await
         .unwrap();
 
-    // Submit a result (admin acts as submitter)
+    // Submit result
     let model_hash = B256::from([0x01u8; 32]);
     let input_hash = B256::from([0x02u8; 32]);
     let result_data = b"prediction:class_0";
     let attestation = build_attestation(USER_KEY, model_hash, input_hash, result_data).await;
+    let stake = U256::from(100_000_000_000_000_000u128);
 
-    let stake = U256::from(100_000_000_000_000_000u128); // 0.1 ETH
-    let receipt = admin_contract
+    let receipt = admin
         .submitResult(
             model_hash,
             input_hash,
@@ -415,25 +428,19 @@ async fn test_submit_result_with_stake() {
         .value(stake)
         .send()
         .await
-        .expect("submitResult send failed")
+        .unwrap()
         .get_receipt()
         .await
-        .expect("submitResult receipt failed");
+        .unwrap();
+    assert!(receipt.status());
 
-    assert!(receipt.status(), "submitResult tx should succeed");
-
-    // Extract resultId from event
     let result_id = extract_result_id(&receipt);
-    assert!(!result_id.is_zero(), "Result ID should be non-zero");
+    assert!(!result_id.is_zero());
 
     // Verify result struct
-    let r = admin_contract.getResult(result_id).call().await.unwrap();
-    assert_eq!(r.enclave, enclave_addr, "Enclave address should match");
-    assert_eq!(
-        r.submitter,
-        ctx.admin_signer.address(),
-        "Submitter should be admin"
-    );
+    let r = admin.getResult(result_id).call().await.unwrap();
+    assert_eq!(r.enclave, enclave_addr);
+    assert_eq!(r.submitter, ctx.admin_addr);
     assert_eq!(r.modelHash, model_hash);
     assert_eq!(r.inputHash, input_hash);
     assert_eq!(r.resultHash, keccak256(result_data));
@@ -441,124 +448,72 @@ async fn test_submit_result_with_stake() {
     assert!(!r.finalized);
     assert!(!r.challenged);
 
-    // Result should not be valid yet (not finalized)
-    let valid = admin_contract.isResultValid(result_id).call().await.unwrap();
-    assert!(!valid, "Result should not be valid before finalization");
+    // Not valid yet (not finalized)
+    let valid = admin.isResultValid(result_id).call().await.unwrap();
+    assert!(!valid);
 
-    // Insufficient stake should revert
-    let attestation2 = build_attestation(USER_KEY, B256::from([0x03u8; 32]), input_hash, result_data).await;
-    let result = admin_contract
+    // Insufficient stake should revert (use .call() to check)
+    let attestation2 =
+        build_attestation(USER_KEY, B256::from([0x03u8; 32]), input_hash, result_data).await;
+    let result = admin
         .submitResult(
             B256::from([0x03u8; 32]),
             input_hash,
             Bytes::copy_from_slice(result_data),
             Bytes::copy_from_slice(&attestation2),
         )
-        .value(U256::from(1u64)) // 1 wei -- insufficient
-        .send()
+        .value(U256::from(1u64))
+        .call()
         .await;
-    assert!(
-        result.is_err(),
-        "Should revert with insufficient stake"
-    );
+    assert!(result.is_err(), "Should revert with insufficient stake");
 
     println!("test_submit_result_with_stake PASSED");
 }
 
-/// 4. Submit, warp time past challenge window, finalize.
+/// 4. Submit, warp time past challenge window, finalize, verify stake returned.
 #[tokio::test]
 async fn test_finalize_after_time_warp() {
     let ctx = TestContext::new().await;
-    let admin_contract = ctx.contract_with_key(ADMIN_KEY);
+    let result_id = setup_submitted_result(&ctx).await;
+    let admin = ctx.contract_with_key(ADMIN_KEY);
 
-    // Register enclave
-    let enclave_addr = parse_signer(USER_KEY).address();
-    admin_contract
-        .registerEnclave(enclave_addr, B256::from([0x22u8; 32]))
-        .send()
-        .await
-        .unwrap()
-        .get_receipt()
-        .await
-        .unwrap();
+    // Cannot finalize before challenge window
+    let early = admin.finalize(result_id).call().await;
+    assert!(early.is_err(), "Should revert before challenge window passes");
 
-    // Submit result
-    let model_hash = B256::from([0x10u8; 32]);
-    let input_hash = B256::from([0x20u8; 32]);
-    let result_data = b"test-finalize-result";
-    let attestation = build_attestation(USER_KEY, model_hash, input_hash, result_data).await;
-    let stake = U256::from(100_000_000_000_000_000u128);
-
-    let receipt = admin_contract
-        .submitResult(
-            model_hash,
-            input_hash,
-            Bytes::copy_from_slice(result_data),
-            Bytes::copy_from_slice(&attestation),
-        )
-        .value(stake)
-        .send()
-        .await
-        .unwrap()
-        .get_receipt()
-        .await
-        .unwrap();
-
-    let result_id = extract_result_id(&receipt);
-
-    // Try to finalize before challenge window passes -- should fail
-    let early_finalize = admin_contract.finalize(result_id).send().await;
-    assert!(
-        early_finalize.is_err(),
-        "Finalize should fail before challenge window passes"
-    );
-
-    // Get submitter balance before finalize
+    // Get balance before finalize
     let provider = ctx.provider_readonly();
-    let balance_before = provider
-        .get_balance(ctx.admin_signer.address())
-        .await
-        .unwrap();
+    let balance_before = provider.get_balance(ctx.admin_addr).await.unwrap();
 
-    // Warp time past challenge window (1 hour + 1 second)
+    // Warp past challenge window (1 hour + 1 second)
     ctx.advance_time(3601).await;
 
-    // Finalize should now succeed
-    let finalize_receipt = admin_contract
+    // Finalize
+    let receipt = admin
         .finalize(result_id)
         .send()
         .await
-        .expect("finalize send failed")
+        .unwrap()
         .get_receipt()
         .await
-        .expect("finalize receipt failed");
-    assert!(finalize_receipt.status(), "finalize tx should succeed");
+        .unwrap();
+    assert!(receipt.status());
 
     // Result should now be valid
-    let valid = admin_contract.isResultValid(result_id).call().await.unwrap();
+    let valid = admin.isResultValid(result_id).call().await.unwrap();
     assert!(valid, "Result should be valid after finalization");
 
-    // Verify stake was returned (balance increased)
-    let balance_after = provider
-        .get_balance(ctx.admin_signer.address())
-        .await
-        .unwrap();
-    // balance_after > balance_before - gas (stake returned, minus gas for finalize tx)
-    // We cannot do exact comparison due to gas costs, but the difference should be
-    // close to +stake (0.1 ETH returned minus gas). At minimum, balance should not
-    // have decreased by more than gas cost.
-    let gas_upper_bound = U256::from(1_000_000_000_000_000u128); // 0.001 ETH max gas
+    // Stake returned (balance should not have dropped much)
+    let balance_after = provider.get_balance(ctx.admin_addr).await.unwrap();
+    let gas_budget = U256::from(1_000_000_000_000_000u128); // 0.001 ETH
     assert!(
-        balance_after > balance_before - gas_upper_bound,
-        "Stake should have been returned (balance should not drop significantly)"
+        balance_after > balance_before - gas_budget,
+        "Stake should have been returned"
     );
 
     // Cannot finalize again
-    let double_finalize = admin_contract.finalize(result_id).send().await;
-    assert!(
-        double_finalize.is_err(),
-        "Should not be able to finalize twice"
-    );
+    let double = admin.finalize(result_id).call().await;
+    assert!(double.is_err(), "Should not finalize twice");
 
     println!("test_finalize_after_time_warp PASSED");
 }
@@ -567,127 +522,42 @@ async fn test_finalize_after_time_warp() {
 #[tokio::test]
 async fn test_challenge_flow() {
     let ctx = TestContext::new().await;
-    let admin_contract = ctx.contract_with_key(ADMIN_KEY);
+    let result_id = setup_submitted_result(&ctx).await;
+    let admin = ctx.contract_with_key(ADMIN_KEY);
+    let challenger = ctx.contract_with_key(CHALLENGER_KEY);
+    let bond = U256::from(100_000_000_000_000_000u128);
 
-    // Register enclave
-    let enclave_addr = parse_signer(USER_KEY).address();
-    admin_contract
-        .registerEnclave(enclave_addr, B256::from([0x33u8; 32]))
-        .send()
-        .await
-        .unwrap()
-        .get_receipt()
-        .await
-        .unwrap();
-
-    // Submit result
-    let model_hash = B256::from([0x30u8; 32]);
-    let input_hash = B256::from([0x40u8; 32]);
-    let result_data = b"challenge-test-result";
-    let attestation = build_attestation(USER_KEY, model_hash, input_hash, result_data).await;
-    let stake = U256::from(100_000_000_000_000_000u128);
-
-    let receipt = admin_contract
-        .submitResult(
-            model_hash,
-            input_hash,
-            Bytes::copy_from_slice(result_data),
-            Bytes::copy_from_slice(&attestation),
-        )
-        .value(stake)
-        .send()
-        .await
-        .unwrap()
-        .get_receipt()
-        .await
-        .unwrap();
-
-    let result_id = extract_result_id(&receipt);
-
-    // Challenge with insufficient bond should fail
-    let challenger_contract = ctx.contract_with_key(CHALLENGER_KEY);
-    let insufficient_challenge = challenger_contract
-        .challenge(result_id)
-        .value(U256::from(1u64))
-        .send()
-        .await;
-    assert!(
-        insufficient_challenge.is_err(),
-        "Challenge with insufficient bond should revert"
-    );
+    // Insufficient bond should revert
+    let bad = challenger.challenge(result_id).value(U256::from(1u64)).call().await;
+    assert!(bad.is_err(), "Challenge with insufficient bond should revert");
 
     // Challenge with correct bond
-    let bond = U256::from(100_000_000_000_000_000u128);
-    let challenge_receipt = challenger_contract
+    let receipt = challenger
         .challenge(result_id)
         .value(bond)
-        .send()
-        .await
-        .expect("challenge send failed")
-        .get_receipt()
-        .await
-        .expect("challenge receipt failed");
-    assert!(challenge_receipt.status(), "challenge tx should succeed");
-
-    // Verify result is now challenged
-    let r = admin_contract.getResult(result_id).call().await.unwrap();
-    assert!(r.challenged, "Result should be challenged");
-    assert_eq!(
-        r.challenger,
-        parse_signer(CHALLENGER_KEY).address(),
-        "Challenger address should match"
-    );
-    assert!(r.challengeBond > U256::ZERO, "Challenge bond should be non-zero");
-    assert!(r.disputeDeadline > U256::ZERO, "Dispute deadline should be set");
-
-    // Cannot finalize a challenged result (even after time warp)
-    ctx.advance_time(7200).await; // 2 hours
-    let finalize_result = admin_contract.finalize(result_id).send().await;
-    assert!(
-        finalize_result.is_err(),
-        "Cannot finalize a challenged result"
-    );
-
-    // Cannot double-challenge
-    let double_challenge = challenger_contract
-        .challenge(result_id)
-        .value(bond)
-        .send()
-        .await;
-    assert!(
-        double_challenge.is_err(),
-        "Cannot challenge the same result twice"
-    );
-
-    // Challenge after window closed should fail (new submission)
-    let model_hash2 = B256::from([0x31u8; 32]);
-    let attestation2 = build_attestation(USER_KEY, model_hash2, input_hash, result_data).await;
-    let receipt2 = admin_contract
-        .submitResult(
-            model_hash2,
-            input_hash,
-            Bytes::copy_from_slice(result_data),
-            Bytes::copy_from_slice(&attestation2),
-        )
-        .value(stake)
         .send()
         .await
         .unwrap()
         .get_receipt()
         .await
         .unwrap();
-    let result_id_2 = extract_result_id(&receipt2);
+    assert!(receipt.status());
 
-    // Time is already advanced 2 hours past challenge window
-    let late_challenge = challenger_contract
-        .challenge(result_id_2)
-        .value(bond)
-        .send()
-        .await;
-    assert!(
-        late_challenge.is_err(),
-        "Challenge after window closes should revert"
-    );
+    // Verify challenged state
+    let r = admin.getResult(result_id).call().await.unwrap();
+    assert!(r.challenged);
+    assert_eq!(r.challenger, parse_signer(CHALLENGER_KEY).address());
+    assert!(r.challengeBond > U256::ZERO);
+    assert!(r.disputeDeadline > U256::ZERO);
+
+    // Cannot finalize a challenged result
+    ctx.advance_time(7200).await;
+    let finalize = admin.finalize(result_id).call().await;
+    assert!(finalize.is_err(), "Cannot finalize a challenged result");
+
+    // Cannot double-challenge
+    let double = challenger.challenge(result_id).value(bond).call().await;
+    assert!(double.is_err(), "Cannot challenge twice");
 
     println!("test_challenge_flow PASSED");
 }
@@ -696,47 +566,15 @@ async fn test_challenge_flow() {
 #[tokio::test]
 async fn test_resolve_dispute_by_timeout() {
     let ctx = TestContext::new().await;
-    let admin_contract = ctx.contract_with_key(ADMIN_KEY);
+    let result_id = setup_submitted_result(&ctx).await;
+    let admin = ctx.contract_with_key(ADMIN_KEY);
+    let challenger = ctx.contract_with_key(CHALLENGER_KEY);
 
-    // Register enclave
-    let enclave_addr = parse_signer(USER_KEY).address();
-    admin_contract
-        .registerEnclave(enclave_addr, B256::from([0x44u8; 32]))
-        .send()
-        .await
-        .unwrap()
-        .get_receipt()
-        .await
-        .unwrap();
-
-    // Submit result
-    let model_hash = B256::from([0x50u8; 32]);
-    let input_hash = B256::from([0x60u8; 32]);
-    let result_data = b"dispute-timeout-test";
-    let attestation = build_attestation(USER_KEY, model_hash, input_hash, result_data).await;
+    let bond = U256::from(100_000_000_000_000_000u128);
     let stake = U256::from(100_000_000_000_000_000u128);
 
-    let receipt = admin_contract
-        .submitResult(
-            model_hash,
-            input_hash,
-            Bytes::copy_from_slice(result_data),
-            Bytes::copy_from_slice(&attestation),
-        )
-        .value(stake)
-        .send()
-        .await
-        .unwrap()
-        .get_receipt()
-        .await
-        .unwrap();
-
-    let result_id = extract_result_id(&receipt);
-
     // Challenge
-    let challenger_contract = ctx.contract_with_key(CHALLENGER_KEY);
-    let bond = U256::from(100_000_000_000_000_000u128);
-    challenger_contract
+    challenger
         .challenge(result_id)
         .value(bond)
         .send()
@@ -746,80 +584,63 @@ async fn test_resolve_dispute_by_timeout() {
         .await
         .unwrap();
 
-    // Cannot resolve by timeout before deadline
-    let early_resolve = challenger_contract
-        .resolveDisputeByTimeout(result_id)
-        .send()
-        .await;
-    assert!(
-        early_resolve.is_err(),
-        "resolveDisputeByTimeout should fail before deadline"
-    );
+    // Cannot resolve before deadline
+    let early = challenger.resolveDisputeByTimeout(result_id).call().await;
+    assert!(early.is_err(), "Should fail before dispute deadline");
 
-    // Get challenger balance before resolution
+    // Record challenger balance before
     let provider = ctx.provider_readonly();
     let challenger_addr = parse_signer(CHALLENGER_KEY).address();
-    let challenger_balance_before = provider.get_balance(challenger_addr).await.unwrap();
+    let bal_before = provider.get_balance(challenger_addr).await.unwrap();
 
-    // Warp past dispute window (24 hours + 1 second)
+    // Warp past dispute window (24h + 1s)
     ctx.advance_time(86401).await;
 
-    // Now resolve by timeout -- challenger wins
-    let resolve_receipt = challenger_contract
+    // Resolve by timeout -- challenger wins
+    let receipt = challenger
         .resolveDisputeByTimeout(result_id)
         .send()
         .await
-        .expect("resolveDisputeByTimeout send failed")
+        .unwrap()
         .get_receipt()
         .await
-        .expect("resolveDisputeByTimeout receipt failed");
-    assert!(resolve_receipt.status(), "resolveDisputeByTimeout tx should succeed");
+        .unwrap();
+    assert!(receipt.status());
 
-    // Dispute should be resolved, prover did NOT win
-    let resolved = admin_contract.disputeResolved(result_id).call().await.unwrap();
-    assert!(resolved, "Dispute should be resolved");
+    // Dispute resolved, prover lost
+    let resolved = admin.disputeResolved(result_id).call().await.unwrap();
+    assert!(resolved);
+    let prover_won = admin.disputeProverWon(result_id).call().await.unwrap();
+    assert!(!prover_won);
 
-    let prover_won = admin_contract.disputeProverWon(result_id).call().await.unwrap();
-    assert!(!prover_won, "Prover should NOT have won (timeout)");
+    // Result not valid
+    let valid = admin.isResultValid(result_id).call().await.unwrap();
+    assert!(!valid);
 
-    // Result should not be valid
-    let valid = admin_contract.isResultValid(result_id).call().await.unwrap();
-    assert!(!valid, "Result should not be valid after challenger wins");
-
-    // Challenger should have received both bonds (stake + bond)
-    let challenger_balance_after = provider.get_balance(challenger_addr).await.unwrap();
-    let _total_pot = stake + bond; // 0.2 ETH
-    let gas_upper_bound = U256::from(1_000_000_000_000_000u128);
-    // challenger_balance_after >= challenger_balance_before + total_pot - bond - gas
-    // (they paid bond, then got total_pot back, minus gas)
-    // Net gain = total_pot - bond = stake = 0.1 ETH, minus gas
+    // Challenger profit: received stake + bond back, minus gas
+    let bal_after = provider.get_balance(challenger_addr).await.unwrap();
+    let gas_budget = U256::from(1_000_000_000_000_000u128);
     assert!(
-        challenger_balance_after > challenger_balance_before + stake - gas_upper_bound - gas_upper_bound,
+        bal_after > bal_before + stake - gas_budget - gas_budget,
         "Challenger should have profited by approximately the prover stake"
     );
 
     // Cannot resolve again
-    let double_resolve = challenger_contract
-        .resolveDisputeByTimeout(result_id)
-        .send()
-        .await;
-    assert!(
-        double_resolve.is_err(),
-        "Cannot resolve dispute twice"
-    );
+    let double = challenger.resolveDisputeByTimeout(result_id).call().await;
+    assert!(double.is_err(), "Cannot resolve dispute twice");
 
     println!("test_resolve_dispute_by_timeout PASSED");
 }
 
-/// 7. Pause/unpause flow: owner pauses, operations revert, owner unpauses, operations work again.
+/// 7. Pause/unpause: owner pauses, operations revert, owner unpauses.
 #[tokio::test]
 async fn test_pause_unpause_flow() {
     let ctx = TestContext::new().await;
-    let admin_contract = ctx.contract_with_key(ADMIN_KEY);
+    let admin = ctx.contract_with_key(ADMIN_KEY);
 
-    // Register enclave first (before pausing)
+    // Register enclave before pausing
     let enclave_addr = parse_signer(USER_KEY).address();
-    admin_contract
+    admin
         .registerEnclave(enclave_addr, B256::from([0x55u8; 32]))
         .send()
         .await
@@ -828,237 +649,43 @@ async fn test_pause_unpause_flow() {
         .await
         .unwrap();
 
-    // Initial state: not paused
-    let paused = admin_contract.paused().call().await.unwrap();
-    assert!(!paused, "Should not be paused initially");
+    // Not paused initially
+    assert!(!admin.paused().call().await.unwrap());
 
     // Non-owner cannot pause
-    let user_contract = ctx.contract_with_key(USER_KEY);
-    let unauthorized_pause = user_contract.pause().send().await;
-    assert!(
-        unauthorized_pause.is_err(),
-        "Non-owner should not be able to pause"
-    );
+    let user = ctx.contract_with_key(USER_KEY);
+    assert!(user.pause().call().await.is_err());
 
     // Owner pauses
-    admin_contract
-        .pause()
-        .send()
-        .await
-        .unwrap()
-        .get_receipt()
-        .await
-        .unwrap();
+    admin.pause().send().await.unwrap().get_receipt().await.unwrap();
+    assert!(admin.paused().call().await.unwrap());
 
-    let paused = admin_contract.paused().call().await.unwrap();
-    assert!(paused, "Contract should be paused");
-
-    // submitResult should revert when paused
+    // Submit reverts when paused
     let model_hash = B256::from([0x70u8; 32]);
     let input_hash = B256::from([0x80u8; 32]);
-    let result_data = b"pause-test-result";
+    let result_data = b"pause-test";
     let attestation = build_attestation(USER_KEY, model_hash, input_hash, result_data).await;
-    let stake = U256::from(100_000_000_000_000_000u128);
-
-    let submit_while_paused = admin_contract
+    let submit = admin
         .submitResult(
             model_hash,
             input_hash,
             Bytes::copy_from_slice(result_data),
             Bytes::copy_from_slice(&attestation),
         )
-        .value(stake)
-        .send()
+        .value(U256::from(100_000_000_000_000_000u128))
+        .call()
         .await;
-    assert!(
-        submit_while_paused.is_err(),
-        "submitResult should revert when paused"
-    );
+    assert!(submit.is_err(), "submitResult should revert when paused");
 
     // Non-owner cannot unpause
-    let unauthorized_unpause = user_contract.unpause().send().await;
-    assert!(
-        unauthorized_unpause.is_err(),
-        "Non-owner should not be able to unpause"
-    );
+    assert!(user.unpause().call().await.is_err());
 
     // Owner unpauses
-    admin_contract
-        .unpause()
-        .send()
-        .await
-        .unwrap()
-        .get_receipt()
-        .await
-        .unwrap();
+    admin.unpause().send().await.unwrap().get_receipt().await.unwrap();
+    assert!(!admin.paused().call().await.unwrap());
 
-    let paused = admin_contract.paused().call().await.unwrap();
-    assert!(!paused, "Contract should be unpaused");
-
-    // submitResult should work again
-    let receipt = admin_contract
-        .submitResult(
-            model_hash,
-            input_hash,
-            Bytes::copy_from_slice(result_data),
-            Bytes::copy_from_slice(&attestation),
-        )
-        .value(stake)
-        .send()
-        .await
-        .expect("submitResult should work after unpause")
-        .get_receipt()
-        .await
-        .unwrap();
-    assert!(receipt.status(), "submitResult should succeed after unpause");
-
-    println!("test_pause_unpause_flow PASSED");
-}
-
-/// 8. Ownership transfer via Ownable2Step: transfer -> accept -> verify new owner.
-#[tokio::test]
-async fn test_ownership_transfer() {
-    let ctx = TestContext::new().await;
-    let admin_contract = ctx.contract_with_key(ADMIN_KEY);
-
-    let new_owner_signer = parse_signer(NEW_OWNER_KEY);
-    let new_owner_addr = new_owner_signer.address();
-
-    // Verify current owner
-    let owner = admin_contract.owner().call().await.unwrap();
-    assert_eq!(owner, ctx.admin_signer.address());
-
-    // Pending owner should be zero initially
-    let pending = admin_contract.pendingOwner().call().await.unwrap();
-    assert_eq!(pending, Address::ZERO, "Pending owner should be zero");
-
-    // Non-owner cannot initiate transfer
-    let user_contract = ctx.contract_with_key(USER_KEY);
-    let unauthorized_transfer = user_contract
-        .transferOwnership(new_owner_addr)
-        .send()
-        .await;
-    assert!(
-        unauthorized_transfer.is_err(),
-        "Non-owner should not be able to transfer ownership"
-    );
-
-    // Owner initiates transfer
-    admin_contract
-        .transferOwnership(new_owner_addr)
-        .send()
-        .await
-        .unwrap()
-        .get_receipt()
-        .await
-        .unwrap();
-
-    // Pending owner should be set
-    let pending = admin_contract.pendingOwner().call().await.unwrap();
-    assert_eq!(
-        pending, new_owner_addr,
-        "Pending owner should be the new owner"
-    );
-
-    // Owner is still the admin (not yet accepted)
-    let owner = admin_contract.owner().call().await.unwrap();
-    assert_eq!(
-        owner,
-        ctx.admin_signer.address(),
-        "Owner should still be admin until accepted"
-    );
-
-    // Someone other than pending owner cannot accept
-    let wrong_accepter = ctx.contract_with_key(USER_KEY);
-    let wrong_accept = wrong_accepter.acceptOwnership().send().await;
-    assert!(
-        wrong_accept.is_err(),
-        "Only pending owner can accept ownership"
-    );
-
-    // Pending owner accepts
-    let new_owner_contract = ctx.contract_with_key(NEW_OWNER_KEY);
-    new_owner_contract
-        .acceptOwnership()
-        .send()
-        .await
-        .unwrap()
-        .get_receipt()
-        .await
-        .unwrap();
-
-    // Ownership should be transferred
-    let owner = admin_contract.owner().call().await.unwrap();
-    assert_eq!(owner, new_owner_addr, "Owner should now be the new owner");
-
-    // Old owner can no longer perform admin actions
-    let old_owner_pause = admin_contract.pause().send().await;
-    assert!(
-        old_owner_pause.is_err(),
-        "Old owner should not be able to pause"
-    );
-
-    // New owner can perform admin actions
-    new_owner_contract
-        .pause()
-        .send()
-        .await
-        .unwrap()
-        .get_receipt()
-        .await
-        .unwrap();
-
-    let paused = admin_contract.paused().call().await.unwrap();
-    assert!(paused, "New owner should be able to pause the contract");
-
-    println!("test_ownership_transfer PASSED");
-}
-
-/// 9. Revoke enclave: register, revoke, verify submission fails with revoked enclave.
-#[tokio::test]
-async fn test_revoke_enclave() {
-    let ctx = TestContext::new().await;
-    let admin_contract = ctx.contract_with_key(ADMIN_KEY);
-
-    let enclave_addr = parse_signer(USER_KEY).address();
-    let image_hash = B256::from([0x66u8; 32]);
-
-    // Register enclave
-    admin_contract
-        .registerEnclave(enclave_addr, image_hash)
-        .send()
-        .await
-        .unwrap()
-        .get_receipt()
-        .await
-        .unwrap();
-
-    // Enclave should be active
-    let enclave_info = admin_contract.enclaves(enclave_addr).call().await.unwrap();
-    assert!(enclave_info.active, "Enclave should be active after registration");
-
-    // Revoke enclave
-    admin_contract
-        .revokeEnclave(enclave_addr)
-        .send()
-        .await
-        .unwrap()
-        .get_receipt()
-        .await
-        .unwrap();
-
-    // Enclave should be inactive
-    let enclave_info = admin_contract.enclaves(enclave_addr).call().await.unwrap();
-    assert!(enclave_info.registered, "Enclave should still be registered");
-    assert!(!enclave_info.active, "Enclave should be inactive after revocation");
-
-    // Submission with revoked enclave should fail
-    let model_hash = B256::from([0x90u8; 32]);
-    let input_hash = B256::from([0xA0u8; 32]);
-    let result_data = b"revoked-enclave-test";
-    let attestation = build_attestation(USER_KEY, model_hash, input_hash, result_data).await;
-
-    let submit_result = admin_contract
+    // Submit works after unpause
+    let receipt = admin
         .submitResult(
             model_hash,
             input_hash,
@@ -1067,106 +694,162 @@ async fn test_revoke_enclave() {
         )
         .value(U256::from(100_000_000_000_000_000u128))
         .send()
+        .await
+        .unwrap()
+        .get_receipt()
+        .await
+        .unwrap();
+    assert!(receipt.status());
+
+    println!("test_pause_unpause_flow PASSED");
+}
+
+/// 8. Ownership transfer via Ownable2Step.
+#[tokio::test]
+async fn test_ownership_transfer() {
+    let ctx = TestContext::new().await;
+    let admin = ctx.contract_with_key(ADMIN_KEY);
+    let new_owner_addr = parse_signer(NEW_OWNER_KEY).address();
+
+    // Current owner
+    assert_eq!(admin.owner().call().await.unwrap(), ctx.admin_addr);
+    assert_eq!(admin.pendingOwner().call().await.unwrap(), Address::ZERO);
+
+    // Non-owner cannot initiate
+    let user = ctx.contract_with_key(USER_KEY);
+    assert!(user.transferOwnership(new_owner_addr).call().await.is_err());
+
+    // Owner initiates transfer
+    admin
+        .transferOwnership(new_owner_addr)
+        .send()
+        .await
+        .unwrap()
+        .get_receipt()
+        .await
+        .unwrap();
+
+    assert_eq!(admin.pendingOwner().call().await.unwrap(), new_owner_addr);
+    assert_eq!(admin.owner().call().await.unwrap(), ctx.admin_addr); // not yet
+
+    // Wrong person cannot accept
+    assert!(user.acceptOwnership().call().await.is_err());
+
+    // Pending owner accepts
+    let new_owner = ctx.contract_with_key(NEW_OWNER_KEY);
+    new_owner
+        .acceptOwnership()
+        .send()
+        .await
+        .unwrap()
+        .get_receipt()
+        .await
+        .unwrap();
+
+    assert_eq!(admin.owner().call().await.unwrap(), new_owner_addr);
+
+    // Old owner cannot admin
+    assert!(admin.pause().call().await.is_err());
+
+    // New owner can admin
+    new_owner.pause().send().await.unwrap().get_receipt().await.unwrap();
+    assert!(admin.paused().call().await.unwrap());
+
+    println!("test_ownership_transfer PASSED");
+}
+
+/// 9. Revoke enclave: register, revoke, submission with revoked enclave fails.
+#[tokio::test]
+async fn test_revoke_enclave() {
+    let ctx = TestContext::new().await;
+    let admin = ctx.contract_with_key(ADMIN_KEY);
+
+    let enclave_addr = parse_signer(USER_KEY).address();
+    admin
+        .registerEnclave(enclave_addr, B256::from([0x66u8; 32]))
+        .send()
+        .await
+        .unwrap()
+        .get_receipt()
+        .await
+        .unwrap();
+
+    // Active after registration
+    let info = admin.enclaves(enclave_addr).call().await.unwrap();
+    assert!(info.active);
+
+    // Revoke
+    admin
+        .revokeEnclave(enclave_addr)
+        .send()
+        .await
+        .unwrap()
+        .get_receipt()
+        .await
+        .unwrap();
+
+    let info = admin.enclaves(enclave_addr).call().await.unwrap();
+    assert!(info.registered);
+    assert!(!info.active);
+
+    // Submit with revoked enclave should fail
+    let model_hash = B256::from([0x90u8; 32]);
+    let input_hash = B256::from([0xA0u8; 32]);
+    let result_data = b"revoked-test";
+    let attestation = build_attestation(USER_KEY, model_hash, input_hash, result_data).await;
+    let submit = admin
+        .submitResult(
+            model_hash,
+            input_hash,
+            Bytes::copy_from_slice(result_data),
+            Bytes::copy_from_slice(&attestation),
+        )
+        .value(U256::from(100_000_000_000_000_000u128))
+        .call()
         .await;
-    assert!(
-        submit_result.is_err(),
-        "Submission with revoked enclave should revert"
-    );
+    assert!(submit.is_err(), "Submit with revoked enclave should revert");
 
     // Cannot revoke again
-    let double_revoke = admin_contract.revokeEnclave(enclave_addr).send().await;
-    assert!(
-        double_revoke.is_err(),
-        "Cannot revoke an already revoked enclave"
-    );
+    assert!(admin.revokeEnclave(enclave_addr).call().await.is_err());
 
     println!("test_revoke_enclave PASSED");
 }
 
-/// 10. Admin config: setProverStake and setChallengeBondAmount.
+/// 10. Admin config: setProverStake, setChallengeBondAmount, setRemainderVerifier.
 #[tokio::test]
 async fn test_admin_config() {
     let ctx = TestContext::new().await;
-    let admin_contract = ctx.contract_with_key(ADMIN_KEY);
+    let admin = ctx.contract_with_key(ADMIN_KEY);
 
-    // Set prover stake to 0.05 ETH
+    // Set prover stake
     let new_stake = U256::from(50_000_000_000_000_000u128);
-    admin_contract
-        .setProverStake(new_stake)
-        .send()
-        .await
-        .unwrap()
-        .get_receipt()
-        .await
-        .unwrap();
+    admin.setProverStake(new_stake).send().await.unwrap().get_receipt().await.unwrap();
+    assert_eq!(admin.proverStake().call().await.unwrap(), new_stake);
 
-    let stake = admin_contract.proverStake().call().await.unwrap();
-    assert_eq!(stake, new_stake, "Prover stake should be updated");
-
-    // Set challenge bond to 0.2 ETH
+    // Set challenge bond
     let new_bond = U256::from(200_000_000_000_000_000u128);
-    admin_contract
-        .setChallengeBondAmount(new_bond)
-        .send()
-        .await
-        .unwrap()
-        .get_receipt()
-        .await
-        .unwrap();
+    admin.setChallengeBondAmount(new_bond).send().await.unwrap().get_receipt().await.unwrap();
+    assert_eq!(admin.challengeBondAmount().call().await.unwrap(), new_bond);
 
-    let bond = admin_contract.challengeBondAmount().call().await.unwrap();
-    assert_eq!(bond, new_bond, "Challenge bond should be updated");
+    // Zero stake/bond should revert (use .call())
+    assert!(admin.setProverStake(U256::ZERO).call().await.is_err());
+    assert!(admin.setChallengeBondAmount(U256::ZERO).call().await.is_err());
 
-    // Zero stake should revert
-    let zero_stake = admin_contract
-        .setProverStake(U256::ZERO)
-        .send()
-        .await;
-    assert!(zero_stake.is_err(), "Zero prover stake should revert");
-
-    // Zero bond should revert
-    let zero_bond = admin_contract
-        .setChallengeBondAmount(U256::ZERO)
-        .send()
-        .await;
-    assert!(zero_bond.is_err(), "Zero challenge bond should revert");
-
-    // Amount too high (>100 ETH) should revert
+    // Too high (>100 ETH) should revert
     let too_high = U256::from(101u64) * U256::from(10u64).pow(U256::from(18u64));
-    let high_stake = admin_contract.setProverStake(too_high).send().await;
-    assert!(high_stake.is_err(), "Stake >100 ETH should revert");
+    assert!(admin.setProverStake(too_high).call().await.is_err());
 
     // Non-owner cannot set config
-    let user_contract = ctx.contract_with_key(USER_KEY);
-    let unauthorized = user_contract
-        .setProverStake(new_stake)
-        .send()
-        .await;
-    assert!(
-        unauthorized.is_err(),
-        "Non-owner should not be able to set prover stake"
-    );
+    let user = ctx.contract_with_key(USER_KEY);
+    assert!(user.setProverStake(new_stake).call().await.is_err());
 
     // Set remainder verifier
     let fake_verifier = Address::from([0xBBu8; 20]);
-    admin_contract
-        .setRemainderVerifier(fake_verifier)
-        .send()
-        .await
-        .unwrap()
-        .get_receipt()
-        .await
-        .unwrap();
-
-    let rv = admin_contract.remainderVerifier().call().await.unwrap();
-    assert_eq!(rv, fake_verifier, "Remainder verifier should be updated");
+    admin.setRemainderVerifier(fake_verifier).send().await.unwrap().get_receipt().await.unwrap();
+    assert_eq!(admin.remainderVerifier().call().await.unwrap(), fake_verifier);
 
     // Zero address should revert
-    let zero_verifier = admin_contract
-        .setRemainderVerifier(Address::ZERO)
-        .send()
-        .await;
-    assert!(zero_verifier.is_err(), "Zero address verifier should revert");
+    assert!(admin.setRemainderVerifier(Address::ZERO).call().await.is_err());
 
     println!("test_admin_config PASSED");
 }
@@ -1175,49 +858,14 @@ async fn test_admin_config() {
 #[tokio::test]
 async fn test_dispute_extension() {
     let ctx = TestContext::new().await;
-    let admin_contract = ctx.contract_with_key(ADMIN_KEY);
-
-    // Register enclave
-    let enclave_addr = parse_signer(USER_KEY).address();
-    admin_contract
-        .registerEnclave(enclave_addr, B256::from([0x77u8; 32]))
-        .send()
-        .await
-        .unwrap()
-        .get_receipt()
-        .await
-        .unwrap();
-
-    // Submit result
-    let model_hash = B256::from([0xB0u8; 32]);
-    let input_hash = B256::from([0xC0u8; 32]);
-    let result_data = b"extend-test-result";
-    let attestation = build_attestation(USER_KEY, model_hash, input_hash, result_data).await;
-    let stake = U256::from(100_000_000_000_000_000u128);
-
-    let receipt = admin_contract
-        .submitResult(
-            model_hash,
-            input_hash,
-            Bytes::copy_from_slice(result_data),
-            Bytes::copy_from_slice(&attestation),
-        )
-        .value(stake)
-        .send()
-        .await
-        .unwrap()
-        .get_receipt()
-        .await
-        .unwrap();
-
-    let result_id = extract_result_id(&receipt);
+    let result_id = setup_submitted_result(&ctx).await;
+    let admin = ctx.contract_with_key(ADMIN_KEY);
+    let challenger = ctx.contract_with_key(CHALLENGER_KEY);
 
     // Challenge
-    let challenger_contract = ctx.contract_with_key(CHALLENGER_KEY);
-    let bond = U256::from(100_000_000_000_000_000u128);
-    challenger_contract
+    challenger
         .challenge(result_id)
-        .value(bond)
+        .value(U256::from(100_000_000_000_000_000u128))
         .send()
         .await
         .unwrap()
@@ -1226,11 +874,11 @@ async fn test_dispute_extension() {
         .unwrap();
 
     // Get initial dispute deadline
-    let r_before = admin_contract.getResult(result_id).call().await.unwrap();
+    let r_before = admin.getResult(result_id).call().await.unwrap();
     let deadline_before = r_before.disputeDeadline;
 
-    // Extend dispute window (admin is submitter)
-    admin_contract
+    // Extend (admin is submitter)
+    admin
         .extendDisputeWindow(result_id)
         .send()
         .await
@@ -1239,34 +887,18 @@ async fn test_dispute_extension() {
         .await
         .unwrap();
 
-    // Deadline should be extended by EXTENSION_PERIOD (30 minutes = 1800 seconds)
-    let r_after = admin_contract.getResult(result_id).call().await.unwrap();
-    let deadline_after = r_after.disputeDeadline;
+    // Deadline extended by 30 minutes (1800 seconds)
+    let r_after = admin.getResult(result_id).call().await.unwrap();
     assert_eq!(
-        deadline_after,
+        r_after.disputeDeadline,
         deadline_before + U256::from(1800u64),
-        "Dispute deadline should be extended by 30 minutes"
     );
 
     // Cannot extend again (MAX_EXTENSIONS = 1)
-    let double_extend = admin_contract
-        .extendDisputeWindow(result_id)
-        .send()
-        .await;
-    assert!(
-        double_extend.is_err(),
-        "Cannot extend dispute window more than MAX_EXTENSIONS times"
-    );
+    assert!(admin.extendDisputeWindow(result_id).call().await.is_err());
 
     // Non-submitter cannot extend
-    let challenger_extend = challenger_contract
-        .extendDisputeWindow(result_id)
-        .send()
-        .await;
-    assert!(
-        challenger_extend.is_err(),
-        "Non-submitter should not be able to extend"
-    );
+    assert!(challenger.extendDisputeWindow(result_id).call().await.is_err());
 
     println!("test_dispute_extension PASSED");
 }

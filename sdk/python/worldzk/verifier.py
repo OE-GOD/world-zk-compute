@@ -120,6 +120,16 @@ class BatchVerifier:
         max_retries: int = 3,
         retry_delay_s: float = 1.0,
     ):
+        """Create a batch verifier.
+
+        Args:
+            rpc_url: JSON-RPC endpoint URL.
+            private_key: Hex-encoded private key for signing transactions.
+            contract_address: Deployed DAGBatchVerifier contract address.
+            gas_limit: Maximum gas per transaction (default 30M).
+            max_retries: Number of retries for transient failures.
+            retry_delay_s: Base delay between retries in seconds.
+        """
         self._w3 = Web3(Web3.HTTPProvider(rpc_url))
         self._account: LocalAccount = Account.from_key(private_key)
         self._gas_limit = gas_limit

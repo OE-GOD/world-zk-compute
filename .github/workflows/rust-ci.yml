@@ -6,11 +6,19 @@ on:
     paths:
       - 'sdk/**'
       - 'services/operator/**'
+      - 'services/admin-cli/**'
+      - 'services/indexer/**'
+      - 'crates/watcher/**'
+      - 'tee/enclave/**'
       - 'examples/xgboost-remainder/**'
   pull_request:
     paths:
       - 'sdk/**'
       - 'services/operator/**'
+      - 'services/admin-cli/**'
+      - 'services/indexer/**'
+      - 'crates/watcher/**'
+      - 'tee/enclave/**'
       - 'examples/xgboost-remainder/**'
   workflow_dispatch:
 
@@ -88,6 +96,146 @@ jobs:
 
       - name: Run tests
         run: cargo test --manifest-path services/operator/Cargo.toml
+
+  admin-cli:
+    name: Admin CLI
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy, rustfmt
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            services/admin-cli/target
+          key: ${{ runner.os }}-cargo-admin-cli-${{ hashFiles('services/admin-cli/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-admin-cli-
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path services/admin-cli/Cargo.toml --check
+
+      - name: Run Clippy
+        run: cargo clippy --manifest-path services/admin-cli/Cargo.toml -- -D warnings
+
+      - name: Run tests
+        run: cargo test --manifest-path services/admin-cli/Cargo.toml
+
+  indexer:
+    name: Indexer Service
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy, rustfmt
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            services/indexer/target
+          key: ${{ runner.os }}-cargo-indexer-${{ hashFiles('services/indexer/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-indexer-
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path services/indexer/Cargo.toml --check
+
+      - name: Run Clippy
+        run: cargo clippy --manifest-path services/indexer/Cargo.toml -- -D warnings
+
+      - name: Run tests
+        run: cargo test --manifest-path services/indexer/Cargo.toml
+
+  watcher-crate:
+    name: Shared Watcher Crate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy, rustfmt
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            crates/watcher/target
+          key: ${{ runner.os }}-cargo-watcher-${{ hashFiles('crates/watcher/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-watcher-
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path crates/watcher/Cargo.toml --check
+
+      - name: Run Clippy
+        run: cargo clippy --manifest-path crates/watcher/Cargo.toml -- -D warnings
+
+      - name: Run tests
+        run: cargo test --manifest-path crates/watcher/Cargo.toml
+
+  enclave:
+    name: TEE Enclave
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy, rustfmt
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            tee/enclave/target
+          key: ${{ runner.os }}-cargo-enclave-${{ hashFiles('tee/enclave/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-enclave-
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path tee/enclave/Cargo.toml --check
+
+      - name: Run Clippy
+        run: cargo clippy --manifest-path tee/enclave/Cargo.toml -- -D warnings
+
+      - name: Run tests
+        run: cargo test --manifest-path tee/enclave/Cargo.toml -- --test-threads=1
 
   xgboost-remainder:
     name: XGBoost Remainder

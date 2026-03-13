@@ -4,11 +4,7 @@ pragma solidity ^0.8.20;
 import "forge-std/Test.sol";
 import "../src/RiscZeroVerifierAdapter.sol";
 import "../src/RiscZeroVerifierRouter.sol";
-import {
-    IRiscZeroVerifier,
-    Receipt as RiscZeroReceipt,
-    VerificationFailed
-} from "risc0-ethereum/IRiscZeroVerifier.sol";
+import {IRiscZeroVerifier, Receipt as RiscZeroReceipt, VerificationFailed} from "risc0-ethereum/IRiscZeroVerifier.sol";
 
 // ============================================================================
 // MOCK CONTRACTS
@@ -114,8 +110,7 @@ contract RiscZeroVerifierAdapterTest is Test {
         bytes32 expectedDigest = sha256(journal);
 
         vm.expectCall(
-            address(mockVerifier),
-            abi.encodeCall(IRiscZeroVerifier.verify, (TEST_SEAL, TEST_IMAGE_ID, expectedDigest))
+            address(mockVerifier), abi.encodeCall(IRiscZeroVerifier.verify, (TEST_SEAL, TEST_IMAGE_ID, expectedDigest))
         );
 
         adapter.verify(TEST_SEAL, TEST_IMAGE_ID, journal);
@@ -136,8 +131,7 @@ contract RiscZeroVerifierAdapterTest is Test {
         bytes memory seal = hex"aabbccdd11223344";
 
         vm.expectCall(
-            address(mockVerifier),
-            abi.encodeCall(IRiscZeroVerifier.verify, (seal, TEST_IMAGE_ID, sha256(TEST_JOURNAL)))
+            address(mockVerifier), abi.encodeCall(IRiscZeroVerifier.verify, (seal, TEST_IMAGE_ID, sha256(TEST_JOURNAL)))
         );
 
         adapter.verify(seal, TEST_IMAGE_ID, TEST_JOURNAL);
@@ -184,15 +178,10 @@ contract RiscZeroVerifierAdapterTest is Test {
         bytes32 expectedDigest = sha256(journal);
 
         // Manually compute what we expect
-        assertEq(
-            expectedDigest,
-            sha256(hex"01020304"),
-            "sha256 digest should be deterministic"
-        );
+        assertEq(expectedDigest, sha256(hex"01020304"), "sha256 digest should be deterministic");
 
         vm.expectCall(
-            address(mockVerifier),
-            abi.encodeCall(IRiscZeroVerifier.verify, (TEST_SEAL, TEST_IMAGE_ID, expectedDigest))
+            address(mockVerifier), abi.encodeCall(IRiscZeroVerifier.verify, (TEST_SEAL, TEST_IMAGE_ID, expectedDigest))
         );
 
         adapter.verify(TEST_SEAL, TEST_IMAGE_ID, journal);
@@ -308,7 +297,7 @@ contract RiscZeroVerifierRouterTest is Test {
 
         (address v,, bool active) = router.verifiers(SELECTOR_A);
         assertEq(v, address(verifierA)); // Address still stored
-        assertFalse(active);             // But inactive
+        assertFalse(active); // But inactive
     }
 
     function test_removeVerifier_emitsEvent() public {
@@ -397,8 +386,7 @@ contract RiscZeroVerifierRouterTest is Test {
 
         // Expect call to verifier A with the full seal, imageId, journalDigest
         vm.expectCall(
-            address(ptA),
-            abi.encodeCall(IRiscZeroVerifier.verify, (sealA, TEST_IMAGE_ID, TEST_JOURNAL_DIGEST))
+            address(ptA), abi.encodeCall(IRiscZeroVerifier.verify, (sealA, TEST_IMAGE_ID, TEST_JOURNAL_DIGEST))
         );
 
         router.verify(sealA, TEST_IMAGE_ID, TEST_JOURNAL_DIGEST);
@@ -414,8 +402,7 @@ contract RiscZeroVerifierRouterTest is Test {
         bytes memory sealB = abi.encodePacked(SELECTOR_B, hex"cafebabe");
 
         vm.expectCall(
-            address(ptB),
-            abi.encodeCall(IRiscZeroVerifier.verify, (sealB, TEST_IMAGE_ID, TEST_JOURNAL_DIGEST))
+            address(ptB), abi.encodeCall(IRiscZeroVerifier.verify, (sealB, TEST_IMAGE_ID, TEST_JOURNAL_DIGEST))
         );
 
         router.verify(sealB, TEST_IMAGE_ID, TEST_JOURNAL_DIGEST);
@@ -472,8 +459,7 @@ contract RiscZeroVerifierRouterTest is Test {
         bytes memory seal = abi.encodePacked(unknownSelector, hex"deadbeef");
 
         vm.expectCall(
-            address(defaultV),
-            abi.encodeCall(IRiscZeroVerifier.verify, (seal, TEST_IMAGE_ID, TEST_JOURNAL_DIGEST))
+            address(defaultV), abi.encodeCall(IRiscZeroVerifier.verify, (seal, TEST_IMAGE_ID, TEST_JOURNAL_DIGEST))
         );
 
         router.verify(seal, TEST_IMAGE_ID, TEST_JOURNAL_DIGEST);
@@ -513,30 +499,28 @@ contract RiscZeroVerifierRouterTest is Test {
         bytes memory seal = abi.encodePacked(SELECTOR_A, hex"deadbeef");
 
         // Use abi.encodeWithSelector since RiscZeroReceipt is a struct param
-        vm.expectCall(address(pt), 0, abi.encodeWithSelector(
-            IRiscZeroVerifier.verifyIntegrity.selector,
-            RiscZeroReceipt({seal: seal, claimDigest: bytes32(uint256(42))})
-        ));
-
-        router.verifyIntegrity(
-            RiscZeroReceipt({seal: seal, claimDigest: bytes32(uint256(42))})
+        vm.expectCall(
+            address(pt),
+            0,
+            abi.encodeWithSelector(
+                IRiscZeroVerifier.verifyIntegrity.selector,
+                RiscZeroReceipt({seal: seal, claimDigest: bytes32(uint256(42))})
+            )
         );
+
+        router.verifyIntegrity(RiscZeroReceipt({seal: seal, claimDigest: bytes32(uint256(42))}));
     }
 
     function test_verifyIntegrity_revertsForSealTooShort() public {
         vm.expectRevert(RiscZeroVerifierRouter.InvalidSeal.selector);
-        router.verifyIntegrity(
-            RiscZeroReceipt({seal: hex"aabb", claimDigest: bytes32(uint256(42))})
-        );
+        router.verifyIntegrity(RiscZeroReceipt({seal: hex"aabb", claimDigest: bytes32(uint256(42))}));
     }
 
     function test_verifyIntegrity_revertsForNoVerifier() public {
         bytes memory seal = abi.encodePacked(bytes4(hex"ffffffff"), hex"deadbeef");
 
         vm.expectRevert(RiscZeroVerifierRouter.NoVerifierFound.selector);
-        router.verifyIntegrity(
-            RiscZeroReceipt({seal: seal, claimDigest: bytes32(uint256(42))})
-        );
+        router.verifyIntegrity(RiscZeroReceipt({seal: seal, claimDigest: bytes32(uint256(42))}));
     }
 
     function test_verifyIntegrity_revertsForInactiveVerifier() public {
@@ -546,9 +530,7 @@ contract RiscZeroVerifierRouterTest is Test {
         bytes memory seal = abi.encodePacked(SELECTOR_A, hex"deadbeef");
 
         vm.expectRevert(RiscZeroVerifierRouter.VerifierNotActive.selector);
-        router.verifyIntegrity(
-            RiscZeroReceipt({seal: seal, claimDigest: bytes32(uint256(42))})
-        );
+        router.verifyIntegrity(RiscZeroReceipt({seal: seal, claimDigest: bytes32(uint256(42))}));
     }
 
     // --- hasVerifier ---
@@ -629,8 +611,7 @@ contract RiscZeroIntegrationTest is Test {
 
         // Expect the backend verifier to receive the call with correct args
         vm.expectCall(
-            address(backendVerifier),
-            abi.encodeCall(IRiscZeroVerifier.verify, (proofData, IMAGE_ID, expectedDigest))
+            address(backendVerifier), abi.encodeCall(IRiscZeroVerifier.verify, (proofData, IMAGE_ID, expectedDigest))
         );
 
         // Call through adapter
@@ -668,16 +649,14 @@ contract RiscZeroIntegrationTest is Test {
         // Call with selector A -- expect call goes to backendVerifier
         bytes memory proofA = abi.encodePacked(SELECTOR, hex"1111");
         vm.expectCall(
-            address(backendVerifier),
-            abi.encodeCall(IRiscZeroVerifier.verify, (proofA, IMAGE_ID, sha256(hex"aaaa")))
+            address(backendVerifier), abi.encodeCall(IRiscZeroVerifier.verify, (proofA, IMAGE_ID, sha256(hex"aaaa")))
         );
         adapter.verify(proofA, IMAGE_ID, hex"aaaa");
 
         // Call with selector B -- expect call goes to backendV2
         bytes memory proofB = abi.encodePacked(selectorV2, hex"2222");
         vm.expectCall(
-            address(backendV2),
-            abi.encodeCall(IRiscZeroVerifier.verify, (proofB, IMAGE_ID, sha256(hex"bbbb")))
+            address(backendV2), abi.encodeCall(IRiscZeroVerifier.verify, (proofB, IMAGE_ID, sha256(hex"bbbb")))
         );
         adapter.verify(proofB, IMAGE_ID, hex"bbbb");
     }
@@ -692,8 +671,7 @@ contract RiscZeroIntegrationTest is Test {
         bytes memory journal = hex"cafe";
 
         vm.expectCall(
-            address(defaultV),
-            abi.encodeCall(IRiscZeroVerifier.verify, (proofData, IMAGE_ID, sha256(journal)))
+            address(defaultV), abi.encodeCall(IRiscZeroVerifier.verify, (proofData, IMAGE_ID, sha256(journal)))
         );
 
         adapter.verify(proofData, IMAGE_ID, journal);
@@ -705,13 +683,14 @@ contract RiscZeroIntegrationTest is Test {
         bytes memory seal = abi.encodePacked(SELECTOR, hex"aabbccdd");
         bytes32 claimDigest = bytes32(uint256(0x999));
 
-        vm.expectCall(address(backendVerifier), 0, abi.encodeWithSelector(
-            IRiscZeroVerifier.verifyIntegrity.selector,
-            RiscZeroReceipt({seal: seal, claimDigest: claimDigest})
-        ));
-
-        router.verifyIntegrity(
-            RiscZeroReceipt({seal: seal, claimDigest: claimDigest})
+        vm.expectCall(
+            address(backendVerifier),
+            0,
+            abi.encodeWithSelector(
+                IRiscZeroVerifier.verifyIntegrity.selector, RiscZeroReceipt({seal: seal, claimDigest: claimDigest})
+            )
         );
+
+        router.verifyIntegrity(RiscZeroReceipt({seal: seal, claimDigest: claimDigest}));
     }
 }

@@ -1,0 +1,124 @@
+# Prometheus alerting rules for world-zk-compute operator and enclave services.
+#
+# Load this file in your prometheus.yml under rule_files:
+#   rule_files:
+#     - "alerting-rules.yml"
+#
+# Metric sources:
+#   Operator: services/operator/src/metrics.rs  (Prometheus text format on /metrics)
+#   Enclave:  tee/enclave/src/metrics.rs        (JSON on /metrics, use json_exporter or add Prometheus endpoint)
+
+groups:
+  # ---------------------------------------------------------------------------
+  # Operator alerts
+  # ---------------------------------------------------------------------------
+  - name: operator
+    rules:
+      - alert: OperatorDown
+        expr: up{job="operator"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          service: operator
+        annotations:
+          summary: "Operator instance {{ $labels.instance }} is down"
+          description: "The operator service has been unreachable for more than 5 minutes. Disputes will not be detected or resolved while the operator is down."
+          runbook_url: "https://github.com/worldcoin/world-zk-compute/blob/main/docs/TROUBLESHOOTING.md#operator-down"
+
+      - alert: HighDisputeRate
+        expr: rate(operator_challenges_detected[1h]) > 5
+        labels:
+          severity: warning
+          service: operator
+        annotations:
+          summary: "High dispute rate on {{ $labels.instance }}"
+          description: "More than 5 challenges detected per hour (current rate: {{ $value | printf \"%.2f\" }}/h). This may indicate a malicious challenger or systemic inference failures."
+          runbook_url: "https://github.com/worldcoin/world-zk-compute/blob/main/docs/TROUBLESHOOTING.md#high-dispute-rate"
+
+      - alert: ProofSubmissionFailed
+        expr: increase(operator_errors_total[15m]) > 0
+        labels:
+          severity: warning
+          service: operator
+        annotations:
+          summary: "Operator errors detected on {{ $labels.instance }}"
+          description: "The operator recorded {{ $value }} new error(s) in the last 15 minutes. This may indicate proof submission failures, RPC issues, or transaction reverts."
+          runbook_url: "https://github.com/worldcoin/world-zk-compute/blob/main/docs/TROUBLESHOOTING.md#proof-submission-failed"
+
+      - alert: DisputeResolutionFailed
+        expr: increase(operator_disputes_failed[15m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          service: operator
+        annotations:
+          summary: "Dispute resolution failed on {{ $labels.instance }}"
+          description: "{{ $value }} dispute(s) failed to resolve in the last 15 minutes. Failed disputes may result in stake slashing. Immediate investigation required."
+          runbook_url: "https://github.com/worldcoin/world-zk-compute/blob/main/docs/TROUBLESHOOTING.md#dispute-resolution-failed"
+
+      - alert: WebhookFailures
+        expr: increase(webhook_failures_total[15m]) > 3
+        labels:
+          severity: warning
+          service: operator
+        annotations:
+          summary: "Webhook delivery failures on {{ $labels.instance }}"
+          description: "More than 3 webhook delivery failures in the last 15 minutes (count: {{ $value }}). Notification recipients may not be receiving dispute alerts."
+          runbook_url: "https://github.com/worldcoin/world-zk-compute/blob/main/docs/TROUBLESHOOTING.md#webhook-failures"
+
+      - alert: LowUptime
+        expr: operator_uptime_seconds < 3600 and changes(operator_uptime_seconds[1h]) > 0
+        labels:
+          severity: info
+          service: operator
+        annotations:
+          summary: "Operator recently restarted on {{ $labels.instance }}"
+          description: "The operator has been running for less than 1 hour (uptime: {{ $value | humanizeDuration }}) and the uptime counter has reset, indicating a recent restart."
+          runbook_url: "https://github.com/worldcoin/world-zk-compute/blob/main/docs/TROUBLESHOOTING.md#operator-restart"
+
+  # ---------------------------------------------------------------------------
+  # Enclave alerts
+  # ---------------------------------------------------------------------------
+  - name: enclave
+    rules:
+      - alert: EnclaveDown
+        expr: up{job="enclave"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          service: enclave
+        annotations:
+          summary: "Enclave instance {{ $labels.instance }} is down"
+          description: "The TEE enclave has been unreachable for more than 5 minutes. Inference requests will fail and new results cannot be submitted."
+          runbook_url: "https://github.com/worldcoin/world-zk-compute/blob/main/docs/TROUBLESHOOTING.md#enclave-down"
+
+      - alert: EnclaveHighLatency
+        expr: enclave_avg_inference_ms > 5000
+        for: 10m
+        labels:
+          severity: warning
+          service: enclave
+        annotations:
+          summary: "High inference latency on {{ $labels.instance }}"
+          description: "Average inference latency is {{ $value | printf \"%.0f\" }}ms (threshold: 5000ms) for more than 10 minutes. This may indicate resource contention, model complexity issues, or hardware degradation."
+          runbook_url: "https://github.com/worldcoin/world-zk-compute/blob/main/docs/TROUBLESHOOTING.md#enclave-high-latency"
+
+      - alert: EnclaveHighErrorRate
+        expr: rate(enclave_total_errors[5m]) / rate(enclave_total_inferences[5m]) > 0.05
+        labels:
+          severity: warning
+          service: enclave
+        annotations:
+          summary: "High error rate on enclave {{ $labels.instance }}"
+          description: "The enclave error rate exceeds 5% over the last 5 minutes (current: {{ $value | printf \"%.2f\" }}). Check enclave logs for inference failures or malformed requests."
+          runbook_url: "https://github.com/worldcoin/world-zk-compute/blob/main/docs/TROUBLESHOOTING.md#enclave-high-error-rate"
+
+      - alert: EnclaveRateLimited
+        expr: rate(enclave_total_rate_limited[5m]) > 0
+        labels:
+          severity: info
+          service: enclave
+        annotations:
+          summary: "Rate limiting active on {{ $labels.instance }}"
+          description: "The enclave is actively rate-limiting requests ({{ $value | printf \"%.2f\" }} rejections/sec). This may indicate a traffic spike or misconfigured rate limits."
+          runbook_url: "https://github.com/worldcoin/world-zk-compute/blob/main/docs/TROUBLESHOOTING.md#enclave-rate-limited"

@@ -1,0 +1,52 @@
+{
+  "chains": [
+    {
+      "name": "localhost",
+      "chainId": 31337,
+      "rpcUrl": "http://127.0.0.1:8545",
+      "explorerUrl": "",
+      "explorerApiKey": "",
+      "verifierRouter": "",
+      "gasMultiplier": 1.0,
+      "codeSizeLimit": 200000,
+      "gasLimit": 500000000,
+      "notes": "Local Anvil. Start with: anvil --gas-limit 500000000 --code-size-limit 200000"
+    },
+    {
+      "name": "sepolia",
+      "chainId": 11155111,
+      "rpcUrl": "https://rpc.sepolia.org",
+      "explorerUrl": "https://sepolia.etherscan.io",
+      "explorerApiKey": "ETHERSCAN_API_KEY",
+      "verifierRouter": "",
+      "gasMultiplier": 1.2,
+      "codeSizeLimit": 24576,
+      "gasLimit": 30000000,
+      "notes": "Ethereum Sepolia testnet. RemainderVerifier exceeds code size limit — use TEEMLVerifier only."
+    },
+    {
+      "name": "arbitrum-sepolia",
+      "chainId": 421614,
+      "rpcUrl": "https://sepolia-rollup.arbitrum.io/rpc",
+      "explorerUrl": "https://sepolia.arbiscan.io",
+      "explorerApiKey": "ARBISCAN_API_KEY",
+      "verifierRouter": "",
+      "gasMultiplier": 1.0,
+      "codeSizeLimit": 200000,
+      "gasLimit": 500000000,
+      "notes": "Primary deployment target. Supports large contracts and high gas limits."
+    },
+    {
+      "name": "world-chain-sepolia",
+      "chainId": 4801,
+      "rpcUrl": "https://worldchain-sepolia.g.alchemy.com/public",
+      "explorerUrl": "https://sepolia.worldscan.org",
+      "explorerApiKey": "WORLDSCAN_API_KEY",
+      "verifierRouter": "",
+      "gasMultiplier": 1.0,
+      "codeSizeLimit": 200000,
+      "gasLimit": 500000000,
+      "notes": "World Chain Sepolia testnet."
+    }
+  ]
+}

@@ -21,10 +21,14 @@
     "dev": "tsup --watch",
     "lint": "eslint src --ext .ts",
     "test": "vitest",
+    "test:integration": "vitest run src/__tests__/anvil-integration.test.ts",
     "test:coverage": "vitest --coverage",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "npm run build",
-    "batch-verify": "tsx src/batch-verifier.ts"
+    "batch-verify": "tsx src/batch-verifier.ts",
+    "generate:abi": "tsx scripts/generate-abi.ts",
+    "docs": "typedoc",
+    "docs:watch": "typedoc --watch"
   },
   "keywords": [
     "zk",
@@ -58,6 +62,8 @@
     "tsup": "^8.0.0",
     "typescript": "^5.3.0",
     "tsx": "^4.0.0",
-    "vitest": "^1.0.0"
+    "vitest": "^1.0.0",
+    "typedoc": "^0.26.0",
+    "typedoc-plugin-markdown": "^4.4.0"
   }
 }

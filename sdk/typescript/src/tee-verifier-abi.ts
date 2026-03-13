@@ -213,8 +213,9 @@ export const teeMLVerifierAbi = [
     name: 'ResultSubmitted',
     inputs: [
       { name: 'resultId', type: 'bytes32', indexed: true },
-      { name: 'modelHash', type: 'bytes32', indexed: false },
+      { name: 'modelHash', type: 'bytes32', indexed: true },
       { name: 'inputHash', type: 'bytes32', indexed: false },
+      { name: 'submitter', type: 'address', indexed: true },
     ],
   },
   {

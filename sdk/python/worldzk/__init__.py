@@ -62,7 +62,27 @@ try:
         StepResult,
         ProgressEvent,
     )
+    from .batch_verifier import (
+        BatchVerifier as StepBatchVerifier,
+        BatchVerificationCancelledError,
+        ProgressTracker,
+    )
     from .tee_verifier import TEEVerifier, MLResult
+    from .event_watcher import (
+        TEEEventWatcher,
+        TEEEventType,
+        TEEEvent,
+        ResultSubmitted as EventResultSubmitted,
+        ResultChallenged as EventResultChallenged,
+        ResultFinalized as EventResultFinalized,
+        ResultExpired as EventResultExpired,
+        DisputeResolved as EventDisputeResolved,
+        EnclaveRegistered as EventEnclaveRegistered,
+        EnclaveRevoked as EventEnclaveRevoked,
+        parse_log,
+        topic_hash,
+    )
+    from .async_client import AsyncTEEVerifier, AsyncEventWatcher
 except ImportError:
     pass  # web3 not installed
 
@@ -104,9 +124,29 @@ __all__ = [
     "BatchSession",
     "StepResult",
     "ProgressEvent",
+    # Step-level Batch Verifier (requires web3 optional dependency)
+    "StepBatchVerifier",
+    "BatchVerificationCancelledError",
+    "ProgressTracker",
     # TEE Verifier (requires web3 optional dependency)
     "TEEVerifier",
     "MLResult",
+    # TEE Event Watcher (requires web3 optional dependency)
+    "TEEEventWatcher",
+    "TEEEventType",
+    "TEEEvent",
+    "EventResultSubmitted",
+    "EventResultChallenged",
+    "EventResultFinalized",
+    "EventResultExpired",
+    "EventDisputeResolved",
+    "EventEnclaveRegistered",
+    "EventEnclaveRevoked",
+    "parse_log",
+    "topic_hash",
+    # Async TEE Verifier & Event Watcher (requires web3 optional dependency)
+    "AsyncTEEVerifier",
+    "AsyncEventWatcher",
     # Hash utilities
     "compute_model_hash",
     "compute_model_hash_from_bytes",

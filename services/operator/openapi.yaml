@@ -1,0 +1,193 @@
+openapi: 3.0.3
+info:
+  title: TEE Operator Service API
+  description: >
+    HTTP API exposed by the TEE Operator service when running in Watch or Run
+    mode. The server is started on the configured metrics port (default 9090)
+    and provides health checks and operational metrics.
+  version: 1.0.0
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:9090
+    description: Local operator metrics server (default port)
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      description: >
+        Returns the current health status of the operator, including uptime
+        and the last block number polled from the chain.
+      operationId: getHealth
+      tags:
+        - Health
+      responses:
+        "200":
+          description: Operator is healthy and running.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              example:
+                status: ok
+                uptime_secs: 3600
+                last_block_polled: 19542100
+
+  /metrics:
+    get:
+      summary: Prometheus metrics
+      description: >
+        Returns all operator metrics in Prometheus text exposition format
+        (version 0.0.4). Suitable for scraping by Prometheus, Grafana Agent,
+        or compatible collectors.
+      operationId: getPrometheusMetrics
+      tags:
+        - Metrics
+      responses:
+        "200":
+          description: Prometheus-formatted metrics.
+          content:
+            "text/plain; version=0.0.4; charset=utf-8":
+              schema:
+                type: string
+              example: |
+                # HELP operator_challenges_detected Total challenges detected
+                # TYPE operator_challenges_detected counter
+                operator_challenges_detected 0
+                # HELP operator_proofs_submitted Total proofs submitted to resolve disputes
+                # TYPE operator_proofs_submitted counter
+                operator_proofs_submitted 0
+                # HELP operator_disputes_resolved Total disputes resolved successfully
+                # TYPE operator_disputes_resolved counter
+                operator_disputes_resolved 0
+                # HELP operator_disputes_failed Total disputes that failed to resolve
+                # TYPE operator_disputes_failed counter
+                operator_disputes_failed 0
+                # HELP operator_errors_total Total errors encountered
+                # TYPE operator_errors_total counter
+                operator_errors_total 0
+                # HELP operator_finalizations_total Total result finalizations
+                # TYPE operator_finalizations_total counter
+                operator_finalizations_total 0
+                # HELP operator_active_disputes Current number of active disputes
+                # TYPE operator_active_disputes gauge
+                operator_active_disputes 0
+                # HELP operator_uptime_seconds Operator uptime in seconds
+                # TYPE operator_uptime_seconds gauge
+                operator_uptime_seconds 3600
+                # HELP operator_last_block_polled Last block number polled
+                # TYPE operator_last_block_polled gauge
+                operator_last_block_polled 19542100
+
+  /metrics/json:
+    get:
+      summary: JSON metrics
+      description: >
+        Returns all operator metrics as a JSON object. This endpoint provides
+        backward compatibility for consumers that prefer JSON over Prometheus
+        text format.
+      operationId: getJsonMetrics
+      tags:
+        - Metrics
+      responses:
+        "200":
+          description: JSON-formatted metrics.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetricsJsonResponse"
+              example:
+                uptime_secs: 3600
+                last_block_polled: 19542100
+                total_submissions: 42
+                total_challenges: 3
+                total_disputes_resolved: 2
+                total_disputes_failed: 1
+                total_finalizations: 35
+                total_errors: 0
+                active_disputes: 1
+
+components:
+  schemas:
+    HealthResponse:
+      type: object
+      required:
+        - status
+        - uptime_secs
+        - last_block_polled
+      properties:
+        status:
+          type: string
+          description: Health status indicator. Always "ok" when the server is responding.
+          example: ok
+        uptime_secs:
+          type: integer
+          format: uint64
+          description: Operator uptime in seconds since the process started.
+          example: 3600
+        last_block_polled:
+          type: integer
+          format: uint64
+          description: The most recent block number polled from the chain.
+          example: 19542100
+
+    MetricsJsonResponse:
+      type: object
+      required:
+        - uptime_secs
+        - last_block_polled
+        - total_submissions
+        - total_challenges
+        - total_disputes_resolved
+        - total_disputes_failed
+        - total_finalizations
+        - total_errors
+        - active_disputes
+      properties:
+        uptime_secs:
+          type: integer
+          format: uint64
+          description: Operator uptime in seconds since the process started.
+          example: 3600
+        last_block_polled:
+          type: integer
+          format: uint64
+          description: The most recent block number polled from the chain.
+          example: 19542100
+        total_submissions:
+          type: integer
+          format: uint64
+          description: Total number of result submission events observed.
+          example: 42
+        total_challenges:
+          type: integer
+          format: uint64
+          description: Total number of challenge events observed.
+          example: 3
+        total_disputes_resolved:
+          type: integer
+          format: uint64
+          description: Total number of disputes resolved successfully by submitting proofs.
+          example: 2
+        total_disputes_failed:
+          type: integer
+          format: uint64
+          description: Total number of disputes that failed to resolve (proof submission failed or timed out).
+          example: 1
+        total_finalizations:
+          type: integer
+          format: uint64
+          description: Total number of result finalization events observed.
+          example: 35
+        total_errors:
+          type: integer
+          format: uint64
+          description: Total number of errors encountered during operation.
+          example: 0
+        active_disputes:
+          type: integer
+          format: uint64
+          description: Current number of active (unresolved) disputes.
+          example: 1

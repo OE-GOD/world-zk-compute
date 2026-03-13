@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 world-zk-sdk = { path = "../../sdk" }
+tee-watcher = { path = "../../crates/watcher" }
 alloy = { version = "1.0", features = ["full"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
@@ -28,3 +29,4 @@ toml = "0.8"
 
 [dev-dependencies]
 tempfile = "3"
+alloy = { version = "1.0", features = ["full", "provider-anvil-node"] }
