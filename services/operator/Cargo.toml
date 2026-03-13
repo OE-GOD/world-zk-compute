@@ -24,7 +24,7 @@ p384 = { version = "0.13", features = ["ecdsa"] }
 ecdsa = { version = "0.16", features = ["verifying"] }
 x509-cert = "0.2"
 der = { version = "0.7", features = ["std", "pem"] }
-axum = "0.7"
+axum = "0.8"
 toml = "0.8"
 
 [dev-dependencies]
