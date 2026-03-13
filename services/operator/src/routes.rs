@@ -8,13 +8,14 @@ use axum::http::header::HeaderValue;
 use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
 use axum::Router;
 
 /// API version constant.
+#[allow(dead_code)]
 pub const API_VERSION: &str = "v1";
 
 /// Middleware that adds `X-API-Version` header to all responses.
+#[allow(dead_code)]
 pub async fn version_header_middleware(
     request: axum::http::Request<axum::body::Body>,
     next: Next,
@@ -36,12 +37,14 @@ pub async fn version_header_middleware(
 /// - `GET /api/v1/status` — operator status
 ///
 /// The returned router should be merged with the main app router.
+#[allow(dead_code)]
 pub fn versioned_routes<S: Clone + Send + Sync + 'static>() -> Router<S> {
     Router::new()
         .layer(middleware::from_fn(version_header_middleware))
 }
 
 /// Handler that redirects old unversioned API paths to `/api/v1/`.
+#[allow(dead_code)]
 pub async fn redirect_to_v1(
     uri: axum::http::Uri,
 ) -> impl IntoResponse {
@@ -59,6 +62,7 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
+    use axum::routing::get;
     use tower::ServiceExt;
 
     #[test]

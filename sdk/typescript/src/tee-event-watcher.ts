@@ -25,6 +25,7 @@ export type TEEEventName =
   | 'ResultSubmitted'
   | 'ResultChallenged'
   | 'ResultFinalized'
+  | 'ResultExpired'
   | 'DisputeResolved'
   | 'EnclaveRegistered'
   | 'EnclaveRevoked';
@@ -42,6 +43,10 @@ export interface ResultChallengedEvent {
 }
 
 export interface ResultFinalizedEvent {
+  resultId: Hex;
+}
+
+export interface ResultExpiredEvent {
   resultId: Hex;
 }
 
@@ -63,6 +68,7 @@ export type TEEEventData =
   | { event: 'ResultSubmitted'; data: ResultSubmittedEvent }
   | { event: 'ResultChallenged'; data: ResultChallengedEvent }
   | { event: 'ResultFinalized'; data: ResultFinalizedEvent }
+  | { event: 'ResultExpired'; data: ResultExpiredEvent }
   | { event: 'DisputeResolved'; data: DisputeResolvedEvent }
   | { event: 'EnclaveRegistered'; data: EnclaveRegisteredEvent }
   | { event: 'EnclaveRevoked'; data: EnclaveRevokedEvent };
@@ -182,6 +188,7 @@ export class TEEEventWatcher {
   on(event: 'ResultSubmitted', handler: EventHandler<ResultSubmittedEvent>): this;
   on(event: 'ResultChallenged', handler: EventHandler<ResultChallengedEvent>): this;
   on(event: 'ResultFinalized', handler: EventHandler<ResultFinalizedEvent>): this;
+  on(event: 'ResultExpired', handler: EventHandler<ResultExpiredEvent>): this;
   on(event: 'DisputeResolved', handler: EventHandler<DisputeResolvedEvent>): this;
   on(event: 'EnclaveRegistered', handler: EventHandler<EnclaveRegisteredEvent>): this;
   on(event: 'EnclaveRevoked', handler: EventHandler<EnclaveRevokedEvent>): this;
@@ -507,6 +514,8 @@ export class TEEEventWatcher {
         };
       case 'ResultFinalized':
         return { event: 'ResultFinalized', data: { resultId: args.resultId } };
+      case 'ResultExpired':
+        return { event: 'ResultExpired', data: { resultId: args.resultId } };
       case 'DisputeResolved':
         return {
           event: 'DisputeResolved',

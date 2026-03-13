@@ -130,12 +130,14 @@ impl RateLimiter {
     }
 
     /// Returns the total number of rate-limited requests.
+    #[allow(dead_code)] // used in tests; kept as public metrics API
     pub fn total_rate_limited(&self) -> u64 {
         self.rate_limited_total
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Returns the number of currently tracked IPs.
+    #[allow(dead_code)] // used in tests; kept as public metrics API
     pub fn tracked_ips(&self) -> usize {
         self.buckets
             .lock()

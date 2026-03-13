@@ -1,0 +1,33 @@
+[workspace]
+resolver = "2"
+members = [
+    "sdk",
+    "crates/watcher",
+    "crates/events",
+    "services/operator",
+    "services/admin-cli",
+    "services/indexer",
+    "tee/enclave",
+    "tests/chaos",
+]
+
+# Exclude crates with external/private dependencies or special build targets
+exclude = [
+    "prover",
+    "private-input-server",
+    "examples/*",
+    "tests/e2e",
+    "contracts/lib/risc0-ethereum",
+    "contracts/stylus/gkr-verifier",
+]
+
+[workspace.dependencies]
+alloy = { version = "1.0", features = ["full"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+anyhow = "1"
+hex = "0.4"
+sha2 = "0.10"
+axum = "0.7"

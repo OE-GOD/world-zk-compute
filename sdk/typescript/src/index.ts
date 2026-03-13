@@ -34,6 +34,7 @@ export type {
   ResultSubmittedEvent,
   ResultChallengedEvent,
   ResultFinalizedEvent,
+  ResultExpiredEvent,
   DisputeResolvedEvent,
   EnclaveRegisteredEvent,
   EnclaveRevokedEvent,

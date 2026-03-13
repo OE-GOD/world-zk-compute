@@ -239,4 +239,9 @@ export const teeMLVerifierAbi = [
     name: 'ResultFinalized',
     inputs: [{ name: 'resultId', type: 'bytes32', indexed: true }],
   },
+  {
+    type: 'event',
+    name: 'ResultExpired',
+    inputs: [{ name: 'resultId', type: 'bytes32', indexed: true }],
+  },
 ] as const;

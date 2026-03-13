@@ -19,7 +19,7 @@ Example usage:
     print(f"Proof: {result.proof}")
 """
 
-from .client import Client, AsyncClient
+from .client import Client, AsyncClient, ResultRow, StatsResponse, HealthResponse
 from .models import (
     ExecutionRequest,
     RequestStatus,
@@ -91,6 +91,9 @@ __all__ = [
     # Client
     "Client",
     "AsyncClient",
+    "ResultRow",
+    "StatsResponse",
+    "HealthResponse",
     # Models
     "ExecutionRequest",
     "RequestStatus",

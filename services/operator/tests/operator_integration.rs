@@ -3,19 +3,8 @@
 //!
 //! Run with: `cargo test --test operator_integration`
 
-use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-
-/// Mirror of OperatorState (from store.rs) for integration test state file
-/// manipulation. We can't import it because `mod store` is private in main.rs.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-struct OperatorState {
-    last_polled_block: u64,
-    #[serde(default)]
-    active_disputes: HashMap<String, u64>,
-    #[serde(default)]
-    processed_event_ids: HashSet<String>,
-}
+use tee_operator::store::OperatorState;
 
 // ─── Crash recovery: state file persistence ───────────────────────────
 

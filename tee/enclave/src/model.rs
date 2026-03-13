@@ -993,10 +993,10 @@ mod tests {
 
     #[test]
     fn test_lightgbm_load_from_file() {
-        // Write a temp LightGBM model file and load it with auto-detection
-        let dir = std::env::temp_dir().join("tee_lgbm_test");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("lgbm_model.json");
+        // Write a temp LightGBM model file and load it with auto-detection.
+        // Use tempfile crate for unique dirs to avoid races with parallel tests.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lgbm_model.json");
         std::fs::write(&path, SAMPLE_LIGHTGBM_JSON).unwrap();
 
         let model = load_model_with_format(path.to_str().unwrap(), ModelFormat::Auto).unwrap();
@@ -1006,8 +1006,5 @@ mod tests {
         // Also test explicit LightGBM format
         let model2 = load_model_with_format(path.to_str().unwrap(), ModelFormat::Lightgbm).unwrap();
         assert_eq!(model2.num_features, 4);
-
-        // Cleanup
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

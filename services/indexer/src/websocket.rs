@@ -140,10 +140,7 @@ impl EventBroadcaster {
     /// Returns the number of receivers that received the event. Returns 0 if
     /// there are no active subscribers (this is not an error).
     pub fn broadcast(&self, event: WsEvent) -> usize {
-        match self.sender.send(event) {
-            Ok(n) => n,
-            Err(_) => 0, // No active receivers
-        }
+        self.sender.send(event).unwrap_or_default()
     }
 
     /// Subscribe to the event stream. Returns a receiver that yields cloned
@@ -241,7 +238,7 @@ async fn handle_ws_connection(socket: WebSocket, broadcaster: Arc<EventBroadcast
                 match heartbeat_state {
                     HeartbeatState::Idle => {
                         // Time to send a ping
-                        if ws_sender.send(Message::Ping(vec![].into())).await.is_err() {
+                        if ws_sender.send(Message::Ping(vec![])).await.is_err() {
                             break;
                         }
                         heartbeat_state = HeartbeatState::WaitingForPong;
@@ -267,7 +264,7 @@ async fn handle_ws_connection(socket: WebSocket, broadcaster: Arc<EventBroadcast
                         }
                         match serde_json::to_string(&event) {
                             Ok(json) => {
-                                if ws_sender.send(Message::Text(json.into())).await.is_err() {
+                                if ws_sender.send(Message::Text(json)).await.is_err() {
                                     break;
                                 }
                             }

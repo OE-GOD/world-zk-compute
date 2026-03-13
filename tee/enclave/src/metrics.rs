@@ -28,6 +28,12 @@ pub struct Metrics {
     pub start_time: Instant,
 }
 
+impl Default for Metrics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Metrics {
     /// Create a new, zeroed metrics instance.
     pub fn new() -> Self {

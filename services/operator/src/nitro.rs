@@ -640,8 +640,8 @@ mod tests {
         ));
 
         let addr_bytes = vec![
-            0xf3, 0x9F, 0xd6, 0xe5, 0x1a, 0xad, 0x88, 0xF6, 0xF4, 0xce, 0x6a, 0xB8, 0x82, 0x72,
-            0x79, 0xcf, 0xfF, 0xb9, 0x22, 0x66,
+            0xf3, 0x9f, 0xd6, 0xe5, 0x1a, 0xad, 0x88, 0xf6, 0xf4, 0xce, 0x6a, 0xb8, 0x82, 0x72,
+            0x79, 0xcf, 0xff, 0xb9, 0x22, 0x66,
         ];
         payload_items.push((
             ciborium::Value::Text("public_key".to_string()),
@@ -891,7 +891,7 @@ mod tests {
 
         // Wrap: SEQUENCE { tbs, signatureAlgorithm, signatureValue }
         let sig_algo = ecdsa_with_sha384_algo_der();
-        let sig_bitstring = der_bitstring(&sig_bytes);
+        let sig_bitstring = der_bitstring(sig_bytes);
 
         der_sequence(&[&tbs, &sig_algo, &sig_bitstring])
     }
@@ -942,7 +942,7 @@ mod tests {
         let sig_bytes = sig.as_bytes();
 
         let sig_algo = ecdsa_with_sha384_algo_der();
-        let sig_bitstring = der_bitstring(&sig_bytes);
+        let sig_bitstring = der_bitstring(sig_bytes);
 
         der_sequence(&[&tbs, &sig_algo, &sig_bitstring])
     }

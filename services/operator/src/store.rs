@@ -229,20 +229,21 @@ mod tests {
 
     #[test]
     fn test_operator_state_serde_roundtrip() {
-        let mut state = OperatorState::default();
-        state.last_polled_block = 12345;
-        state
-            .active_disputes
-            .insert("0xaabb".to_string(), 1700000000);
-        state
-            .active_disputes
-            .insert("0xccdd".to_string(), 1700086400);
-        state
-            .processed_event_ids
-            .insert("0xdeadbeef:0".to_string());
-        state
-            .processed_event_ids
-            .insert("0xdeadbeef:1".to_string());
+        let state = OperatorState {
+            last_polled_block: 12345,
+            active_disputes: [
+                ("0xaabb".to_string(), 1700000000),
+                ("0xccdd".to_string(), 1700086400),
+            ]
+            .into_iter()
+            .collect(),
+            processed_event_ids: [
+                "0xdeadbeef:0".to_string(),
+                "0xdeadbeef:1".to_string(),
+            ]
+            .into_iter()
+            .collect(),
+        };
 
         let json = serde_json::to_string_pretty(&state).unwrap();
         let loaded: OperatorState = serde_json::from_str(&json).unwrap();
@@ -265,14 +266,11 @@ mod tests {
         let state_path = dir.path().join("operator-state.json");
         let store = StateStore::new(&state_path);
 
-        let mut state = OperatorState::default();
-        state.last_polled_block = 42;
-        state
-            .active_disputes
-            .insert("0x1111".to_string(), 9999);
-        state
-            .processed_event_ids
-            .insert("tx1:0".to_string());
+        let state = OperatorState {
+            last_polled_block: 42,
+            active_disputes: [("0x1111".to_string(), 9999)].into_iter().collect(),
+            processed_event_ids: ["tx1:0".to_string()].into_iter().collect(),
+        };
 
         store.save(&state).unwrap();
 
