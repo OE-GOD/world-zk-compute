@@ -55,7 +55,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             sdk/target
-          key: ${{ runner.os }}-cargo-sdk-${{ hashFiles('sdk/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-sdk-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-sdk-
 
@@ -90,7 +90,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             services/operator/target
-          key: ${{ runner.os }}-cargo-operator-${{ hashFiles('services/operator/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-operator-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-operator-
 
@@ -125,7 +125,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             services/admin-cli/target
-          key: ${{ runner.os }}-cargo-admin-cli-${{ hashFiles('services/admin-cli/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-admin-cli-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-admin-cli-
 
@@ -160,7 +160,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             services/indexer/target
-          key: ${{ runner.os }}-cargo-indexer-${{ hashFiles('services/indexer/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-indexer-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-indexer-
 
@@ -195,7 +195,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             crates/watcher/target
-          key: ${{ runner.os }}-cargo-watcher-${{ hashFiles('crates/watcher/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-watcher-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-watcher-
 
@@ -207,6 +207,41 @@ jobs:
 
       - name: Run tests
         run: cargo test --manifest-path crates/watcher/Cargo.toml
+
+  events-crate:
+    name: Shared Events Crate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy, rustfmt
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            crates/events/target
+          key: ${{ runner.os }}-cargo-events-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-events-
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path crates/events/Cargo.toml --check
+
+      - name: Run Clippy
+        run: cargo clippy --manifest-path crates/events/Cargo.toml -- -D warnings
+
+      - name: Run tests
+        run: cargo test --manifest-path crates/events/Cargo.toml
 
   enclave:
     name: TEE Enclave
@@ -230,7 +265,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             tee/enclave/target
-          key: ${{ runner.os }}-cargo-enclave-${{ hashFiles('tee/enclave/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-enclave-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-enclave-
 
@@ -241,7 +276,7 @@ jobs:
         run: cargo clippy --manifest-path tee/enclave/Cargo.toml -- -D warnings
 
       - name: Run tests
-        run: cargo test --manifest-path tee/enclave/Cargo.toml -- --test-threads=1
+        run: cargo test --manifest-path tee/enclave/Cargo.toml
 
   xgboost-remainder:
     name: XGBoost Remainder
@@ -265,7 +300,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             examples/xgboost-remainder/target
-          key: ${{ runner.os }}-cargo-remainder-${{ hashFiles('examples/xgboost-remainder/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-remainder-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-remainder-
 
@@ -305,7 +340,7 @@ jobs:
             ${{ runner.os }}-cargo-clippy-
 
       - name: Run Clippy (workspace)
-        run: cargo clippy --workspace -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
   workspace-fmt:
     name: Workspace Rustfmt

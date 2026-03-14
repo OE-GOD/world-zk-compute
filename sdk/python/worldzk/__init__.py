@@ -128,6 +128,7 @@ __all__ = [
     "RateLimitError",
     "ProofError",
     "NetworkError",
+    "TimeoutError",
     # XGBoost
     "XGBoostConverter",
     "XGBoostModel",

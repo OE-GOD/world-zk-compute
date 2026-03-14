@@ -666,7 +666,15 @@ async fn load_model_handler(
             (status, e.to_string())
         })?;
 
-    let loaded = state.model_registry.get_model(&req.model_id).unwrap();
+    let loaded = state
+        .model_registry
+        .get_model(&req.model_id)
+        .ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Model {} not found after successful load", req.model_id),
+            )
+        })?;
     tracing::info!(
         "Model loaded into registry: id={}, hash={}, size={}",
         loaded.model_id,

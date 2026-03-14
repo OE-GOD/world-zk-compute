@@ -38,10 +38,11 @@ dev = [
     "ruff>=0.1",
     "respx>=0.20",
     "web3>=6.0",
-    "pdoc3>=0.11",
+    "eth-account>=0.8",
+    "pdoc>=14.0",
 ]
 docs = [
-    "pdoc3>=0.11",
+    "pdoc>=14.0",
 ]
 requests = [
     "requests>=2.28",

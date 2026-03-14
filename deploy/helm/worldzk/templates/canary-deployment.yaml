@@ -36,10 +36,17 @@ spec:
       {{- end }}
       serviceAccountName: {{ include "worldzk.operator.serviceAccountName" . }}
       terminationGracePeriodSeconds: {{ $canary.terminationGracePeriodSeconds | default .Values.operator.terminationGracePeriodSeconds }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
       containers:
         - name: operator
           image: "{{ $canary.image.repository | default .Values.operator.image.repository }}:{{ $canary.image.tag | default "canary" }}"
           imagePullPolicy: {{ $canary.image.pullPolicy | default .Values.operator.image.pullPolicy }}
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
           ports:
             - name: http
               containerPort: {{ .Values.operator.port }}
@@ -78,10 +85,14 @@ spec:
           volumeMounts:
             - name: proof-storage
               mountPath: /app/proofs
+            - name: tmp
+              mountPath: /tmp
       volumes:
         - name: proof-storage
           emptyDir:
             sizeLimit: {{ $canary.proofStorageSizeLimit | default .Values.operator.proofStorageSizeLimit }}
+        - name: tmp
+          emptyDir: {}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

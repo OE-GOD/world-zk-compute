@@ -18,7 +18,6 @@ hex = "0.4"
 anyhow = "1"
 thiserror.workspace = true
 ciborium = "0.2"
-sha2 = "0.10"
 base64 = "0.22"
 p384 = { version = "0.13", features = ["ecdsa"] }
 ecdsa = { version = "0.16", features = ["verifying"] }

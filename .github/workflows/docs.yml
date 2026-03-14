@@ -35,7 +35,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             sdk/target
-          key: docs-rust-${{ hashFiles('sdk/Cargo.lock') }}
+          key: docs-rust-${{ hashFiles('Cargo.lock') }}
 
       - name: Generate rustdoc
         run: cd sdk && cargo doc --no-deps --document-private-items 2>&1
@@ -98,7 +98,7 @@ jobs:
           pip install -e ".[docs]"
 
       - name: Generate pdoc
-        run: cd sdk/python && pdoc worldzk -o docs/_build --html
+        run: cd sdk/python && pdoc worldzk -o docs/_build
 
       - name: Upload docs artifact
         if: github.ref == 'refs/heads/main'

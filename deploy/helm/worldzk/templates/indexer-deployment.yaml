@@ -29,10 +29,17 @@ spec:
       {{- end }}
       serviceAccountName: {{ include "worldzk.indexer.serviceAccountName" . }}
       terminationGracePeriodSeconds: {{ .Values.indexer.terminationGracePeriodSeconds }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
       containers:
         - name: indexer
           image: "{{ .Values.indexer.image.repository }}:{{ .Values.indexer.image.tag }}"
           imagePullPolicy: {{ .Values.indexer.image.pullPolicy }}
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
           ports:
             - name: http
               containerPort: {{ .Values.indexer.port }}
@@ -82,6 +89,8 @@ spec:
           volumeMounts:
             - name: indexer-data
               mountPath: /data
+            - name: tmp
+              mountPath: /tmp
       volumes:
         - name: indexer-data
           {{- if .Values.indexer.persistence.enabled }}
@@ -90,6 +99,8 @@ spec:
           {{- else }}
           emptyDir: {}
           {{- end }}
+        - name: tmp
+          emptyDir: {}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

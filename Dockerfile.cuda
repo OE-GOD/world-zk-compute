@@ -22,7 +22,8 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+# Keep in sync with RUST_VERSION in .github/workflows/rust-ci.yml
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.92.0
 ENV PATH="/root/.cargo/bin:${PATH}"
 
 WORKDIR /app

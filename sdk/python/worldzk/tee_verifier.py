@@ -39,8 +39,9 @@ TEE_ML_VERIFIER_ABI: list[dict[str, Any]] = [
         "name": "ResultSubmitted",
         "inputs": [
             {"name": "resultId", "type": "bytes32", "indexed": True},
-            {"name": "modelHash", "type": "bytes32", "indexed": False},
+            {"name": "modelHash", "type": "bytes32", "indexed": True},
             {"name": "inputHash", "type": "bytes32", "indexed": False},
+            {"name": "submitter", "type": "address", "indexed": True},
         ],
         "anonymous": False,
     },

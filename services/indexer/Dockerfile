@@ -27,7 +27,11 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates curl jq && \
     rm -rf /var/lib/apt/lists/*
 
+RUN adduser --disabled-password --gecos "" appuser
+
 COPY --from=builder /build/target/release/tee-indexer /usr/local/bin/
+
+RUN mkdir -p /data && chown appuser:appuser /data
 
 WORKDIR /app
 
@@ -35,6 +39,8 @@ ENV PORT=8081
 ENV DB_PATH=/data/indexer.db
 
 EXPOSE 8081
+
+USER appuser
 
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD curl -f http://localhost:8081/health || exit 1

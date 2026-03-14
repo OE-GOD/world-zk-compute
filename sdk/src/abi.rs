@@ -155,7 +155,7 @@ sol! {
 
         event EnclaveRegistered(address indexed enclaveKey, bytes32 enclaveImageHash);
         event EnclaveRevoked(address indexed enclaveKey);
-        event ResultSubmitted(bytes32 indexed resultId, bytes32 modelHash, bytes32 inputHash);
+        event ResultSubmitted(bytes32 indexed resultId, bytes32 indexed modelHash, bytes32 inputHash, address indexed submitter);
         event ResultChallenged(bytes32 indexed resultId, address challenger);
         event DisputeResolved(bytes32 indexed resultId, bool proverWon);
         event ResultFinalized(bytes32 indexed resultId);

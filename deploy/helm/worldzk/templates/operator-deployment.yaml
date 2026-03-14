@@ -34,10 +34,17 @@ spec:
       {{- end }}
       serviceAccountName: {{ include "worldzk.operator.serviceAccountName" . }}
       terminationGracePeriodSeconds: {{ .Values.operator.terminationGracePeriodSeconds }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
       containers:
         - name: operator
           image: "{{ .Values.operator.image.repository }}:{{ .Values.operator.image.tag }}"
           imagePullPolicy: {{ .Values.operator.image.pullPolicy }}
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
           ports:
             - name: http
               containerPort: {{ .Values.operator.port }}
@@ -69,10 +76,14 @@ spec:
           volumeMounts:
             - name: proof-storage
               mountPath: /app/proofs
+            - name: tmp
+              mountPath: /tmp
       volumes:
         - name: proof-storage
           emptyDir:
             sizeLimit: {{ .Values.operator.proofStorageSizeLimit }}
+        - name: tmp
+          emptyDir: {}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

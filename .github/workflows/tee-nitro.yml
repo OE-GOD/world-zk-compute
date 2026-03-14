@@ -48,7 +48,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             tee/enclave/target
-          key: ${{ runner.os }}-cargo-tee-nitro-${{ hashFiles('tee/enclave/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-tee-nitro-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-tee-nitro-
 
@@ -89,7 +89,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             services/operator/target
-          key: ${{ runner.os }}-cargo-tee-operator-${{ hashFiles('services/operator/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-tee-operator-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-tee-operator-
 
@@ -193,7 +193,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             services/operator/target
-          key: ${{ runner.os }}-cargo-tee-operator-${{ hashFiles('services/operator/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-tee-operator-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-tee-operator-
 

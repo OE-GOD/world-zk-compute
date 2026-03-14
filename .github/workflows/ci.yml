@@ -208,7 +208,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             sdk/target
-          key: ${{ runner.os }}-cargo-sdk-${{ hashFiles('sdk/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-sdk-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-sdk-
 
@@ -288,7 +288,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             sdk/target
-          key: ${{ runner.os }}-cargo-sdk-e2e-${{ hashFiles('sdk/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-sdk-e2e-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-sdk-e2e-
 
@@ -384,7 +384,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             tee/enclave/target
-          key: ${{ runner.os }}-cargo-tee-enclave-${{ hashFiles('tee/enclave/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-tee-enclave-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-tee-enclave-
 

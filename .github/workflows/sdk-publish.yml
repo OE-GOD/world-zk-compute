@@ -298,7 +298,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             sdk/target
-          key: ${{ runner.os }}-cargo-sdk-publish-${{ hashFiles('sdk/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-sdk-publish-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-sdk-publish-
 

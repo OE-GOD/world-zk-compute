@@ -1,12 +1,16 @@
-FROM rust:1.82-slim AS builder
+# Keep in sync with RUST_VERSION in .github/workflows/rust-ci.yml
+FROM rust:1.92-slim AS builder
 WORKDIR /app
 COPY enclave/ .
 RUN cargo build --release
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
+RUN adduser --disabled-password --gecos "" appuser
 COPY --from=builder /app/target/release/tee-enclave /usr/local/bin/
 COPY test-model/ /app/model/
+RUN chown -R appuser:appuser /app
+USER appuser
 ENV MODEL_PATH=/app/model/model.json
 ENV PORT=8080
 EXPOSE 8080

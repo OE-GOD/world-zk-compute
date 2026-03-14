@@ -24,6 +24,7 @@ use config::{Config, ModelConfig};
 use prover::ProofManager;
 use store::StateStore;
 use tee_operator::alerting::{AlertConfig, AlertManager, AlertSeverity};
+use tee_operator::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 use watcher::{EventWatcher, TEEEvent};
 
 /// Cached attestation verification result with TTL.
@@ -423,6 +424,14 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
     let alert_manager = Arc::new(AlertManager::new(alert_config));
     tracing::info!("AlertManager initialized");
 
+    // Circuit breakers for RPC and chain calls
+    let rpc_cb = Arc::new(CircuitBreaker::new(CircuitBreakerConfig::default()));
+    let chain_cb = Arc::new(CircuitBreaker::new(CircuitBreakerConfig {
+        failure_threshold: 3,
+        recovery_timeout: std::time::Duration::from_secs(60),
+        success_threshold_for_close: 1,
+    }));
+
     // Semaphore to limit concurrent proof submissions (T215)
     let proof_semaphore = Arc::new(tokio::sync::Semaphore::new(10));
 
@@ -457,8 +466,27 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
     let mut finalize_counter = 0u64;
 
     while !shutdown.is_shutting_down() {
-        // Poll for new events
-        let (events, next_block) = watcher.poll_events(from_block).await?;
+        // Poll for new events (through RPC circuit breaker)
+        let (events, next_block) = if let Err(e) = rpc_cb.allow_request() {
+            tracing::warn!("RPC circuit breaker: {}", e);
+            (vec![], from_block)
+        } else {
+            match watcher.poll_events(from_block).await {
+                Ok(r) => {
+                    rpc_cb.record_success();
+                    r
+                }
+                Err(e) => {
+                    rpc_cb.record_failure();
+                    tracing::warn!(
+                        consecutive_failures = rpc_cb.consecutive_failures(),
+                        "RPC poll failed: {}",
+                        e
+                    );
+                    (vec![], from_block)
+                }
+            }
+        };
 
         let _watch_span = tracing_setup::span_watch_cycle(from_block, next_block, 0);
         let _watch_guard = _watch_span.enter();
@@ -551,11 +579,12 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
                             let rid = *result_id;
                             let am = alert_manager.clone();
                             let ms = metrics_state.clone();
+                            let cb = chain_cb.clone();
                             shutdown.track_task_start();
                             let sd = shutdown.clone();
                             tokio::spawn(
                                 async move {
-                                    handle_challenge(&chain, &pm, rid, &am, &ms).await;
+                                    handle_challenge(&chain, &pm, rid, &am, &ms, &cb).await;
                                     sd.track_task_done();
                                     drop(permit);
                                 }
@@ -621,7 +650,14 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
         finalize_counter += 1;
         if finalize_counter >= 12 {
             finalize_counter = 0;
-            auto_finalize(&watcher, &chain_client, from_block.saturating_sub(7200)).await;
+            auto_finalize(
+                &watcher,
+                &chain_client,
+                from_block.saturating_sub(7200),
+                &rpc_cb,
+                &chain_cb,
+            )
+            .await;
         }
 
         // Use select to allow shutdown to interrupt the sleep
@@ -801,6 +837,7 @@ async fn handle_challenge(
     result_id: B256,
     alert_manager: &AlertManager,
     metrics: &metrics::MetricsState,
+    chain_cb: &CircuitBreaker,
 ) {
     let rid_hex = format!("0x{}", hex::encode(result_id));
 
@@ -840,6 +877,7 @@ async fn handle_challenge(
 
     match resolve_result {
         Ok(tx) => {
+            chain_cb.record_success();
             tracing::info!("Dispute resolved for {}! tx={}", rid_hex, tx);
             metrics.record_dispute_resolved();
             let mut meta = HashMap::new();
@@ -854,6 +892,7 @@ async fn handle_challenge(
             );
         }
         Err(e) => {
+            chain_cb.record_failure();
             tracing::error!("Failed to resolve dispute for {}: {}", rid_hex, e);
             metrics.record_dispute_failed();
             let mut meta = HashMap::new();
@@ -891,10 +930,23 @@ async fn resolve_with_proof(
         .await
 }
 
-async fn auto_finalize(watcher: &EventWatcher, chain: &chain::ChainClient, from_block: u64) {
+async fn auto_finalize(
+    watcher: &EventWatcher,
+    chain: &chain::ChainClient,
+    from_block: u64,
+    rpc_cb: &CircuitBreaker,
+    chain_cb: &CircuitBreaker,
+) {
+    if rpc_cb.allow_request().is_err() {
+        return; // RPC circuit breaker is open, skip finalize poll
+    }
     let (events, _) = match watcher.poll_events(from_block).await {
-        Ok(r) => r,
+        Ok(r) => {
+            rpc_cb.record_success();
+            r
+        }
         Err(e) => {
+            rpc_cb.record_failure();
             tracing::warn!("Failed to poll for finalizeable results: {}", e);
             return;
         }
@@ -902,9 +954,17 @@ async fn auto_finalize(watcher: &EventWatcher, chain: &chain::ChainClient, from_
 
     for event in &events {
         if let TEEEvent::ResultSubmitted { result_id, .. } = event {
-            // Try to finalize — the contract will revert if not ready
-            if let Ok(tx) = chain.finalize(*result_id).await {
-                tracing::info!("Auto-finalized {}, tx={}", result_id, tx);
+            if chain_cb.allow_request().is_err() {
+                break; // Chain circuit breaker is open
+            }
+            match chain.finalize(*result_id).await {
+                Ok(tx) => {
+                    chain_cb.record_success();
+                    tracing::info!("Auto-finalized {}, tx={}", result_id, tx);
+                }
+                Err(_) => {
+                    chain_cb.record_failure();
+                }
             }
         }
     }

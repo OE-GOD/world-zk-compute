@@ -104,7 +104,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             sdk/target
-          key: ${{ runner.os }}-cargo-sdk-e2e-${{ hashFiles('sdk/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-sdk-e2e-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-sdk-e2e-
 
@@ -225,7 +225,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             sdk/target
-          key: ${{ runner.os }}-cargo-sdk-batch-${{ hashFiles('sdk/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-sdk-batch-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-sdk-batch-
 

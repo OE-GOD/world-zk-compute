@@ -1,5 +1,6 @@
 # ---- Stage 1: Build --------------------------------------------------------
-FROM rust:1.80-bookworm AS builder
+# Keep in sync with RUST_VERSION in .github/workflows/rust-ci.yml
+FROM rust:1.92-bookworm AS builder
 
 WORKDIR /build
 
@@ -19,8 +20,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
+RUN adduser --disabled-password --gecos "" appuser
+
 COPY --from=builder /build/target/release/xgboost-remainder /usr/local/bin/xgboost-remainder
 COPY sample_model.json /app/model.json
+
+RUN chown -R appuser:appuser /app
+
+USER appuser
 
 EXPOSE 3000
 
