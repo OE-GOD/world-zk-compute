@@ -1,0 +1,186 @@
+# =============================================================================
+# Operator Service Configuration -- Sepolia Testnet
+#
+# Example TOML config for running the operator on Ethereum Sepolia testnet
+# (chain ID: 11155111).
+#
+# Copy this file and fill in your secrets before use:
+#
+#   cp config.sepolia.toml config.local.toml
+#   # Edit config.local.toml with your values
+#   cargo run -p tee-operator -- --config config.local.toml watch
+#
+# Environment variables always take precedence over values in this file.
+# For example, setting OPERATOR_PRIVATE_KEY in the environment overrides
+# the private_key field below.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# RPC Connection
+# -----------------------------------------------------------------------------
+
+# Ethereum Sepolia JSON-RPC endpoint (chain ID: 11155111).
+# Get a free key at https://dashboard.alchemy.com/
+# Env var: OPERATOR_RPC_URL
+rpc_url = "https://eth-sepolia.g.alchemy.com/v2/YOUR_ALCHEMY_API_KEY"
+
+# -----------------------------------------------------------------------------
+# Operator Wallet
+# -----------------------------------------------------------------------------
+
+# Private key for the operator wallet (hex, with 0x prefix).
+# This wallet pays gas for TEE result submissions, dispute responses, and
+# proof relay transactions. Ensure it has sufficient Sepolia ETH (~0.1 ETH).
+# NEVER commit a real private key to version control.
+# Env var: OPERATOR_PRIVATE_KEY
+private_key = "0xYOUR_PRIVATE_KEY_HERE"
+
+# Amount of ETH to stake when submitting dispute proofs (in wei).
+# 0.001 ETH = 1000000000000000 wei (lower for Sepolia testing).
+# Env var: PROVER_STAKE
+prover_stake = "1000000000000000"
+
+# -----------------------------------------------------------------------------
+# Contract Addresses
+# -----------------------------------------------------------------------------
+
+# Primary TEEMLVerifier contract address on Sepolia.
+# Deploy with: ./scripts/deploy-sepolia-tee.sh
+# Addresses are saved to: deployments/11155111.json
+# Env var: TEE_VERIFIER_ADDRESS
+tee_verifier_address = "0xYOUR_TEE_VERIFIER_ADDRESS"
+
+# Additional TEEMLVerifier contracts to watch (multi-contract support).
+# The operator monitors events from all listed contracts simultaneously.
+# When set, this takes precedence over tee_verifier_address for event watching.
+# Env var: CONTRACT_ADDRESSES (comma-separated)
+contracts = [
+    # "0xYOUR_FIRST_TEE_VERIFIER",
+    # "0xYOUR_SECOND_TEE_VERIFIER",
+]
+
+# -----------------------------------------------------------------------------
+# TEE Enclave
+# -----------------------------------------------------------------------------
+
+# URL of the TEE enclave HTTP service for inference requests.
+# For local development, use http://localhost:8080.
+# In Docker Compose, use the internal service name (e.g., http://enclave:8080).
+# Env var: ENCLAVE_URL
+enclave_url = "http://127.0.0.1:8080"
+
+# Whether to verify AWS Nitro attestation documents from the enclave.
+# Set to true in production; false for local development without Nitro.
+# Env var: NITRO_VERIFICATION
+nitro_verification = false
+
+# Expected PCR0 value for the enclave image (hex string).
+# Only checked when nitro_verification = true.
+# Obtain from: nitro-cli describe-enclaves
+# Env var: EXPECTED_PCR0
+# expected_pcr0 = "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+
+# How long to cache attestation verification results (in seconds).
+# Avoids re-verifying the same attestation document on every request.
+# Env var: ATTESTATION_CACHE_TTL
+attestation_cache_ttl = 300
+
+# -----------------------------------------------------------------------------
+# ZK Prover (Dispute Fallback)
+# -----------------------------------------------------------------------------
+
+# URL of the warm prover HTTP service for ZK proof generation.
+# The warm prover pre-loads guest programs for fast proof turnaround.
+# When set, the operator sends proof requests to this remote service
+# instead of running the precompute binary locally.
+# Env var: PROVER_URL
+# prover_url = "http://127.0.0.1:3000"
+
+# Path to the precompute binary for GKR/Hyrax proof preprocessing.
+# Used when generating remainder proofs for dispute resolution.
+# Only needed when prover_url is not set (local proof generation).
+# Env var: PRECOMPUTE_BIN
+precompute_bin = "precompute_proof"
+
+# Directory where generated proofs are stored on disk.
+# The operator writes proof files here before submitting on-chain.
+# Env var: PROOFS_DIR
+proofs_dir = "./proofs"
+
+# Maximum number of retries when proof generation fails.
+# Uses exponential backoff between attempts.
+# Env var: MAX_PROOF_RETRIES
+max_proof_retries = 3
+
+# Base delay in seconds between proof retry attempts.
+# Actual delay: proof_retry_delay_secs * 2^(attempt - 1)
+# Env var: PROOF_RETRY_DELAY_SECS
+proof_retry_delay_secs = 10
+
+# -----------------------------------------------------------------------------
+# Model Configuration
+# -----------------------------------------------------------------------------
+
+# Default model path (legacy single-model support).
+# Prefer using the [[models]] registry below for multi-model setups.
+# Env var: MODEL_PATH
+model_path = "./model.json"
+
+# -----------------------------------------------------------------------------
+# Monitoring and Notifications
+# -----------------------------------------------------------------------------
+
+# Port for the operator health check and metrics HTTP server.
+# Health endpoint: GET http://localhost:{metrics_port}/health
+# Env var: METRICS_PORT
+metrics_port = 9090
+
+# Webhook URL for dispute lifecycle notifications (optional).
+# Receives JSON payloads on challenge, proof submission, and resolution events.
+# Compatible with Slack incoming webhooks.
+# Env var: WEBHOOK_URL
+# webhook_url = "https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK"
+
+# -----------------------------------------------------------------------------
+# Operator Behavior
+# -----------------------------------------------------------------------------
+
+# Dry-run mode: simulate the full flow without broadcasting transactions.
+# Useful for validating configuration against live Sepolia without spending gas.
+# Env var: DRY_RUN
+dry_run = false
+
+# Path to the operator state file for crash recovery.
+# The operator persists its event-watching cursor here so it can resume
+# after restart without replaying all historical events.
+# Env var: STATE_FILE
+state_file = "./operator-state-sepolia.json"
+
+# -----------------------------------------------------------------------------
+# Model Registry
+# -----------------------------------------------------------------------------
+# Each [[models]] entry defines a model the operator can run inference on.
+# The operator validates model_hash on startup if provided.
+# IMPORTANT: [[models]] entries must come last in the file because TOML
+# treats all subsequent key-value pairs as part of the array table.
+
+[[models]]
+name = "default"
+path = "./model.json"
+model_format = "xgboost"
+# Keccak256 hash of the model file (hex). Validated on startup for integrity.
+# Compute with: cast keccak $(cat model.json | xxd -p -c0)
+# model_hash = "0x..."
+
+# Uncomment to add additional models:
+#
+# [[models]]
+# name = "classification-v2"
+# path = "./models/classification_v2.json"
+# model_format = "xgboost"
+# model_hash = "0x..."
+#
+# [[models]]
+# name = "lightgbm-example"
+# path = "./models/lgbm_model.txt"
+# model_format = "lightgbm"

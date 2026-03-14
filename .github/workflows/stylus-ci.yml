@@ -1,5 +1,7 @@
 name: Stylus CI
 
+permissions: read-all
+
 on:
   push:
     branches: [main]

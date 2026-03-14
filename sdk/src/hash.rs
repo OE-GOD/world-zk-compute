@@ -48,8 +48,16 @@ pub fn compute_model_hash_from_file(path: &str) -> std::io::Result<B256> {
 /// The features are JSON-serialized (e.g. `[1.0,2.5,3.7]`) and then hashed.
 /// The JSON serialization must match exactly what `serde_json::to_vec` produces
 /// for a `Vec<f64>` in order to produce the same hash as the enclave.
+///
+/// # Panics
+///
+/// Panics if any feature value is NaN or Infinity (not valid JSON).
 pub fn compute_input_hash(features: &[f64]) -> B256 {
-    let json_bytes = serde_json::to_vec(features).expect("f64 values are always JSON-serializable");
+    assert!(
+        features.iter().all(|f| f.is_finite()),
+        "feature values must be finite (no NaN or Infinity)"
+    );
+    let json_bytes = serde_json::to_vec(features).expect("finite f64 values are JSON-serializable");
     keccak256(&json_bytes)
 }
 
@@ -59,8 +67,16 @@ pub fn compute_input_hash(features: &[f64]) -> B256 {
 /// `keccak256(serde_json::to_vec(&scores))`.
 ///
 /// The scores are JSON-serialized (e.g. `[0.85]`) and then hashed.
+///
+/// # Panics
+///
+/// Panics if any score value is NaN or Infinity (not valid JSON).
 pub fn compute_result_hash(scores: &[f64]) -> B256 {
-    let json_bytes = serde_json::to_vec(scores).expect("f64 values are always JSON-serializable");
+    assert!(
+        scores.iter().all(|f| f.is_finite()),
+        "score values must be finite (no NaN or Infinity)"
+    );
+    let json_bytes = serde_json::to_vec(scores).expect("finite f64 values are JSON-serializable");
     keccak256(&json_bytes)
 }
 

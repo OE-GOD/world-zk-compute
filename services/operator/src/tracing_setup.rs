@@ -239,6 +239,7 @@ fn non_empty_env(key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     /// Helper: clear all OTEL-related env vars to get predictable defaults.
     fn clear_otel_env() {
@@ -251,6 +252,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_tracing_config_defaults() {
         clear_otel_env();
         let config = TracingConfig::from_env();
@@ -261,6 +263,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_tracing_config_from_env_enabled() {
         clear_otel_env();
         std::env::set_var("OTEL_ENABLED", "true");
@@ -278,6 +281,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_tracing_config_otel_enabled_values() {
         clear_otel_env();
 
@@ -312,6 +316,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_tracing_config_new_with_defaults() {
         clear_otel_env();
         let config = TracingConfig::new(None, None);
@@ -337,6 +342,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_non_empty_env_helper() {
         clear_otel_env();
 
@@ -369,6 +375,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_tracing_config_default_trait() {
         let config = TracingConfig::default();
         assert_eq!(config.service_name, DEFAULT_SERVICE_NAME);

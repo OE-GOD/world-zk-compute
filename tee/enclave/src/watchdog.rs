@@ -185,8 +185,9 @@ impl Watchdog {
         }
 
         // Store the snapshot
-        if let Ok(mut guard) = self.latest.write() {
-            *guard = health;
+        match self.latest.write() {
+            Ok(mut guard) => *guard = health,
+            Err(_) => tracing::warn!("Watchdog: RwLock poisoned, health snapshot not updated"),
         }
     }
 
@@ -321,17 +322,14 @@ fn read_rss_bytes() -> u64 {
 /// Maximum number of nonces stored in the LRU cache before the oldest are
 /// evicted. 100K entries at ~64 bytes per nonce string keeps memory under
 /// ~10 MB even with long nonce values.
-#[allow(dead_code)]
 pub const MAX_NONCE_ENTRIES: usize = 100_000;
 
 /// Default maximum age (in seconds) for a request timestamp to be
 /// considered fresh. Requests older than this are rejected.
-#[allow(dead_code)]
 pub const DEFAULT_MAX_REQUEST_AGE_SECS: u64 = 60;
 
 /// Errors returned by replay protection validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum ReplayError {
     /// The nonce has already been seen.
     DuplicateNonce,
@@ -356,14 +354,12 @@ impl std::error::Error for ReplayError {}
 /// Bounded LRU nonce registry backed by a `HashMap` for O(1) lookups and a
 /// `VecDeque` for FIFO eviction ordering. When the registry reaches
 /// [`MAX_NONCE_ENTRIES`], the oldest nonce is evicted to make room.
-#[allow(dead_code)]
 pub struct NonceRegistry {
     set: HashMap<String, ()>,
     order: VecDeque<String>,
     max_entries: usize,
 }
 
-#[allow(dead_code)]
 impl NonceRegistry {
     /// Create a new registry with the given capacity limit.
     pub fn new(max_entries: usize) -> Self {
@@ -396,11 +392,13 @@ impl NonceRegistry {
     }
 
     /// Number of nonces currently stored.
+    #[allow(dead_code)] // Used in tests
     pub fn len(&self) -> usize {
         self.set.len()
     }
 
     /// Whether the registry is empty.
+    #[allow(dead_code)] // Used in tests
     pub fn is_empty(&self) -> bool {
         self.set.is_empty()
     }
@@ -409,7 +407,6 @@ impl NonceRegistry {
 /// Check whether `timestamp_secs` (unix epoch) is within `max_age` seconds
 /// of the current time. Rejects timestamps that are older than `max_age`
 /// **or** more than `max_age` seconds in the future (clock-skew guard).
-#[allow(dead_code)]
 pub fn check_timestamp(timestamp_secs: u64, max_age: u64) -> bool {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -428,7 +425,6 @@ pub fn check_timestamp(timestamp_secs: u64, max_age: u64) -> bool {
 }
 
 /// Simple equality check: does the request's `chain_id` match `expected`?
-#[allow(dead_code)]
 pub fn check_chain_id(request_chain_id: u64, expected: u64) -> bool {
     request_chain_id == expected
 }
@@ -438,7 +434,6 @@ pub fn check_chain_id(request_chain_id: u64, expected: u64) -> bool {
 ///
 /// Thread-safety: wrap in `std::sync::Mutex` or `tokio::sync::Mutex` when
 /// sharing across request handlers.
-#[allow(dead_code)]
 pub struct ReplayProtection {
     nonces: NonceRegistry,
     /// Maximum allowed age of a request timestamp (seconds).
@@ -447,7 +442,6 @@ pub struct ReplayProtection {
     pub expected_chain_id: u64,
 }
 
-#[allow(dead_code)]
 impl ReplayProtection {
     /// Create a new `ReplayProtection` with the given configuration.
     pub fn new(max_request_age_secs: u64, expected_chain_id: u64) -> Self {
@@ -460,6 +454,7 @@ impl ReplayProtection {
 
     /// Create a `ReplayProtection` with default settings (60 s max age,
     /// chain ID 1 for mainnet).
+    #[allow(dead_code)] // Used in tests
     pub fn default_mainnet() -> Self {
         Self::new(DEFAULT_MAX_REQUEST_AGE_SECS, 1)
     }

@@ -64,6 +64,7 @@ from .hash_utils import (
 )
 from .xgboost import XGBoostConverter, XGBoostModel, ModelParseError
 from .lightgbm import LightGBMConverter
+from .networks import NetworkConfig, SEPOLIA, ANVIL, NETWORKS
 
 try:
     from .verifier import (
@@ -135,6 +136,11 @@ __all__ = [
     "ModelParseError",
     # LightGBM
     "LightGBMConverter",
+    # Networks
+    "NetworkConfig",
+    "SEPOLIA",
+    "ANVIL",
+    "NETWORKS",
     # Batch Verifier (requires web3 optional dependency)
     "BatchVerifier",
     "BatchVerifyInput",

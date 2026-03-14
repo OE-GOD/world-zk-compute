@@ -265,3 +265,44 @@ The GKR+Hyrax proof is ABI-encoded and contains:
 | `resolveDispute()` | ~254M | Full GKR DAG proof (needs Arbitrum or batching) |
 | Batch verify (15 txs) | ~13-28M each | Fits within 30M block gas limit |
 | Groth16 hybrid | ~51M | Groth16 verification of EC checks |
+
+## Sepolia Testnet Deployment Topology
+
+```
+                    Ethereum Sepolia (Chain ID: 11155111)
+                    ┌──────────────────────────────────┐
+                    │  TEEMLVerifier                    │
+                    │  ExecutionEngine                  │
+                    │  ProgramRegistry                  │
+                    │  (verifier router: 0x925d...187)  │
+                    └────────────┬─────────────────────┘
+                                 │
+            ┌────────────────────┼────────────────────┐
+            │                    │                    │
+   ┌────────▼──────┐   ┌────────▼──────┐   ┌────────▼──────┐
+   │   Operator    │   │   Enclave     │   │  Warm Prover  │
+   │   :9090       │──▶│   :8080       │   │  :3000        │
+   │  (event poll) │   │  (inference)  │   │  (ZK proofs)  │
+   └───────────────┘   └──────────────┘   └───────────────┘
+            │
+   ┌────────▼──────┐
+   │   Indexer     │
+   │   :8081       │
+   │  (query API)  │
+   └───────────────┘
+```
+
+**Sepolia-specific constraints:**
+
+- TEE-only mode: RemainderVerifier exceeds Sepolia's 24KB contract size limit
+- ZK dispute path available only on Arbitrum Sepolia (421614) or via batch verification
+- Verifier router `0x925d8331ddc0a1F0d96E68CF073DFE1d92b69187` supports risc0 v3.0.x selector
+- Operator polls Sepolia at ~12s intervals (matching block time)
+
+**Deployment methods:**
+
+| Method | Command |
+|--------|---------|
+| Docker Compose | `docker compose -f docker-compose.sepolia.yml --env-file .env.sepolia up -d` |
+| Helm | `helm install worldzk deploy/helm/worldzk -f deploy/helm/worldzk/values-sepolia.yaml` |
+| Kustomize | `kubectl apply -k deploy/k8s/overlays/sepolia/` |

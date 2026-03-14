@@ -10,7 +10,6 @@ mod metrics;
 mod model;
 mod model_registry;
 mod nitro;
-#[allow(dead_code)] // Public API exported via lib.rs; binary will wire in when OTLP is enabled
 mod tracing_setup;
 mod validation;
 mod watchdog;
@@ -30,7 +29,7 @@ use metrics::{Metrics, MetricsSnapshot};
 use model::XgboostModel;
 use model_registry::ModelRegistry;
 use nitro::{AttestationDocument, NitroAttestor};
-use watchdog::{DetailedHealth, Watchdog};
+use watchdog::{DetailedHealth, ReplayProtection, Watchdog};
 
 // ---------------------------------------------------------------------------
 // Shared application state
@@ -126,6 +125,8 @@ struct AppState {
     expected_model_hash: Option<String>,
     /// Multi-model registry for loading/unloading models at runtime.
     model_registry: ModelRegistry,
+    /// Replay protection for /infer requests (nonce dedup + timestamp freshness).
+    replay_protection: std::sync::Mutex<ReplayProtection>,
 }
 
 // ---------------------------------------------------------------------------
@@ -139,6 +140,14 @@ struct InferRequest {
     /// enclave-wide CHAIN_ID env var (default: 1 for Ethereum mainnet).
     #[serde(default)]
     chain_id: Option<u64>,
+    /// Client-provided nonce for replay protection.
+    /// When both nonce and timestamp are provided, the server validates
+    /// uniqueness and freshness before processing.
+    #[serde(default)]
+    nonce: Option<String>,
+    /// Client-provided Unix timestamp (seconds) for replay protection.
+    #[serde(default)]
+    timestamp: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -365,6 +374,21 @@ async fn infer(
             })
             .to_string(),
         ));
+    }
+
+    // Replay protection: validate nonce uniqueness and timestamp freshness
+    if let (Some(ref nonce), Some(timestamp)) = (&req.nonce, req.timestamp) {
+        let mut guard = state
+            .replay_protection
+            .lock()
+            .map_err(|_| lock_error("replay_protection"))?;
+        let chain_id = req.chain_id.unwrap_or(state.attestor.chain_id());
+        if let Err(e) = guard.validate_request(nonce, timestamp, chain_id) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("Replay protection failed: {}", e),
+            ));
+        }
     }
 
     let start = std::time::Instant::now();
@@ -739,7 +763,7 @@ async fn unload_model_handler(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt::init();
+    tracing_setup::init_tracing("worldzk-enclave", None);
 
     let config = Config::from_env();
 
@@ -866,6 +890,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         watchdog,
         expected_model_hash: config.expected_model_hash,
         model_registry,
+        replay_protection: std::sync::Mutex::new(ReplayProtection::new(
+            watchdog::DEFAULT_MAX_REQUEST_AGE_SECS,
+            config.chain_id,
+        )),
     });
 
     // Background attestation refresh (every 5 minutes)
@@ -935,8 +963,13 @@ async fn shutdown_signal() {
 
     #[cfg(unix)]
     {
-        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to install SIGTERM handler");
+        let Ok(mut sigterm) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        else {
+            tracing::warn!("failed to install SIGTERM handler, using ctrl-c only");
+            ctrl_c.await.ok();
+            return;
+        };
         tokio::select! {
             _ = ctrl_c => { tracing::info!("Received SIGINT, shutting down gracefully"); }
             _ = sigterm.recv() => { tracing::info!("Received SIGTERM, shutting down gracefully"); }
@@ -1002,6 +1035,10 @@ mod tests {
             watchdog,
             expected_model_hash: None,
             model_registry,
+            replay_protection: std::sync::Mutex::new(ReplayProtection::new(
+                watchdog::DEFAULT_MAX_REQUEST_AGE_SECS,
+                1, // mainnet chain_id for tests
+            )),
         })
     }
 
@@ -1609,5 +1646,160 @@ mod tests {
         // Cleanup
         let _ = std::fs::remove_dir_all(std::env::temp_dir().join("tee_reload_test_alt"));
         let _ = std::fs::remove_dir_all(std::env::temp_dir().join("tee_reload_test_invalid"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Replay protection integration tests (HTTP handler level)
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_infer_replay_protection_rejects_duplicate_nonce() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let state = test_app_state();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let body = serde_json::json!({
+            "features": [5.0, 3.5, 1.5, 0.3],
+            "nonce": "duplicate-nonce-test-001",
+            "timestamp": now
+        });
+        let body_str = serde_json::to_string(&body).unwrap();
+
+        // First request should succeed.
+        let app = test_app(state.clone());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/infer")
+            .header("content-type", "application/json")
+            .body(Body::from(body_str.clone()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Second request with the same nonce should be rejected.
+        let app2 = test_app(state);
+        let req2 = Request::builder()
+            .method("POST")
+            .uri("/infer")
+            .header("content-type", "application/json")
+            .body(Body::from(body_str))
+            .unwrap();
+        let resp2 = app2.oneshot(req2).await.unwrap();
+        assert_eq!(resp2.status(), StatusCode::BAD_REQUEST);
+
+        let resp_body = axum::body::to_bytes(resp2.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let resp_str = String::from_utf8(resp_body.to_vec()).unwrap();
+        assert!(
+            resp_str.contains("Replay protection failed"),
+            "Expected 'Replay protection failed' in response body, got: {}",
+            resp_str
+        );
+    }
+
+    #[tokio::test]
+    async fn test_infer_replay_protection_allows_different_nonces() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let state = test_app_state();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // First request with nonce A.
+        let body1 = serde_json::json!({
+            "features": [5.0, 3.5, 1.5, 0.3],
+            "nonce": "unique-nonce-aaa",
+            "timestamp": now
+        });
+        let app = test_app(state.clone());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/infer")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body1).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Second request with nonce B (different nonce, same timestamp).
+        let body2 = serde_json::json!({
+            "features": [5.0, 3.5, 1.5, 0.3],
+            "nonce": "unique-nonce-bbb",
+            "timestamp": now
+        });
+        let app2 = test_app(state);
+        let req2 = Request::builder()
+            .method("POST")
+            .uri("/infer")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body2).unwrap()))
+            .unwrap();
+        let resp2 = app2.oneshot(req2).await.unwrap();
+        assert_eq!(resp2.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_infer_without_nonce_skips_replay_check() {
+        let state = test_app_state();
+
+        // Request without nonce or timestamp fields -- backwards compatible.
+        let body = serde_json::json!({
+            "features": [5.0, 3.5, 1.5, 0.3]
+        });
+        let app = test_app(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/infer")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_infer_replay_protection_rejects_expired_timestamp() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let state = test_app_state();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Timestamp 5 minutes (300 seconds) in the past; default max_request_age is 60s.
+        let expired_ts = now.saturating_sub(300);
+
+        let body = serde_json::json!({
+            "features": [5.0, 3.5, 1.5, 0.3],
+            "nonce": "expired-ts-nonce-001",
+            "timestamp": expired_ts
+        });
+        let app = test_app(state);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/infer")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let resp_body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let resp_str = String::from_utf8(resp_body.to_vec()).unwrap();
+        assert!(
+            resp_str.contains("Replay protection failed"),
+            "Expected 'Replay protection failed' in response body, got: {}",
+            resp_str
+        );
     }
 }

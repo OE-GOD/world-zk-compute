@@ -1,0 +1,102 @@
+{{- if .Values.prover.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "worldzk.fullname" . }}-prover
+  labels:
+    {{- include "worldzk.labels" . | nindent 4 }}
+    app.kubernetes.io/component: prover
+spec:
+  replicas: {{ .Values.prover.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "worldzk.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: prover
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "worldzk.labels" . | nindent 8 }}
+        app.kubernetes.io/component: prover
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "worldzk.operator.serviceAccountName" . }}
+      terminationGracePeriodSeconds: {{ .Values.prover.terminationGracePeriodSeconds }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: prover
+          image: "{{ .Values.prover.image.repository }}:{{ .Values.prover.image.tag }}"
+          imagePullPolicy: {{ .Values.prover.image.pullPolicy }}
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+          ports:
+            - name: http
+              containerPort: {{ .Values.prover.port }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "worldzk.configMapName" . }}
+          {{- if .Values.prover.env }}
+          env:
+            {{- range $key, $value := .Values.prover.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          {{- end }}
+          {{- with .Values.prover.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.prover.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.prover.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: proof-storage
+              mountPath: /app/proofs
+            - name: programs
+              mountPath: /app/programs
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: proof-storage
+          emptyDir:
+            sizeLimit: {{ .Values.prover.proofStorageSizeLimit }}
+        - name: programs
+          emptyDir:
+            sizeLimit: {{ .Values.prover.programStorageSizeLimit }}
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

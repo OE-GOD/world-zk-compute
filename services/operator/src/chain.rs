@@ -29,7 +29,6 @@ impl ChainClient {
     }
 
     /// Resolve a dispute by submitting a ZK proof.
-    #[allow(dead_code)]
     pub async fn resolve_dispute(
         &self,
         result_id: B256,
@@ -44,7 +43,6 @@ impl ChainClient {
     }
 
     /// Finalize an unchallenged result after the challenge window.
-    #[allow(dead_code)]
     pub async fn finalize(&self, result_id: B256) -> anyhow::Result<B256> {
         self.tee_verifier.finalize(result_id).await
     }
@@ -56,7 +54,6 @@ impl ChainClient {
     }
 
     /// Register an enclave key.
-    #[allow(dead_code)]
     pub async fn register_enclave(&self, key: Address, image_hash: B256) -> anyhow::Result<B256> {
         self.tee_verifier.register_enclave(key, image_hash).await
     }

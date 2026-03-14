@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Pre-commit hook: run shellcheck on staged shell scripts.
+# Install: git config core.hooksPath .githooks
+
+set -euo pipefail
+
+if ! command -v shellcheck &>/dev/null; then
+    echo "shellcheck not installed, skipping script lint"
+    exit 0
+fi
+
+# Get staged .sh files
+STAGED=$(git diff --cached --name-only --diff-filter=ACM | grep '\.sh$' || true)
+
+if [ -z "$STAGED" ]; then
+    exit 0
+fi
+
+FAIL=0
+for f in $STAGED; do
+    if ! shellcheck "$f" 2>/dev/null; then
+        echo "shellcheck failed: $f"
+        FAIL=1
+    fi
+done
+
+if [ "$FAIL" -ne 0 ]; then
+    echo ""
+    echo "Fix shellcheck warnings before committing."
+    exit 1
+fi

@@ -22,7 +22,7 @@ PRODUCTION_CONTRACTS=(
     "PausableExecutionEngine"
 )
 
-cd "$CONTRACTS_DIR"
+cd "$CONTRACTS_DIR" || exit 1
 
 echo "Building contracts..."
 SIZES_OUTPUT=$(forge build --sizes 2>&1)

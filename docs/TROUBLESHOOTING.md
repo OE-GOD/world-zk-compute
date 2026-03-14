@@ -513,3 +513,63 @@ cd services/operator && cargo test
 # Run E2E test:
 bash scripts/tee-e2e.sh
 ```
+
+---
+
+## Service Health Checks
+
+| Service | Endpoint | Expected Response | Common Failures |
+|---------|----------|-------------------|-----------------|
+| Enclave | `GET /health` | `{"status":"ok","model_loaded":true,"model_hash":"0x..."}` | Model not loaded, wrong model path |
+| Warm Prover | `GET /health` | `{"status":"ok","num_features":N,"model":"..."}` | Binary not found, model parse error |
+| Operator | `GET /health` | `{"status":"ok"}` | RPC unreachable, missing contract addresses |
+| Indexer | `GET /health` | `{"status":"ok"}` | Database connection failed |
+| Indexer | `GET /stats` | `{"total_results":N,"latest_block":N}` | Not synced, no events indexed |
+
+### Health Check Commands
+
+```bash
+# Quick health check for all services
+curl -s http://localhost:8080/health | jq .   # Enclave
+curl -s http://localhost:3000/health | jq .   # Warm Prover
+curl -s http://localhost:9090/health | jq .   # Operator
+curl -s http://localhost:8081/health | jq .   # Indexer
+```
+
+---
+
+## Load Test Troubleshooting
+
+### HTTP 429 (Rate Limited)
+
+The enclave enforces `MAX_REQUESTS_PER_MINUTE` (default: 60). Reduce load test concurrency
+or increase the limit:
+
+```bash
+# Reduce concurrency
+./scripts/load-test-enclave.sh --concurrency 2 --requests 10
+
+# Or increase the limit on the enclave
+MAX_REQUESTS_PER_MINUTE=120 docker compose up enclave
+```
+
+### Connection Refused
+
+Service not running or wrong port. Verify with:
+
+```bash
+docker compose ps              # Check service status
+docker compose logs enclave    # Check for startup errors
+```
+
+### WebSocket Test Failures
+
+The `ws-scale` mode requires either `websocat` or Python 3 with `websockets`:
+
+```bash
+# Install websocat (macOS)
+brew install websocat
+
+# Or install Python websockets
+pip3 install websockets
+```

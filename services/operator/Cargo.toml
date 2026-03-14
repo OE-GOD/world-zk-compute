@@ -28,5 +28,5 @@ toml = "0.8"
 
 [dev-dependencies]
 tempfile = "3"
-tower = { version = "0.5", features = ["util"] }
+serial_test = "3"
 alloy = { version = "1.0", features = ["full", "provider-anvil-node"] }

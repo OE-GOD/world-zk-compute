@@ -135,13 +135,14 @@ fi
 # ── Deploy function ──────────────────────────────────────────────────────────
 deploy_to_chain() {
     local chain_name="$1"
-    local chain_id rpc_url explorer_url explorer_api_key_env gas_multiplier code_size_limit gas_limit
+    local chain_id rpc_url explorer_url explorer_api_key_env code_size_limit gas_limit
 
     chain_id=$(jq -r --arg n "$chain_name" '.chains[] | select(.name == $n) | .chainId' "$CHAINS_FILE")
     rpc_url=$(jq -r --arg n "$chain_name" '.chains[] | select(.name == $n) | .rpcUrl' "$CHAINS_FILE")
     explorer_url=$(jq -r --arg n "$chain_name" '.chains[] | select(.name == $n) | .explorerUrl' "$CHAINS_FILE")
     explorer_api_key_env=$(jq -r --arg n "$chain_name" '.chains[] | select(.name == $n) | .explorerApiKey' "$CHAINS_FILE")
     code_size_limit=$(jq -r --arg n "$chain_name" '.chains[] | select(.name == $n) | .codeSizeLimit' "$CHAINS_FILE")
+    # shellcheck disable=SC2034
     gas_limit=$(jq -r --arg n "$chain_name" '.chains[] | select(.name == $n) | .gasLimit' "$CHAINS_FILE")
 
     echo ""

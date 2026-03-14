@@ -1,0 +1,69 @@
+# ===============================================================================
+# Isolated Test Environment
+#
+# Runs Anvil + services for integration testing without external dependencies.
+#
+# Usage:
+#   docker compose -f docker-compose.test.yml up -d
+#   docker compose -f docker-compose.test.yml run --rm test-runner
+#   docker compose -f docker-compose.test.yml down -v
+# ===============================================================================
+
+services:
+  anvil:
+    image: ghcr.io/foundry-rs/foundry:latest
+    entrypoint: ["anvil", "--host", "0.0.0.0", "--gas-limit", "500000000", "--silent"]
+    ports:
+      - "8545:8545"
+    healthcheck:
+      test: ["CMD-SHELL", "cast block-number --rpc-url http://localhost:8545 || exit 1"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+    networks:
+      - test
+
+  enclave:
+    build:
+      context: ./tee
+    depends_on:
+      anvil:
+        condition: service_healthy
+    environment:
+      MODEL_PATH: /app/model/model.json
+      PORT: "8080"
+      ENCLAVE_PRIVATE_KEY: "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a"
+      CHAIN_ID: "31337"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+    networks:
+      - test
+
+  warm-prover:
+    build:
+      context: ./examples/xgboost-remainder
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3000/health || exit 1"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+    networks:
+      - test
+
+  test-runner:
+    image: ghcr.io/foundry-rs/foundry:latest
+    depends_on:
+      anvil:
+        condition: service_healthy
+      enclave:
+        condition: service_healthy
+    entrypoint: ["sh", "-c", "echo 'Test environment ready. Anvil at http://anvil:8545, Enclave at http://enclave:8080'"]
+    networks:
+      - test
+
+networks:
+  test:
+    driver: bridge

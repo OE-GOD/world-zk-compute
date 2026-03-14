@@ -10,7 +10,17 @@ use axum::routing::get;
 use axum::{Json, Router};
 use serde::Serialize;
 
-use crate::routes::version_header_middleware;
+/// Middleware that adds `X-API-Version: v1` header to all responses.
+async fn version_header_middleware(
+    request: axum::http::Request<axum::body::Body>,
+    next: middleware::Next,
+) -> axum::response::Response {
+    let mut response = next.run(request).await;
+    response
+        .headers_mut()
+        .insert("X-API-Version", header::HeaderValue::from_static("v1"));
+    response
+}
 
 /// Shared metrics state, safe for concurrent access via atomics.
 pub struct MetricsState {
@@ -47,49 +57,41 @@ impl MetricsState {
     }
 
     /// Record a new result submission.
-    #[allow(dead_code)]
     pub fn record_submission(&self) {
         self.total_submissions.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record a new challenge event.
-    #[allow(dead_code)]
     pub fn record_challenge(&self) {
         self.total_challenges.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record a dispute resolution.
-    #[allow(dead_code)]
     pub fn record_dispute_resolved(&self) {
         self.total_disputes_resolved.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record a failed dispute (proof submission failed or timed out).
-    #[allow(dead_code)]
     pub fn record_dispute_failed(&self) {
         self.total_disputes_failed.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record a finalization.
-    #[allow(dead_code)]
     pub fn record_finalization(&self) {
         self.total_finalizations.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record an error.
-    #[allow(dead_code)]
     pub fn record_error(&self) {
         self.total_errors.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Set the current number of active disputes.
-    #[allow(dead_code)]
     pub fn set_active_disputes(&self, count: u64) {
         self.active_disputes.store(count, Ordering::Relaxed);
     }
 
     /// Update the last polled block number.
-    #[allow(dead_code)]
     pub fn set_last_block(&self, block: u64) {
         self.last_block_polled.store(block, Ordering::Relaxed);
     }

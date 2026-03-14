@@ -1,5 +1,7 @@
 name: TEE Nitro Build & Test
 
+permissions: read-all
+
 on:
   push:
     branches: [main]

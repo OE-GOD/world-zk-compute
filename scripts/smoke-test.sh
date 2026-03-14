@@ -35,8 +35,10 @@ DEPLOYER_ADDR="0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 PROVER_KEY="0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
 PROVER_ADDR="0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
 REQUESTER_KEY="0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a"
+# shellcheck disable=SC2034
 REQUESTER_ADDR="0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
 CHALLENGER_KEY="0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6"
+# shellcheck disable=SC2034
 CHALLENGER_ADDR="0x90F79bf6EB2c4f870365E785982E1f101E93b906"
 # Account #4 used as TEE enclave signer
 ENCLAVE_KEY="0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a"
@@ -95,7 +97,8 @@ record_fail() {
 # strip_cast_annotation "1000 [1e3]" -> "1000"
 # cast call often appends human-readable annotations like " [1e15]"
 strip_cast() {
-    echo "$1" | sed 's/ \[.*\]$//'
+    local val="$1"
+    echo "${val%% \[*\]}"
 }
 
 # assert_eq <description> <expected> <actual>
@@ -163,6 +166,7 @@ compute_result_id() {
     cast keccak "$packed"
 }
 
+# shellcheck disable=SC2329
 cleanup() {
     log "Cleaning up..."
     if [ -n "$ANVIL_PID" ] && kill -0 "$ANVIL_PID" 2>/dev/null; then

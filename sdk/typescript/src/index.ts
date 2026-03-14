@@ -132,3 +132,6 @@ export type {
   TreeNode,
   LightGBMModel,
 } from './lightgbm';
+
+export { SEPOLIA_NETWORK, ANVIL_NETWORK, NETWORKS } from './networks';
+export type { NetworkConfig } from './networks';

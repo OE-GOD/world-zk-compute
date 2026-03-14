@@ -1,5 +1,7 @@
 name: Rust CI
 
+permissions: read-all
+
 on:
   push:
     branches: [main]
@@ -300,7 +302,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             examples/xgboost-remainder/target
-          key: ${{ runner.os }}-cargo-remainder-${{ hashFiles('Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-remainder-${{ hashFiles('examples/xgboost-remainder/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-remainder-
 

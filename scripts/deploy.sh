@@ -523,7 +523,7 @@ EOF
 # ---------------------------------------------------------------------------
 print_rollback_info() {
     header "============================================================"
-    printf "  ${RED}DEPLOYMENT INCOMPLETE -- Rollback Info${RESET}\n"
+    printf "  %sDEPLOYMENT INCOMPLETE -- Rollback Info%s\n" "$RED" "$RESET"
     header "============================================================"
     echo ""
 
@@ -792,7 +792,7 @@ printf "  ${BOLD}Deployer:${RESET}   %s\n" "$DEPLOYER_ADDR"
 printf "  ${BOLD}Output:${RESET}     %s\n" "$DEPLOY_FILE"
 
 if [[ "$DRY_RUN" == "true" ]]; then
-    printf "  ${BOLD}Mode:${RESET}       ${YELLOW}DRY RUN (no transactions broadcast)${RESET}\n"
+    printf "  %sMode:%s       %sDRY RUN (no transactions broadcast)%s\n" "$BOLD" "$RESET" "$YELLOW" "$RESET"
 fi
 
 echo ""

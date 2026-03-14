@@ -15,14 +15,15 @@
     {
       "name": "sepolia",
       "chainId": 11155111,
-      "rpcUrl": "https://rpc.sepolia.org",
+      "rpcUrl": "https://ethereum-sepolia-rpc.publicnode.com",
       "explorerUrl": "https://sepolia.etherscan.io",
       "explorerApiKey": "ETHERSCAN_API_KEY",
-      "verifierRouter": "",
+      "verifierRouter": "0x925d8331ddc0a1F0d96E68CF073DFE1d92b69187",
       "gasMultiplier": 1.2,
       "codeSizeLimit": 24576,
       "gasLimit": 30000000,
-      "notes": "Ethereum Sepolia testnet. RemainderVerifier exceeds code size limit — use TEEMLVerifier only."
+      "teeOnly": true,
+      "notes": "Ethereum Sepolia testnet. EIP-170 code size limit (24576 bytes) prevents deploying RemainderVerifier. Only TEEMLVerifier + ExecutionEngine are deployable. risc0 verifier router selector: 73c457ba (v3.0.x)."
     },
     {
       "name": "arbitrum-sepolia",

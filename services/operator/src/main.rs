@@ -6,7 +6,6 @@ mod metrics;
 mod nitro;
 pub mod notifications;
 mod prover;
-mod routes;
 mod store;
 mod tracing_setup;
 mod watcher;
@@ -502,9 +501,7 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
         from_block = next_block;
 
         // Update last polled block
-        metrics_state
-            .last_block_polled
-            .store(from_block, Ordering::Relaxed);
+        metrics_state.set_last_block(from_block);
 
         for event in &events {
             if shutdown.is_shutting_down() {
@@ -527,9 +524,7 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
                         continue;
                     }
 
-                    metrics_state
-                        .total_challenges
-                        .fetch_add(1, Ordering::Relaxed);
+                    metrics_state.record_challenge();
                     tracing::warn!(
                         result_id = %result_id,
                         challenger = %challenger,
@@ -596,7 +591,7 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
                                 "Max concurrent proof submissions reached, skipping (will retry on next poll): {}",
                                 rid_hex
                             );
-                            metrics_state.total_errors.fetch_add(1, Ordering::Relaxed);
+                            metrics_state.record_error();
                             // Don't mark as processed — will be retried on next poll
                             continue;
                         }
@@ -606,15 +601,11 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
                     op_state.processed_event_ids.insert(rid_hex);
                 }
                 TEEEvent::ResultSubmitted { result_id, .. } => {
-                    metrics_state
-                        .total_submissions
-                        .fetch_add(1, Ordering::Relaxed);
+                    metrics_state.record_submission();
                     tracing::info!(result_id = %result_id, "New result submitted");
                 }
                 TEEEvent::ResultFinalized { result_id } => {
-                    metrics_state
-                        .total_finalizations
-                        .fetch_add(1, Ordering::Relaxed);
+                    metrics_state.record_finalization();
                     // Remove from active disputes if present
                     let rid_hex = format!("0x{}", hex::encode(result_id));
                     op_state.active_disputes.remove(&rid_hex);
@@ -639,6 +630,9 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
                 }
             }
         }
+
+        // Update active dispute gauge after processing all events
+        metrics_state.set_active_disputes(op_state.active_disputes.len() as u64);
 
         // Persist state after each poll cycle for crash recovery
         op_state.last_polled_block = from_block;

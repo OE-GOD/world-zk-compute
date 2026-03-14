@@ -83,9 +83,8 @@ echo ""
 if command -v hey &>/dev/null; then
     echo "--- Load Test (using hey) ---"
 
-    AUTH_HEADER=""
     if [ -n "$API_KEY" ]; then
-        AUTH_HEADER="-H \"Authorization: Bearer ${API_KEY}\""
+        : # API key passed via inline expansion below
     fi
 
     BODY="{\"features\": ${FEATURES}}"
@@ -103,9 +102,8 @@ else
 
     TMPDIR=$(mktemp -d)
     BODY="{\"features\": ${FEATURES}}"
-    AUTH_FLAGS=""
     if [ -n "$API_KEY" ]; then
-        AUTH_FLAGS="-H \"Authorization: Bearer ${API_KEY}\""
+        : # API key passed via inline expansion below
     fi
 
     # Send requests in batches
@@ -113,7 +111,6 @@ else
     SUCCESS=0
     ERRORS=0
     RATE_LIMITED=0
-    TOTAL_TIME=0
     TIMES_FILE="$TMPDIR/times.txt"
     touch "$TIMES_FILE"
 

@@ -1,6 +1,7 @@
 # Environment
 .env
 .env.local
+.env.sepolia
 
 # Rust
 target/
@@ -52,6 +53,9 @@ SCALING_ZKVM.md
 
 # Development prompts
 *_PROMPT.md
+
+# Load test results
+load-test-results/
 
 # Local cache
 cache/

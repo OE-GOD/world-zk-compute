@@ -1,5 +1,7 @@
 name: SDK CI (TypeScript + Python)
 
+permissions: read-all
+
 on:
   push:
     branches: [main]

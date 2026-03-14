@@ -20,7 +20,8 @@ Production incident response procedures for World ZK Compute.
 6. [Contract Upgrade Procedure](#6-contract-upgrade-procedure)
 7. [Monitoring Alert Responses](#7-monitoring-alert-responses)
 8. [Scaling](#8-scaling)
-9. [Database Backup and Restore](#9-database-backup-and-restore)
+9. [Load Testing Procedures](#9-load-testing-procedures)
+10. [Database Backup and Restore](#10-database-backup-and-restore)
 
 ---
 
@@ -760,7 +761,76 @@ The indexer uses **SQLite** (single-writer) and runs as **1 replica** with `Recr
 
 ---
 
-## 9. Database Backup and Restore
+## 9. Load Testing Procedures
+
+### Prerequisites
+
+- Running services (Docker Compose or K8s)
+- `curl` and `python3` (required)
+- `hey` (recommended, for latency percentiles): `brew install hey`
+- `websocat` (optional, for indexer WebSocket tests)
+
+### Quick Load Test
+
+```bash
+# Enclave inference — 50 requests, 5 concurrent
+./scripts/load-test-enclave.sh --requests 50 --concurrency 5
+
+# Warm prover single proof — 10 requests, 2 concurrent
+./scripts/load-test-prover.sh --requests 10 --concurrency 2
+
+# Warm prover batch mode — 20 requests, batch size 8
+./scripts/load-test-prover-batch.sh --requests 20 --batch-size 8
+
+# Indexer REST + WebSocket
+./scripts/load-test-indexer.sh --mode rest-health --requests 100
+./scripts/load-test-indexer.sh --mode ws-scale --ws-connections 20 --ws-duration 60
+```
+
+### Docker Compose Load Test
+
+Run the full automated suite:
+
+```bash
+docker compose -f docker-compose.loadtest.yml up
+# Results written to ./load-test-results/
+```
+
+Configure via environment variables:
+
+```bash
+CONCURRENCY=10 REQUESTS=100 docker compose -f docker-compose.loadtest.yml up
+```
+
+### Interpreting Results
+
+| Metric | Healthy Range | Action if Exceeded |
+|--------|--------------|-------------------|
+| P50 latency (enclave) | < 50ms | Check CPU, model size |
+| P95 latency (enclave) | < 200ms | Reduce concurrency or scale horizontally |
+| P50 latency (prover) | < 500ms | Expected — proof generation is CPU-intensive |
+| Error rate | < 1% | Check service logs: `docker compose logs <service>` |
+| 429 rate | 0% | Increase `MAX_REQUESTS_PER_MINUTE` on enclave |
+
+### Pre-Deployment Validation
+
+Before deploying to Sepolia or production:
+
+1. Run health checks: `./scripts/load-test-enclave.sh --health-only`
+2. Run baseline load test with expected concurrency
+3. Verify error rate < 1% and P95 latency within SLO
+4. Check Prometheus metrics during test: `curl http://localhost:9090/metrics`
+
+### Troubleshooting Load Tests
+
+- **Connection refused**: Service not running. Check `docker compose ps`.
+- **HTTP 429**: Rate limit active. Increase `MAX_REQUESTS_PER_MINUTE` or reduce `--concurrency`.
+- **Timeouts**: Prover is CPU-bound. Increase `--timeout` or reduce `--concurrency`.
+- **"model_loaded: false"**: Enclave hasn't loaded a model. Check `MODEL_PATH` env var.
+
+---
+
+## 10. Database Backup and Restore
 
 ### Indexer SQLite Database
 
@@ -943,3 +1013,54 @@ docker compose restart operator
 cast rpc anvil_increaseTime 3601 --rpc-url http://127.0.0.1:8545
 cast rpc anvil_mine 1 --rpc-url http://127.0.0.1:8545
 ```
+
+---
+
+## 10. Load Testing
+
+### When to Run
+
+- Before production releases
+- After infrastructure changes (scaling, new regions)
+- After significant code changes to enclave/operator/indexer
+- Periodically to establish baseline metrics
+
+### Quick Start (Docker Compose)
+
+```bash
+# Full stack load test (starts all services + runs tests)
+docker compose -f docker-compose.loadtest.yml up
+
+# Results are written to ./load-test-results/
+```
+
+### Individual Scripts
+
+```bash
+# Enclave inference (default: 20 requests, 5 concurrent)
+./scripts/load-test-enclave.sh --url http://localhost:8080
+
+# Warm prover batch (default: 10 requests, 3 concurrent, batch size 4)
+./scripts/load-test-prover-batch.sh --url http://localhost:3000
+
+# Indexer REST + WebSocket
+./scripts/load-test-indexer.sh --url http://localhost:8081 --mode rest-health
+./scripts/load-test-indexer.sh --url http://localhost:8081 --mode ws-scale
+```
+
+### Performance Baselines
+
+| Metric | Target | Critical |
+|--------|--------|----------|
+| Enclave P95 latency | < 100ms | > 500ms |
+| Enclave throughput | > 50 req/s | < 10 req/s |
+| Prover batch P95 | < 5s | > 30s |
+| Indexer REST P95 | < 50ms | > 200ms |
+| WS connection success | > 99% | < 95% |
+
+### Troubleshooting
+
+- **HTTP 429 (rate limited):** Reduce `--concurrency` or increase the enclave's `MAX_REQUESTS_PER_MINUTE` env var.
+- **Connection refused:** Service not started or wrong port. Check `docker compose ps`.
+- **Timeouts under load:** Check CPU/memory limits in docker-compose. Scale up or add replicas.
+- **WebSocket failures:** Ensure `websocat` or `python3` with `websockets` is installed for ws-scale mode.

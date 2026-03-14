@@ -16,6 +16,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONTRACTS_DIR="$ROOT_DIR/contracts"
+# shellcheck disable=SC2034
 FIXTURE_PATH="$CONTRACTS_DIR/test/fixtures/phase1a_dag_fixture.json"
 
 ANVIL_PORT=8552
@@ -193,6 +194,7 @@ cast send "$TEE_VERIFIER" "challenge(bytes32)" "$RESULT_ID" \
 ok "Challenged by $CHALLENGER_ADDR (bond: $CHALLENGE_BOND)"
 
 # Verify challenged state
+# shellcheck disable=SC2034
 IS_CHALLENGED=$(cast call "$TEE_VERIFIER" "getResult(bytes32)" "$RESULT_ID" --rpc-url "$RPC_URL" \
     | python3 -c "
 import sys
@@ -229,6 +231,7 @@ ok "Fixture loaded: proof=$(echo -n "$PROOF_HEX" | wc -c | tr -d ' ') chars, gen
 
 # Record balances before resolution
 ADMIN_BAL_BEFORE=$(cast balance "$ADMIN_ADDR" --rpc-url "$RPC_URL")
+# shellcheck disable=SC2034
 CHALLENGER_BAL_BEFORE=$(cast balance "$CHALLENGER_ADDR" --rpc-url "$RPC_URL")
 
 # Call resolveDispute — this triggers verifyDAGProof (>254M gas)

@@ -1,5 +1,7 @@
 name: CI
 
+permissions: read-all
+
 on:
   push:
     branches: [main]
@@ -112,7 +114,7 @@ jobs:
         run: cargo fmt --manifest-path examples/xgboost-remainder/Cargo.toml --check
 
       - name: Run Clippy
-        run: cargo clippy --manifest-path examples/xgboost-remainder/Cargo.toml -- -W warnings
+        run: cargo clippy --manifest-path examples/xgboost-remainder/Cargo.toml -- -D warnings
 
       - name: Run tests
         run: cargo test --manifest-path examples/xgboost-remainder/Cargo.toml
@@ -148,7 +150,7 @@ jobs:
         run: cargo fmt --manifest-path contracts/stylus/gkr-verifier/Cargo.toml --check
 
       - name: Run Clippy (native)
-        run: cargo clippy --manifest-path contracts/stylus/gkr-verifier/Cargo.toml --no-default-features -- -W warnings
+        run: cargo clippy --manifest-path contracts/stylus/gkr-verifier/Cargo.toml --no-default-features -- -D warnings
 
       - name: Run tests (native)
         run: cargo test --manifest-path contracts/stylus/gkr-verifier/Cargo.toml --no-default-features

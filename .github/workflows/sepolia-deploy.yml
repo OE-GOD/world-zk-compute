@@ -1,0 +1,79 @@
+name: Sepolia Deployment
+
+permissions: read-all
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: 'Deploy contracts to Sepolia'
+        type: boolean
+        default: false
+      run_e2e:
+        description: 'Run E2E validation after deployment'
+        type: boolean
+        default: false
+
+jobs:
+  deploy:
+    name: Deploy to Sepolia
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: ${{ inputs.deploy }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Deploy contracts + register enclave
+        env:
+          DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
+          ENCLAVE_PRIVATE_KEY: ${{ secrets.ENCLAVE_PRIVATE_KEY }}
+          ALCHEMY_SEPOLIA_RPC_URL: ${{ secrets.ALCHEMY_SEPOLIA_RPC_URL }}
+          ETHERSCAN_API_KEY: ${{ secrets.ETHERSCAN_API_KEY }}
+        run: bash scripts/deploy-sepolia-tee.sh
+
+      - name: Upload deployment artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sepolia-deployment
+          path: deployments/11155111.json
+          if-no-files-found: warn
+
+  e2e:
+    name: E2E Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [deploy]
+    if: ${{ always() && inputs.run_e2e }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Download deployment artifacts
+        if: ${{ inputs.deploy }}
+        uses: actions/download-artifact@v4
+        with:
+          name: sepolia-deployment
+          path: deployments/
+
+      - name: Run Sepolia E2E
+        env:
+          DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
+          ENCLAVE_PRIVATE_KEY: ${{ secrets.ENCLAVE_PRIVATE_KEY }}
+          ALCHEMY_SEPOLIA_RPC_URL: ${{ secrets.ALCHEMY_SEPOLIA_RPC_URL }}
+          TEE_VERIFIER_ADDRESS: ${{ secrets.TEE_VERIFIER_ADDRESS }}
+          EXECUTION_ENGINE_ADDRESS: ${{ secrets.EXECUTION_ENGINE_ADDRESS }}
+          PROGRAM_REGISTRY_ADDRESS: ${{ secrets.PROGRAM_REGISTRY_ADDRESS }}
+        run: bash scripts/sepolia-e2e.sh

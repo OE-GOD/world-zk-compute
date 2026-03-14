@@ -449,3 +449,46 @@ docker compose down -v
 - [ ] Webhook URL uses HTTPS
 - [ ] Contract uses Ownable2Step (prevents accidental ownership transfer)
 - [ ] No replay attack vector: `CHAIN_ID` set correctly on enclave
+
+---
+
+## Sepolia Testnet Deployment Checklist
+
+### Pre-Deployment
+
+- [ ] Alchemy/Infura API key provisioned for Sepolia
+- [ ] Deployer wallet funded with ~0.06 ETH on Sepolia
+- [ ] `.env.sepolia` created from `.env.sepolia.example` with all keys set
+- [ ] Private keys are NOT committed to version control
+- [ ] Foundry installed (`forge`, `cast` available)
+
+### Deployment
+
+- [ ] Run `source .env.sepolia && ./scripts/deploy-sepolia-tee.sh`
+- [ ] Contract addresses saved to `.env.sepolia` (TEE_VERIFIER_ADDRESS, EXECUTION_ENGINE_ADDRESS)
+- [ ] Etherscan verification completed (if ETHERSCAN_API_KEY set)
+- [ ] Enclave key registered on TEEMLVerifier
+- [ ] Program image ID registered on ProgramRegistry
+
+### Post-Deployment Validation
+
+- [ ] Run `./scripts/check-sepolia-balances.sh` — all wallets funded
+- [ ] Run `./scripts/sepolia-status.sh` — RPC connected, contracts readable
+- [ ] Run `./scripts/sepolia-e2e.sh` — E2E inference + submission works
+- [ ] Start services: `docker compose -f docker-compose.sepolia.yml --env-file .env.sepolia up -d`
+- [ ] All services healthy: `docker compose -f docker-compose.sepolia.yml ps`
+- [ ] Operator polling events: check logs for `ResultSubmitted` detection
+
+### Monitoring
+
+- [ ] Start monitoring: `docker compose -f docker-compose.sepolia.yml -f docker-compose.monitoring.yml --env-file .env.sepolia up -d`
+- [ ] Grafana accessible at `http://localhost:3001`
+- [ ] Import `monitoring/grafana-sepolia.json` dashboard
+- [ ] Verify Prometheus scraping operator/enclave metrics
+
+### Sepolia-Specific Notes
+
+- RemainderVerifier exceeds Sepolia's 24KB code size limit — only TEE path is deployable
+- Verifier router address: `0x925d8331ddc0a1F0d96E68CF073DFE1d92b69187` (risc0 v3.0.x)
+- Sepolia block time: ~12 seconds (same as mainnet)
+- Faucet: https://www.alchemy.com/faucets/ethereum-sepolia

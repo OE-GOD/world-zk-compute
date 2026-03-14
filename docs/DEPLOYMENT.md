@@ -169,6 +169,67 @@ cast send $ENGINE_ADDRESS \
   --limit 20
 ```
 
+## Sepolia Testnet (TEE Path)
+
+The TEE path deploys `TEEMLVerifier` and `ExecutionEngine` to Ethereum Sepolia.
+
+> **Note:** The `RemainderVerifier` contract exceeds the EIP-170 24KB code size limit
+> on Sepolia. Use Arbitrum Sepolia for full ZK verification deployment.
+
+### Prerequisites
+
+- Alchemy or Infura API key for Sepolia RPC
+- Funded deployer wallet (~0.06 ETH on Sepolia)
+- Etherscan API key (optional, for contract verification)
+- Foundry installed
+
+### 1. Configure Environment
+
+```bash
+cp .env.sepolia.example .env.sepolia
+# Edit .env.sepolia:
+#   ALCHEMY_SEPOLIA_RPC_URL=https://eth-sepolia.g.alchemy.com/v2/YOUR_KEY
+#   DEPLOYER_PRIVATE_KEY=0x...
+#   ENCLAVE_PRIVATE_KEY=0x...
+#   ETHERSCAN_API_KEY=...  (optional)
+```
+
+### 2. Deploy Contracts + Register Enclave
+
+```bash
+source .env.sepolia
+./scripts/deploy-sepolia-tee.sh
+```
+
+This deploys contracts, registers the XGBoost program, registers the TEE enclave,
+and optionally funds operator/requester wallets.
+
+### 3. Run E2E Validation
+
+```bash
+source .env.sepolia
+./scripts/sepolia-e2e.sh
+```
+
+### 4. Run Services Against Sepolia
+
+```bash
+docker compose -f docker-compose.sepolia.yml --env-file .env.sepolia up -d
+```
+
+### 5. Check Wallet Balances
+
+```bash
+source .env.sepolia
+./scripts/check-sepolia-balances.sh
+```
+
+### Reference
+
+- risc0 verifier router: `0x925d8331ddc0a1F0d96E68CF073DFE1d92b69187` (v3.0.x, selector `73c457ba`)
+- Chain ID: `11155111`
+- Explorer: https://sepolia.etherscan.io
+
 ## Production Considerations
 
 1. **Use Real RISC Zero Verifier**

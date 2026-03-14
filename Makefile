@@ -14,10 +14,12 @@
         test-admin-cli test-indexer test-watcher-crate test-events-crate \
         build build-contracts build-rust \
         fmt fmt-sol fmt-rust lint lint-sol lint-rust \
-        deploy-local deploy-sepolia deploy-multichain \
-        docker-up docker-down docker-gpu \
+        deploy-local deploy-sepolia deploy-multichain deploy-sepolia-tee \
+        docker-up docker-down docker-gpu docker-sepolia docker-sepolia-down \
+        load-test load-test-enclave load-test-prover load-test-batch load-test-indexer \
+        sepolia-e2e check-sepolia-balances test-sepolia-sdk \
         bench clean verify snapshot help \
-        smoke-test audit docs
+        smoke-test audit docs check preflight sepolia-status
 
 # ── Test ─────────────────────────────────────────────────────────────────────
 
@@ -144,6 +146,49 @@ docker-down: ## Stop Docker Compose stack
 docker-gpu: ## Start GPU-enabled warm prover
 	docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d warm-prover-gpu
 
+# ── Load Testing ─────────────────────────────────────────────────────────────
+
+load-test: ## Run full load test suite via Docker Compose
+	docker compose -f docker-compose.loadtest.yml up
+
+load-test-enclave: ## Load test enclave /infer endpoint
+	bash scripts/load-test-enclave.sh
+
+load-test-prover: ## Load test warm prover /prove endpoint
+	bash scripts/load-test-prover.sh
+
+load-test-batch: ## Load test warm prover /prove/batch endpoint
+	bash scripts/load-test-prover-batch.sh
+
+load-test-indexer: ## Load test indexer REST + WebSocket
+	bash scripts/load-test-indexer.sh
+
+# ── Sepolia ──────────────────────────────────────────────────────────────────
+
+deploy-sepolia-tee: ## Deploy contracts + register program + enclave on Sepolia
+	bash scripts/deploy-sepolia-tee.sh
+
+sepolia-e2e: ## Run E2E validation on live Sepolia
+	bash scripts/sepolia-e2e.sh
+
+docker-sepolia: ## Start services against Sepolia testnet
+	docker compose -f docker-compose.sepolia.yml --env-file .env.sepolia up -d
+
+docker-sepolia-down: ## Stop Sepolia Docker Compose stack
+	docker compose -f docker-compose.sepolia.yml --env-file .env.sepolia down
+
+check-sepolia-balances: ## Check Sepolia wallet balances
+	bash scripts/check-sepolia-balances.sh
+
+sepolia-status: ## Show Sepolia deployment status and balances
+	bash scripts/sepolia-status.sh
+
+test-sepolia-sdk: ## Run all SDK E2E tests against Sepolia
+	bash scripts/sdk-e2e-sepolia.sh
+
+preflight: ## Run CI preflight checks locally
+	bash scripts/ci-preflight.sh
+
 # ── Benchmarks ───────────────────────────────────────────────────────────────
 
 bench: ## Run Rust benchmarks
@@ -203,6 +248,13 @@ clean: ## Clean all build artifacts
 	cargo clean --manifest-path crates/watcher/Cargo.toml 2>/dev/null || true
 	cargo clean --manifest-path crates/events/Cargo.toml 2>/dev/null || true
 	cargo clean --manifest-path examples/xgboost-remainder/Cargo.toml 2>/dev/null || true
+
+# ── Check ────────────────────────────────────────────────────────────────────
+
+check: lint ## Run all validation (lint + script checks + compose validation)
+	bash scripts/test-all-scripts.sh
+	bash scripts/lint-compose.sh
+	bash scripts/check-contract-sizes.sh
 
 # ── Help ─────────────────────────────────────────────────────────────────────
 

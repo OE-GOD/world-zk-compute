@@ -28,6 +28,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 TOTAL_TIMEOUT=120
 WARM_PROVER_PORT=3000
 OPERATOR_PORT=9090
+# shellcheck disable=SC2034
 ANVIL_PORT=8545
 
 # --- Color output -------------------------------------------------------------
@@ -110,6 +111,7 @@ check_timeout() {
 
 # --- Cleanup trap -------------------------------------------------------------
 
+# shellcheck disable=SC2329
 cleanup() {
     local exit_code=$?
     if [ "$NO_CLEANUP" = true ]; then
@@ -178,10 +180,9 @@ cd "$ROOT_DIR"
 wait_for_url() {
     local url="$1"
     local timeout_secs="$2"
-    local label="$3"
-    local i
-
-    for i in $(seq 1 "$timeout_secs"); do
+    # shellcheck disable=SC2034
+    local label="$3"  # used for logging context
+    for _i in $(seq 1 "$timeout_secs"); do
         check_timeout
         if curl -sf "$url" >/dev/null 2>&1; then
             return 0
@@ -208,7 +209,7 @@ log "Step 2/7: Waiting for deployer to finish contract deployment..."
 DEPLOYER_TIMEOUT=90
 DEPLOYER_DONE=false
 
-for i in $(seq 1 "$DEPLOYER_TIMEOUT"); do
+for _i in $(seq 1 "$DEPLOYER_TIMEOUT"); do
     check_timeout
 
     # Check if deployer container has exited

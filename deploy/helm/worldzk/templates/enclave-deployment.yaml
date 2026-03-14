@@ -1,0 +1,100 @@
+{{- if .Values.enclave.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "worldzk.fullname" . }}-enclave
+  labels:
+    {{- include "worldzk.labels" . | nindent 4 }}
+    app.kubernetes.io/component: enclave
+spec:
+  replicas: {{ .Values.enclave.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "worldzk.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: enclave
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "worldzk.labels" . | nindent 8 }}
+        app.kubernetes.io/component: enclave
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "worldzk.operator.serviceAccountName" . }}
+      terminationGracePeriodSeconds: {{ .Values.enclave.terminationGracePeriodSeconds }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: enclave
+          image: "{{ .Values.enclave.image.repository }}:{{ .Values.enclave.image.tag }}"
+          imagePullPolicy: {{ .Values.enclave.image.pullPolicy }}
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+          ports:
+            - name: http
+              containerPort: {{ .Values.enclave.port }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "worldzk.configMapName" . }}
+            - secretRef:
+                name: {{ include "worldzk.secretName" . }}
+          {{- if .Values.enclave.env }}
+          env:
+            {{- range $key, $value := .Values.enclave.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          {{- end }}
+          {{- with .Values.enclave.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.enclave.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.enclave.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: model-storage
+              mountPath: /app/models
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: model-storage
+          emptyDir:
+            sizeLimit: {{ .Values.enclave.modelStorageSizeLimit }}
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

@@ -1,0 +1,118 @@
+# =============================================================================
+# Docker Build Targets for World ZK Compute Services
+#
+# Usage (from project root):
+#   make -f deploy/docker/Makefile.docker build-all
+#   make -f deploy/docker/Makefile.docker push-all REGISTRY=ghcr.io/myorg/world-zk-compute
+#   make -f deploy/docker/Makefile.docker tag VERSION=v1.2.3
+#   make -f deploy/docker/Makefile.docker help
+#
+# All targets assume the working directory is the project root.
+# =============================================================================
+
+# -- Configuration ------------------------------------------------------------
+
+REGISTRY  ?= ghcr.io/worldcoin/world-zk-compute
+VERSION   ?= $(shell git rev-parse --short HEAD)
+TAG       ?= $(VERSION)
+
+# Docker BuildKit for faster, cacheable builds
+export DOCKER_BUILDKIT ?= 1
+
+# -- Phony Targets ------------------------------------------------------------
+
+.PHONY: build-all build-enclave build-operator build-prover build-indexer \
+        push-all push-enclave push-operator push-prover push-indexer \
+        tag tag-enclave tag-operator tag-prover tag-indexer \
+        help
+
+# -- Build Targets -------------------------------------------------------------
+
+## build-all: Build Docker images for all services
+build-all: build-enclave build-operator build-prover build-indexer
+
+## build-enclave: Build the TEE enclave Docker image
+build-enclave:
+	docker build \
+		-t $(REGISTRY)/enclave:$(TAG) \
+		-f tee/Dockerfile \
+		tee/
+
+## build-operator: Build the operator service Docker image (context = project root)
+build-operator:
+	docker build \
+		-t $(REGISTRY)/operator:$(TAG) \
+		-f services/operator/Dockerfile \
+		.
+
+## build-prover: Build the warm prover (xgboost-remainder) Docker image
+build-prover:
+	docker build \
+		-t $(REGISTRY)/warm-prover:$(TAG) \
+		-f examples/xgboost-remainder/Dockerfile \
+		examples/xgboost-remainder/
+
+## build-indexer: Build the indexer service Docker image (context = project root)
+build-indexer:
+	docker build \
+		-t $(REGISTRY)/indexer:$(TAG) \
+		-f services/indexer/Dockerfile \
+		.
+
+# -- Push Targets --------------------------------------------------------------
+
+## push-all: Push all Docker images to the registry
+push-all: push-enclave push-operator push-prover push-indexer
+
+## push-enclave: Push the enclave image
+push-enclave:
+	docker push $(REGISTRY)/enclave:$(TAG)
+
+## push-operator: Push the operator image
+push-operator:
+	docker push $(REGISTRY)/operator:$(TAG)
+
+## push-prover: Push the warm prover image
+push-prover:
+	docker push $(REGISTRY)/warm-prover:$(TAG)
+
+## push-indexer: Push the indexer image
+push-indexer:
+	docker push $(REGISTRY)/indexer:$(TAG)
+
+# -- Tag Targets ---------------------------------------------------------------
+
+## tag: Re-tag all images with VERSION (e.g., make tag VERSION=v1.0.0)
+tag: tag-enclave tag-operator tag-prover tag-indexer
+
+tag-enclave:
+	docker tag $(REGISTRY)/enclave:$(TAG) $(REGISTRY)/enclave:$(VERSION)
+
+tag-operator:
+	docker tag $(REGISTRY)/operator:$(TAG) $(REGISTRY)/operator:$(VERSION)
+
+tag-prover:
+	docker tag $(REGISTRY)/warm-prover:$(TAG) $(REGISTRY)/warm-prover:$(VERSION)
+
+tag-indexer:
+	docker tag $(REGISTRY)/indexer:$(TAG) $(REGISTRY)/indexer:$(VERSION)
+
+# -- Help Target ---------------------------------------------------------------
+
+## help: Show this help message
+help:
+	@echo "World ZK Compute -- Docker Build Targets"
+	@echo ""
+	@echo "Configuration:"
+	@echo "  REGISTRY  = $(REGISTRY)"
+	@echo "  VERSION   = $(VERSION)"
+	@echo "  TAG       = $(TAG)"
+	@echo ""
+	@echo "Targets:"
+	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/^## /  /' | sort
+	@echo ""
+	@echo "Dockerfiles:"
+	@echo "  tee/Dockerfile                          -> enclave"
+	@echo "  services/operator/Dockerfile             -> operator"
+	@echo "  examples/xgboost-remainder/Dockerfile    -> warm-prover"
+	@echo "  services/indexer/Dockerfile               -> indexer"

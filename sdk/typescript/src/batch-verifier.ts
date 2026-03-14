@@ -660,7 +660,10 @@ export interface DAGBatchSession {
   circuitHash: Hex;
   sender: Hex;
   nextBatchIdx: number;
+  totalBatches: number;
   finalized: boolean;
+  finalizeInputIdx: number;
+  finalizeGroupsDone: number;
 }
 
 /**
@@ -810,7 +813,10 @@ export class DAGBatchVerifier {
       circuitHash,
       sender: this.walletClient.account?.address as Hex ?? '0x0' as Hex,
       nextBatchIdx: Number(result[1]),
+      totalBatches: Number(result[2]),
       finalized: result[3],
+      finalizeInputIdx: Number(result[4]),
+      finalizeGroupsDone: Number(result[5]),
     };
   }
 
@@ -848,10 +854,14 @@ export class DAGBatchVerifier {
       totalGas += continueReceipt.gasUsed;
     }
 
-    // Step 3: Finalize until complete.
+    // Step 3: Finalize until complete (with safety limit to prevent infinite loops).
+    const MAX_FINALIZE_ITERATIONS = 100;
     let isComplete = false;
     let finalizeIdx = 0;
     while (!isComplete) {
+      if (finalizeIdx >= MAX_FINALIZE_ITERATIONS) {
+        throw new Error(`Finalize loop exceeded ${MAX_FINALIZE_ITERATIONS} iterations — aborting`);
+      }
       onProgress?.('finalize', finalizeIdx);
       const finalizeResult = await this.finalizeVerification(sessionId, proof);
       txHashes.push(finalizeResult.txHash);

@@ -132,7 +132,7 @@ impl CircuitBreaker {
                 let remaining = self
                     .config
                     .recovery_timeout
-                    .checked_sub(inner.opened_at.unwrap().elapsed())
+                    .checked_sub(inner.opened_at.unwrap_or_else(Instant::now).elapsed())
                     .unwrap_or(Duration::ZERO);
                 Err(CircuitBreakerError::Open {
                     remaining_secs: remaining.as_secs_f64(),

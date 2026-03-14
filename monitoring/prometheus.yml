@@ -1,0 +1,62 @@
+# Prometheus configuration for World ZK Compute services
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
+#
+# Targets are configured for the Docker Compose network where services
+# are accessible by their compose service names.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - "alerting-rules.yml"
+
+scrape_configs:
+  # -- Operator service metrics (Prometheus text format)
+  - job_name: "operator"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["operator:9090"]
+        labels:
+          service: "operator"
+          environment: "local"
+
+  # -- TEE Enclave metrics
+  - job_name: "enclave"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["enclave:8090"]
+        labels:
+          service: "enclave"
+          environment: "local"
+
+  # -- Indexer service metrics
+  - job_name: "indexer"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["indexer:8081"]
+        labels:
+          service: "indexer"
+          environment: "local"
+
+  # -- Warm prover metrics (when enabled)
+  - job_name: "prover"
+    metrics_path: /metrics
+    scrape_interval: 30s
+    static_configs:
+      - targets: ["warm-prover:3000"]
+        labels:
+          service: "prover"
+          environment: "local"
+
+  # -- Private input server (health only)
+  - job_name: "private-input"
+    metrics_path: /health
+    scrape_interval: 30s
+    static_configs:
+      - targets: ["private-input-server:3001"]
+        labels:
+          service: "private-input"
+          environment: "local"

@@ -5,6 +5,6 @@ edition = "2021"
 
 [dependencies]
 tee-events = { path = "../events" }
-alloy = { version = "1.0", features = ["full"] }
-tracing = "0.1"
-anyhow = "1"
+alloy = { workspace = true }
+tracing.workspace = true
+anyhow.workspace = true

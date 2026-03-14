@@ -522,11 +522,8 @@ class TestSubmitResult:
     ECDSA attestation locally.
 
     NOTE: The SDK's ``submit_result`` returns the result ID parsed from the
-    ``ResultSubmitted`` event.  However the on-chain event has 3 indexed
-    params while the SDK ABI declares only 1 indexed, causing a
-    ``MismatchedABI`` warning.  When event decoding fails the SDK falls back
-    to returning the tx hash.  We therefore compute the expected result ID
-    manually using ``_compute_result_id`` for reliable on-chain lookups.
+    ``ResultSubmitted`` event.  The ABI now has correct indexed params so
+    event decoding works reliably.
     """
 
     def test_submit_result_succeeds(
@@ -570,9 +567,7 @@ class TestSubmitResult:
             stake_wei=10**17,
         )
 
-        result_id = _compute_result_id(
-            w3, returned, DEPLOYER_ADDRESS, model_hash, input_hash
-        )
+        result_id = returned
 
         on_chain = deployer_verifier.get_result(result_id)
         assert on_chain.submitted_at > 0
@@ -626,9 +621,7 @@ class TestSubmitResult:
             stake_wei=10**17,
         )
 
-        result_id = _compute_result_id(
-            w3, returned, DEPLOYER_ADDRESS, model_hash, input_hash
-        )
+        result_id = returned
         valid = deployer_verifier.is_result_valid(result_id)
         assert valid is False
 
@@ -659,9 +652,7 @@ class TestChallengeFlow:
             attestation=attestation,
             stake_wei=10**17,
         )
-        result_id = _compute_result_id(
-            w3, returned, DEPLOYER_ADDRESS, model_hash, input_hash
-        )
+        result_id = returned
 
         # Challenge from user2
         tx_hash = user2_verifier.challenge(result_id, bond_wei=10**17)
@@ -691,9 +682,7 @@ class TestChallengeFlow:
             attestation=attestation,
             stake_wei=10**17,
         )
-        result_id = _compute_result_id(
-            w3, returned, DEPLOYER_ADDRESS, model_hash, input_hash
-        )
+        result_id = returned
 
         # Advance time past challenge window (1 hour + 1 second)
         w3.provider.make_request("evm_increaseTime", [3601])
@@ -733,9 +722,7 @@ class TestFinalizeFlow:
             attestation=attestation,
             stake_wei=10**17,
         )
-        result_id = _compute_result_id(
-            w3, returned, DEPLOYER_ADDRESS, model_hash, input_hash
-        )
+        result_id = returned
 
         # Advance time past challenge window (1 hour + 1 second)
         w3.provider.make_request("evm_increaseTime", [3601])
@@ -764,9 +751,7 @@ class TestFinalizeFlow:
             attestation=attestation,
             stake_wei=10**17,
         )
-        result_id = _compute_result_id(
-            w3, returned, DEPLOYER_ADDRESS, model_hash, input_hash
-        )
+        result_id = returned
 
         # Before finalize — not valid yet
         assert deployer_verifier.is_result_valid(result_id) is False
@@ -797,9 +782,7 @@ class TestFinalizeFlow:
             attestation=attestation,
             stake_wei=10**17,
         )
-        result_id = _compute_result_id(
-            w3, returned, DEPLOYER_ADDRESS, model_hash, input_hash
-        )
+        result_id = returned
 
         # Use raw contract .call() which raises on revert (SDK _send_tx swallows reverts)
         contract = _raw_contract(w3, contract_address)
@@ -836,9 +819,7 @@ class TestDisputeTimeout:
             attestation=attestation,
             stake_wei=10**17,
         )
-        result_id = _compute_result_id(
-            w3, returned, DEPLOYER_ADDRESS, model_hash, input_hash
-        )
+        result_id = returned
 
         # Challenge
         user2_verifier.challenge(result_id, bond_wei=10**17)
@@ -874,9 +855,7 @@ class TestDisputeTimeout:
             attestation=attestation,
             stake_wei=10**17,
         )
-        result_id = _compute_result_id(
-            w3, returned, DEPLOYER_ADDRESS, model_hash, input_hash
-        )
+        result_id = returned
 
         # Challenge
         user2_verifier.challenge(result_id, bond_wei=10**17)
@@ -988,9 +967,7 @@ class TestEventWatcherIntegration:
             attestation=attestation,
             stake_wei=10**17,
         )
-        result_id = _compute_result_id(
-            w3, returned, DEPLOYER_ADDRESS, model_hash, input_hash
-        )
+        result_id = returned
 
         block_before = w3.eth.block_number
         user2_verifier.challenge(result_id, bond_wei=10**17)

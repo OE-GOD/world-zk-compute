@@ -1,11 +1,11 @@
 # -- Global configuration shared across all components
 global:
-  # -- Ethereum JSON-RPC endpoint
-  rpcUrl: "http://localhost:8545"
-  # -- TEEMLVerifier contract address
-  contractAddress: "0x0000000000000000000000000000000000000000"
-  # -- Target chain ID (31337=Anvil, 11155111=Sepolia, 1=Mainnet)
-  chainId: "31337"
+  # -- Ethereum JSON-RPC endpoint (REQUIRED — set via --set or values override)
+  rpcUrl: ""
+  # -- TEEMLVerifier contract address (REQUIRED — set via --set or values override)
+  contractAddress: ""
+  # -- Target chain ID (11155111=Sepolia, 1=Mainnet, 31337=Anvil)
+  chainId: ""
   # -- Rust log filter (trace, debug, info, warn, error)
   logLevel: "info"
   # -- TEE enclave service URL
@@ -34,11 +34,11 @@ operator:
   # -- Resource requests and limits
   resources:
     requests:
-      memory: "128Mi"
+      memory: "256Mi"
       cpu: "250m"
     limits:
-      memory: "256Mi"
-      cpu: "500m"
+      memory: "512Mi"
+      cpu: "1000m"
   # -- Liveness probe configuration
   livenessProbe:
     httpGet:
@@ -126,10 +126,138 @@ indexer:
   # -- Termination grace period in seconds
   terminationGracePeriodSeconds: 15
 
+# -- Enclave (TEE) component configuration
+enclave:
+  # -- Enable the enclave deployment
+  enabled: true
+  # -- Number of enclave replicas
+  replicaCount: 1
+  image:
+    # -- Enclave container image repository
+    repository: world-zk-compute/enclave
+    # -- Enclave container image tag
+    tag: latest
+    # -- Image pull policy
+    pullPolicy: IfNotPresent
+  # -- Enclave HTTP port
+  port: 8090
+  # -- Additional environment variables for the enclave
+  env:
+    MODEL_FORMAT: "xgboost"
+    NITRO_ENABLED: "false"
+  # -- Resource requests and limits
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "500m"
+    limits:
+      memory: "512Mi"
+      cpu: "2000m"
+  # -- Liveness probe configuration
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 10
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 3
+  # -- Readiness probe configuration
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+  # -- Size limit for model storage volume
+  modelStorageSizeLimit: 512Mi
+  # -- Termination grace period in seconds
+  terminationGracePeriodSeconds: 15
+
+# -- Warm prover component configuration
+prover:
+  # -- Enable the prover deployment
+  enabled: false
+  # -- Number of prover replicas
+  replicaCount: 1
+  image:
+    # -- Prover container image repository
+    repository: world-zk-compute/prover
+    # -- Prover container image tag
+    tag: latest
+    # -- Image pull policy
+    pullPolicy: IfNotPresent
+  # -- Prover HTTP port
+  port: 8081
+  # -- Additional environment variables for the prover
+  env: {}
+  # -- Resource requests and limits (proving is CPU/memory intensive)
+  resources:
+    requests:
+      memory: "4Gi"
+      cpu: "2000m"
+    limits:
+      memory: "8Gi"
+      cpu: "4000m"
+  # -- Liveness probe configuration
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 3
+  # -- Readiness probe configuration
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  # -- Size limit for proof output storage
+  proofStorageSizeLimit: 2Gi
+  # -- Size limit for program binary storage
+  programStorageSizeLimit: 512Mi
+  # -- Termination grace period in seconds
+  terminationGracePeriodSeconds: 60
+
+# -- Private input server configuration
+privateInput:
+  # -- Enable the private input server
+  enabled: false
+  # -- Number of replicas
+  replicaCount: 1
+  image:
+    # -- Private input server image repository
+    repository: world-zk-compute/private-input-server
+    # -- Private input server image tag
+    tag: latest
+    # -- Image pull policy
+    pullPolicy: IfNotPresent
+  # -- Service port
+  port: 3001
+  # -- Additional environment variables
+  env: {}
+  # -- Resource requests and limits
+  resources:
+    requests:
+      memory: "64Mi"
+      cpu: "100m"
+    limits:
+      memory: "128Mi"
+      cpu: "250m"
+  # -- Termination grace period in seconds
+  terminationGracePeriodSeconds: 10
+
 # -- Secrets configuration
 secrets:
-  # -- Create the secret resource (set to false if managing secrets externally)
-  create: true
+  # -- Create the secret resource (set to true and provide keys, or false to manage externally)
+  create: false
   # -- Name override for the secret (defaults to release fullname + "-secrets")
   nameOverride: ""
   # -- Operator private key (hex with 0x prefix)

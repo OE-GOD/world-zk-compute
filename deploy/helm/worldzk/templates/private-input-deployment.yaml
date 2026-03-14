@@ -1,0 +1,87 @@
+{{- if .Values.privateInput.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "worldzk.fullname" . }}-private-input
+  labels:
+    {{- include "worldzk.labels" . | nindent 4 }}
+    app.kubernetes.io/component: private-input
+spec:
+  replicas: {{ .Values.privateInput.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "worldzk.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: private-input
+  template:
+    metadata:
+      annotations:
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "worldzk.labels" . | nindent 8 }}
+        app.kubernetes.io/component: private-input
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "worldzk.operator.serviceAccountName" . }}
+      terminationGracePeriodSeconds: {{ .Values.privateInput.terminationGracePeriodSeconds }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: private-input
+          image: "{{ .Values.privateInput.image.repository }}:{{ .Values.privateInput.image.tag }}"
+          imagePullPolicy: {{ .Values.privateInput.image.pullPolicy }}
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+          ports:
+            - name: http
+              containerPort: {{ .Values.privateInput.port }}
+              protocol: TCP
+          {{- if .Values.privateInput.env }}
+          env:
+            {{- range $key, $value := .Values.privateInput.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          {{- end }}
+          {{- with .Values.privateInput.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

@@ -287,7 +287,10 @@ impl Storage for SqliteStorage {
     fn get_last_indexed_block(&self) -> u64 {
         let conn = match self.lock() {
             Ok(c) => c,
-            Err(_) => return 0,
+            Err(e) => {
+                tracing::warn!("DB lock poisoned in get_last_indexed_block: {}", e);
+                return 0;
+            }
         };
         conn.query_row(
             "SELECT value FROM indexer_state WHERE key = 'last_indexed_block'",
@@ -312,7 +315,10 @@ impl Storage for SqliteStorage {
     fn get_total_results(&self) -> u64 {
         let conn = match self.lock() {
             Ok(c) => c,
-            Err(_) => return 0,
+            Err(e) => {
+                tracing::warn!("DB lock poisoned in get_total_results: {}", e);
+                return 0;
+            }
         };
         conn.query_row("SELECT COUNT(*) FROM results", [], |r| {
             let v: i64 = r.get(0)?;
@@ -536,8 +542,13 @@ async fn shutdown_signal() {
 
     #[cfg(unix)]
     {
-        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to install SIGTERM handler");
+        let Ok(mut sigterm) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        else {
+            tracing::warn!("failed to install SIGTERM handler, using ctrl-c only");
+            ctrl_c.await.ok();
+            return;
+        };
         tokio::select! {
             _ = ctrl_c => { info!("received SIGINT, shutting down"); }
             _ = sigterm.recv() => { info!("received SIGTERM, shutting down"); }

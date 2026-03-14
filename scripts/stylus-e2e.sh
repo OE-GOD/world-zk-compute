@@ -28,6 +28,7 @@ DEVNODE_DIR="$PROJECT_ROOT/.nitro-devnode"
 RPC_URL="http://localhost:8547"
 # Pre-funded dev account on nitro-devnode
 DEV_PRIVATE_KEY="0xb6b15c8cb491557369f3c7d2c287b053eb229daa9c22138887752191c9520659"
+# shellcheck disable=SC2034
 DEV_ADDRESS="0x3f1Eae7D46d88F08fc2F8ed27FCb2AB183EB2d0E"
 
 # Parse args

@@ -113,7 +113,7 @@ run_sp1() {
     fi
 
     local output
-    output=$(cargo run --release -p "${example}-sp1-script" -- $args 2>&1) || true
+    output=$(cargo run --release -p "${example}-sp1-script" -- "$args" 2>&1) || true
     echo "$output"
 
     # Parse metrics from output (macOS-compatible — no grep -P)

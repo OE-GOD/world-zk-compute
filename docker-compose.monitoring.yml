@@ -1,0 +1,56 @@
+# ===============================================================================
+# Monitoring Stack — Prometheus + Grafana
+#
+# Layers on top of any base docker-compose (local, loadtest, or Sepolia).
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
+#   docker compose -f docker-compose.sepolia.yml --env-file .env.sepolia \
+#     -f docker-compose.monitoring.yml up -d
+#
+# Access:
+#   Prometheus: http://localhost:9091
+#   Grafana:    http://localhost:3001 (admin/admin)
+# ===============================================================================
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerting-rules.yml:/etc/prometheus/alerting-rules.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=7d'
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    ports:
+      - "3001:3000"
+    volumes:
+      - ./monitoring/grafana-operator.json:/var/lib/grafana/dashboards/operator.json:ro
+      - ./monitoring/grafana-enclave.json:/var/lib/grafana/dashboards/enclave.json:ro
+      - ./monitoring/grafana-sepolia.json:/var/lib/grafana/dashboards/sepolia.json:ro
+      - grafana-data:/var/lib/grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/operator.json
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  default:
+    name: worldzk
+    driver: bridge
+
+volumes:
+  prometheus-data:
+  grafana-data:

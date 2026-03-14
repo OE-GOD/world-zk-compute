@@ -54,6 +54,23 @@ SECRETS
   Ensure it exists in namespace {{ .Release.Namespace }} before the pods start.
 {{- end }}
 
+{{- if eq (toString .Values.global.chainId) "11155111" }}
+
+SEPOLIA TESTNET
+---------------
+  Verifier Router: 0x925d8331ddc0a1F0d96E68CF073DFE1d92b69187 (risc0 v3.0.x)
+  Explorer:        https://sepolia.etherscan.io
+
+  Note: RemainderVerifier exceeds Sepolia's 24KB code size limit.
+  Only TEEMLVerifier + ExecutionEngine are deployable on Sepolia.
+
+  Check deployment status:
+    ALCHEMY_SEPOLIA_RPC_URL={{ .Values.global.rpcUrl }} ./scripts/sepolia-status.sh
+
+  Run E2E validation:
+    ALCHEMY_SEPOLIA_RPC_URL={{ .Values.global.rpcUrl }} ./scripts/sepolia-e2e.sh
+{{- end }}
+
 USEFUL COMMANDS
 ---------------
   Upgrade:

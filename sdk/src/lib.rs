@@ -32,6 +32,7 @@ pub mod client;
 pub mod event_watcher;
 pub mod fixture;
 pub mod hash;
+pub mod networks;
 pub mod precompiles;
 pub mod retry;
 pub mod tee;

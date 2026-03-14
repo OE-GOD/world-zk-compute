@@ -1,0 +1,24 @@
+# Sepolia testnet values override
+# Usage: helm install worldzk deploy/helm/worldzk -f deploy/helm/worldzk/values-sepolia.yaml
+
+global:
+  rpcUrl: "https://eth-sepolia.g.alchemy.com/v2/YOUR_KEY"
+  chainId: "11155111"
+  logLevel: "info"
+  enclaveUrl: "http://worldzk-enclave:8080"
+  pollIntervalSecs: "12"
+
+operator:
+  enabled: true
+  replicaCount: 1
+  env:
+    RUST_LOG_FORMAT: "json"
+    OPERATOR_AUTO_DISPUTE: "false"
+    MAX_PROOF_RETRIES: "3"
+
+indexer:
+  enabled: true
+  replicaCount: 1
+
+secrets:
+  create: true

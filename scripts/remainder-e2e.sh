@@ -30,7 +30,7 @@ if ! curl -s "$RPC_URL" -X POST -H "Content-Type: application/json" --data '{"js
     anvil --port "$ANVIL_PORT" --silent &
     ANVIL_PID=$!
     sleep 2
-    trap "kill $ANVIL_PID 2>/dev/null || true" EXIT
+    trap 'kill $ANVIL_PID 2>/dev/null || true' EXIT
 else
     log "Anvil already running on port $ANVIL_PORT"
 fi
@@ -55,6 +55,7 @@ ok "Proof generated: ${PROOF_SIZE} bytes in ${PROVE_TIME}ms, predicted class: ${
 # The proof is bincode-serialized (Rust native format).
 # For on-chain submission, we prepend the "REM1" selector.
 # The raw proof hex is already ABI-wrapped in proof_hex.
+# shellcheck disable=SC2034
 PROOF_HEX=$(python3 -c "import json; d=json.load(open('$PROOF_OUTPUT')); print('0x' + d['proof_hex'])")
 PUBLIC_INPUTS_HEX=$(python3 -c "import json; d=json.load(open('$PROOF_OUTPUT')); print('0x' + d['public_inputs_hex'])")
 

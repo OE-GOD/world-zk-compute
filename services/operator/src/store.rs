@@ -3,7 +3,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// A stored ZK proof ready for on-chain dispute resolution.
-#[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StoredProof {
     pub proof_hex: String,

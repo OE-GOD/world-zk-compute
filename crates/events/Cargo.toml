@@ -6,8 +6,8 @@ edition = "2021"
 [dependencies]
 alloy-primitives = "1.0"
 alloy-sol-types = "1.0"
-serde = { version = "1.0", features = ["derive"] }
-hex = "0.4"
+serde = { workspace = true }
+hex.workspace = true
 
 [dev-dependencies]
-serde_json = "1.0"
+serde_json.workspace = true

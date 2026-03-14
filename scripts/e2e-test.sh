@@ -32,6 +32,7 @@ RPC_URL="http://127.0.0.1:${ANVIL_PORT}"
 
 # Known RISC Zero Verifier Router addresses
 SEPOLIA_VERIFIER_ADDRESS="0x925d8331ddc0a1F0d96E68CF073DFE1d92b69187"
+# shellcheck disable=SC2034
 MAINNET_VERIFIER_ADDRESS="0x8EaB2D97Dfce405A1692a21b3ff3A172d593D319"
 
 # Anvil deterministic accounts (default mnemonic)
@@ -64,6 +65,7 @@ log() { echo "==> $*"; }
 err() { echo "ERROR: $*" >&2; }
 ok()  { echo "  OK: $*"; }
 
+# shellcheck disable=SC2329
 cleanup() {
     log "Cleaning up..."
     if [ -n "$PROVER_PID" ] && kill -0 "$PROVER_PID" 2>/dev/null; then
@@ -86,7 +88,7 @@ usage() {
     echo "  --network  Network to deploy to (default: local)"
     echo "             local   - Anvil + MockVerifier (default)"
     echo "             sepolia - Deploy to Sepolia with real RISC Zero verifier"
-    exit 1
+    exit "${1:-1}"
 }
 
 # ── Parse args ────────────────────────────────────────────────────────────────
@@ -96,7 +98,7 @@ while [[ $# -gt 0 ]]; do
         --example) EXAMPLE="$2"; shift 2 ;;
         --gpu)     GPU=true; shift ;;
         --network) NETWORK="$2"; shift 2 ;;
-        -h|--help) usage ;;
+        -h|--help) usage 0 ;;
         *) err "Unknown option: $1"; usage ;;
     esac
 done
@@ -154,7 +156,7 @@ if [[ "$NETWORK" == "local" ]]; then
     # Kill any existing anvil on that port
     if lsof -ti:${ANVIL_PORT} &>/dev/null; then
         log "Killing existing process on port ${ANVIL_PORT}"
-        kill $(lsof -ti:${ANVIL_PORT}) 2>/dev/null || true
+        kill "$(lsof -ti:${ANVIL_PORT})" 2>/dev/null || true
         sleep 1
     fi
 
@@ -349,6 +351,7 @@ run_example() {
     fi
 
     # Extract tx hash (try multiple field names)
+    # shellcheck disable=SC2034
     TX_HASH=$(echo "$TX_OUTPUT" | grep -i "transactionHash\|hash" | head -1 | awk '{print $NF}')
     log "TX output (last 5 lines):"
     echo "$TX_OUTPUT" | tail -5
@@ -356,7 +359,7 @@ run_example() {
     # Wait until the request is visible on-chain (handles block confirmation delays)
     if [[ "$NETWORK" != "local" ]]; then
         log "Waiting for request to appear on-chain..."
-        for i in $(seq 1 12); do
+        for _i in $(seq 1 12); do
             NEXT_ID=$(cast call --rpc-url "$RPC_URL" "$ENGINE_ADDR" "nextRequestId()(uint256)" 2>/dev/null || echo "1")
             if [ "$NEXT_ID" != "1" ] && [ -n "$NEXT_ID" ]; then
                 log "Request confirmed on-chain (nextRequestId=$NEXT_ID)"
@@ -408,6 +411,7 @@ run_example() {
 
     # Build prover (prover has its own Cargo.toml, not a workspace member)
     log "Building prover (this may take a while on first run)..."
+    # shellcheck disable=SC2086
     cargo build --release --bin world-zk-prover --manifest-path "$ROOT_DIR/prover/Cargo.toml" $PROVE_FEATURES 2>&1 | tail -3
 
     # Run prover in background (run from repo root so ./programs/ is accessible)

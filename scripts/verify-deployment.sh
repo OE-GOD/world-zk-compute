@@ -115,8 +115,10 @@ record_warn() {
 }
 
 # Strip cast formatting annotations like " [1e17]"
+# shellcheck disable=SC2329
 strip_annotation() {
-    echo "$1" | sed 's/ \[.*\]$//'
+    local val="$1"
+    echo "${val%% \[*\]}"
 }
 
 # Shorten an address for display: 0x1234...abcd

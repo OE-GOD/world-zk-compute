@@ -1,0 +1,10 @@
+# Pre-commit hooks for World ZK Compute
+# Install: pip install pre-commit && pre-commit install
+# Run manually: pre-commit run --all-files
+
+repos:
+  - repo: https://github.com/koalaman/shellcheck-precommit
+    rev: v0.10.0
+    hooks:
+      - id: shellcheck
+        files: ^scripts/.*\.sh$

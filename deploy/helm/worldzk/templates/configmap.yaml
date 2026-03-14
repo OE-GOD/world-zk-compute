@@ -5,9 +5,9 @@ metadata:
   labels:
     {{- include "worldzk.labels" . | nindent 4 }}
 data:
-  OPERATOR_RPC_URL: {{ .Values.global.rpcUrl | quote }}
-  TEE_VERIFIER_ADDRESS: {{ .Values.global.contractAddress | quote }}
-  CHAIN_ID: {{ .Values.global.chainId | quote }}
+  OPERATOR_RPC_URL: {{ required "global.rpcUrl is required" .Values.global.rpcUrl | quote }}
+  TEE_VERIFIER_ADDRESS: {{ required "global.contractAddress is required" .Values.global.contractAddress | quote }}
+  CHAIN_ID: {{ required "global.chainId is required" .Values.global.chainId | quote }}
   RUST_LOG: {{ .Values.global.logLevel | quote }}
   ENCLAVE_URL: {{ .Values.global.enclaveUrl | quote }}
   POLL_INTERVAL_SECS: {{ .Values.global.pollIntervalSecs | quote }}

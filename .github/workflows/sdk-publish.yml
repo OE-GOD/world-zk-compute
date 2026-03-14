@@ -281,6 +281,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: version-check
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4

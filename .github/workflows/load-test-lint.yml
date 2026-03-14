@@ -1,0 +1,81 @@
+name: Load Test Script Lint
+
+permissions: read-all
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/load-test-*.sh'
+      - 'scripts/deploy-sepolia-tee.sh'
+      - 'scripts/sepolia-e2e.sh'
+      - 'scripts/sepolia-status.sh'
+      - 'scripts/check-sepolia-balances.sh'
+      - 'scripts/generate-load-report.sh'
+  pull_request:
+    paths:
+      - 'scripts/load-test-*.sh'
+      - 'scripts/deploy-sepolia-tee.sh'
+      - 'scripts/sepolia-e2e.sh'
+      - 'scripts/sepolia-status.sh'
+      - 'scripts/check-sepolia-balances.sh'
+      - 'scripts/generate-load-report.sh'
+  workflow_dispatch:
+
+jobs:
+  lint-scripts:
+    name: Shellcheck + Syntax
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Shellcheck all scripts
+        run: |
+          shellcheck \
+            scripts/load-test-enclave.sh \
+            scripts/load-test-prover.sh \
+            scripts/load-test-prover-batch.sh \
+            scripts/load-test-indexer.sh \
+            scripts/deploy-sepolia-tee.sh \
+            scripts/sepolia-e2e.sh \
+            scripts/sepolia-status.sh \
+            scripts/check-sepolia-balances.sh \
+            scripts/generate-load-report.sh
+
+      - name: Bash syntax check
+        run: |
+          for f in \
+            scripts/load-test-enclave.sh \
+            scripts/load-test-prover.sh \
+            scripts/load-test-prover-batch.sh \
+            scripts/load-test-indexer.sh \
+            scripts/deploy-sepolia-tee.sh \
+            scripts/sepolia-e2e.sh \
+            scripts/sepolia-status.sh \
+            scripts/check-sepolia-balances.sh \
+            scripts/generate-load-report.sh; do
+            echo "Checking $f..."
+            bash -n "$f"
+          done
+
+      - name: Verify --help exits 0
+        run: |
+          for f in \
+            scripts/load-test-enclave.sh \
+            scripts/load-test-prover.sh \
+            scripts/load-test-prover-batch.sh \
+            scripts/load-test-indexer.sh \
+            scripts/deploy-sepolia-tee.sh \
+            scripts/sepolia-e2e.sh \
+            scripts/sepolia-status.sh \
+            scripts/check-sepolia-balances.sh \
+            scripts/generate-load-report.sh; do
+            echo "Testing $f --help..."
+            bash "$f" --help
+          done

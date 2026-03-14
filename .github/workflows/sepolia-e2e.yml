@@ -1,5 +1,7 @@
 name: Sepolia E2E Test (Real Verifier)
 
+permissions: read-all
+
 on:
   workflow_dispatch:
     inputs:

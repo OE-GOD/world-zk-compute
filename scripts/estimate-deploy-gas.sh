@@ -31,7 +31,7 @@ done
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONTRACTS_DIR="$(dirname "$SCRIPT_DIR")/contracts"
 
-cd "$CONTRACTS_DIR"
+cd "$CONTRACTS_DIR" || exit 1
 
 # Get gas price
 if [ -n "$GAS_PRICE_OVERRIDE" ]; then

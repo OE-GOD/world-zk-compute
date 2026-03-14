@@ -300,3 +300,219 @@ fn test_notification_health_status_serializable() {
     assert_eq!(parsed["webhook_url"], "https://hooks.slack.com/test");
     assert_eq!(parsed["total_failures"], 42);
 }
+
+// ─── Circuit breaker integration tests ───────────────────────────────
+
+use std::sync::Arc;
+use std::time::Duration;
+use tee_operator::circuit_breaker::{
+    CircuitBreaker, CircuitBreakerConfig, CircuitBreakerError, State,
+};
+
+/// Simulate RPC failures tripping the breaker, verify it opens, wait for
+/// recovery timeout, verify it transitions to HalfOpen, then record
+/// successes to close it. This mirrors the operator watch loop behavior.
+#[test]
+fn test_circuit_breaker_rpc_recovery_lifecycle() {
+    let cb = CircuitBreaker::new(CircuitBreakerConfig {
+        failure_threshold: 5,
+        recovery_timeout: Duration::from_millis(30),
+        success_threshold_for_close: 2,
+    });
+
+    // Initially closed — RPC polls are flowing normally.
+    assert_eq!(cb.state(), State::Closed);
+    assert!(cb.allow_request().is_ok());
+
+    // Simulate 5 consecutive RPC failures (e.g., provider.get_block_number() errors).
+    for i in 0..5 {
+        cb.record_failure();
+        if i < 4 {
+            assert_eq!(
+                cb.state(),
+                State::Closed,
+                "Should stay closed until threshold"
+            );
+        }
+    }
+
+    // After 5 failures the breaker opens — watch loop should skip polling.
+    assert_eq!(cb.state(), State::Open);
+    let err = cb.allow_request().unwrap_err();
+    assert!(matches!(err, CircuitBreakerError::Open { .. }));
+
+    // Wait for recovery timeout to elapse.
+    std::thread::sleep(Duration::from_millis(40));
+
+    // Breaker should transition to HalfOpen — trial poll allowed.
+    assert_eq!(cb.state(), State::HalfOpen);
+    assert!(cb.allow_request().is_ok());
+
+    // First success in HalfOpen — still HalfOpen (need 2).
+    cb.record_success();
+    assert_eq!(cb.state(), State::HalfOpen);
+
+    // Second success — breaker closes, normal operation resumes.
+    cb.record_success();
+    assert_eq!(cb.state(), State::Closed);
+    assert!(cb.allow_request().is_ok());
+    assert_eq!(cb.consecutive_failures(), 0);
+}
+
+/// Simulate chain failures during dispute resolution: create breaker with
+/// threshold=3, record 3 failures (simulating resolve_with_proof failures),
+/// verify breaker opens, verify allow_request() returns error (so
+/// auto_finalize would be skipped).
+#[test]
+fn test_circuit_breaker_chain_failure_during_dispute() {
+    let cb = CircuitBreaker::new(CircuitBreakerConfig {
+        failure_threshold: 3,
+        recovery_timeout: Duration::from_millis(50),
+        success_threshold_for_close: 1,
+    });
+
+    // Simulate 3 resolve_with_proof failures (chain submission errors).
+    cb.record_failure(); // tx reverted
+    cb.record_failure(); // nonce too low
+    cb.record_failure(); // gas estimation failed
+
+    assert_eq!(cb.state(), State::Open);
+    assert_eq!(cb.trip_count(), 1);
+
+    // auto_finalize checks allow_request() before submitting — should get Open error.
+    let err = cb.allow_request().unwrap_err();
+    assert!(
+        matches!(err, CircuitBreakerError::Open { remaining_secs } if remaining_secs > 0.0),
+        "Expected Open error with positive remaining time"
+    );
+
+    // call_sync should also be rejected while open.
+    let sync_err = cb
+        .call_sync(|| Ok::<_, anyhow::Error>("should not run"))
+        .unwrap_err();
+    assert!(matches!(sync_err, CircuitBreakerError::Open { .. }));
+}
+
+/// Create two independent breakers (rpc_cb and chain_cb with different
+/// configs matching main.rs: rpc default config, chain with threshold=3/
+/// timeout=60s/success=1), trip rpc_cb, verify chain_cb is still closed
+/// and vice versa.
+#[test]
+fn test_circuit_breaker_independent_rpc_and_chain() {
+    // RPC breaker — default config (threshold=5, timeout=30s, success=2).
+    let rpc_cb = CircuitBreaker::new(CircuitBreakerConfig::default());
+
+    // Chain breaker — stricter config for dispute submissions.
+    let chain_cb = CircuitBreaker::new(CircuitBreakerConfig {
+        failure_threshold: 3,
+        recovery_timeout: Duration::from_secs(60),
+        success_threshold_for_close: 1,
+    });
+
+    // Trip the RPC breaker.
+    for _ in 0..5 {
+        rpc_cb.record_failure();
+    }
+    assert_eq!(rpc_cb.state(), State::Open);
+
+    // Chain breaker should be completely unaffected.
+    assert_eq!(chain_cb.state(), State::Closed);
+    assert!(chain_cb.allow_request().is_ok());
+    assert_eq!(chain_cb.consecutive_failures(), 0);
+    assert_eq!(chain_cb.trip_count(), 0);
+
+    // Trip the chain breaker independently.
+    for _ in 0..3 {
+        chain_cb.record_failure();
+    }
+    assert_eq!(chain_cb.state(), State::Open);
+    assert_eq!(chain_cb.trip_count(), 1);
+
+    // RPC breaker state unchanged (still Open from before).
+    assert_eq!(rpc_cb.state(), State::Open);
+    assert_eq!(rpc_cb.trip_count(), 1);
+}
+
+/// Simulate 20 watch loop iterations where every 5th poll "fails"
+/// (record_failure), others succeed (record_success). After the
+/// simulation, verify the breaker stayed closed (failures never reached
+/// threshold of 5 consecutively). Check metrics show 0 trips.
+#[test]
+fn test_circuit_breaker_metrics_during_watch_simulation() {
+    let cb = CircuitBreaker::new(CircuitBreakerConfig {
+        failure_threshold: 5,
+        recovery_timeout: Duration::from_millis(50),
+        success_threshold_for_close: 2,
+    });
+
+    // Simulate 20 watch loop iterations.
+    for i in 1..=20 {
+        if i % 5 == 0 {
+            // Every 5th iteration fails (iterations 5, 10, 15, 20).
+            cb.record_failure();
+        } else {
+            // Other iterations succeed — this resets consecutive failures.
+            cb.record_success();
+        }
+    }
+
+    // Failures never reached 5 consecutive (max was 1 at a time),
+    // so the breaker should have stayed closed the entire time.
+    assert_eq!(cb.state(), State::Closed);
+
+    let metrics = cb.metrics();
+    assert_eq!(metrics.state, State::Closed);
+    assert_eq!(metrics.total_trips, 0, "Breaker should never have tripped");
+    assert_eq!(
+        metrics.state_changes, 0,
+        "No state transitions should have occurred"
+    );
+    // After iteration 20 (a failure), consecutive_failures should be 1.
+    assert_eq!(metrics.consecutive_failures, 1);
+    assert_eq!(metrics.consecutive_successes, 0);
+}
+
+/// Test the async `call()` method: simulate 3 async failures to trip, then
+/// wait for recovery, then 1 success to close. This tests the async API
+/// that `cmd_watch` could use.
+#[tokio::test]
+async fn test_circuit_breaker_call_async_integration() {
+    let cb = Arc::new(CircuitBreaker::new(CircuitBreakerConfig {
+        failure_threshold: 3,
+        recovery_timeout: Duration::from_millis(20),
+        success_threshold_for_close: 1,
+    }));
+
+    // 3 async failures trip the breaker.
+    for i in 0..3 {
+        let result = cb
+            .call(|| async { Err::<(), _>(anyhow::anyhow!("rpc timeout #{}", i)) })
+            .await;
+        assert!(result.is_err());
+    }
+
+    assert_eq!(cb.state(), State::Open);
+    assert_eq!(cb.trip_count(), 1);
+
+    // Next async call is rejected immediately (no closure execution).
+    let rejected = cb
+        .call(|| async { Ok::<_, anyhow::Error>("should not execute") })
+        .await;
+    assert!(matches!(
+        rejected.unwrap_err(),
+        CircuitBreakerError::Open { .. }
+    ));
+
+    // Wait for recovery timeout.
+    tokio::time::sleep(Duration::from_millis(30)).await;
+
+    assert_eq!(cb.state(), State::HalfOpen);
+
+    // One successful async call closes the breaker (success_threshold=1).
+    let result = cb.call(|| async { Ok::<_, anyhow::Error>(42u64) }).await;
+    assert_eq!(result.unwrap(), 42u64);
+
+    assert_eq!(cb.state(), State::Closed);
+    assert_eq!(cb.trip_count(), 1); // Only the original trip, recovery does not increment.
+    assert_eq!(cb.consecutive_failures(), 0);
+}
