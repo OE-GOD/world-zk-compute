@@ -23,9 +23,7 @@ impl ProverMode {
 
 /// Manages ZK proof generation via subprocess or HTTP warm prover.
 pub struct ProofManager {
-    #[allow(dead_code)]
     precompute_bin: String,
-    #[allow(dead_code)]
     model_path: String,
     proofs_dir: PathBuf,
     mode: ProverMode,

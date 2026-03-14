@@ -1,0 +1,36 @@
+---
+# Kustomize overlay for monitoring.
+#
+# Applies to the base manifests at ../../ and patches the ConfigMap
+# with monitoring-specific values. Also adds a Prometheus scrape
+# ConfigMap for service discovery of operator and indexer metrics
+# endpoints.
+#
+# Usage:
+#   kubectl apply -k deploy/k8s/overlays/monitoring
+#
+# Prerequisites:
+#   kubectl create namespace world-zk-monitoring
+#   kubectl -n world-zk-monitoring create secret generic world-zk-secrets \
+#     --from-literal=OPERATOR_PRIVATE_KEY=0x... \
+#     --from-literal=ENCLAVE_PRIVATE_KEY=0x... \
+#     --from-literal=TEE_VERIFIER_ADDRESS=0x...
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: world-zk-monitoring
+
+resources:
+  - ../../
+
+patches:
+  - path: configmap-patch.yaml
+
+configMapGenerator:
+  - name: prometheus-config
+    files:
+      - prometheus.yml=prometheus-config.yaml
+    options:
+      labels:
+        app.kubernetes.io/part-of: world-zk-compute
+        app.kubernetes.io/component: monitoring

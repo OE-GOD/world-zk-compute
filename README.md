@@ -27,14 +27,53 @@ Prover submits proof → Contract verifies → Prover gets paid
 │   ├── script/                Deployment scripts (Local, Testnet, Remainder)
 │   └── stylus/gkr-verifier/  Arbitrum Stylus WASM port (Rust, 85 tests)
 ├── prover/                  Rust prover node (risc0-zkvm v3.0)
+├── services/
+│   ├── operator/              TEE dispute operator (Rust, axum)
+│   ├── indexer/               On-chain event indexer
+│   └── admin-cli/             Admin CLI tool
+├── tee/
+│   └── enclave/               TEE inference enclave (Rust, axum)
 ├── examples/
 │   └── xgboost-remainder/     XGBoost ZKML circuit (34 tests)
 │       └── gnark-wrapper/     Groth16 SNARK wrapper (Go, 14 tests)
 ├── sdk/
-│   ├── python/                Python SDK + XGBoost model parser (37 tests)
-│   └── typescript/            TypeScript REST client
+│   ├── rust (sdk/)            Rust SDK (DAG verifier, TEE, events)
+│   ├── python/                Python SDK + XGBoost model parser (449 tests)
+│   └── typescript/            TypeScript SDK (199 tests)
 ├── programs/                Pre-compiled guest program binaries
-└── scripts/                 E2E test scripts
+├── deploy/                  Kubernetes manifests + Helm charts
+├── monitoring/              Prometheus + Grafana configs
+├── scripts/                 E2E, deployment, and utility scripts
+└── docs/                    Architecture, runbooks, threat model
+```
+
+## TEE + ZK Dispute System
+
+The production path uses TEE inference with ZK dispute fallback:
+
+```
+User → TEE Enclave (inference) → On-chain result submission
+                                  ↓
+                          Challenge window (anyone can dispute)
+                                  ↓
+              If disputed → ZK proof generated → On-chain verification
+              If unchallenged → Result finalized
+```
+
+- **TEE happy path cost:** ~$0.0001 per inference (gas only)
+- **ZK dispute cost:** ~$0.02 (Groth16) or ~$5 (full GKR)
+- **AWS Nitro Enclaves** with P-384 attestation chain verification
+
+### Docker Compose Quickstart
+
+```bash
+# Start everything: Anvil + contracts + TEE + prover + operator
+docker compose up --build
+
+# Run inference via TEE enclave
+curl -X POST http://localhost:8080/infer \
+  -H "Content-Type: application/json" \
+  -d '{"features": [1.0, 2.0, 3.0, 4.0]}'
 ```
 
 ## Test Coverage
@@ -45,8 +84,9 @@ Prover submits proof → Contract verifies → Prover gets paid
 | Stylus (Rust) | 85 | BN254 field/EC ops, Poseidon, GKR, Hyrax, sumcheck, proof decoding |
 | Remainder (Rust) | 34 | XGBoost circuit, GKR prove-and-verify, model parsing, ABI encoding |
 | gnark (Go) | 14 | Groth16 circuit compilation, proving, per-layer num_vars |
-| Python SDK | 37 | XGBoost JSON import, risc0 serde serialization, model validation |
-| **Total** | **337** | All run in CI |
+| TypeScript SDK | 199 | TEE verifier, event watcher, batch verifier, Anvil integration |
+| Python SDK | 449 | Client, verifier, XGBoost, LightGBM, batch, events, CLI |
+| **Total** | **948+** | All run in CI |
 
 ## Architecture
 
@@ -260,6 +300,16 @@ cd prover && cargo build --release
 | `bonsai` | [Bonsai](https://bonsai.xyz) GPU cloud | Production (10-100x faster) |
 | `bonsai-fallback` | Try Bonsai, fall back to local | Hybrid |
 
+## SDKs
+
+| SDK | Install | Docs |
+|-----|---------|------|
+| **Rust** | `world-zk-sdk` in Cargo.toml | [sdk/README.md](sdk/README.md) |
+| **TypeScript** | `npm install @worldzk/sdk` | [sdk/typescript/](sdk/typescript/) |
+| **Python** | `pip install worldzk` | [sdk/python/docs/](sdk/python/docs/) |
+
+All SDKs support: TEE verification, event watching, batch verification, hash computation.
+
 ## CI
 
 All components tested in GitHub Actions on every push/PR:
@@ -267,11 +317,14 @@ All components tested in GitHub Actions on every push/PR:
 | Job | What |
 |-----|------|
 | `solidity` | forge fmt + forge test (167 tests) |
-| `rust` | clippy + cargo test (prover) |
+| `rust` | clippy + cargo test (prover + SDK) |
 | `remainder` | fmt + clippy + cargo test (34 tests) |
 | `stylus` | fmt + clippy + cargo test + WASM build (85 tests) |
 | `gnark` | go test (14 tests) |
-| `python-sdk` | ruff + pytest (37 tests) |
+| `typescript-sdk` | vitest (199 tests) |
+| `python-sdk` | ruff + pytest (449 tests) |
+| `e2e-smoke` | Docker Compose E2E |
+| `security-audit` | cargo audit + npm audit |
 
 ## Deployed Contracts (Sepolia Testnet)
 
@@ -280,6 +333,18 @@ All components tested in GitHub Actions on every push/PR:
 | MockRiscZeroVerifier | `0x0D194f172a3a50e0E293d0d8f21774b1a222362E` |
 | ProgramRegistry | `0x7F9EFc73E50a4f6ec6Ab7B464f6556a89fDeD3ac` |
 | ExecutionEngine | `0x9CFd1CF0e263420e010013373Ec4008d341a483e` |
+
+## Documentation
+
+- [Architecture](docs/ARCHITECTURE.md) — system design and component interaction
+- [API Reference](docs/API.md) — REST API for all services
+- [Contract Addresses](docs/CONTRACT_ADDRESSES.md) — deployed contract registry
+- [SDK Quickstart](docs/SDK_QUICKSTART.md) — getting started with SDKs
+- [Gas Optimization](docs/GAS_OPTIMIZATION.md) — gas profiling and optimization notes
+- [Threat Model](docs/THREAT_MODEL.md) — security analysis
+- [Runbook](docs/RUNBOOK.md) — operational procedures
+- [Upgrade Guide](docs/UPGRADE_GUIDE.md) — contract upgrade process
+- [Troubleshooting](docs/TROUBLESHOOTING.md) — common issues and fixes
 
 ## Roadmap
 
@@ -293,8 +358,9 @@ All components tested in GitHub Actions on every push/PR:
 - [x] **Multi-tx batch verification** (15 txs, all under 30M gas block limit)
 - [x] **Groth16 hybrid verification** (gnark SNARK wrapping, 3416 public inputs)
 - [x] **Stylus WASM port** (full GKR DAG verifier on Arbitrum, ~23.7KB Brotli)
-- [x] **Per-layer num_vars** in gnark circuit (variable-width XGBoost layers)
-- [x] **CI for all components** (Solidity, Rust, Stylus, gnark, Python — 337 tests)
+- [x] **TEE + ZK dispute system** (AWS Nitro attestation, operator service)
+- [x] **Multi-language SDKs** (Rust, TypeScript, Python — 948+ tests)
+- [x] **Production hardening** (CI/CD, monitoring, Docker Compose, Helm charts)
 - [ ] Arbitrum Stylus testnet deployment
 - [ ] Batch verification orchestrator SDK
 - [ ] World Chain mainnet deployment

@@ -1,8 +1,28 @@
+---
+# Kustomize overlay for local development (Anvil).
+#
+# Applies to the base manifests at ../../ and patches the ConfigMap
+# with local-dev values:
+#   - Anvil RPC at http://anvil:8545
+#   - Chain ID 31337 (Anvil default)
+#   - Debug-level Rust logging
+#
+# Usage:
+#   kubectl apply -k deploy/k8s/overlays/local
+#
+# Prerequisites:
+#   kubectl create namespace world-zk
+#   kubectl -n world-zk create secret generic world-zk-secrets \
+#     --from-literal=OPERATOR_PRIVATE_KEY=0xac0974bec... \
+#     --from-literal=ENCLAVE_PRIVATE_KEY=0x59c6995e... \
+#     --from-literal=TEE_VERIFIER_ADDRESS=0x...
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-resources:
-  - ../../base
+namespace: world-zk
 
-patchesStrategicMerge:
-  - configmap-patch.yaml
+resources:
+  - ../../
+
+patches:
+  - path: configmap-patch.yaml

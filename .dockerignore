@@ -1,0 +1,75 @@
+# =============================================================================
+# World ZK Compute -- Docker Build Context Exclusions
+# =============================================================================
+
+# Rust build artifacts
+target/
+*.rs.bk
+
+# Node.js
+node_modules/
+npm-debug.log*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Documentation (not needed in containers)
+*.md
+!Dockerfile*
+docs/
+
+# Contracts build artifacts
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+
+# CI / GitHub
+.github/
+
+# Deployment configs
+deploy/
+deployments/
+
+# Monitoring configs
+monitoring/
+
+# Test suites
+tests/
+**/test_data/
+**/benches/
+
+# Scripts (not needed in containers)
+scripts/
+
+# Environment files (may contain secrets)
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+logs/
+
+# Claude agent state
+.claude/
+
+# Misc
+Makefile
+*.gas-snapshot
+slither.config.json

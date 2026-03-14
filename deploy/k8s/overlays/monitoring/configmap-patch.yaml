@@ -1,0 +1,19 @@
+---
+# Patch the base ConfigMap for monitoring environments.
+# Uses info-level logging with JSON format and a faster poll interval
+# to ensure timely metrics collection and alerting.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: world-zk-config
+data:
+  # Info-level logging for production monitoring.
+  # Keeps logs readable while avoiding debug-level noise.
+  RUST_LOG: "info,operator=info,indexer=info"
+
+  # JSON-structured logs for aggregation by Loki, Datadog, or similar.
+  RUST_LOG_FORMAT: "json"
+
+  # Faster poll interval (6 seconds) for monitoring environments
+  # to reduce latency on event detection and alerting.
+  POLL_INTERVAL_SECS: "6"

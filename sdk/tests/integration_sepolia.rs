@@ -74,8 +74,8 @@ async fn test_sepolia_rpc_connectivity() {
         .as_str()
         .expect("Missing 'result' field in eth_blockNumber response");
 
-    let block_number =
-        u64::from_str_radix(block_hex.trim_start_matches("0x"), 16).expect("Invalid hex block number");
+    let block_number = u64::from_str_radix(block_hex.trim_start_matches("0x"), 16)
+        .expect("Invalid hex block number");
 
     assert!(
         block_number > 0,

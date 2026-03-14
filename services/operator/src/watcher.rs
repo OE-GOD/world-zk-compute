@@ -4,9 +4,4 @@
 //! This module re-exports the public API for backward compatibility with
 //! the rest of the operator codebase.
 
-#[allow(unused_imports)]
-pub use tee_watcher::{
-    parse_log, parse_log_tagged, topic_dispute_resolved, topic_result_challenged,
-    topic_result_expired, topic_result_finalized, topic_result_submitted, EventWatcher, TEEEvent,
-    TaggedEvent,
-};
+pub use tee_watcher::{EventWatcher, TEEEvent};

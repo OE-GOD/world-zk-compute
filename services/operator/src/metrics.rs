@@ -32,6 +32,8 @@ pub struct MetricsState {
     pub total_errors: AtomicU64,
     pub active_disputes: AtomicU64,
     pub last_block_polled: AtomicU64,
+    #[allow(dead_code)] // accessed via .load()/.store(); clippy false positive on atomic fields
+    pub webhook_failures: AtomicU64,
     pub start_time: Instant,
 }
 
@@ -52,6 +54,7 @@ impl MetricsState {
             total_errors: AtomicU64::new(0),
             active_disputes: AtomicU64::new(0),
             last_block_polled: AtomicU64::new(0),
+            webhook_failures: AtomicU64::new(0),
             start_time: Instant::now(),
         }
     }
@@ -96,6 +99,12 @@ impl MetricsState {
         self.last_block_polled.store(block, Ordering::Relaxed);
     }
 
+    /// Update the webhook failure count (synced from WebhookNotifier).
+    #[allow(dead_code)] // called from main.rs cmd_watch; clippy false positive
+    pub fn set_webhook_failures(&self, count: u64) {
+        self.webhook_failures.store(count, Ordering::Relaxed);
+    }
+
     /// Get uptime in seconds.
     #[allow(dead_code)]
     pub fn uptime_secs(&self) -> u64 {
@@ -113,6 +122,7 @@ impl MetricsState {
         let errors = self.total_errors.load(Ordering::Relaxed);
         let active = self.active_disputes.load(Ordering::Relaxed);
         let last_block = self.last_block_polled.load(Ordering::Relaxed);
+        let webhook_failures = self.webhook_failures.load(Ordering::Relaxed);
 
         format!(
             "\
@@ -134,6 +144,9 @@ operator_errors_total {errors}\n\
 # HELP operator_finalizations_total Total result finalizations\n\
 # TYPE operator_finalizations_total counter\n\
 operator_finalizations_total {finalizations}\n\
+# HELP webhook_failures_total Total webhook notification delivery failures\n\
+# TYPE webhook_failures_total counter\n\
+webhook_failures_total {webhook_failures}\n\
 # HELP operator_active_disputes Current number of active disputes\n\
 # TYPE operator_active_disputes gauge\n\
 operator_active_disputes {active}\n\
@@ -165,6 +178,7 @@ struct MetricsJsonResponse {
     total_finalizations: u64,
     total_errors: u64,
     active_disputes: u64,
+    webhook_failures: u64,
 }
 
 async fn health_handler(State(state): State<Arc<MetricsState>>) -> Json<HealthResponse> {
@@ -199,6 +213,7 @@ async fn json_metrics_handler(State(state): State<Arc<MetricsState>>) -> Json<Me
         total_finalizations: state.total_finalizations.load(Ordering::Relaxed),
         total_errors: state.total_errors.load(Ordering::Relaxed),
         active_disputes: state.active_disputes.load(Ordering::Relaxed),
+        webhook_failures: state.webhook_failures.load(Ordering::Relaxed),
     })
 }
 
@@ -258,6 +273,7 @@ mod tests {
         assert_eq!(state.total_errors.load(Ordering::Relaxed), 0);
         assert_eq!(state.active_disputes.load(Ordering::Relaxed), 0);
         assert_eq!(state.last_block_polled.load(Ordering::Relaxed), 0);
+        assert_eq!(state.webhook_failures.load(Ordering::Relaxed), 0);
     }
 
     #[test]
@@ -337,6 +353,7 @@ mod tests {
         assert_eq!(state.total_disputes_failed.load(Ordering::Relaxed), 0);
         assert_eq!(state.total_errors.load(Ordering::Relaxed), 0);
         assert_eq!(state.active_disputes.load(Ordering::Relaxed), 0);
+        assert_eq!(state.webhook_failures.load(Ordering::Relaxed), 0);
     }
 
     #[test]
@@ -533,6 +550,7 @@ mod tests {
         assert_eq!(body["total_errors"], 7);
         assert_eq!(body["active_disputes"], 2);
         assert_eq!(body["last_block_polled"], 200);
+        assert_eq!(body["webhook_failures"], 0);
     }
 
     #[test]
@@ -546,6 +564,7 @@ mod tests {
         state.total_finalizations.store(8, Ordering::Relaxed);
         state.active_disputes.store(4, Ordering::Relaxed);
         state.last_block_polled.store(12345, Ordering::Relaxed);
+        state.webhook_failures.store(6, Ordering::Relaxed);
 
         let output = state.render_prometheus();
 
@@ -581,6 +600,12 @@ mod tests {
         assert!(lines.contains(&"# TYPE operator_finalizations_total counter"));
         assert!(lines.contains(&"operator_finalizations_total 8"));
 
+        assert!(lines.contains(
+            &"# HELP webhook_failures_total Total webhook notification delivery failures"
+        ));
+        assert!(lines.contains(&"# TYPE webhook_failures_total counter"));
+        assert!(lines.contains(&"webhook_failures_total 6"));
+
         // Verify all gauge metrics have correct format
         assert!(
             lines.contains(&"# HELP operator_active_disputes Current number of active disputes")
@@ -615,6 +640,7 @@ mod tests {
         assert!(output.contains("operator_disputes_failed 0"));
         assert!(output.contains("operator_errors_total 0"));
         assert!(output.contains("operator_finalizations_total 0"));
+        assert!(output.contains("webhook_failures_total 0"));
         assert!(output.contains("operator_active_disputes 0"));
         assert!(output.contains("operator_last_block_polled 0"));
     }

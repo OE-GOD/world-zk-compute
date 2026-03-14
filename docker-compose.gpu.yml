@@ -127,7 +127,6 @@ services:
 
 networks:
   backend:
-    driver: bridge
 
 volumes:
   prover-cache:

@@ -7,42 +7,60 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Production hardening phase 2: fuzz tests, invariant tests, improved error handling
+- Monitoring stack: Prometheus scrape configs, Grafana dashboards (operator, enclave, indexer, Sepolia)
+- Comprehensive documentation: architecture, threat model, runbook, troubleshooting, upgrade guide
 
-- **Contracts**: TEEMLVerifier, ExecutionEngine, ProgramRegistry with upgrade support (UUPS proxy)
-- **Contracts**: RemainderVerifier — GKR/Hyrax on-chain verifier for XGBoost circuits
-- **Contracts**: GKRDAGVerifier — arbitrary DAG circuit verification
-- **Contracts**: DAGBatchVerifier — multi-tx batch verification (15 txs for 88-layer circuits)
-- **Contracts**: Groth16 hybrid verification path for both linear and DAG circuits
-- **Contracts**: Stylus WASM port of GKR DAG verifier for Arbitrum (24.5KB compressed)
-- **TEE Enclave**: AWS Nitro attestation with P-384 cert chain verification
-- **TEE Enclave**: Replay protection (nonce dedup + timestamp freshness)
-- **TEE Enclave**: Model registry with XGBoost + LightGBM support
-- **TEE Enclave**: Watchdog, metrics, validation, and graceful shutdown
-- **Operator Service**: Event watcher, auto-dispute, proof submission
-- **Operator Service**: Circuit breaker, rate limiting, deadline monitor
-- **Operator Service**: TOML config, multi-contract watching, webhook notifications
-- **Operator Service**: Metrics (Prometheus), tracing (OpenTelemetry-ready)
-- **Indexer Service**: REST + WebSocket API for on-chain event indexing
-- **Admin CLI**: Contract management tool (pause, unpause, register, revoke, status)
-- **Shared Crates**: `tee-watcher` (event filtering), `tee-events` (ABI types)
-- **Rust SDK**: Client, TEE verifier, event watcher, hash utilities, retry logic
-- **Python SDK**: TEEVerifier, XGBoostConverter, LightGBMConverter, EventWatcher, BatchVerifier, async client, CLI
-- **TypeScript SDK**: TEEVerifier, TEEEventWatcher, BatchVerifier, hash utilities
-- **XGBoost Circuit**: Full inference circuit with leaf selection + comparison verification (Phase 1a+1b)
-- **XGBoost Circuit**: DAG verifier integration (Phase 1c) with 88-layer compute
-- **Prover**: risc0-zkvm v3.0 warm prover with HTTP API
-- **Docker**: Full-stack compose (anvil + deployer + enclave + prover + operator)
-- **Docker**: GPU compose, Sepolia compose, monitoring compose, load test compose, test compose
-- **Helm**: Kubernetes deployment templates (operator, indexer, enclave, prover, private-input)
-- **Helm**: HPA, PDB, NetworkPolicy, canary deployment support
-- **CI**: Rust, contracts, SDK, Stylus, security audit, benchmarks, E2E workflows
-- **Scripts**: Deployment (local, Sepolia, multichain), E2E testing, load testing
-- **Scripts**: Sepolia operations (register, submit, query, dispute, events, status)
-- **Scripts**: Operational tooling (health check, emergency pause, audit, env generation, docker logs)
-- **Scripts**: CI preflight, SDK E2E testing, contract size checking
-- **Monitoring**: Prometheus scrape config, Grafana dashboards (operator, enclave, indexer, Sepolia)
-- **Monitoring**: Alerting rules (operator down, high dispute rate, enclave errors)
-- **Docs**: Architecture, threat model, upgrade guide, runbook, troubleshooting, gas optimization
-- **Docs**: SDK quickstart, Sepolia quickstart, disaster recovery, performance SLOs
-- **Private Input Server**: Minimal Python HTTP server for storing execution inputs
-- **Security**: SECURITY.md, GitHub issue templates, PR template
+## [2026-03-13] - Production Hardening and Documentation
+
+### Added
+- CI workflows for benchmarks, security audit, SDK publishing, and E2E smoke tests
+- LightGBM precompute support in Python SDK
+- Gas profiling tests and contract size checks
+
+### Changed
+- Improved error handling across operator, enclave, and SDK layers
+
+## [2026-03-10] - DAG Batch Verifier, Groth16 Hybrid, and Stylus Port
+
+### Added
+- DAG batch verifier (DAGBatchVerifier.sol) for multi-tx GKR verification under 30M gas per tx
+- DAG hybrid Groth16 verification with on-chain Poseidon transcript replay
+- Stylus WASM port of GKR DAG verifier (52KB raw, 24.5KB Brotli compressed)
+
+### Changed
+- 88-layer XGBoost verification split into 15 transactions (1 setup + 11 continue + 3 finalize)
+- 166 Solidity tests, 14 Go tests, 34 Rust tests passing
+
+## [2026-03-06] - Operator Service and TEE Production Path
+
+### Added
+- Operator service with auto-dispute detection, circuit breaker, and webhook notifications
+- AWS Nitro enclave attestation with P-384 certificate chain verification
+- Admin CLI for contract management and deployment operations
+- Python and TypeScript SDK feature parity (async client, batch verifier, event watcher)
+
+### Changed
+- TEE architecture redesigned: happy path at ~$0.0001/inference with ZK dispute fallback
+
+## [2026-03-01] - XGBoost Circuit and GKR On-Chain Verifier
+
+### Added
+- XGBoost tree inference circuit with leaf selection and comparison verification (Phase 1a+1b)
+- GKR + Hyrax on-chain verifier (PoseidonSponge, SumcheckVerifier, HyraxVerifier, GKRVerifier)
+- DAG verifier for arbitrary circuit topologies (GKRDAGVerifier.sol)
+- XGBoost JSON model import with automatic circuit generation
+
+### Changed
+- GKR direct verification benchmarked at ~7.6M gas (simple) and ~252M gas (88-layer XGBoost DAG)
+
+## [2026-02-20] - Core Infrastructure
+
+### Added
+- Core contracts: TEEMLVerifier, ExecutionEngine, ProgramRegistry with UUPS upgradeability
+- risc0-zkvm v3.0 prover with pre-compiled guest program binaries
+- Foundry test suite for on-chain verification
+- Python, TypeScript, and Rust SDKs
+- Docker Compose for local development and GPU-accelerated proving
+- Sepolia testnet deployment scripts with auto-funding
+- E2E test script supporting local and Sepolia networks

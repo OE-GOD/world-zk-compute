@@ -3,10 +3,17 @@
 #
 # Layers on top of any base docker-compose (local, loadtest, or Sepolia).
 #
-# Usage:
+# Usage (local / default):
 #   docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
+#
+# Usage (Sepolia):
 #   docker compose -f docker-compose.sepolia.yml --env-file .env.sepolia \
 #     -f docker-compose.monitoring.yml up -d
+#   NOTE: When using with Sepolia, the prometheus.yml scrape targets must
+#   match the Sepolia compose service names. The grafana-sepolia.json dashboard
+#   is mounted below and provides Sepolia-specific panels (chain head, gas,
+#   finality). Ensure .env.sepolia sets OPERATOR_RPC_URL to your Sepolia
+#   provider (Alchemy/Infura) and CHAIN_ID=11155111.
 #
 # Access:
 #   Prometheus: http://localhost:9091
@@ -38,6 +45,7 @@ services:
       - ./monitoring/grafana-operator.json:/var/lib/grafana/dashboards/operator.json:ro
       - ./monitoring/grafana-enclave.json:/var/lib/grafana/dashboards/enclave.json:ro
       - ./monitoring/grafana-sepolia.json:/var/lib/grafana/dashboards/sepolia.json:ro
+      - ./monitoring/grafana-indexer.json:/var/lib/grafana/dashboards/indexer.json:ro
       - grafana-data:/var/lib/grafana
     environment:
       GF_SECURITY_ADMIN_PASSWORD: admin

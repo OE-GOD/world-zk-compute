@@ -19,16 +19,6 @@ mod tests {
     use tee_operator::{evict_excess_disputes, prune_and_evict, prune_old_disputes, PruneConfig};
 
     // -----------------------------------------------------------------------
-    // Helper: reusable state store wrapper using the operator's StateStore
-    // -----------------------------------------------------------------------
-
-    #[allow(dead_code)]
-    fn new_state_store(dir: &tempfile::TempDir) -> tee_operator::store::StateStore {
-        let path = dir.path().join("chaos-state.json");
-        tee_operator::store::StateStore::new(path)
-    }
-
-    // -----------------------------------------------------------------------
     // Test 1: Operator handles RPC connection refused gracefully
     //         (circuit breaker opens after threshold failures)
     // -----------------------------------------------------------------------

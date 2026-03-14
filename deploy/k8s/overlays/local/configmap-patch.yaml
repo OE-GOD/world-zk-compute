@@ -1,14 +1,19 @@
+---
+# Patch the base ConfigMap for local development.
+# Points at Anvil (local Ethereum node) with debug logging enabled.
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: worldzk-config
+  name: world-zk-config
 data:
+  # Local Anvil RPC endpoint.
+  # When running Anvil inside the cluster, use the service name.
+  # When running Anvil on the host, use host.docker.internal:8545.
+  OPERATOR_RPC_URL: "http://anvil:8545"
+
+  # Anvil default chain ID.
   CHAIN_ID: "31337"
-  RPC_URL: "http://anvil:8545"
-  LOG_LEVEL: "debug"
+
+  # Debug logging for local development.
+  # Per-module filters: "debug,hyper=info,tower=info"
   RUST_LOG: "debug"
-  RUST_LOG_FORMAT: "pretty"
-  POLL_INTERVAL_SECS: "2"
-  ENCLAVE_URL: "http://worldzk-enclave:8090"
-  PROVER_URL: "http://worldzk-prover:3000"
-  METRICS_PORT: "9090"

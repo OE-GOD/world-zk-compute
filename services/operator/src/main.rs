@@ -634,6 +634,11 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
         // Update active dispute gauge after processing all events
         metrics_state.set_active_disputes(op_state.active_disputes.len() as u64);
 
+        // Sync webhook failure count into Prometheus metrics
+        if let Some(ref n) = notifier {
+            metrics_state.set_webhook_failures(n.notification_failures());
+        }
+
         // Persist state after each poll cycle for crash recovery
         op_state.last_polled_block = from_block;
         if let Err(e) = state_store.save(&op_state) {

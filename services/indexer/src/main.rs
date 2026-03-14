@@ -519,9 +519,9 @@ pub struct HealthResponse {
 // ---------------------------------------------------------------------------
 
 #[derive(Clone)]
-#[allow(dead_code)]
 pub(crate) struct AppState {
     pub(crate) storage: Arc<dyn Storage>,
+    #[allow(dead_code)] // stored for lifetime management; websocket routes receive it separately
     pub(crate) broadcaster: Arc<EventBroadcaster>,
 }
 

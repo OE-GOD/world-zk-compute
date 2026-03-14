@@ -1,0 +1,64 @@
+# Prometheus scrape configuration for World ZK Compute services.
+#
+# Targets the operator (port 8080) and indexer (port 8081) metrics
+# endpoints within the world-zk-monitoring namespace.
+#
+# Mount this ConfigMap as a volume in your Prometheus deployment:
+#   volumes:
+#     - name: prometheus-config
+#       configMap:
+#         name: prometheus-config
+#   volumeMounts:
+#     - name: prometheus-config
+#       mountPath: /etc/prometheus
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+
+scrape_configs:
+  # Operator service metrics
+  - job_name: "worldzk-operator"
+    metrics_path: "/metrics"
+    scheme: "http"
+    static_configs:
+      - targets:
+          - "worldzk-operator.world-zk-monitoring.svc.cluster.local:8080"
+        labels:
+          service: "operator"
+          app: "world-zk-compute"
+
+  # Indexer service metrics
+  - job_name: "worldzk-indexer"
+    metrics_path: "/metrics"
+    scheme: "http"
+    static_configs:
+      - targets:
+          - "worldzk-indexer.world-zk-monitoring.svc.cluster.local:8081"
+        labels:
+          service: "indexer"
+          app: "world-zk-compute"
+
+  # Operator health check (used for uptime alerting)
+  - job_name: "worldzk-operator-health"
+    metrics_path: "/health"
+    scheme: "http"
+    scrape_interval: 30s
+    static_configs:
+      - targets:
+          - "worldzk-operator.world-zk-monitoring.svc.cluster.local:8080"
+        labels:
+          service: "operator"
+          probe: "health"
+
+  # Indexer health check (used for uptime alerting)
+  - job_name: "worldzk-indexer-health"
+    metrics_path: "/health"
+    scheme: "http"
+    scrape_interval: 30s
+    static_configs:
+      - targets:
+          - "worldzk-indexer.world-zk-monitoring.svc.cluster.local:8081"
+        labels:
+          service: "indexer"
+          probe: "health"

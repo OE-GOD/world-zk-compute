@@ -1,62 +1,84 @@
-# Prometheus configuration for World ZK Compute services
+# =============================================================================
+# Prometheus Configuration for World ZK Compute
 #
-# Usage:
+# Scrapes metrics from all services in the stack:
+#   - Operator service    (dispute detection, proof submission, on-chain watcher)
+#   - TEE Enclave         (inference, attestation, model metrics)
+#   - Warm Prover         (risc0/Groth16 proof generation)
+#   - Indexer             (on-chain event indexing, query serving)
+#
+# Usage (Docker Compose):
 #   docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
 #
-# Targets are configured for the Docker Compose network where services
-# are accessible by their compose service names.
+# When running inside Docker Compose, targets use service names (e.g.,
+# "operator:9090"). When running Prometheus standalone against local processes,
+# replace service names with "localhost" below.
+# =============================================================================
 
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+# Alerting rules — thresholds for operator/enclave health, dispute rates, etc.
 rule_files:
   - "alerting-rules.yml"
 
 scrape_configs:
-  # -- Operator service metrics (Prometheus text format)
+  # ---------------------------------------------------------------------------
+  # Operator service (port 9090, /metrics)
+  #
+  # The operator watches on-chain events (ResultSubmitted, ResultChallenged),
+  # triggers TEE re-execution or ZK proof generation when disputes arise,
+  # and submits proof transactions. Exposes counters for challenges detected,
+  # proofs submitted, disputes resolved/failed, and uptime.
+  # ---------------------------------------------------------------------------
   - job_name: "operator"
     metrics_path: /metrics
     static_configs:
-      - targets: ["operator:9090"]
+      - targets: ["localhost:9090"]
         labels:
           service: "operator"
-          environment: "local"
 
-  # -- TEE Enclave metrics
+  # ---------------------------------------------------------------------------
+  # TEE Enclave service (port 8080, /metrics)
+  #
+  # Runs ML inference inside a trusted execution environment (AWS Nitro).
+  # Exposes total inferences, errors, average latency, rate-limited requests,
+  # attestation refresh count, and model metadata (name, trees, features).
+  # ---------------------------------------------------------------------------
   - job_name: "enclave"
     metrics_path: /metrics
     static_configs:
-      - targets: ["enclave:8090"]
+      - targets: ["localhost:8080"]
         labels:
           service: "enclave"
-          environment: "local"
 
-  # -- Indexer service metrics
+  # ---------------------------------------------------------------------------
+  # Warm Prover service (port 3000, /metrics)
+  #
+  # Pre-warmed risc0-zkvm prover that generates Groth16 or STARK proofs
+  # on demand. Keeps the prover process resident to avoid cold-start latency
+  # (~6-7 min per Groth16 proof). Metrics include proof queue depth,
+  # generation time, and success/failure counts.
+  # ---------------------------------------------------------------------------
+  - job_name: "warm-prover"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["localhost:3000"]
+        labels:
+          service: "warm-prover"
+
+  # ---------------------------------------------------------------------------
+  # Indexer service (port 8081, /metrics)
+  #
+  # Indexes on-chain events (ResultSubmitted, ResultChallenged, ResultFinalized)
+  # into a queryable store. Exposes event counters, last indexed block number,
+  # indexer lag, query latency percentiles, WebSocket connection count,
+  # and database size.
+  # ---------------------------------------------------------------------------
   - job_name: "indexer"
     metrics_path: /metrics
     static_configs:
-      - targets: ["indexer:8081"]
+      - targets: ["localhost:8081"]
         labels:
           service: "indexer"
-          environment: "local"
-
-  # -- Warm prover metrics (when enabled)
-  - job_name: "prover"
-    metrics_path: /metrics
-    scrape_interval: 30s
-    static_configs:
-      - targets: ["warm-prover:3000"]
-        labels:
-          service: "prover"
-          environment: "local"
-
-  # -- Private input server (health only)
-  - job_name: "private-input"
-    metrics_path: /health
-    scrape_interval: 30s
-    static_configs:
-      - targets: ["private-input-server:3001"]
-        labels:
-          service: "private-input"
-          environment: "local"
