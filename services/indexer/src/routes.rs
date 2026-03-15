@@ -164,6 +164,34 @@ fn validate_query_params(
         }
     }
 
+    // --- offset + after_id mutual exclusion ---
+    if filter.offset.is_some() && filter.after_id.is_some() {
+        violations.push(
+            "offset and after_id are mutually exclusive; use one or the other".to_string(),
+        );
+    }
+
+    // --- offset + limit deep pagination guard ---
+    if let Some(offset) = filter.offset {
+        let limit = filter.limit.unwrap_or(50);
+        let sum = offset.saturating_add(limit);
+        if sum > MAX_OFFSET_PLUS_LIMIT {
+            violations.push(format!(
+                "offset + limit must not exceed {MAX_OFFSET_PLUS_LIMIT}, got {sum}"
+            ));
+        }
+    }
+
+    // --- after_id length ---
+    if let Some(ref after_id) = filter.after_id {
+        if after_id.len() > MAX_ID_LENGTH {
+            violations.push(format!(
+                "after_id too long ({} chars); maximum is {MAX_ID_LENGTH}",
+                after_id.len()
+            ));
+        }
+    }
+
     if violations.is_empty() {
         Ok(())
     } else {
@@ -242,17 +270,54 @@ pub(crate) async fn handle_list_results(
     State(state): State<AppState>,
     RawQuery(raw_query): RawQuery,
     Query(filter): Query<ResultFilter>,
-) -> Result<Json<Vec<ResultRow>>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
     validate_raw_query(&raw_query)?;
     validate_query_params(&filter)?;
-    state.storage.list_results(&filter).map(Json).map_err(|e| {
+
+    let map_storage_err = |e: anyhow::Error| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
                 error: e.to_string(),
             }),
         )
-    })
+    };
+
+    // Get the total count of matching results (ignoring limit/offset/after_id).
+    let total_count = state
+        .storage
+        .count_results(&filter)
+        .map_err(map_storage_err)?;
+
+    // Fetch the actual page of results.
+    let rows = state
+        .storage
+        .list_results(&filter)
+        .map_err(map_storage_err)?;
+
+    // Determine if there are more results beyond this page.
+    let limit = filter.limit.unwrap_or(50).min(1000) as u64;
+    let offset = filter.offset.unwrap_or(0) as u64;
+    let has_more = if filter.after_id.is_some() {
+        // For cursor-based pagination, there are more if we got a full page.
+        rows.len() as u64 >= limit
+    } else {
+        // For offset-based pagination, compare offset + limit against total.
+        offset + limit < total_count
+    };
+
+    let mut response = Json(rows).into_response();
+    let headers = response.headers_mut();
+
+    if let Ok(val) = HeaderValue::from_str(&total_count.to_string()) {
+        headers.insert(HeaderName::from_static("x-total-count"), val);
+    }
+    headers.insert(
+        HeaderName::from_static("x-has-more"),
+        HeaderValue::from_static(if has_more { "true" } else { "false" }),
+    );
+
+    Ok(response)
 }
 
 pub(crate) async fn handle_get_result(

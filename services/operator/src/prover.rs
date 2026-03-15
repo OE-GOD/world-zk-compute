@@ -41,6 +41,9 @@ pub struct ProofManager {
 }
 
 impl ProofManager {
+    /// Create a new ProofManager. Reads `PROVER_TIMEOUT_SECS` from env for
+    /// the HTTP request timeout. Prefer `with_config_timeout()` when the
+    /// caller already has a resolved config value.
     pub fn new(
         precompute_bin: &str,
         model_path: &str,
@@ -48,16 +51,57 @@ impl ProofManager {
         max_retries: u32,
         retry_delay_secs: u64,
     ) -> Self {
-        let mode = ProverMode::from_env();
-
         let request_timeout = std::env::var("PROVER_TIMEOUT_SECS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(DEFAULT_PROVER_REQUEST_TIMEOUT_SECS);
 
+        Self::build_client(
+            precompute_bin,
+            model_path,
+            proofs_dir,
+            max_retries,
+            retry_delay_secs,
+            request_timeout,
+        )
+    }
+
+    /// Create a ProofManager with an explicit HTTP request timeout (seconds).
+    ///
+    /// This avoids redundant env-var reads when the caller already loaded
+    /// the timeout value via `Config::from_env()`.
+    pub fn with_config_timeout(
+        precompute_bin: &str,
+        model_path: &str,
+        proofs_dir: &str,
+        max_retries: u32,
+        retry_delay_secs: u64,
+        request_timeout_secs: u64,
+    ) -> Self {
+        Self::build_client(
+            precompute_bin,
+            model_path,
+            proofs_dir,
+            max_retries,
+            retry_delay_secs,
+            request_timeout_secs,
+        )
+    }
+
+    /// Internal builder shared by all constructors.
+    fn build_client(
+        precompute_bin: &str,
+        model_path: &str,
+        proofs_dir: &str,
+        max_retries: u32,
+        retry_delay_secs: u64,
+        request_timeout_secs: u64,
+    ) -> Self {
+        let mode = ProverMode::from_env();
+
         let http_client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(DEFAULT_PROVER_CONNECT_TIMEOUT_SECS))
-            .timeout(Duration::from_secs(request_timeout))
+            .timeout(Duration::from_secs(request_timeout_secs))
             .build()
             .expect("failed to build prover HTTP client");
 
@@ -66,7 +110,7 @@ impl ProofManager {
             mode,
             max_retries,
             retry_delay_secs,
-            request_timeout,
+            request_timeout_secs,
         );
         Self {
             precompute_bin: precompute_bin.to_string(),

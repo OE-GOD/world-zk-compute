@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -284,6 +284,54 @@ pub async fn serve_metrics(state: Arc<MetricsState>, port: u16) {
     };
 
     if let Err(e) = axum::serve(listener, app).await {
+        tracing::error!("Metrics server error: {}", e);
+    }
+}
+
+/// Serve the metrics HTTP server with graceful shutdown support.
+///
+/// Listens on `0.0.0.0:{port}` and shuts down when the `shutdown_rx` watch
+/// channel receives `true`. The `_shutdown_state` parameter is accepted for
+/// API compatibility with the operator's `ShutdownState` but is not used
+/// directly — shutdown is signalled via the watch channel.
+pub async fn serve_metrics_with_shutdown<S: Send + Sync + 'static>(
+    state: Arc<MetricsState>,
+    port: u16,
+    _shutdown_state: Arc<S>,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) {
+    let versioned = Router::new()
+        .route("/health", get(health_handler))
+        .route("/ready", get(ready_handler))
+        .route("/metrics", get(prometheus_metrics_handler))
+        .route("/metrics/json", get(json_metrics_handler))
+        .layer(middleware::from_fn(version_header_middleware));
+
+    let app = Router::new()
+        .route("/health", get(health_handler))
+        .route("/ready", get(ready_handler))
+        .route("/metrics", get(prometheus_metrics_handler))
+        .route("/metrics/json", get(json_metrics_handler))
+        .nest("/api/v1", versioned)
+        .with_state(state);
+
+    let addr = format!("0.0.0.0:{}", port);
+    tracing::info!("Metrics server (with shutdown) listening on {}", addr);
+
+    let listener = match tokio::net::TcpListener::bind(&addr).await {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::error!("Failed to bind metrics server on {}: {}", addr, e);
+            return;
+        }
+    };
+
+    let server = axum::serve(listener, app).with_graceful_shutdown(async move {
+        let _ = shutdown_rx.wait_for(|v| *v).await;
+        tracing::info!("Metrics server shutting down");
+    });
+
+    if let Err(e) = server.await {
         tracing::error!("Metrics server error: {}", e);
     }
 }

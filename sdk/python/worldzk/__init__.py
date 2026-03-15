@@ -101,6 +101,11 @@ try:
         ExecutionRequestInfo,
         EXECUTION_ENGINE_ABI,
     )
+    from .prover_registry import (
+        ProverRegistryClient,
+        ProverInfo,
+        PROVER_REGISTRY_ABI,
+    )
 except ImportError:
     pass  # web3 not installed
 
@@ -180,6 +185,10 @@ __all__ = [
     "ExecutionEngineClient",
     "ExecutionRequestInfo",
     "EXECUTION_ENGINE_ABI",
+    # ProverRegistry (requires web3 optional dependency)
+    "ProverRegistryClient",
+    "ProverInfo",
+    "PROVER_REGISTRY_ABI",
     # Hash utilities
     "compute_model_hash",
     "compute_model_hash_from_bytes",

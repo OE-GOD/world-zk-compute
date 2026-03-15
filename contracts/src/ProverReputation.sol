@@ -72,6 +72,14 @@ contract ProverReputation {
     uint256 public constant DECAY_PERIOD = 30 days;
     uint256 public constant DECAY_RATE = 100; // -1% per period of inactivity
 
+    /// @notice Maximum elapsed time considered for decay calculation (365 days).
+    /// @dev If a prover has been inactive longer than MAX_DECAY_PERIOD, the elapsed
+    /// time is clamped to this value. This prevents the score from decaying fully to
+    /// zero for extremely long absences (365 days / 30 days = 12 periods, retaining
+    /// ~88.6% of the score via 0.99^12). It also bounds the loop iteration count,
+    /// providing a tighter gas ceiling than the 120-iteration fallback cap.
+    uint256 public constant MAX_DECAY_PERIOD = 365 days;
+
     // Cooldown constraints
     uint256 public constant MIN_COOLDOWN = 1 minutes;
     uint256 public constant MAX_COOLDOWN = 30 days;
@@ -131,6 +139,7 @@ contract ProverReputation {
     error InvalidScore();
     error InvalidCooldown();
     error TimestampOverflow();
+    error InvalidTimestamp();
     error SlashCooldownActive();
 
     // ========================================================================

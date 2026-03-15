@@ -318,12 +318,13 @@ async fn cmd_submit(
     );
 
     // 4. Trigger proof pre-computation (best-effort, uses warm prover if PROVER_URL is set)
-    let proof_mgr = ProofManager::new(
+    let proof_mgr = ProofManager::with_config_timeout(
         &config.precompute_bin,
         &model.path,
         &config.proofs_dir,
         config.max_proof_retries,
         config.proof_retry_delay_secs,
+        config.prover_timeout_secs,
     );
     let result_id = format!("0x{}", hex::encode(tx_hash));
     let features_owned = features_json.to_string();
@@ -435,12 +436,13 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
         &config.private_key,
         &config.tee_verifier_address,
     )?);
-    let proof_mgr = Arc::new(ProofManager::new(
+    let proof_mgr = Arc::new(ProofManager::with_config_timeout(
         &config.precompute_bin,
         &config.model_path,
         &config.proofs_dir,
         config.max_proof_retries,
         config.proof_retry_delay_secs,
+        config.prover_timeout_secs,
     ));
 
     // Initialize webhook notifier (None if WEBHOOK_URL is not set)
@@ -495,24 +497,37 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
     {
         let shutdown = shutdown.clone();
         tokio::spawn(async move {
-            shutdown_signal().await;
-            tracing::info!("Shutdown signal received");
-            shutdown.signal_shutdown();
+            let reason = shutdown_signal().await;
+            tracing::info!(
+                signal = reason,
+                "shutting down gracefully, reason: {}",
+                reason
+            );
+            shutdown.signal_shutdown(reason);
         });
     }
 
-    // Initialize metrics and spawn HTTP server
+    // Initialize metrics and spawn HTTP server (shutdown-aware health endpoint)
     let metrics_state = Arc::new(metrics::MetricsState::new());
     {
         let ms = metrics_state.clone();
+        let sd = shutdown.clone();
         tokio::spawn(async move {
-            metrics::serve_metrics(ms, metrics_port).await;
+            metrics::serve_metrics_with_shutdown(ms, metrics_port, sd).await;
         });
     }
 
     // Load persistent state for crash recovery
     let state_store = StateStore::new(&config.state_file);
     let mut op_state = state_store.load_or_default();
+
+    // Audit log: configuration loaded for watch mode
+    audit::log_config_loaded(
+        &config.rpc_url,
+        &config.tee_verifier_address,
+        false,
+        config.nitro_verification,
+    );
 
     tracing::info!("Watching for events on {}...", config.tee_verifier_address);
 

@@ -455,17 +455,39 @@ impl PgStorage {
             sql.push_str(&format!(" AND model_hash = ${param_count}"));
         }
 
-        sql.push_str(" ORDER BY block_number DESC");
+        // Sorting: whitelist allowed columns to prevent SQL injection.
+        let order_col = match filter.sort_by.as_deref() {
+            Some("block_number") => "block_number",
+            Some("submitted_at") => "timestamp",
+            Some("status") => "status",
+            _ => "block_number",
+        };
+        let order_dir = match filter.sort_order.as_deref() {
+            Some("asc") => "ASC",
+            Some("desc") => "DESC",
+            _ => "DESC",
+        };
+        sql.push_str(&format!(" ORDER BY {order_col} {order_dir}, id ASC"));
 
         let limit = filter.limit.unwrap_or(50).min(1000) as i64;
         param_count += 1;
         sql.push_str(&format!(" LIMIT ${param_count}"));
+
+        // Offset-based pagination
+        let offset = filter.offset.unwrap_or(0) as i64;
+        if offset > 0 {
+            param_count += 1;
+            sql.push_str(&format!(" OFFSET ${param_count}"));
+        }
 
         let mut query = sqlx::query(&sql);
         for val in &bind_values {
             query = query.bind(val.clone());
         }
         query = query.bind(limit);
+        if offset > 0 {
+            query = query.bind(offset);
+        }
 
         let rows = query.fetch_all(&self.pool).await?;
         Ok(rows
@@ -482,6 +504,37 @@ impl PgStorage {
                 challenger: r.get(8),
             })
             .collect())
+    }
+
+    async fn count_results_async(&self, filter: &ResultFilter) -> anyhow::Result<u64> {
+        let mut sql = String::from("SELECT COUNT(*) FROM results WHERE true");
+        let mut bind_values: Vec<String> = Vec::new();
+        let mut param_count: usize = 0;
+
+        if let Some(ref status) = filter.status {
+            bind_values.push(status.clone());
+            param_count += 1;
+            sql.push_str(&format!(" AND status = ${param_count}"));
+        }
+        if let Some(ref submitter) = filter.submitter {
+            bind_values.push(submitter.clone());
+            param_count += 1;
+            sql.push_str(&format!(" AND submitter = ${param_count}"));
+        }
+        if let Some(ref model_hash) = filter.model_hash {
+            bind_values.push(model_hash.clone());
+            param_count += 1;
+            sql.push_str(&format!(" AND model_hash = ${param_count}"));
+        }
+
+        let mut query = sqlx::query(&sql);
+        for val in &bind_values {
+            query = query.bind(val.clone());
+        }
+
+        let row = query.fetch_one(&self.pool).await?;
+        let count: i64 = row.get(0);
+        Ok(count as u64)
     }
 
     async fn get_stats_async(&self) -> anyhow::Result<StatsResponse> {
