@@ -51,7 +51,7 @@ const MAX_QUERY_STRING_LENGTH: usize = 4096;
 const VALID_STATUSES: &[&str] = &["submitted", "challenged", "finalized", "resolved"];
 
 /// Valid values for the `sort_by` query parameter.
-const VALID_SORT_BY: &[&str] = &["block_number", "submitted_at", "status"];
+const VALID_SORT_BY: &[&str] = &["block_number", "submitted_at", "status", "submitter"];
 
 /// Valid values for the `sort_order` query parameter.
 const VALID_SORT_ORDER: &[&str] = &["asc", "desc"];
@@ -393,7 +393,17 @@ pub(crate) struct ReadinessChecks {
     pub indexing: String,
 }
 
-/// Extended readiness response with per-check detail.
+/// Readiness response with per-check detail.
+///
+/// Example (ready):
+/// ```json
+/// { "ready": true, "checks": { "db": "ok", "indexing": "ok" }, "last_indexed_block": 42 }
+/// ```
+///
+/// Example (not ready):
+/// ```json
+/// { "ready": false, "checks": { "db": "ok", "indexing": "stale" }, "last_indexed_block": 0 }
+/// ```
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ReadinessResponse {
     /// Overall readiness: `true` only when all checks pass.
@@ -406,24 +416,31 @@ pub(crate) struct ReadinessResponse {
 
 /// Readiness probe for Kubernetes.
 ///
-/// Returns 200 if and only if storage is healthy **and** the indexer has
-/// processed at least one block (`last_indexed_block > 0`). Otherwise
-/// returns 503 Service Unavailable so K8s does not route traffic to a
-/// pod that has not caught up yet.
+/// Returns 200 if and only if:
+/// 1. Storage backend is healthy (no lock poisoning)
+/// 2. Database is reachable (connectivity check via trivial query)
+/// 3. The indexer has processed at least one block (`last_indexed_block > 0`)
+///
+/// Otherwise returns 503 Service Unavailable so K8s does not route traffic
+/// to a pod that has not caught up yet.
 ///
 /// The response includes a `checks` object with individual check statuses:
-/// - `db`: `"ok"` when the storage backend is healthy, `"error"` otherwise.
+/// - `db`: `"ok"` when the storage backend is healthy and reachable, `"error"` otherwise.
 /// - `indexing`: `"ok"` when at least one block has been indexed, `"stale"` otherwise.
 pub(crate) async fn handle_ready(State(state): State<AppState>) -> impl IntoResponse {
-    let db_healthy = state.storage.is_healthy();
+    let backend_healthy = state.storage.is_healthy();
+    let connectivity_ok = state.storage.check_connectivity().is_ok();
+    let db_ok = backend_healthy && connectivity_ok;
+
     let last_block = state.storage.get_last_indexed_block();
     let indexing_ok = last_block > 0;
-    let ready = db_healthy && indexing_ok;
+
+    let ready = db_ok && indexing_ok;
 
     let body = ReadinessResponse {
         ready,
         checks: ReadinessChecks {
-            db: if db_healthy {
+            db: if db_ok {
                 "ok".to_string()
             } else {
                 "error".to_string()
@@ -1563,5 +1580,735 @@ mod tests {
                 .unwrap(),
             "49"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Readiness probe tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_ready_returns_503_when_no_blocks_indexed() {
+        let s = test_storage();
+        // Do not set last_indexed_block -- defaults to 0
+        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+
+        let req = axum::http::Request::builder()
+            .uri("/ready")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let readiness: super::super::ReadinessResponse =
+            serde_json::from_slice(&body).unwrap();
+        assert!(!readiness.ready);
+        assert_eq!(readiness.last_indexed_block, 0);
+        assert!(readiness.reason.is_some());
+        assert!(
+            readiness.reason.as_ref().unwrap().contains("no blocks indexed"),
+            "expected 'no blocks indexed' in reason, got: {:?}",
+            readiness.reason
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ready_returns_200_when_blocks_indexed() {
+        let s = test_storage();
+        s.set_last_indexed_block(42).unwrap();
+        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+
+        let req = axum::http::Request::builder()
+            .uri("/ready")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let readiness: super::super::ReadinessResponse =
+            serde_json::from_slice(&body).unwrap();
+        assert!(readiness.ready);
+        assert_eq!(readiness.last_indexed_block, 42);
+        assert!(readiness.reason.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_ready_returns_200_reason_omitted_in_json() {
+        // When ready=true, the "reason" key should be omitted from JSON
+        let s = test_storage();
+        s.set_last_indexed_block(10).unwrap();
+        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+
+        let req = axum::http::Request::builder()
+            .uri("/ready")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["ready"], true);
+        assert!(
+            v.get("reason").is_none(),
+            "reason should be omitted when ready=true, got: {:?}",
+            v.get("reason")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ready_returns_503_when_storage_unhealthy() {
+        let sqlite = super::super::SqliteStorage::open_in_memory().unwrap();
+        sqlite
+            .lock_poisoned
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let s: Arc<dyn super::super::Storage> = Arc::new(sqlite);
+        s.set_last_indexed_block(100).unwrap();
+        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+
+        let req = axum::http::Request::builder()
+            .uri("/ready")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let readiness: super::super::ReadinessResponse =
+            serde_json::from_slice(&body).unwrap();
+        assert!(!readiness.ready);
+        assert!(readiness.reason.is_some());
+        assert!(
+            readiness.reason.as_ref().unwrap().contains("lock poisoned"),
+            "expected 'lock poisoned' in reason, got: {:?}",
+            readiness.reason
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ready_db_connectivity_check_passes() {
+        let s = test_storage();
+        s.set_last_indexed_block(5).unwrap();
+        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+
+        let req = axum::http::Request::builder()
+            .uri("/ready")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let readiness: super::super::ReadinessResponse =
+            serde_json::from_slice(&body).unwrap();
+        assert!(readiness.ready);
+        assert!(readiness.reason.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_ready_response_has_required_fields() {
+        let s = test_storage();
+        s.set_last_indexed_block(1).unwrap();
+        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+
+        let req = axum::http::Request::builder()
+            .uri("/ready")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(v.get("ready").is_some(), "missing 'ready' field");
+        assert!(
+            v.get("last_indexed_block").is_some(),
+            "missing 'last_indexed_block' field"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Sorting tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_sort_by_block_number_asc() {
+        let s = test_storage();
+        s.insert_result("0x01", "0xm", "0xi", "0xa", 30).unwrap();
+        s.insert_result("0x02", "0xm", "0xi", "0xa", 10).unwrap();
+        s.insert_result("0x03", "0xm", "0xi", "0xa", 20).unwrap();
+        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/results?sort_by=block_number&sort_order=asc")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page.data.len(), 3);
+        assert_eq!(page.data[0].block_number, 10);
+        assert_eq!(page.data[1].block_number, 20);
+        assert_eq!(page.data[2].block_number, 30);
+    }
+
+    #[tokio::test]
+    async fn test_sort_by_block_number_desc() {
+        let s = test_storage();
+        s.insert_result("0x01", "0xm", "0xi", "0xa", 30).unwrap();
+        s.insert_result("0x02", "0xm", "0xi", "0xa", 10).unwrap();
+        s.insert_result("0x03", "0xm", "0xi", "0xa", 20).unwrap();
+        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/results?sort_by=block_number&sort_order=desc")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page.data.len(), 3);
+        assert_eq!(page.data[0].block_number, 30);
+        assert_eq!(page.data[1].block_number, 20);
+        assert_eq!(page.data[2].block_number, 10);
+    }
+
+    #[tokio::test]
+    async fn test_sort_by_status_asc() {
+        let s = test_storage();
+        s.insert_result("0x01", "0xm", "0xi", "0xa", 1).unwrap();
+        s.insert_result("0x02", "0xm", "0xi", "0xa", 2).unwrap();
+        s.insert_result("0x03", "0xm", "0xi", "0xa", 3).unwrap();
+        s.update_result_status("0x02", "finalized", None).unwrap();
+        s.update_result_status("0x03", "challenged", None).unwrap();
+        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/results?sort_by=status&sort_order=asc")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page.data.len(), 3);
+        assert_eq!(page.data[0].status, "challenged");
+        assert_eq!(page.data[1].status, "finalized");
+        assert_eq!(page.data[2].status, "submitted");
+    }
+
+    #[tokio::test]
+    async fn test_sort_by_submitter_asc() {
+        let s = test_storage();
+        s.insert_result("0x01", "0xm", "0xi", "0xcharlie", 1)
+            .unwrap();
+        s.insert_result("0x02", "0xm", "0xi", "0xalice", 2)
+            .unwrap();
+        s.insert_result("0x03", "0xm", "0xi", "0xbob", 3)
+            .unwrap();
+        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/results?sort_by=submitter&sort_order=asc")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page.data.len(), 3);
+        assert_eq!(page.data[0].submitter, "0xalice");
+        assert_eq!(page.data[1].submitter, "0xbob");
+        assert_eq!(page.data[2].submitter, "0xcharlie");
+    }
+
+    #[tokio::test]
+    async fn test_sort_by_submitter_desc() {
+        let s = test_storage();
+        s.insert_result("0x01", "0xm", "0xi", "0xcharlie", 1)
+            .unwrap();
+        s.insert_result("0x02", "0xm", "0xi", "0xalice", 2)
+            .unwrap();
+        s.insert_result("0x03", "0xm", "0xi", "0xbob", 3)
+            .unwrap();
+        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/results?sort_by=submitter&sort_order=desc")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page.data.len(), 3);
+        assert_eq!(page.data[0].submitter, "0xcharlie");
+        assert_eq!(page.data[1].submitter, "0xbob");
+        assert_eq!(page.data[2].submitter, "0xalice");
+    }
+
+    #[tokio::test]
+    async fn test_default_sort_is_block_number_desc() {
+        let s = test_storage();
+        s.insert_result("0x01", "0xm", "0xi", "0xa", 10).unwrap();
+        s.insert_result("0x02", "0xm", "0xi", "0xa", 50).unwrap();
+        s.insert_result("0x03", "0xm", "0xi", "0xa", 30).unwrap();
+        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/results")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page.data.len(), 3);
+        assert_eq!(page.data[0].block_number, 50);
+        assert_eq!(page.data[1].block_number, 30);
+        assert_eq!(page.data[2].block_number, 10);
+    }
+
+    #[tokio::test]
+    async fn test_invalid_sort_by_returns_400() {
+        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/results?sort_by=nonexistent")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let err: ErrorResponse = serde_json::from_slice(&body).unwrap();
+        assert!(
+            err.error.contains("invalid sort_by"),
+            "expected 'invalid sort_by' in error, got: {}",
+            err.error
+        );
+    }
+
+    #[tokio::test]
+    async fn test_invalid_sort_order_returns_400() {
+        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/results?sort_order=updown")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let err: ErrorResponse = serde_json::from_slice(&body).unwrap();
+        assert!(
+            err.error.contains("invalid sort_order"),
+            "expected 'invalid sort_order' in error, got: {}",
+            err.error
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sort_order_without_sort_by_uses_default_column() {
+        let s = test_storage();
+        s.insert_result("0x01", "0xm", "0xi", "0xa", 10).unwrap();
+        s.insert_result("0x02", "0xm", "0xi", "0xa", 50).unwrap();
+        s.insert_result("0x03", "0xm", "0xi", "0xa", 30).unwrap();
+        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/results?sort_order=asc")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page.data.len(), 3);
+        assert_eq!(page.data[0].block_number, 10);
+        assert_eq!(page.data[1].block_number, 30);
+        assert_eq!(page.data[2].block_number, 50);
+    }
+
+    // -----------------------------------------------------------------------
+    // Pagination tests
+    // -----------------------------------------------------------------------
+
+    /// Helper: send GET and return (status, headers, body bytes).
+    async fn get_with_headers(
+        app: axum::Router,
+        uri: &str,
+    ) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+        let req = axum::http::Request::builder()
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        let body = resp.into_body().collect().await.unwrap().to_bytes().to_vec();
+        (status, headers, body)
+    }
+
+    #[tokio::test]
+    async fn test_pagination_headers_present_on_list() {
+        let s = test_storage();
+        s.insert_result("0x01", "0xm", "0xi", "0xa", 1).unwrap();
+        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+
+        let (status, headers, _body) =
+            get_with_headers(app, "/api/v1/results").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            headers.get("x-total-count").is_some(),
+            "missing x-total-count header"
+        );
+        assert!(
+            headers.get("x-has-more").is_some(),
+            "missing x-has-more header"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pagination_total_count_value() {
+        let s = test_storage();
+        for i in 0..5u64 {
+            s.insert_result(&format!("0x{:02x}", i), "0xm", "0xi", "0xa", i)
+                .unwrap();
+        }
+        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+
+        let (status, headers, _body) =
+            get_with_headers(app, "/api/v1/results?limit=2").await;
+        assert_eq!(status, StatusCode::OK);
+
+        let total: u64 = headers
+            .get("x-total-count")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(total, 5, "x-total-count should reflect all matching results");
+    }
+
+    #[tokio::test]
+    async fn test_pagination_has_more_true() {
+        let s = test_storage();
+        for i in 0..10u64 {
+            s.insert_result(&format!("0x{:02x}", i), "0xm", "0xi", "0xa", i)
+                .unwrap();
+        }
+        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+
+        let (status, headers, _body) =
+            get_with_headers(app, "/api/v1/results?limit=3").await;
+        assert_eq!(status, StatusCode::OK);
+
+        let has_more = headers.get("x-has-more").unwrap().to_str().unwrap();
+        assert_eq!(has_more, "true", "should have more results");
+    }
+
+    #[tokio::test]
+    async fn test_pagination_has_more_false() {
+        let s = test_storage();
+        for i in 0..3u64 {
+            s.insert_result(&format!("0x{:02x}", i), "0xm", "0xi", "0xa", i)
+                .unwrap();
+        }
+        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+
+        let (status, headers, body) =
+            get_with_headers(app, "/api/v1/results").await;
+        assert_eq!(status, StatusCode::OK);
+
+        let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page.data.len(), 3);
+
+        let has_more = headers.get("x-has-more").unwrap().to_str().unwrap();
+        assert_eq!(has_more, "false", "should NOT have more results");
+    }
+
+    #[tokio::test]
+    async fn test_offset_pagination() {
+        let s = test_storage();
+        for i in 0..5u64 {
+            s.insert_result(&format!("0x{:02x}", i), "0xm", "0xi", "0xa", i * 10)
+                .unwrap();
+        }
+        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+
+        let (status, headers, body) =
+            get_with_headers(app.clone(), "/api/v1/results?limit=2&offset=0").await;
+        assert_eq!(status, StatusCode::OK);
+        let page1: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page1.data.len(), 2);
+        assert_eq!(
+            headers.get("x-has-more").unwrap().to_str().unwrap(),
+            "true"
+        );
+
+        let (status, _headers, body) =
+            get_with_headers(app.clone(), "/api/v1/results?limit=2&offset=2").await;
+        assert_eq!(status, StatusCode::OK);
+        let page2: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page2.data.len(), 2);
+
+        let (status, headers, body) =
+            get_with_headers(app, "/api/v1/results?limit=2&offset=4").await;
+        assert_eq!(status, StatusCode::OK);
+        let page3: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page3.data.len(), 1);
+        assert_eq!(
+            headers.get("x-has-more").unwrap().to_str().unwrap(),
+            "false"
+        );
+
+        let all_ids: Vec<String> = page1
+            .data
+            .iter()
+            .chain(page2.data.iter())
+            .chain(page3.data.iter())
+            .map(|r| r.id.clone())
+            .collect();
+        let unique: std::collections::HashSet<&String> = all_ids.iter().collect();
+        assert_eq!(unique.len(), 5, "all 5 results should appear across pages");
+    }
+
+    #[tokio::test]
+    async fn test_after_id_cursor_pagination() {
+        let s = test_storage();
+        for i in 0..5u64 {
+            s.insert_result(
+                &format!("0x{:02x}", i),
+                "0xm",
+                "0xi",
+                "0xa",
+                i * 10,
+            )
+            .unwrap();
+        }
+        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+
+        let (status, _headers, body) =
+            get_with_headers(app.clone(), "/api/v1/results?limit=2").await;
+        assert_eq!(status, StatusCode::OK);
+        let page1: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page1.data.len(), 2);
+
+        let last_id = &page1.data.last().unwrap().id;
+        let uri = format!("/api/v1/results?limit=2&after_id={}", last_id);
+        let (status, _headers, body) = get_with_headers(app.clone(), &uri).await;
+        assert_eq!(status, StatusCode::OK);
+        let page2: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page2.data.len(), 2);
+
+        for row in &page2.data {
+            assert!(
+                !page1.data.iter().any(|r| r.id == row.id),
+                "after_id page should not overlap with previous page"
+            );
+        }
+
+        let last_id = &page2.data.last().unwrap().id;
+        let uri = format!("/api/v1/results?limit=2&after_id={}", last_id);
+        let (status, headers, body) = get_with_headers(app, &uri).await;
+        assert_eq!(status, StatusCode::OK);
+        let page3: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page3.data.len(), 1);
+        assert_eq!(
+            headers.get("x-has-more").unwrap().to_str().unwrap(),
+            "false"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_offset_and_after_id_mutually_exclusive() {
+        let app = build_app(
+            test_storage(),
+            test_broadcaster(),
+            test_rate_limit_config(),
+        );
+
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/results?offset=5&after_id=0x01")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let err: ErrorResponse = serde_json::from_slice(&body).unwrap();
+        assert!(
+            err.error.contains("mutually exclusive"),
+            "expected mutual exclusion error, got: {}",
+            err.error
+        );
+    }
+
+    #[tokio::test]
+    async fn test_deep_pagination_rejected() {
+        let app = build_app(
+            test_storage(),
+            test_broadcaster(),
+            test_rate_limit_config(),
+        );
+
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/results?offset=9500&limit=600")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let err: ErrorResponse = serde_json::from_slice(&body).unwrap();
+        assert!(
+            err.error.contains("offset + limit must not exceed 10000"),
+            "expected deep pagination error, got: {}",
+            err.error
+        );
+    }
+
+    #[tokio::test]
+    async fn test_offset_within_limit_accepted() {
+        let s = test_storage();
+        s.insert_result("0x01", "0xm", "0xi", "0xa", 1).unwrap();
+        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/results?offset=100&limit=50")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_backward_compat_no_offset_no_after_id() {
+        let s = test_storage();
+        s.insert_result("0x01", "0xm", "0xi", "0xa", 1).unwrap();
+        s.insert_result("0x02", "0xm", "0xi", "0xa", 2).unwrap();
+        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+
+        let (status, headers, body) =
+            get_with_headers(app, "/api/v1/results").await;
+        assert_eq!(status, StatusCode::OK);
+
+        let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page.data.len(), 2);
+        assert_eq!(
+            headers.get("x-total-count").unwrap().to_str().unwrap(),
+            "2"
+        );
+        assert_eq!(
+            headers.get("x-has-more").unwrap().to_str().unwrap(),
+            "false"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_total_count_with_filter() {
+        let s = test_storage();
+        s.insert_result("0x01", "0xm", "0xi", "0xa", 1).unwrap();
+        s.insert_result("0x02", "0xm", "0xi", "0xa", 2).unwrap();
+        s.insert_result("0x03", "0xm", "0xi", "0xa", 3).unwrap();
+        s.update_result_status("0x01", "finalized", None).unwrap();
+        s.update_result_status("0x02", "finalized", None).unwrap();
+        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+
+        let (status, headers, body) =
+            get_with_headers(app, "/api/v1/results?status=finalized&limit=1").await;
+        assert_eq!(status, StatusCode::OK);
+
+        let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page.data.len(), 1, "should return 1 row (limit=1)");
+
+        let total: u64 = headers
+            .get("x-total-count")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(
+            total, 2,
+            "x-total-count should be 2 (all matching finalized)"
+        );
+
+        let has_more = headers.get("x-has-more").unwrap().to_str().unwrap();
+        assert_eq!(has_more, "true", "should have more results");
+    }
+
+    #[tokio::test]
+    async fn test_after_id_too_long_returns_400() {
+        let app = build_app(
+            test_storage(),
+            test_broadcaster(),
+            test_rate_limit_config(),
+        );
+
+        let long_id = "x".repeat(200);
+        let req = axum::http::Request::builder()
+            .uri(&format!("/api/v1/results?after_id={}", long_id))
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let err: ErrorResponse = serde_json::from_slice(&body).unwrap();
+        assert!(
+            err.error.contains("after_id too long"),
+            "expected 'after_id too long' in error, got: {}",
+            err.error
+        );
+    }
+
+    #[tokio::test]
+    async fn test_paginated_response_fields() {
+        let s = test_storage();
+        for i in 0..5u64 {
+            s.insert_result(&format!("0x{:02x}", i), "0xm", "0xi", "0xa", i * 10)
+                .unwrap();
+        }
+        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+
+        let (status, _headers, body) =
+            get_with_headers(app, "/api/v1/results?limit=2&offset=1").await;
+        assert_eq!(status, StatusCode::OK);
+
+        let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page.data.len(), 2);
+        assert_eq!(page.total, 5);
+        assert_eq!(page.limit, 2);
+        assert_eq!(page.offset, 1);
+        assert!(page.has_more);
     }
 }

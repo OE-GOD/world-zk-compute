@@ -20,8 +20,8 @@ use tower::ServiceExt;
 mod indexer;
 
 use indexer::{
-    build_app, websocket::EventBroadcaster, HealthResponse, ResultFilter, ResultRow, SqliteStorage,
-    StatsResponse, Storage,
+    build_app, websocket::EventBroadcaster, HealthResponse, PaginatedResponse, ResultFilter,
+    ResultRow, SqliteStorage, StatsResponse, Storage,
 };
 
 fn make_storage() -> Arc<dyn Storage> {
@@ -172,6 +172,7 @@ fn test_storage_list_filter_by_model_hash() {
             submitter: None,
             model_hash: Some("0xmodelA".to_string()),
             limit: None,
+            ..Default::default()
         })
         .unwrap();
 
@@ -296,10 +297,10 @@ async fn test_api_list_with_status_filter() {
 
     let resp = app.oneshot(req).await.unwrap();
     let body = resp.into_body().collect().await.unwrap().to_bytes();
-    let rows: Vec<ResultRow> = serde_json::from_slice(&body).unwrap();
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].id, "0x01");
-    assert_eq!(rows[0].status, "finalized");
+    let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+    assert_eq!(page.data.len(), 1);
+    assert_eq!(page.data[0].id, "0x01");
+    assert_eq!(page.data[0].status, "finalized");
 }
 
 // ---------------------------------------------------------------------------
@@ -346,8 +347,8 @@ async fn test_api_versioned_results() {
     assert_eq!(version_header, "v1");
 
     let body = resp.into_body().collect().await.unwrap().to_bytes();
-    let rows: Vec<ResultRow> = serde_json::from_slice(&body).unwrap();
-    assert_eq!(rows.len(), 2);
+    let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+    assert_eq!(page.data.len(), 2);
 }
 
 #[tokio::test]
@@ -431,9 +432,9 @@ async fn test_api_list_filter_by_submitter() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     let body = resp.into_body().collect().await.unwrap().to_bytes();
-    let rows: Vec<ResultRow> = serde_json::from_slice(&body).unwrap();
-    assert_eq!(rows.len(), 2);
-    assert!(rows.iter().all(|r| r.submitter == "0xa"));
+    let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+    assert_eq!(page.data.len(), 2);
+    assert!(page.data.iter().all(|r| r.submitter == "0xa"));
 }
 
 #[tokio::test]
@@ -454,8 +455,10 @@ async fn test_api_list_with_limit() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     let body = resp.into_body().collect().await.unwrap().to_bytes();
-    let rows: Vec<ResultRow> = serde_json::from_slice(&body).unwrap();
-    assert_eq!(rows.len(), 2);
+    let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+    assert_eq!(page.data.len(), 2);
+    assert_eq!(page.total, 5);
+    assert!(page.has_more);
 }
 
 #[tokio::test]
@@ -473,16 +476,16 @@ async fn test_api_results_ordered_by_block_desc() {
 
     let resp = app.oneshot(req).await.unwrap();
     let body = resp.into_body().collect().await.unwrap().to_bytes();
-    let rows: Vec<ResultRow> = serde_json::from_slice(&body).unwrap();
+    let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
 
-    assert_eq!(rows.len(), 3);
+    assert_eq!(page.data.len(), 3);
     // Newest first (highest block_number)
-    assert_eq!(rows[0].id, "0xnew");
-    assert_eq!(rows[0].block_number, 100);
-    assert_eq!(rows[1].id, "0xmid");
-    assert_eq!(rows[1].block_number, 50);
-    assert_eq!(rows[2].id, "0xold");
-    assert_eq!(rows[2].block_number, 5);
+    assert_eq!(page.data[0].id, "0xnew");
+    assert_eq!(page.data[0].block_number, 100);
+    assert_eq!(page.data[1].id, "0xmid");
+    assert_eq!(page.data[1].block_number, 50);
+    assert_eq!(page.data[2].id, "0xold");
+    assert_eq!(page.data[2].block_number, 5);
 }
 
 // ---------------------------------------------------------------------------
@@ -547,6 +550,7 @@ fn test_storage_concurrent_access() {
                 submitter: None,
                 model_hash: None,
                 limit: None,
+                ..Default::default()
             });
             let _ = storage.get_stats();
         }));

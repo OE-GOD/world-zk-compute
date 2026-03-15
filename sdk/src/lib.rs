@@ -55,7 +55,8 @@ pub use gas_estimation::{
     estimate_batch_session, estimate_continue_gas, estimate_finalize_gas,
     estimate_input_groups, estimate_start_gas, estimate_total_batches,
     estimate_total_cost_eth, estimate_total_cost_usd, xgboost_reference_estimate,
-    BatchGasEstimate, GasRange, GROUPS_PER_FINALIZE_BATCH, LAYERS_PER_BATCH,
+    BatchGasEstimate, GasRange, RpcBatchGasEstimate, RpcGasEstimator,
+    GROUPS_PER_FINALIZE_BATCH, LAYERS_PER_BATCH,
 };
 pub use prover_registry::ProverRegistryClient;
 pub use tee::TEEVerifier;

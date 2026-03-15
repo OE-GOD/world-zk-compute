@@ -118,25 +118,29 @@ echo ""
 # designed to be split across multiple transactions).
 #
 # Exempt patterns (case-insensitive):
-#   - DAGBatch*          — multi-tx batch verifier tests
-#   - *dag_e2e*          — full DAG end-to-end (250M+, uses Anvil --gas-limit)
-#   - *dag_hybrid*       — DAG hybrid tests (multi-tx in production)
-#   - *dag_groth16*      — DAG Groth16 tests (multi-tx in production)
-#   - *dag_verification* — full DAG verification
-#   - *dag_build*        — DAG build helpers (run inside high-gas Anvil)
-#   - *dag_collect*      — DAG collect helpers
-#   - *dag_input*        — DAG input proof decode
-#   - *dag_transcript*   — DAG transcript trace
-#   - *dag_invalid*      — DAG negative tests (may still use high gas for setup)
-#   - *dag_wrong*        — DAG wrong-gens tests
-#   - *dag_unregistered* — DAG unregistered circuit tests
-#   - *dag_register*     — DAG register tests
-#   - *dag_single_tx*    — single-tx fallback test (still high gas)
-#   - *embedded_public*  — DAG embedded public input tests
-#   - *public_value*     — DAG public value claim tests
-#   - *fixture_loads*    — fixture loading tests
+#   - DAGBatch*                     — multi-tx batch verifier tests
+#   - GKRDAG*                       — GKR DAG verifier tests (multi-tx path)
+#   - *dag_e2e*                     — full DAG end-to-end (250M+, uses Anvil --gas-limit)
+#   - *dag_hybrid*                  — DAG hybrid tests (multi-tx in production)
+#   - *dag_groth16*                 — DAG Groth16 tests (multi-tx in production)
+#   - *dag_verification*            — full DAG verification
+#   - *dag_build*                   — DAG build helpers (run inside high-gas Anvil)
+#   - *dag_collect*                 — DAG collect helpers
+#   - *dag_input*                   — DAG input proof decode
+#   - *dag_transcript*              — DAG transcript trace
+#   - *dag_invalid*                 — DAG negative tests (may still use high gas for setup)
+#   - *dag_wrong*                   — DAG wrong-gens tests
+#   - *dag_unregistered*            — DAG unregistered circuit tests
+#   - *dag_register*                — DAG register tests
+#   - *dag_single_tx*               — single-tx fallback test (still high gas)
+#   - *embedded_public*             — DAG embedded public input tests
+#   - *public_value*                — DAG public value claim tests
+#   - *fixture_loads*               — fixture loading tests
+#   - *hybrid_accepts*              — hybrid noncommitted registration (large setup)
+#   - *hybrid_noncommitted*         — hybrid noncommitted claim check (large setup)
+#   - *hybrid_rejects_no_groth16*   — hybrid groth16 verifier check (large setup)
 
-EXEMPT_PATTERN="(DAGBatch|dag_e2e|dag_hybrid|dag_groth16|dag_verification|dag_build|dag_collect|dag_input|dag_transcript|dag_invalid|dag_wrong|dag_unregistered|dag_register|dag_single_tx|embedded_public|public_value|fixture_loads)"
+EXEMPT_PATTERN="(DAGBatch|GKRDAG|dag_e2e|dag_hybrid|dag_groth16|dag_verification|dag_build|dag_collect|dag_input|dag_transcript|dag_invalid|dag_wrong|dag_unregistered|dag_register|dag_single_tx|embedded_public|public_value|fixture_loads|hybrid_accepts|hybrid_noncommitted|hybrid_rejects_no_groth16)"
 
 block_limit_violations=0
 block_limit_violation_count=0

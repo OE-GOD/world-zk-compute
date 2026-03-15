@@ -11,6 +11,22 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 
 /// @title IExecutionCallback
 /// @notice Interface for contracts that receive verified computation results
+/// @dev Implementors MUST be aware of the following constraints:
+///
+///      GAS LIMITS: The callback receives all remaining gas from the submitProof transaction
+///      after proof verification and prover payment. There is no explicit gas stipend -- the
+///      callback inherits whatever gas remains. Keep callback logic minimal and avoid unbounded
+///      loops or large storage writes. If the callback consumes too much gas, the entire
+///      submitProof transaction will run out of gas (reverting proof recording and prover payment).
+///
+///      REVERT BEHAVIOR: If onExecutionComplete reverts, the proof is still considered valid and
+///      the prover is still paid. The ExecutionEngine catches the revert and emits a CallbackFailed
+///      event. The callback contract should NOT rely on reverts to signal invalid results -- the
+///      proof has already been cryptographically verified at this point.
+///
+///      REENTRANCY: The callback is invoked after all state changes (status update, prover payment,
+///      fee payment) are complete. The ExecutionEngine uses ReentrancyGuard, so calling back into
+///      submitProof or other nonReentrant functions from the callback will revert.
 interface IExecutionCallback {
     /// @notice Called by ExecutionEngine after a proof is verified
     /// @param requestId The ID of the completed execution request
@@ -287,6 +303,14 @@ contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
     }
 
     /// @notice Cancel a pending execution request and refund the tip
+    /// @dev This function is deliberately NOT guarded by whenNotPaused so that users can
+    ///      always recover their funds even when the contract is paused for emergency.
+    ///      Only Pending requests can be cancelled -- once a prover has Claimed the request,
+    ///      the requester must wait for the claim to expire (CLAIM_WINDOW) before the request
+    ///      can be reclaimed by another prover. The full tip amount is refunded via low-level
+    ///      call for contract wallet compatibility. If the ETH transfer to the requester fails
+    ///      (e.g., requester is a contract that reverts on receive), the entire transaction
+    ///      reverts with TransferFailed.
     /// @param requestId The request to cancel (must be Pending and owned by msg.sender)
     function cancelExecution(uint256 requestId) external nonReentrant {
         ExecutionRequest storage req = requests[requestId];
@@ -308,6 +332,20 @@ contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
     // ========================================================================
 
     /// @notice Claim an execution request (prover)
+    /// @dev FRONTRUNNING WARNING: claimExecution is vulnerable to frontrunning. A competing
+    ///      prover can observe a pending claimExecution transaction in the mempool and submit
+    ///      their own claim with higher gas, winning the claim. Provers should consider using
+    ///      Flashbots Protect or private mempools to mitigate this risk.
+    ///
+    ///      CLAIM ORDERING: Claims are first-come-first-served. The first transaction to be
+    ///      mined wins the claim. If the request was previously Claimed but the claim deadline
+    ///      (CLAIM_WINDOW = 10 minutes) has passed without proof submission, any prover can
+    ///      reclaim it. The abandoned prover's address is recorded in the reputation system
+    ///      (if configured) via recordAbandon(), which is wrapped in try/catch so reputation
+    ///      failures never block reclaiming.
+    ///
+    ///      The claim deadline is set to block.timestamp + CLAIM_WINDOW. The prover must call
+    ///      submitProof before this deadline or lose the claim.
     /// @param requestId The request to claim
     function claimExecution(uint256 requestId) external nonReentrant whenNotPaused {
         ExecutionRequest storage req = requests[requestId];
@@ -335,6 +373,25 @@ contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
     }
 
     /// @notice Submit proof for a claimed execution
+    /// @dev After proof verification succeeds, the request is marked Completed and the prover
+    ///      is paid immediately. The payout is calculated with tip decay (see calculatePayout)
+    ///      and a protocol fee is deducted (protocolFeeBps basis points, sent to feeRecipient).
+    ///
+    ///      CALLBACK BEHAVIOR: If a callbackContract was specified in the request, the engine
+    ///      calls IExecutionCallback.onExecutionComplete() after paying the prover. The callback
+    ///      is wrapped in try/catch -- if it reverts, the proof is still valid and the prover is
+    ///      still paid. A CallbackFailed event is emitted with the revert reason for observability.
+    ///
+    ///      GAS LIMITS FOR CALLBACKS: The callback receives all remaining gas after proof
+    ///      verification and prover payment. Complex callbacks should be designed to stay within
+    ///      the block gas limit. Callback contracts that consume excessive gas will cause the
+    ///      entire submitProof transaction to run out of gas (the try/catch only catches reverts,
+    ///      not out-of-gas at the call site). Callback implementors should keep logic minimal
+    ///      and avoid unbounded loops or large storage writes.
+    ///
+    ///      REVERT BEHAVIOR: If the prover ETH transfer fails, the entire transaction reverts
+    ///      (no proof recorded). If the fee transfer fails, it also reverts. Only the callback
+    ///      is allowed to fail silently.
     /// @param requestId The request ID
     /// @param seal The proof seal (risc0 seal or Remainder proof)
     /// @param journal The public outputs (journal / public inputs)
@@ -471,8 +528,14 @@ contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
     }
 
     /// @notice Get cumulative statistics for a prover address
-    /// @dev These counters are incremented in submitProof. Earnings reflect the prover's
-    ///      share after protocol fee deduction (not the full tip amount).
+    /// @dev These counters are incremented in submitProof and accumulate monotonically over
+    ///      the lifetime of the contract. Earnings reflect the prover's share after protocol
+    ///      fee deduction (not the full tip amount). Note that earnings represent historical
+    ///      totals -- they are never decremented, even if the prover has already withdrawn
+    ///      (ETH is sent immediately in submitProof, not held in escrow). The earnings value
+    ///      is therefore a running total of all payouts sent to the prover, useful for
+    ///      reputation scoring and analytics but not an indicator of claimable balance.
+    ///      Returns (0, 0) for addresses that have never submitted a proof.
     /// @param prover The prover address to query
     /// @return completed Number of proofs successfully submitted by this prover
     /// @return earnings Total ETH earned from payouts (after protocol fee deduction)
@@ -551,6 +614,15 @@ contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
     ///      and recordAbandon are called during proof submission and claim expiration
     ///      respectively. Failures in reputation calls are silently caught (try/catch)
     ///      so they never block core execution logic.
+    ///
+    ///      REQUIREMENTS: The supplied address must implement the ProverReputation interface
+    ///      (recordSuccess(address,uint256,uint256) and recordAbandon(address,uint256)).
+    ///      If it does not, the try/catch will silently swallow reverts, effectively
+    ///      disabling reputation tracking without any visible error. There is no interface
+    ///      check (ERC-165) performed here -- the owner is trusted to provide a valid address.
+    ///
+    ///      Takes effect immediately for all subsequent proof submissions and claim expirations.
+    ///      Changing the reputation contract does not migrate data from the previous contract.
     /// @param _reputation ProverReputation contract address (address(0) to disable)
     function setReputation(address _reputation) external onlyOwner {
         reputation = ProverReputation(_reputation);

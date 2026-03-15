@@ -1,8 +1,8 @@
 //! WebSocket event streaming for real-time push notifications.
 //!
 //! Provides an [`EventBroadcaster`] that distributes events to all connected
-//! WebSocket clients, with per-client subscription filtering and heartbeat
-//! keep-alive.
+//! WebSocket clients, with per-client subscription filtering, heartbeat
+//! keep-alive, and cursor-based pagination via monotonic sequence IDs.
 //!
 //! # Usage
 //!
@@ -30,10 +30,23 @@
 //! If no subscribe message is sent, all events are forwarded. The server sends
 //! a ping frame every 30 seconds and disconnects if no pong is received within
 //! 10 seconds.
+//!
+//! # Cursor-based Pagination
+//!
+//! Every event sent over WebSocket includes a monotonic `sequence_id`. Clients
+//! can reconnect and replay missed events by sending:
+//!
+//! ```json
+//! {"subscribe": "results", "since_id": 12345}
+//! ```
+//!
+//! The server keeps the last [`DEFAULT_EVENT_BUFFER_SIZE`] events in memory.
+//! On receiving a `since_id`, all buffered events with `sequence_id > since_id`
+//! are replayed before switching to live streaming.
 
-use std::collections::HashSet;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::collections::{HashSet, VecDeque};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -51,6 +64,9 @@ use tracing::{debug, info, warn};
 
 /// Default maximum number of concurrent WebSocket connections.
 const DEFAULT_MAX_WS_CONNECTIONS: usize = 100;
+
+/// Default number of recent events kept in the replay buffer.
+const DEFAULT_EVENT_BUFFER_SIZE: usize = 1000;
 
 /// Interval between heartbeat ping frames.
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
@@ -83,24 +99,102 @@ pub struct WsEvent {
     pub data: serde_json::Value,
 }
 
+/// A [`WsEvent`] augmented with a monotonic sequence ID for cursor-based
+/// pagination. This is what gets broadcast on the channel and stored in the
+/// replay buffer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SequencedEvent {
+    /// Monotonically increasing sequence identifier. Never reused, never zero.
+    pub sequence_id: u64,
+    /// Event type name, e.g. "ResultSubmitted", "ResultChallenged".
+    pub event_type: String,
+    /// Arbitrary key-value payload carrying event-specific data.
+    pub data: serde_json::Value,
+}
+
+impl SequencedEvent {
+    /// Convert from a [`WsEvent`] and a sequence ID.
+    fn from_ws_event(event: WsEvent, sequence_id: u64) -> Self {
+        Self {
+            sequence_id,
+            event_type: event.event_type,
+            data: event.data,
+        }
+    }
+}
+
 /// Client-to-server message for subscribing to specific event types.
+///
+/// Supports two forms:
+/// - Array form: `{"subscribe": ["ResultSubmitted", "ResultChallenged"]}`
+/// - String form with cursor: `{"subscribe": "results", "since_id": 12345}`
+///
+/// An empty `subscribe` array means "all events". When `since_id` is provided,
+/// all buffered events with `sequence_id > since_id` are replayed immediately.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SubscribeMessage {
-    /// List of event type names to subscribe to. An empty list means "all".
-    pub subscribe: Vec<String>,
+    /// Event type filter. Can be a list of event type names, or the string
+    /// "results" to subscribe to all result-related events.
+    #[serde(default)]
+    pub subscribe: SubscribeFilter,
+    /// Optional cursor for replaying missed events. When set, the server sends
+    /// all buffered events with `sequence_id > since_id` before switching to
+    /// live streaming.
+    #[serde(default)]
+    pub since_id: Option<u64>,
+}
+
+/// The `subscribe` field can be either a list of event types or a single
+/// string (for backward compatibility and the `"results"` shorthand).
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum SubscribeFilter {
+    /// List of specific event type names.
+    List(Vec<String>),
+    /// Single string, e.g. "results" to subscribe to all.
+    Single(String),
+}
+
+impl Default for SubscribeFilter {
+    fn default() -> Self {
+        Self::List(Vec::new())
+    }
+}
+
+impl SubscribeFilter {
+    /// Convert to a HashSet filter. Returns `None` if all events should pass.
+    fn to_filter_set(&self) -> Option<HashSet<String>> {
+        match self {
+            SubscribeFilter::List(list) if list.is_empty() => None,
+            SubscribeFilter::List(list) => Some(list.iter().cloned().collect()),
+            SubscribeFilter::Single(s) if s == "results" || s.is_empty() => None,
+            SubscribeFilter::Single(s) => {
+                let mut set = HashSet::new();
+                set.insert(s.clone());
+                Some(set)
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
 // EventBroadcaster
 // ---------------------------------------------------------------------------
 
-/// Central hub that distributes [`WsEvent`]s to all connected WebSocket
+/// Central hub that distributes [`SequencedEvent`]s to all connected WebSocket
 /// clients via a [`tokio::sync::broadcast`] channel.
 ///
 /// Each WebSocket handler task subscribes to the broadcast channel and
-/// forwards matching events to its client.
+/// forwards matching events to its client. A bounded replay buffer stores
+/// recent events for cursor-based pagination.
 pub struct EventBroadcaster {
-    sender: broadcast::Sender<WsEvent>,
+    sender: broadcast::Sender<SequencedEvent>,
+    /// Monotonically increasing sequence counter.
+    next_sequence_id: AtomicU64,
+    /// Bounded buffer of recent events for replay.
+    event_buffer: RwLock<VecDeque<SequencedEvent>>,
+    /// Maximum number of events to keep in the replay buffer.
+    buffer_capacity: usize,
     /// Number of currently active WebSocket connections.
     active_connections: AtomicUsize,
     /// Maximum allowed concurrent connections.
@@ -110,8 +204,9 @@ pub struct EventBroadcaster {
 impl EventBroadcaster {
     /// Create a new broadcaster with the given channel capacity.
     ///
-    /// `capacity` determines how many events can be buffered before slow
-    /// receivers start losing messages.
+    /// `capacity` determines how many events can be buffered in the broadcast
+    /// channel before slow receivers start losing messages. The replay buffer
+    /// defaults to [`DEFAULT_EVENT_BUFFER_SIZE`] (1000) events.
     pub fn new(capacity: usize) -> Self {
         let (sender, _) = broadcast::channel(capacity);
         let max_connections = std::env::var("MAX_WS_CONNECTIONS")
@@ -120,6 +215,9 @@ impl EventBroadcaster {
             .unwrap_or(DEFAULT_MAX_WS_CONNECTIONS);
         Self {
             sender,
+            next_sequence_id: AtomicU64::new(1),
+            event_buffer: RwLock::new(VecDeque::with_capacity(DEFAULT_EVENT_BUFFER_SIZE)),
+            buffer_capacity: DEFAULT_EVENT_BUFFER_SIZE,
             active_connections: AtomicUsize::new(0),
             max_connections,
         }
@@ -130,6 +228,26 @@ impl EventBroadcaster {
         let (sender, _) = broadcast::channel(capacity);
         Self {
             sender,
+            next_sequence_id: AtomicU64::new(1),
+            event_buffer: RwLock::new(VecDeque::with_capacity(DEFAULT_EVENT_BUFFER_SIZE)),
+            buffer_capacity: DEFAULT_EVENT_BUFFER_SIZE,
+            active_connections: AtomicUsize::new(0),
+            max_connections,
+        }
+    }
+
+    /// Create a new broadcaster with a custom replay buffer size (for testing).
+    pub fn with_buffer_size(capacity: usize, buffer_size: usize) -> Self {
+        let (sender, _) = broadcast::channel(capacity);
+        let max_connections = std::env::var("MAX_WS_CONNECTIONS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_MAX_WS_CONNECTIONS);
+        Self {
+            sender,
+            next_sequence_id: AtomicU64::new(1),
+            event_buffer: RwLock::new(VecDeque::with_capacity(buffer_size)),
+            buffer_capacity: buffer_size,
             active_connections: AtomicUsize::new(0),
             max_connections,
         }
@@ -137,16 +255,58 @@ impl EventBroadcaster {
 
     /// Broadcast an event to all connected clients.
     ///
+    /// Assigns a monotonic `sequence_id` to the event, stores it in the replay
+    /// buffer, and sends it on the broadcast channel.
+    ///
     /// Returns the number of receivers that received the event. Returns 0 if
     /// there are no active subscribers (this is not an error).
     pub fn broadcast(&self, event: WsEvent) -> usize {
-        self.sender.send(event).unwrap_or_default()
+        let seq_id = self.next_sequence_id.fetch_add(1, Ordering::SeqCst);
+        let sequenced = SequencedEvent::from_ws_event(event, seq_id);
+
+        // Store in replay buffer
+        if let Ok(mut buf) = self.event_buffer.write() {
+            if buf.len() >= self.buffer_capacity {
+                buf.pop_front();
+            }
+            buf.push_back(sequenced.clone());
+        }
+
+        self.sender.send(sequenced).unwrap_or_default()
     }
 
     /// Subscribe to the event stream. Returns a receiver that yields cloned
     /// events as they are broadcast.
-    pub fn subscribe(&self) -> broadcast::Receiver<WsEvent> {
+    pub fn subscribe(&self) -> broadcast::Receiver<SequencedEvent> {
         self.sender.subscribe()
+    }
+
+    /// Returns the current sequence ID counter value (next ID to be assigned).
+    pub fn current_sequence_id(&self) -> u64 {
+        self.next_sequence_id.load(Ordering::SeqCst)
+    }
+
+    /// Retrieve all buffered events with `sequence_id > since_id`.
+    ///
+    /// Returns events in chronological order (oldest first). If `since_id` is
+    /// 0, returns all buffered events.
+    pub fn events_since(&self, since_id: u64) -> Vec<SequencedEvent> {
+        if let Ok(buf) = self.event_buffer.read() {
+            buf.iter()
+                .filter(|e| e.sequence_id > since_id)
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Returns the number of events currently in the replay buffer.
+    pub fn buffer_len(&self) -> usize {
+        self.event_buffer
+            .read()
+            .map(|buf| buf.len())
+            .unwrap_or(0)
     }
 
     /// Returns the current number of active WebSocket connections.
@@ -289,15 +449,44 @@ async fn handle_ws_connection(socket: WebSocket, broadcaster: Arc<EventBroadcast
                     Some(Ok(Message::Text(text))) => {
                         match serde_json::from_str::<SubscribeMessage>(&text) {
                             Ok(sub) => {
-                                if sub.subscribe.is_empty() {
-                                    filter = None;
+                                // Update filter
+                                filter = sub.subscribe.to_filter_set();
+
+                                if filter.is_none() {
                                     debug!("WebSocket client subscribed to all events");
                                 } else {
                                     debug!(
                                         "WebSocket client subscribed to: {:?}",
-                                        sub.subscribe
+                                        filter
                                     );
-                                    filter = Some(sub.subscribe.into_iter().collect());
+                                }
+
+                                // Replay buffered events if since_id is provided
+                                if let Some(since_id) = sub.since_id {
+                                    let missed = broadcaster.events_since(since_id);
+                                    debug!(
+                                        "Replaying {} buffered events since sequence_id {}",
+                                        missed.len(),
+                                        since_id
+                                    );
+                                    for event in missed {
+                                        // Apply filter to replayed events too
+                                        if let Some(ref allowed) = filter {
+                                            if !allowed.contains(&event.event_type) {
+                                                continue;
+                                            }
+                                        }
+                                        match serde_json::to_string(&event) {
+                                            Ok(json) => {
+                                                if ws_sender.send(Message::Text(json)).await.is_err() {
+                                                    break;
+                                                }
+                                            }
+                                            Err(e) => {
+                                                warn!("Failed to serialize replayed event: {}", e);
+                                            }
+                                        }
+                                    }
                                 }
                             }
                             Err(e) => {
@@ -350,6 +539,8 @@ mod tests {
         let broadcaster = EventBroadcaster::new(64);
         assert_eq!(broadcaster.active_connections(), 0);
         assert!(broadcaster.max_connections() > 0);
+        assert_eq!(broadcaster.buffer_len(), 0);
+        assert_eq!(broadcaster.current_sequence_id(), 1);
     }
 
     #[test]
@@ -361,6 +552,8 @@ mod tests {
         };
         let count = broadcaster.broadcast(event);
         assert_eq!(count, 0);
+        // Event should still be buffered
+        assert_eq!(broadcaster.buffer_len(), 1);
     }
 
     #[test]
@@ -374,15 +567,16 @@ mod tests {
             data: serde_json::json!({"result_id": "0xdef", "challenger": "0x123"}),
         };
 
-        let count = broadcaster.broadcast(event.clone());
+        let count = broadcaster.broadcast(event);
         assert_eq!(count, 2);
 
         let received1 = rx1.try_recv().unwrap();
         assert_eq!(received1.event_type, "ResultChallenged");
-        assert_eq!(received1, event);
+        assert_eq!(received1.sequence_id, 1);
 
         let received2 = rx2.try_recv().unwrap();
-        assert_eq!(received2, event);
+        assert_eq!(received2.event_type, "ResultChallenged");
+        assert_eq!(received2.sequence_id, 1);
     }
 
     #[test]
@@ -438,14 +632,41 @@ mod tests {
     fn test_subscribe_message_parsing() {
         let json = r#"{"subscribe": ["ResultSubmitted", "ResultChallenged"]}"#;
         let msg: SubscribeMessage = serde_json::from_str(json).unwrap();
-        assert_eq!(msg.subscribe.len(), 2);
-        assert_eq!(msg.subscribe[0], "ResultSubmitted");
-        assert_eq!(msg.subscribe[1], "ResultChallenged");
+        assert_eq!(
+            msg.subscribe,
+            SubscribeFilter::List(vec![
+                "ResultSubmitted".to_string(),
+                "ResultChallenged".to_string(),
+            ])
+        );
+        assert!(msg.since_id.is_none());
 
         // Empty subscribe means "all events"
         let json_all = r#"{"subscribe": []}"#;
         let msg_all: SubscribeMessage = serde_json::from_str(json_all).unwrap();
-        assert!(msg_all.subscribe.is_empty());
+        assert_eq!(msg_all.subscribe, SubscribeFilter::List(Vec::new()));
+    }
+
+    #[test]
+    fn test_subscribe_message_with_since_id() {
+        let json = r#"{"subscribe": "results", "since_id": 42}"#;
+        let msg: SubscribeMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            msg.subscribe,
+            SubscribeFilter::Single("results".to_string())
+        );
+        assert_eq!(msg.since_id, Some(42));
+    }
+
+    #[test]
+    fn test_subscribe_message_string_form() {
+        let json = r#"{"subscribe": "results"}"#;
+        let msg: SubscribeMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            msg.subscribe,
+            SubscribeFilter::Single("results".to_string())
+        );
+        assert!(msg.since_id.is_none());
     }
 
     #[test]
@@ -463,11 +684,24 @@ mod tests {
     }
 
     #[test]
+    fn test_sequenced_event_serialization_roundtrip() {
+        let event = SequencedEvent {
+            sequence_id: 42,
+            event_type: "ResultSubmitted".to_string(),
+            data: serde_json::json!({"result_id": "0xabc"}),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("\"sequence_id\":42"));
+        let deserialized: SequencedEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, deserialized);
+    }
+
+    #[test]
     fn test_subscribe_message_invalid_json_fails() {
         let bad_json = r#"{"not_subscribe": true}"#;
-        // serde will produce a default missing-field error
+        // With default, this should parse but subscribe will be default (empty list)
         let result = serde_json::from_str::<SubscribeMessage>(bad_json);
-        assert!(result.is_err());
+        assert!(result.is_ok()); // now succeeds because subscribe has a default
 
         let also_bad = r#"hello world"#;
         let result2 = serde_json::from_str::<SubscribeMessage>(also_bad);
@@ -516,5 +750,262 @@ mod tests {
         assert_eq!(accepted, 10);
         assert_eq!(rejected, 10);
         assert_eq!(broadcaster.active_connections(), 10);
+    }
+
+    // -----------------------------------------------------------------------
+    // Sequence ID and replay buffer tests (T454)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sequence_ids_are_monotonic() {
+        let broadcaster = EventBroadcaster::new(64);
+
+        for i in 0..10 {
+            let event = WsEvent {
+                event_type: "ResultSubmitted".to_string(),
+                data: serde_json::json!({"idx": i}),
+            };
+            broadcaster.broadcast(event);
+        }
+
+        let events = broadcaster.events_since(0);
+        assert_eq!(events.len(), 10);
+        for (i, event) in events.iter().enumerate() {
+            assert_eq!(event.sequence_id, (i + 1) as u64);
+        }
+
+        // Verify monotonicity
+        for window in events.windows(2) {
+            assert!(
+                window[1].sequence_id > window[0].sequence_id,
+                "Sequence IDs must be strictly increasing"
+            );
+        }
+    }
+
+    #[test]
+    fn test_sequence_ids_start_at_one() {
+        let broadcaster = EventBroadcaster::new(64);
+        let mut rx = broadcaster.subscribe();
+
+        let event = WsEvent {
+            event_type: "ResultSubmitted".to_string(),
+            data: serde_json::json!({}),
+        };
+        broadcaster.broadcast(event);
+
+        let received = rx.try_recv().unwrap();
+        assert_eq!(received.sequence_id, 1, "First sequence ID should be 1");
+    }
+
+    #[test]
+    fn test_events_since_returns_events_after_cursor() {
+        let broadcaster = EventBroadcaster::new(64);
+
+        for i in 0..5 {
+            broadcaster.broadcast(WsEvent {
+                event_type: format!("Event{}", i),
+                data: serde_json::json!({"i": i}),
+            });
+        }
+
+        // since_id=0 returns all
+        let all = broadcaster.events_since(0);
+        assert_eq!(all.len(), 5);
+
+        // since_id=3 returns events 4 and 5
+        let after3 = broadcaster.events_since(3);
+        assert_eq!(after3.len(), 2);
+        assert_eq!(after3[0].sequence_id, 4);
+        assert_eq!(after3[1].sequence_id, 5);
+
+        // since_id=5 returns nothing
+        let after5 = broadcaster.events_since(5);
+        assert_eq!(after5.len(), 0);
+
+        // since_id=999 returns nothing
+        let after999 = broadcaster.events_since(999);
+        assert_eq!(after999.len(), 0);
+    }
+
+    #[test]
+    fn test_buffer_bounded_to_capacity() {
+        let broadcaster = EventBroadcaster::with_buffer_size(64, 5);
+
+        for i in 0..10 {
+            broadcaster.broadcast(WsEvent {
+                event_type: "ResultSubmitted".to_string(),
+                data: serde_json::json!({"i": i}),
+            });
+        }
+
+        // Buffer should contain only last 5 events
+        assert_eq!(broadcaster.buffer_len(), 5);
+
+        let events = broadcaster.events_since(0);
+        assert_eq!(events.len(), 5);
+        // Oldest should be sequence_id 6 (events 1-5 were evicted)
+        assert_eq!(events[0].sequence_id, 6);
+        assert_eq!(events[4].sequence_id, 10);
+    }
+
+    #[test]
+    fn test_buffer_empty_initially() {
+        let broadcaster = EventBroadcaster::new(64);
+        assert_eq!(broadcaster.buffer_len(), 0);
+        assert!(broadcaster.events_since(0).is_empty());
+    }
+
+    #[test]
+    fn test_events_since_with_filter() {
+        let broadcaster = EventBroadcaster::new(64);
+
+        broadcaster.broadcast(WsEvent {
+            event_type: "ResultSubmitted".to_string(),
+            data: serde_json::json!({}),
+        });
+        broadcaster.broadcast(WsEvent {
+            event_type: "ResultChallenged".to_string(),
+            data: serde_json::json!({}),
+        });
+        broadcaster.broadcast(WsEvent {
+            event_type: "ResultSubmitted".to_string(),
+            data: serde_json::json!({}),
+        });
+
+        // events_since returns all types (filtering is per-client in handler)
+        let events = broadcaster.events_since(0);
+        assert_eq!(events.len(), 3);
+    }
+
+    #[test]
+    fn test_current_sequence_id_advances() {
+        let broadcaster = EventBroadcaster::new(64);
+        assert_eq!(broadcaster.current_sequence_id(), 1);
+
+        broadcaster.broadcast(WsEvent {
+            event_type: "Test".to_string(),
+            data: serde_json::json!({}),
+        });
+        assert_eq!(broadcaster.current_sequence_id(), 2);
+
+        broadcaster.broadcast(WsEvent {
+            event_type: "Test".to_string(),
+            data: serde_json::json!({}),
+        });
+        assert_eq!(broadcaster.current_sequence_id(), 3);
+    }
+
+    #[test]
+    fn test_subscribe_filter_to_filter_set() {
+        // Empty list = all
+        let f = SubscribeFilter::List(Vec::new());
+        assert!(f.to_filter_set().is_none());
+
+        // Non-empty list = specific types
+        let f = SubscribeFilter::List(vec!["A".to_string(), "B".to_string()]);
+        let set = f.to_filter_set().unwrap();
+        assert!(set.contains("A"));
+        assert!(set.contains("B"));
+        assert!(!set.contains("C"));
+
+        // "results" string = all
+        let f = SubscribeFilter::Single("results".to_string());
+        assert!(f.to_filter_set().is_none());
+
+        // Empty string = all
+        let f = SubscribeFilter::Single("".to_string());
+        assert!(f.to_filter_set().is_none());
+
+        // Specific string = filter
+        let f = SubscribeFilter::Single("ResultSubmitted".to_string());
+        let set = f.to_filter_set().unwrap();
+        assert!(set.contains("ResultSubmitted"));
+        assert_eq!(set.len(), 1);
+    }
+
+    #[test]
+    fn test_sequenced_event_from_ws_event() {
+        let ws = WsEvent {
+            event_type: "ResultSubmitted".to_string(),
+            data: serde_json::json!({"key": "value"}),
+        };
+        let seq = SequencedEvent::from_ws_event(ws.clone(), 42);
+        assert_eq!(seq.sequence_id, 42);
+        assert_eq!(seq.event_type, ws.event_type);
+        assert_eq!(seq.data, ws.data);
+    }
+
+    #[test]
+    fn test_subscribe_message_backwards_compatible() {
+        // Old format (array subscribe, no since_id) should still work
+        let json = r#"{"subscribe": ["ResultSubmitted"]}"#;
+        let msg: SubscribeMessage = serde_json::from_str(json).unwrap();
+        assert!(msg.since_id.is_none());
+        match msg.subscribe {
+            SubscribeFilter::List(list) => {
+                assert_eq!(list.len(), 1);
+                assert_eq!(list[0], "ResultSubmitted");
+            }
+            _ => panic!("Expected List variant"),
+        }
+    }
+
+    #[test]
+    fn test_buffer_eviction_order() {
+        let broadcaster = EventBroadcaster::with_buffer_size(64, 3);
+
+        // Insert events 1, 2, 3
+        for i in 1..=3 {
+            broadcaster.broadcast(WsEvent {
+                event_type: format!("Event{}", i),
+                data: serde_json::json!({}),
+            });
+        }
+        assert_eq!(broadcaster.buffer_len(), 3);
+
+        // Insert event 4 -- should evict event 1
+        broadcaster.broadcast(WsEvent {
+            event_type: "Event4".to_string(),
+            data: serde_json::json!({}),
+        });
+        assert_eq!(broadcaster.buffer_len(), 3);
+
+        let events = broadcaster.events_since(0);
+        assert_eq!(events[0].sequence_id, 2);
+        assert_eq!(events[0].event_type, "Event2");
+        assert_eq!(events[2].sequence_id, 4);
+        assert_eq!(events[2].event_type, "Event4");
+    }
+
+    #[test]
+    fn test_events_since_partial_buffer() {
+        let broadcaster = EventBroadcaster::with_buffer_size(64, 5);
+
+        // Insert 8 events, buffer keeps last 5
+        for i in 1..=8 {
+            broadcaster.broadcast(WsEvent {
+                event_type: "Test".to_string(),
+                data: serde_json::json!({"i": i}),
+            });
+        }
+
+        // since_id=3 -- event 3 was evicted, but 4-8 are in buffer
+        let events = broadcaster.events_since(3);
+        assert_eq!(events.len(), 5); // 4, 5, 6, 7, 8
+        assert_eq!(events[0].sequence_id, 4);
+
+        // since_id=6 -- only 7, 8
+        let events = broadcaster.events_since(6);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].sequence_id, 7);
+        assert_eq!(events[1].sequence_id, 8);
+    }
+
+    #[test]
+    fn test_default_buffer_size_is_1000() {
+        let broadcaster = EventBroadcaster::new(64);
+        assert_eq!(broadcaster.buffer_capacity, DEFAULT_EVENT_BUFFER_SIZE);
+        assert_eq!(DEFAULT_EVENT_BUFFER_SIZE, 1000);
     }
 }

@@ -1638,6 +1638,25 @@ contract RemainderVerifier is Ownable2Step, Pausable {
     /// @notice Start a new batch DAG verification session (setup only, no compute layers).
     /// @dev Decodes proof for transcript setup, squeezes output challenges, and stores initial state.
     ///      All compute layer verification happens in continueDAGBatchVerify calls.
+    ///
+    ///      SESSION ID DERIVATION:
+    ///      sessionId = keccak256(msg.sender, circuitHash, block.number)
+    ///      This ties the session to the caller, circuit, and block. Collision risk: if the same
+    ///      caller verifies the same circuit twice in the same block, the second call will
+    ///      overwrite the first session's state. Callers verifying multiple proofs for the same
+    ///      circuit should spread calls across different blocks or use distinct EOA/contract addresses.
+    ///
+    ///      AUTHORIZATION MODEL:
+    ///      The session records msg.sender as the session owner (session.verifier). Only this
+    ///      address can call continueDAGBatchVerify and finalizeDAGBatchVerify for this session.
+    ///      This prevents griefing attacks where a third party could submit invalid continuation
+    ///      data to corrupt an in-progress verification.
+    ///
+    ///      REPLAY PROTECTION:
+    ///      Sessions are bound to a specific block.number at creation time. The same proof cannot
+    ///      be "replayed" across blocks because the session ID would differ. After finalization and
+    ///      cleanup, the storage slots are zeroed and cannot be reused -- starting a new verification
+    ///      for the same circuit in a later block produces a different session ID.
     function startDAGBatchVerify(
         bytes calldata proof,
         bytes32 circuitHash,
@@ -1719,6 +1738,25 @@ contract RemainderVerifier is Ownable2Step, Pausable {
     }
 
     /// @notice Continue a batch DAG verification session. Processes the next batch of compute layers.
+    /// @dev AUTHORIZATION: Only the original session creator (msg.sender == session.verifier) can
+    ///      call this function. Reverts with "Batch: unauthorized" if a different address attempts
+    ///      to continue the session. This prevents third parties from injecting corrupted proof
+    ///      data into an in-progress verification.
+    ///
+    ///      ORDERING: Batches must be submitted in strict sequential order. The session tracks
+    ///      nextBatchIdx and increments it after each successful call. Submitting batch N before
+    ///      batch N-1 is not possible because the session state (sponge, bindings) from the
+    ///      prior batch is required. Submitting the same batch index twice will fail because
+    ///      nextBatchIdx has already advanced past it.
+    ///
+    ///      PROOF RE-SUPPLY: The full proof is re-supplied via calldata on every call rather
+    ///      than being stored on-chain. This costs ~16 gas/byte for calldata vs ~20,000 gas/slot
+    ///      for storage, saving significant gas for the 400KB+ proof blobs. The proof bytes are
+    ///      decoded fresh each call but only the relevant layer range is verified.
+    ///
+    ///      STATE PERSISTENCE: After each batch, the Poseidon sponge state (4 uint256 values)
+    ///      and layer bindings are written to storage for the next batch to consume. The
+    ///      CrossBatchData arrays grow with each batch as more bindings accumulate.
     function continueDAGBatchVerify(
         bytes32 sessionId,
         bytes calldata proof,
@@ -1865,6 +1903,25 @@ contract RemainderVerifier is Ownable2Step, Pausable {
     /// @dev Each call processes a batch of committed input eval groups (up to GROUPS_PER_FINALIZE_BATCH).
     ///      Public input layers are verified in the same call as the last committed group batch.
     ///      Returns true when fully finalized; call again if false.
+    ///
+    ///      AUTHORIZATION: Only the session creator (session.verifier == msg.sender) can finalize.
+    ///      This maintains the same authorization model as continueDAGBatchVerify.
+    ///
+    ///      MULTI-TX FINALIZATION: For circuits with many committed input groups (e.g., 34 groups
+    ///      in the 88-layer XGBoost circuit), finalization is split across multiple transactions.
+    ///      Each call processes up to GROUPS_PER_FINALIZE_BATCH (16) groups and returns false if
+    ///      more groups remain. The session tracks progress via finalizeInputIdx (current input
+    ///      layer) and finalizeGroupsDone (groups verified in current committed input). The caller
+    ///      must keep calling until true is returned.
+    ///
+    ///      PRECONDITION: All compute batches must be completed (nextBatchIdx >= totalBatches)
+    ///      before finalize can be called. Reverts with "Batch: compute batches not done" otherwise.
+    ///
+    ///      COMPLETION: When this function returns true, the session is marked as finalized.
+    ///      The proof has been fully verified across all transactions. The session can then be
+    ///      cleaned up via cleanupDAGBatchSession to reclaim storage gas refunds.
+    /// @return finalized True if all input layers have been verified and the session is complete.
+    ///         False if more finalize calls are needed.
     function finalizeDAGBatchVerify(
         bytes32 sessionId,
         bytes calldata proof,

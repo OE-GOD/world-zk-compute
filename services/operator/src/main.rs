@@ -68,6 +68,10 @@ enum Commands {
         /// Port for the health/metrics HTTP server
         #[arg(long, default_value = "9090")]
         metrics_port: u16,
+        /// Dry-run mode: monitor events and log what would happen, but do not
+        /// submit any on-chain transactions.
+        #[arg(long, default_value = "false")]
+        dry_run: bool,
     },
     /// Combined: submit + watch + prove
     Run {
@@ -125,14 +129,17 @@ async fn main() -> anyhow::Result<()> {
             let selected = config.get_model(model.as_deref())?;
             cmd_submit(&config, &features, selected).await
         }
-        Commands::Watch { metrics_port } => {
+        Commands::Watch {
+            metrics_port,
+            dry_run,
+        } => {
             if let Err(msgs) = config.validate_for_command("watch") {
                 for msg in &msgs {
                     tracing::error!("Config validation: {}", msg);
                 }
                 std::process::exit(1);
             }
-            cmd_watch(&config, metrics_port).await
+            cmd_watch(&config, metrics_port, dry_run).await
         }
         Commands::Run {
             features,
@@ -363,22 +370,39 @@ fn cmd_models(config: &Config) -> anyhow::Result<()> {
 struct ShutdownState {
     shutting_down: AtomicBool,
     in_flight_tasks: AtomicU64,
+    cancel_tx: tokio::sync::watch::Sender<bool>,
+    cancel_rx: tokio::sync::watch::Receiver<bool>,
+    reason: std::sync::Mutex<Option<String>>,
 }
 
 impl ShutdownState {
     fn new() -> Self {
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
         Self {
             shutting_down: AtomicBool::new(false),
             in_flight_tasks: AtomicU64::new(0),
+            cancel_tx,
+            cancel_rx,
+            reason: std::sync::Mutex::new(None),
         }
     }
 
     fn is_shutting_down(&self) -> bool {
-        self.shutting_down.load(Ordering::Relaxed)
+        self.shutting_down.load(Ordering::SeqCst)
     }
 
+    /// Signal shutdown without a specific reason.
     fn signal_shutdown(&self) {
-        self.shutting_down.store(true, Ordering::Relaxed);
+        self.signal_shutdown_with_reason("unknown");
+    }
+
+    /// Signal shutdown with a human-readable reason (e.g. "SIGINT", "SIGTERM").
+    fn signal_shutdown_with_reason(&self, reason: &str) {
+        self.shutting_down.store(true, Ordering::SeqCst);
+        if let Ok(mut r) = self.reason.lock() {
+            *r = Some(reason.to_string());
+        }
+        let _ = self.cancel_tx.send(true);
     }
 
     fn track_task_start(&self) {
@@ -392,10 +416,20 @@ impl ShutdownState {
     fn in_flight_count(&self) -> u64 {
         self.in_flight_tasks.load(Ordering::Relaxed)
     }
+
+    /// Subscribe to shutdown cancellation notifications.
+    fn subscribe_cancel(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.cancel_rx.clone()
+    }
+
+    /// Return the shutdown reason, if set.
+    fn reason(&self) -> Option<String> {
+        self.reason.lock().unwrap().clone()
+    }
 }
 
-/// Wait for shutdown signal (SIGINT or SIGTERM).
-async fn shutdown_signal() {
+/// Wait for shutdown signal (SIGINT or SIGTERM) and return the reason string.
+async fn shutdown_signal() -> &'static str {
     let ctrl_c = tokio::signal::ctrl_c();
 
     #[cfg(unix)]
@@ -405,15 +439,14 @@ async fn shutdown_signal() {
         else {
             tracing::warn!("failed to install SIGTERM handler, using ctrl-c only");
             ctrl_c.await.ok();
-            tracing::info!("Shutting down...");
-            return;
+            return "SIGINT";
         };
         tokio::select! {
             _ = ctrl_c => {
-                tracing::info!("Received SIGINT, shutting down...");
+                "SIGINT"
             },
             _ = sigterm.recv() => {
-                tracing::info!("Received SIGTERM, shutting down...");
+                "SIGTERM"
             },
         }
     }
@@ -421,12 +454,15 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     {
         ctrl_c.await.ok();
-        tracing::info!("Shutting down...");
+        "SIGINT"
     }
 }
 
 #[tracing::instrument(skip(config))]
-async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
+async fn cmd_watch(config: &Config, metrics_port: u16, dry_run: bool) -> anyhow::Result<()> {
+    if dry_run {
+        tracing::info!("[DRY-RUN] Dry-run mode enabled. No on-chain transactions will be submitted.");
+    }
     let contract_addr: Address = config
         .tee_verifier_address
         .parse()
@@ -437,12 +473,13 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
         &config.private_key,
         &config.tee_verifier_address,
     )?);
-    let proof_mgr = Arc::new(ProofManager::new(
+    let proof_mgr = Arc::new(ProofManager::with_config_timeout(
         &config.precompute_bin,
         &config.model_path,
         &config.proofs_dir,
         config.max_proof_retries,
         config.proof_retry_delay_secs,
+        config.prover_timeout_secs,
     ));
 
     // Initialize webhook notifier (None if WEBHOOK_URL is not set)
@@ -497,24 +534,28 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
     let metrics_state = Arc::new(metrics::MetricsState::new());
 
     // Spawn shutdown signal handler
-    let (metrics_shutdown_tx, metrics_shutdown_rx) = tokio::sync::watch::channel(false);
     {
         let shutdown = shutdown.clone();
-        let ms = metrics_state.clone();
         tokio::spawn(async move {
-            shutdown_signal().await;
-            tracing::info!("shutting down gracefully");
-            shutdown.signal_shutdown();
-            ms.mark_shutting_down();
-            let _ = metrics_shutdown_tx.send(true);
+            let reason = shutdown_signal().await;
+            tracing::info!(
+                signal = reason,
+                "shutting down gracefully, reason: {}",
+                reason
+            );
+            shutdown.signal_shutdown_with_reason(reason);
         });
     }
 
-    // Spawn HTTP metrics server with graceful shutdown support
+    // Spawn HTTP metrics server with graceful shutdown support.
+    // The cancel receiver fires when ShutdownState broadcasts the
+    // cancellation signal. serve_metrics_with_shutdown marks MetricsState
+    // as shutting_down so health/ready endpoints return 503.
     {
         let ms = metrics_state.clone();
+        let cancel_rx = shutdown.subscribe_cancel();
         tokio::spawn(async move {
-            metrics::serve_metrics_with_shutdown(ms, metrics_port, metrics_shutdown_rx).await;
+            metrics::serve_metrics_with_shutdown(ms, metrics_port, cancel_rx).await;
         });
     }
 
@@ -640,6 +681,18 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
                         tracing::debug!("Alert suppressed or failed: {}", e);
                     }
 
+                    if dry_run {
+                        // In dry-run mode: log what would happen, skip transactions
+                        tracing::info!(
+                            result_id = %result_id,
+                            challenger = %challenger,
+                            "[DRY-RUN] Would submit proof to resolve dispute for {}",
+                            rid_hex
+                        );
+                        op_state.processed_event_ids.insert(rid_hex);
+                        continue;
+                    }
+
                     // Spawn proof resolution as a separate task to avoid blocking
                     // the event loop (T215)
                     let dispute_span =
@@ -734,7 +787,7 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
 
         // Every ~60 seconds (12 iterations * 5s), check for finalizeable results
         finalize_counter += 1;
-        if finalize_counter >= 12 {
+        if finalize_counter >= 12 && !dry_run {
             finalize_counter = 0;
             auto_finalize(
                 &watcher,
@@ -819,9 +872,9 @@ async fn cmd_run(
         return submit_result;
     }
 
-    // 2. Start watching
+    // 2. Start watching (Run command never uses dry-run)
     tracing::info!("Starting watch loop...");
-    cmd_watch(config, metrics_port).await
+    cmd_watch(config, metrics_port, false).await
 }
 
 #[tracing::instrument(skip(config))]
@@ -831,7 +884,7 @@ async fn cmd_register(
     skip_verify: bool,
 ) -> anyhow::Result<()> {
     let enclave_client =
-        enclave::EnclaveClient::new(&config.enclave_url);
+        enclave::EnclaveClient::with_config_timeout(&config.enclave_url, config.enclave_timeout_secs);
 
     // 1. Get enclave address first (needed for nonce computation)
     let info = enclave_client.info().await?;
@@ -919,15 +972,11 @@ async fn cmd_register(
         .register_enclave(enclave_addr, image_hash)
         .await?;
     tracing::info!("Enclave registered on-chain: tx={}", tx_hash);
-    tracing::info!(
-        target: "security_audit",
-        action = "enclave_registered",
-        enclave_address = %enclave_addr,
-        pcr0 = %verified.pcr0,
-        image_hash = %format!("0x{}", hex::encode(image_hash)),
-        tx_hash = %tx_hash,
-        skip_verify = skip_verify,
-        "Enclave registered on-chain"
+    audit::log_enclave_registered(
+        &format!("{}", enclave_addr),
+        &format!("0x{}", hex::encode(image_hash)),
+        &format!("0x{}", hex::encode(tx_hash)),
+        &config.tee_verifier_address,
     );
 
     println!("Enclave registered:");
@@ -987,14 +1036,7 @@ async fn handle_challenge(
         Ok(tx) => {
             chain_cb.record_success();
             tracing::info!("Dispute resolved for {}! tx={}", rid_hex, tx);
-            tracing::info!(
-                target: "security_audit",
-                action = "dispute_resolved",
-                result_id = %rid_hex,
-                tx_hash = %tx,
-                success = true,
-                "Dispute proof submitted and resolved on-chain"
-            );
+            audit::log_dispute_submitted(&rid_hex, "", &format!("{}", tx));
             metrics.record_dispute_resolved();
             let mut meta = HashMap::new();
             meta.insert("result_id".to_string(), rid_hex);
@@ -1010,14 +1052,7 @@ async fn handle_challenge(
         Err(e) => {
             chain_cb.record_failure();
             tracing::error!("Failed to resolve dispute for {}: {}", rid_hex, e);
-            tracing::warn!(
-                target: "security_audit",
-                action = "dispute_failed",
-                result_id = %rid_hex,
-                error = %e,
-                success = false,
-                "Dispute resolution failed -- proof submission unsuccessful"
-            );
+            audit::log_dispute_failed(&rid_hex, "", &format!("{}", e));
             metrics.record_dispute_failed();
             let mut meta = HashMap::new();
             meta.insert("result_id".to_string(), rid_hex);
@@ -1043,13 +1078,10 @@ async fn resolve_with_proof(
     let public_inputs = hex_to_bytes(&proof.public_inputs_hex)?;
     let gens_data = hex_to_bytes(&proof.gens_hex)?;
 
-    tracing::info!(
-        target: "security_audit",
-        action = "proof_verification_submitted",
-        result_id = %result_id,
-        circuit_hash = %circuit_hash,
-        proof_size = proof_bytes.len(),
-        "Submitting proof for on-chain verification"
+    audit::log_proof_verification_submitted(
+        &format!("0x{}", hex::encode(result_id)),
+        &format!("0x{}", hex::encode(circuit_hash)),
+        proof_bytes.len(),
     );
 
     chain
@@ -1251,5 +1283,50 @@ mod tests {
         state.track_task_done();
         state.track_task_done();
         assert_eq!(state.in_flight_count(), 0);
+    }
+
+    #[test]
+    fn test_cli_watch_dry_run_flag() {
+        // Verify the --dry-run flag is parsed correctly
+        let cli = Cli::parse_from([
+            "tee-operator",
+            "watch",
+            "--dry-run",
+        ]);
+        match cli.command {
+            Commands::Watch { dry_run, .. } => assert!(dry_run, "--dry-run should be true"),
+            _ => panic!("expected Watch command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_watch_default_no_dry_run() {
+        // Verify the default is dry_run=false
+        let cli = Cli::parse_from([
+            "tee-operator",
+            "watch",
+        ]);
+        match cli.command {
+            Commands::Watch { dry_run, .. } => assert!(!dry_run, "default dry_run should be false"),
+            _ => panic!("expected Watch command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_watch_metrics_port_with_dry_run() {
+        // Verify --metrics-port and --dry-run can be combined
+        let cli = Cli::parse_from([
+            "tee-operator",
+            "watch",
+            "--metrics-port", "8080",
+            "--dry-run",
+        ]);
+        match cli.command {
+            Commands::Watch { metrics_port, dry_run } => {
+                assert_eq!(metrics_port, 8080);
+                assert!(dry_run);
+            }
+            _ => panic!("expected Watch command"),
+        }
     }
 }

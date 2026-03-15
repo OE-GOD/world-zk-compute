@@ -20,8 +20,9 @@ use tower::ServiceExt;
 
 use indexer::{
     build_app,
-    websocket::{EventBroadcaster, WsEvent},
-    HealthResponse, ResultFilter, ResultRow, SqliteStorage, StatsResponse, Storage,
+    websocket::{EventBroadcaster, SequencedEvent, WsEvent},
+    HealthResponse, PaginatedResponse, ResultFilter, ResultRow, SqliteStorage, StatsResponse,
+    Storage,
 };
 
 // ---------------------------------------------------------------------------
@@ -224,8 +225,8 @@ mod rest_results {
         let (status, body) = get_request(app, "/results").await;
 
         assert_eq!(status, StatusCode::OK);
-        let rows: Vec<ResultRow> = serde_json::from_slice(&body).unwrap();
-        assert!(rows.is_empty());
+        let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert!(page.data.is_empty());
     }
 
     #[tokio::test]
@@ -235,8 +236,8 @@ mod rest_results {
         let (status, body) = get_request(app, "/results").await;
 
         assert_eq!(status, StatusCode::OK);
-        let rows: Vec<ResultRow> = serde_json::from_slice(&body).unwrap();
-        assert_eq!(rows.len(), 5);
+        let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page.data.len(), 5);
     }
 
     #[tokio::test]
@@ -245,7 +246,8 @@ mod rest_results {
         let app = build_app(s, make_broadcaster());
         let (_, body) = get_request(app, "/results").await;
 
-        let rows: Vec<ResultRow> = serde_json::from_slice(&body).unwrap();
+        let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        let rows = &page.data;
         for i in 0..rows.len() - 1 {
             assert!(
                 rows[i].block_number >= rows[i + 1].block_number,
@@ -268,9 +270,9 @@ mod rest_results {
         let (status, body) = get_request(app, "/results?status=finalized").await;
 
         assert_eq!(status, StatusCode::OK);
-        let rows: Vec<ResultRow> = serde_json::from_slice(&body).unwrap();
-        assert_eq!(rows.len(), 2);
-        assert!(rows.iter().all(|r| r.status == "finalized"));
+        let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page.data.len(), 2);
+        assert!(page.data.iter().all(|r| r.status == "finalized"));
     }
 
     #[tokio::test]
@@ -282,9 +284,9 @@ mod rest_results {
             get_request(app, "/results?submitter=0xaa00").await;
 
         assert_eq!(status, StatusCode::OK);
-        let rows: Vec<ResultRow> = serde_json::from_slice(&body).unwrap();
-        assert_eq!(rows.len(), 3); // indices 0, 2, 4
-        assert!(rows.iter().all(|r| r.submitter == "0xaa00"));
+        let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page.data.len(), 3); // indices 0, 2, 4
+        assert!(page.data.iter().all(|r| r.submitter == "0xaa00"));
     }
 
     #[tokio::test]
@@ -296,9 +298,9 @@ mod rest_results {
             get_request(app, "/results?model_hash=0xmodel_2").await;
 
         assert_eq!(status, StatusCode::OK);
-        let rows: Vec<ResultRow> = serde_json::from_slice(&body).unwrap();
-        assert_eq!(rows.len(), 3);
-        assert!(rows.iter().all(|r| r.model_hash == "0xmodel_2"));
+        let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page.data.len(), 3);
+        assert!(page.data.iter().all(|r| r.model_hash == "0xmodel_2"));
     }
 
     #[tokio::test]
@@ -308,8 +310,8 @@ mod rest_results {
         let (status, body) = get_request(app, "/results?limit=3").await;
 
         assert_eq!(status, StatusCode::OK);
-        let rows: Vec<ResultRow> = serde_json::from_slice(&body).unwrap();
-        assert_eq!(rows.len(), 3);
+        let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page.data.len(), 3);
     }
 
     #[tokio::test]
@@ -339,8 +341,8 @@ mod rest_results {
         let (status, body) =
             get_request(app.clone(), "/results?status=finalized&model_hash=0xaaaa").await;
         assert_eq!(status, StatusCode::OK);
-        let rows: Vec<ResultRow> = serde_json::from_slice(&body).unwrap();
-        assert_eq!(rows.len(), 2);
+        let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page.data.len(), 2);
 
         // Filter: submitter=0xcc11 + status=finalized => only 0x01
         let (status, body) = get_request(
@@ -349,9 +351,9 @@ mod rest_results {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
-        let rows: Vec<ResultRow> = serde_json::from_slice(&body).unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].id, "0x01");
+        let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page.data.len(), 1);
+        assert_eq!(page.data[0].id, "0x01");
     }
 
     #[tokio::test]
@@ -422,8 +424,8 @@ mod rest_results {
         let (status, body) = get_request(app, "/api/v1/results").await;
 
         assert_eq!(status, StatusCode::OK);
-        let rows: Vec<ResultRow> = serde_json::from_slice(&body).unwrap();
-        assert_eq!(rows.len(), 3);
+        let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page.data.len(), 3);
     }
 
     #[tokio::test]
@@ -516,7 +518,7 @@ mod websocket_tests {
         .expect("ws error");
 
         let text = extract_text(msg);
-        let received: WsEvent = serde_json::from_str(&text).unwrap();
+        let received: SequencedEvent = serde_json::from_str(&text).unwrap();
         assert_eq!(received.event_type, "ResultSubmitted");
         assert_eq!(received.data["result_id"], "0xabc");
     }
@@ -567,7 +569,7 @@ mod websocket_tests {
         .expect("ws error");
 
         let text = extract_text(msg);
-        let received: WsEvent = serde_json::from_str(&text).unwrap();
+        let received: SequencedEvent = serde_json::from_str(&text).unwrap();
         assert_eq!(received.event_type, "ResultChallenged");
         assert_eq!(received.data["result_id"], "0x02");
     }
@@ -598,7 +600,7 @@ mod websocket_tests {
             .expect("ws error");
 
             let text = extract_text(msg);
-            let received: WsEvent = serde_json::from_str(&text).unwrap();
+            let received: SequencedEvent = serde_json::from_str(&text).unwrap();
             assert_eq!(received.event_type, "ResultFinalized");
         }
     }
@@ -637,7 +639,7 @@ mod websocket_tests {
             .expect("ws error");
 
             let text = extract_text(msg);
-            let received: WsEvent = serde_json::from_str(&text).unwrap();
+            let received: SequencedEvent = serde_json::from_str(&text).unwrap();
             assert_eq!(received.event_type, *expected);
         }
     }
@@ -656,7 +658,9 @@ mod websocket_tests {
         assert_eq!(sent, 1);
 
         let received = rx.try_recv().unwrap();
-        assert_eq!(received, event);
+        // broadcast() wraps WsEvent into SequencedEvent, so compare fields
+        assert_eq!(received.event_type, event.event_type);
+        assert_eq!(received.data, event.data);
     }
 
     #[tokio::test]
@@ -762,6 +766,7 @@ mod db_correctness {
                 submitter: None,
                 model_hash: None,
                 limit: None,
+                ..Default::default()
             })
             .unwrap();
         assert_eq!(results.len(), 5);
@@ -788,6 +793,7 @@ mod db_correctness {
                 submitter: None,
                 model_hash: None,
                 limit: None,
+                ..Default::default()
             })
             .unwrap();
         assert_eq!(results.len(), 50, "default limit should be 50");

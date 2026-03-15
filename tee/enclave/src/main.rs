@@ -491,8 +491,8 @@ async fn infer(
     state.metrics.record_inference(elapsed);
 
     tracing::info!(
-        target: "security_audit",
-        action = "attestation_signed",
+        target: "audit",
+        event = "attestation_signed",
         model_hash = %format!("0x{}", hex::encode(model_hash)),
         input_hash = %format!("0x{}", hex::encode(input_hash)),
         result_hash = %format!("0x{}", hex::encode(attestation.result_hash)),
@@ -563,6 +563,12 @@ async fn reload_model(
         .unwrap_or("");
 
     if provided_key != expected_key {
+        tracing::warn!(
+            target: "audit",
+            event = "model_reload_auth_failed",
+            model_path = %req.model_path,
+            "Model hot-reload authentication failed"
+        );
         return Err((
             StatusCode::UNAUTHORIZED,
             "Invalid or missing admin API key".to_string(),
@@ -643,6 +649,15 @@ async fn reload_model(
         hex::encode(new_model_hash),
         new_model_sha256,
     );
+    tracing::info!(
+        target: "audit",
+        event = "model_reloaded",
+        model_path = %req.model_path,
+        model_hash = %format!("0x{}", hex::encode(new_model_hash)),
+        num_trees = num_trees,
+        num_features = num_features,
+        "Model hot-reload completed successfully"
+    );
 
     Ok(Json(ReloadModelResponse {
         success: true,
@@ -701,6 +716,12 @@ async fn load_model_handler(
         .unwrap_or("");
 
     if provided_key != expected_key {
+        tracing::warn!(
+            target: "audit",
+            event = "model_load_auth_failed",
+            model_id = %req.model_id,
+            "Model registry load authentication failed"
+        );
         return Err((
             StatusCode::UNAUTHORIZED,
             "Invalid or missing admin API key".to_string(),
@@ -736,6 +757,14 @@ async fn load_model_handler(
         loaded.model_hash,
         loaded.size_bytes,
     );
+    tracing::info!(
+        target: "audit",
+        event = "model_loaded",
+        model_id = %loaded.model_id,
+        model_hash = %loaded.model_hash,
+        size_bytes = loaded.size_bytes,
+        "Model loaded into registry"
+    );
 
     Ok(Json(LoadModelResponse {
         success: true,
@@ -769,6 +798,12 @@ async fn unload_model_handler(
         .unwrap_or("");
 
     if provided_key != expected_key {
+        tracing::warn!(
+            target: "audit",
+            event = "model_unload_auth_failed",
+            model_id = %model_id,
+            "Model registry unload authentication failed"
+        );
         return Err((
             StatusCode::UNAUTHORIZED,
             "Invalid or missing admin API key".to_string(),
@@ -781,6 +816,12 @@ async fn unload_model_handler(
         .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
 
     tracing::info!("Model unloaded from registry: id={}", model_id);
+    tracing::info!(
+        target: "audit",
+        event = "model_unloaded",
+        model_id = %model_id,
+        "Model unloaded from registry"
+    );
 
     Ok(Json(UnloadModelResponse {
         success: true,

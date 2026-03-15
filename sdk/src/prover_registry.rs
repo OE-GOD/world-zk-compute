@@ -195,6 +195,7 @@ impl ProverRegistryClient {
     /// Reactivate the caller's prover registration.
     ///
     /// The prover must have at least `minStake` to reactivate.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     pub async fn reactivate_prover(&self) -> anyhow::Result<alloy::primitives::B256> {
         let provider = self.build_provider();
         let contract = ProverRegistry::new(self.client.contract_address(), provider);
@@ -217,6 +218,7 @@ impl ProverRegistryClient {
     ///
     /// If the prover was deactivated due to low stake and the new total
     /// exceeds `minStake`, the prover is automatically reactivated.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     pub async fn add_stake(&self, amount: U256) -> anyhow::Result<alloy::primitives::B256> {
         let provider = self.build_provider();
         let contract = ProverRegistry::new(self.client.contract_address(), provider);
@@ -234,6 +236,7 @@ impl ProverRegistryClient {
     /// Withdraw stake from the caller's prover registration.
     ///
     /// If the prover is active, the remaining stake must be >= `minStake`.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     pub async fn withdraw_stake(&self, amount: U256) -> anyhow::Result<alloy::primitives::B256> {
         let provider = self.build_provider();
         let contract = ProverRegistry::new(self.client.contract_address(), provider);
@@ -255,6 +258,7 @@ impl ProverRegistryClient {
     /// Get the full prover info for a given address.
     ///
     /// Returns the on-chain `Prover` struct with stake, reputation, stats, etc.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(prover = %prover)))]
     pub async fn get_prover_info(
         &self,
         prover: Address,
@@ -267,6 +271,7 @@ impl ProverRegistryClient {
     }
 
     /// Check if an address is an active prover.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(addr = %addr)))]
     pub async fn is_prover_active(&self, addr: Address) -> anyhow::Result<bool> {
         let provider = self.build_provider();
         let contract = ProverRegistry::new(self.client.contract_address(), provider);
@@ -276,6 +281,7 @@ impl ProverRegistryClient {
     }
 
     /// Check if an address is a registered prover (active or inactive).
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(addr = %addr)))]
     pub async fn is_prover(&self, addr: Address) -> anyhow::Result<bool> {
         let provider = self.build_provider();
         let contract = ProverRegistry::new(self.client.contract_address(), provider);
@@ -285,6 +291,7 @@ impl ProverRegistryClient {
     }
 
     /// Get all active prover addresses.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     pub async fn get_active_provers(&self) -> anyhow::Result<Vec<Address>> {
         let provider = self.build_provider();
         let contract = ProverRegistry::new(self.client.contract_address(), provider);
@@ -294,6 +301,7 @@ impl ProverRegistryClient {
     }
 
     /// Get the number of active provers.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     pub async fn active_prover_count(&self) -> anyhow::Result<U256> {
         let provider = self.build_provider();
         let contract = ProverRegistry::new(self.client.contract_address(), provider);
@@ -303,6 +311,7 @@ impl ProverRegistryClient {
     }
 
     /// Get the effective weight of a prover (stake * reputation / 10000).
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(prover = %prover)))]
     pub async fn get_weight(&self, prover: Address) -> anyhow::Result<U256> {
         let provider = self.build_provider();
         let contract = ProverRegistry::new(self.client.contract_address(), provider);
@@ -316,6 +325,7 @@ impl ProverRegistryClient {
     /// # Arguments
     ///
     /// * `seed` - Random seed (e.g., blockhash or VRF output).
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     pub async fn select_prover(&self, seed: U256) -> anyhow::Result<Address> {
         let provider = self.build_provider();
         let contract = ProverRegistry::new(self.client.contract_address(), provider);
@@ -325,6 +335,7 @@ impl ProverRegistryClient {
     }
 
     /// Get the top N provers by reputation.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(n)))]
     pub async fn get_top_provers(&self, n: u64) -> anyhow::Result<Vec<Address>> {
         let provider = self.build_provider();
         let contract = ProverRegistry::new(self.client.contract_address(), provider);
@@ -338,6 +349,7 @@ impl ProverRegistryClient {
     // =====================================================================
 
     /// Get the staking token address.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     pub async fn staking_token(&self) -> anyhow::Result<Address> {
         let provider = self.build_provider();
         let contract = ProverRegistry::new(self.client.contract_address(), provider);
@@ -347,6 +359,7 @@ impl ProverRegistryClient {
     }
 
     /// Get the minimum stake required to be an active prover.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     pub async fn min_stake(&self) -> anyhow::Result<U256> {
         let provider = self.build_provider();
         let contract = ProverRegistry::new(self.client.contract_address(), provider);
@@ -356,6 +369,7 @@ impl ProverRegistryClient {
     }
 
     /// Get the slash basis points (e.g., 500 = 5%).
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     pub async fn slash_basis_points(&self) -> anyhow::Result<U256> {
         let provider = self.build_provider();
         let contract = ProverRegistry::new(self.client.contract_address(), provider);
@@ -365,6 +379,7 @@ impl ProverRegistryClient {
     }
 
     /// Get the total amount staked across all provers.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     pub async fn total_staked(&self) -> anyhow::Result<U256> {
         let provider = self.build_provider();
         let contract = ProverRegistry::new(self.client.contract_address(), provider);
@@ -378,6 +393,7 @@ impl ProverRegistryClient {
     // =====================================================================
 
     /// Set the minimum stake requirement (owner only).
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     pub async fn set_min_stake(
         &self,
         min_stake: U256,
@@ -396,6 +412,7 @@ impl ProverRegistryClient {
     }
 
     /// Set the slash percentage in basis points (owner only, max 50% = 5000).
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     pub async fn set_slash_basis_points(
         &self,
         bps: U256,
@@ -414,6 +431,7 @@ impl ProverRegistryClient {
     }
 
     /// Authorize or deauthorize a slasher address (owner only).
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(slasher = %slasher, authorized)))]
     pub async fn set_slasher(
         &self,
         slasher: Address,
@@ -440,6 +458,7 @@ impl ProverRegistryClient {
     ///
     /// Reduces the prover's stake by `slashBasisPoints` percent and decreases
     /// reputation by 5%. If stake falls below minStake, the prover is deactivated.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(prover = %prover)))]
     pub async fn slash(
         &self,
         prover: Address,
@@ -462,6 +481,7 @@ impl ProverRegistryClient {
     ///
     /// Increases proofsSubmitted, adds reward to totalEarnings, and increases
     /// reputation by 0.5% (capped at 100%).
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(prover = %prover)))]
     pub async fn record_success(
         &self,
         prover: Address,

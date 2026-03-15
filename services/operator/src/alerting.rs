@@ -216,6 +216,31 @@ impl Default for AlertConfig {
     }
 }
 
+impl AlertConfig {
+    /// Validate alert configuration values.
+    ///
+    /// Emits `tracing::warn!` for likely-unintended but technically valid settings.
+    /// Returns `Ok(())` on success, `Err(Vec<String>)` for hard errors.
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let errors: Vec<String> = Vec::new();
+
+        // escalation_timeout_secs == 0 means immediate escalation on every
+        // alert tick, which is almost certainly unintended.
+        if self.escalation_timeout_secs == 0 {
+            tracing::warn!(
+                "escalation_timeout_secs is 0 -- this causes immediate escalation on every \
+                 tick, which is likely unintended. Set a positive value (e.g. 900 for 15 min)."
+            );
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Alert Stats
 // ---------------------------------------------------------------------------

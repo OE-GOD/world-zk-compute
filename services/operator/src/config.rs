@@ -72,6 +72,15 @@ pub struct ConfigFile {
     /// Total request timeout for prover HTTP requests (seconds).
     /// Default: 300 (proof generation can take several minutes).
     pub prover_timeout_secs: Option<u64>,
+    /// Prover-specific retry: maximum number of retries (default: 3).
+    /// Env var: `PROVER_MAX_RETRIES`.
+    pub prover_max_retries: Option<u32>,
+    /// Prover-specific retry: base delay in seconds between retries (default: 5).
+    /// Env var: `PROVER_RETRY_DELAY_SECS`.
+    pub prover_retry_delay_secs: Option<u64>,
+    /// Prover-specific retry: maximum delay in seconds for exponential backoff cap (default: 300).
+    /// Env var: `PROVER_RETRY_MAX_DELAY_SECS`.
+    pub prover_retry_max_delay_secs: Option<u64>,
 }
 
 impl ConfigFile {
@@ -161,6 +170,16 @@ pub struct Config {
     /// Proof generation can take several minutes, so default is generous.
     /// Env var: `PROVER_TIMEOUT_SECS`. Default: 300.
     pub prover_timeout_secs: u64,
+    /// Prover-specific retry: maximum number of retries (default: 3).
+    /// Env var: `PROVER_MAX_RETRIES`.
+    pub prover_max_retries: u32,
+    /// Prover-specific retry: base delay in seconds between retries (default: 5).
+    /// Env var: `PROVER_RETRY_DELAY_SECS`.
+    pub prover_retry_delay_secs: u64,
+    /// Prover-specific retry: maximum delay in seconds for exponential backoff cap (default: 300).
+    /// Prevents retries from waiting indefinitely as backoff grows.
+    /// Env var: `PROVER_RETRY_MAX_DELAY_SECS`.
+    pub prover_retry_max_delay_secs: u64,
 }
 
 impl Config {
@@ -322,6 +341,25 @@ impl Config {
             .or(file_cfg.prover_timeout_secs)
             .unwrap_or(300);
 
+        // Prover-specific retry parameters.
+        let prover_max_retries = std::env::var("PROVER_MAX_RETRIES")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .or(file_cfg.prover_max_retries)
+            .unwrap_or(3);
+
+        let prover_retry_delay_secs = std::env::var("PROVER_RETRY_DELAY_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .or(file_cfg.prover_retry_delay_secs)
+            .unwrap_or(5);
+
+        let prover_retry_max_delay_secs = std::env::var("PROVER_RETRY_MAX_DELAY_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .or(file_cfg.prover_retry_max_delay_secs)
+            .unwrap_or(300);
+
         // Build the contract addresses list.
         // Priority: CONTRACT_ADDRESSES env var > contracts array in TOML > tee_verifier_address.
         let contract_addresses = if let Ok(addrs_str) = std::env::var("CONTRACT_ADDRESSES") {
@@ -358,7 +396,7 @@ impl Config {
             file_cfg.models
         };
 
-        Ok(Self {
+        let config = Self {
             rpc_url,
             private_key,
             tee_verifier_address,
@@ -385,7 +423,20 @@ impl Config {
             contract_addresses,
             enclave_timeout_secs,
             prover_timeout_secs,
-        })
+            prover_max_retries,
+            prover_retry_delay_secs,
+            prover_retry_max_delay_secs,
+        };
+
+        // Run validation during config loading so issues are caught early.
+        if let Err(validation_errors) = config.validate() {
+            return Err(anyhow::anyhow!(
+                "Configuration validation failed:\n  - {}",
+                validation_errors.join("\n  - ")
+            ));
+        }
+
+        Ok(config)
     }
 
     /// Returns the primary contract address (the first one) for backward compatibility.
@@ -467,12 +518,17 @@ impl Config {
     ///
     /// Checks:
     /// - RPC URL starts with `http://`, `https://`, `ws://`, or `wss://`
+    /// - RPC URL uses `https://` or `wss://` for non-localhost targets (warns on `http://`)
     /// - Private key is valid hex (64 hex chars or `0x`-prefixed 66 chars)
     /// - Contract addresses are valid Ethereum addresses (`0x` + 40 hex chars)
+    /// - `metrics_port` is in range 1024-65535 (0 = random port, documented)
+    /// - `prover_max_retries` <= 10 (warns if higher)
+    /// - Prover retry backoff cap >= base delay
     /// - Numeric config values are in reasonable ranges
     /// - URL fields have valid schemes
     ///
     /// Returns `Ok(())` if valid, or `Err(Vec<String>)` with all validation errors.
+    /// Soft issues are emitted via `tracing::warn!` and do not cause a hard failure.
     pub fn validate(&self) -> Result<(), Vec<String>> {
         let mut errors: Vec<String> = Vec::new();
 
@@ -486,6 +542,20 @@ impl Config {
                 "rpc_url '{}' is invalid: must start with http://, https://, ws://, or wss://",
                 self.rpc_url
             ));
+        }
+
+        // 1b. Warn when using unencrypted transport for non-localhost RPC URLs.
+        // This strongly suggests a mainnet or testnet endpoint where HTTPS should be used.
+        if (self.rpc_url.starts_with("http://") || self.rpc_url.starts_with("ws://"))
+            && !self.rpc_url.contains("127.0.0.1")
+            && !self.rpc_url.contains("localhost")
+        {
+            tracing::warn!(
+                rpc_url = %self.rpc_url,
+                "RPC URL uses unencrypted transport (http:// or ws://). \
+                 Use https:// or wss:// for mainnet and testnet endpoints to prevent \
+                 private key and transaction data from being intercepted."
+            );
         }
 
         // 2. Private key must be valid hex (64 chars or 0x-prefixed 66 chars)
@@ -509,7 +579,41 @@ impl Config {
             Self::validate_eth_address(addr, &format!("contract_addresses[{}]", i), &mut errors);
         }
 
-        // 4. Numeric range checks
+        // 4. Metrics port: 0 means let the OS pick a random available port.
+        // Ports 1-1023 are privileged and typically require root.
+        // Valid explicit range: 1024-65535.
+        if self.metrics_port != 0 && self.metrics_port < 1024 {
+            errors.push(format!(
+                "metrics_port {} is in the privileged range (1-1023). \
+                 Use a port in the range 1024-65535, or 0 for a random available port.",
+                self.metrics_port
+            ));
+        }
+
+        // 5. Prover retry parameter warnings (soft) and errors (hard).
+        if self.prover_max_retries > 10 {
+            tracing::warn!(
+                prover_max_retries = self.prover_max_retries,
+                "prover_max_retries is greater than 10. High retry counts can delay \
+                 dispute resolution and waste resources. Consider reducing it."
+            );
+        }
+
+        if self.prover_retry_max_delay_secs < self.prover_retry_delay_secs {
+            errors.push(format!(
+                "prover_retry_max_delay_secs ({}) must be >= prover_retry_delay_secs ({})",
+                self.prover_retry_max_delay_secs, self.prover_retry_delay_secs
+            ));
+        }
+
+        if self.prover_retry_delay_secs == 0 {
+            errors.push(
+                "prover_retry_delay_secs must be > 0 (a zero delay creates a tight retry loop)"
+                    .to_string(),
+            );
+        }
+
+        // 6. Numeric range checks
         if self.attestation_cache_ttl > 86400 {
             errors.push(format!(
                 "attestation_cache_ttl {} exceeds maximum of 86400 (24 hours)",

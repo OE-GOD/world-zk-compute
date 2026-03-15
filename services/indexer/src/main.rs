@@ -333,9 +333,11 @@ impl Storage for SqliteStorage {
             ));
         }
 
-        // Sorting: whitelist allowed columns to prevent SQL injection
+        // Sorting: whitelist allowed columns to prevent SQL injection.
+        // "submitted_at" is the public API name; maps to the `timestamp` DB column.
         let order_col = match filter.sort_by.as_deref() {
             Some("block_number") => "block_number",
+            Some("submitted_at") => "timestamp",
             Some("status") => "status",
             Some("submitter") => "submitter",
             _ => "block_number",
@@ -659,7 +661,7 @@ pub struct ResultFilter {
     /// Cursor-based pagination: return results after this ID.
     /// Mutually exclusive with `offset`.
     pub after_id: Option<String>,
-    /// Column to sort by. Allowed: `block_number`, `status`, `submitter`.
+    /// Column to sort by. Allowed: `block_number`, `submitted_at`, `status`.
     pub sort_by: Option<String>,
     /// Sort direction. Allowed: `asc`, `desc` (default `desc`).
     pub sort_order: Option<String>,
@@ -830,25 +832,33 @@ async fn main() -> anyhow::Result<()> {
     };
     let app = build_app_with_rate_limit(storage.clone(), broadcaster.clone(), rl_config);
 
-    // Spawn the event polling loop
+    // Spawn the event polling loop with shutdown support
     let poll_storage = storage.clone();
     let poll_broadcaster = broadcaster.clone();
     let poll_rpc = config.rpc_url.clone();
     let poll_addr = config.contract_address;
     let poll_interval = config.poll_interval_secs;
-    tokio::spawn(async move {
+    let (poll_shutdown_tx, mut poll_shutdown_rx) = tokio::sync::watch::channel(false);
+    let poll_handle = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(poll_interval));
         loop {
-            interval.tick().await;
-            if let Err(e) = poll_and_index(
-                &poll_rpc,
-                poll_addr,
-                poll_storage.as_ref(),
-                &poll_broadcaster,
-            )
-            .await
-            {
-                warn!("poll error: {}", e);
+            tokio::select! {
+                _ = interval.tick() => {
+                    if let Err(e) = poll_and_index(
+                        &poll_rpc,
+                        poll_addr,
+                        poll_storage.as_ref(),
+                        &poll_broadcaster,
+                    )
+                    .await
+                    {
+                        warn!("poll error: {}", e);
+                    }
+                }
+                _ = poll_shutdown_rx.changed() => {
+                    info!("poll loop received shutdown signal");
+                    break;
+                }
             }
         }
     });
@@ -859,7 +869,23 @@ async fn main() -> anyhow::Result<()> {
         .with_graceful_shutdown(shutdown_signal())
         .await?;
 
-    info!("tee-indexer stopped");
+    // Signal the poll loop to stop and wait for it
+    let _ = poll_shutdown_tx.send(true);
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), poll_handle).await;
+
+    // Log shutdown metrics: uptime, final indexed block, total results
+    let uptime_secs = start_time.elapsed().as_secs();
+    let final_block = storage.get_last_indexed_block();
+    let total_results = storage.get_total_results();
+    info!(
+        uptime_secs = uptime_secs,
+        last_indexed_block = final_block,
+        total_results = total_results,
+        "tee-indexer stopped (uptime: {}s, final indexed block: {}, total results: {})",
+        uptime_secs,
+        final_block,
+        total_results
+    );
     Ok(())
 }
 
@@ -1217,8 +1243,8 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
 
         let body = resp.into_body().collect().await.unwrap().to_bytes();
-        let rows: Vec<ResultRow> = serde_json::from_slice(&body).unwrap();
-        assert_eq!(rows.len(), 2);
+        let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page.data.len(), 2);
 
         let req = axum::http::Request::builder()
             .uri("/results?status=finalized")
@@ -1227,9 +1253,9 @@ mod tests {
 
         let resp = app.clone().oneshot(req).await.unwrap();
         let body = resp.into_body().collect().await.unwrap().to_bytes();
-        let rows: Vec<ResultRow> = serde_json::from_slice(&body).unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].id, "0x02");
+        let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page.data.len(), 1);
+        assert_eq!(page.data[0].id, "0x02");
 
         let req = axum::http::Request::builder()
             .uri("/results?submitter=0xaa11")
@@ -1238,8 +1264,8 @@ mod tests {
 
         let resp = app.oneshot(req).await.unwrap();
         let body = resp.into_body().collect().await.unwrap().to_bytes();
-        let rows: Vec<ResultRow> = serde_json::from_slice(&body).unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].id, "0x01");
+        let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page.data.len(), 1);
+        assert_eq!(page.data[0].id, "0x01");
     }
 }

@@ -443,6 +443,501 @@ pub fn estimate_input_groups(num_layers: u32) -> u32 {
 }
 
 // ---------------------------------------------------------------------------
+// RPC-based gas estimation (eth_estimateGas)
+// ---------------------------------------------------------------------------
+
+use alloy::primitives::{Address, Bytes, B256};
+use alloy::providers::ProviderBuilder;
+
+use crate::abi::RemainderVerifier;
+use crate::client::Client;
+use crate::fixture::ProofData;
+
+/// Result of an RPC-based gas estimate for a full DAG batch verification session.
+///
+/// Unlike [`BatchGasEstimate`] (which uses empirical constants), this struct
+/// contains actual gas values returned by `eth_estimateGas` calls against a
+/// live node (Anvil, testnet, or mainnet fork).
+///
+/// # Gas profile reference (88-layer XGBoost circuit)
+///
+/// | Phase | Gas range |
+/// |---|---|
+/// | Start | ~14-17.5M |
+/// | Continue (per step) | ~13-28M |
+/// | Finalize (per step) | ~9-22M |
+/// | Cleanup | ~0.1-0.5M |
+#[derive(Debug, Clone)]
+pub struct RpcBatchGasEstimate {
+    /// Gas estimate for `startDAGBatchVerify`.
+    pub start_gas: u64,
+
+    /// Gas estimate for each `continueDAGBatchVerify` call.
+    /// Length equals the number of continue batches.
+    pub continue_gas_per_step: Vec<u64>,
+
+    /// Gas estimate for each `finalizeDAGBatchVerify` call.
+    /// Length equals the number of finalize batches.
+    pub finalize_gas_per_step: Vec<u64>,
+
+    /// Gas estimate for `cleanupDAGBatchSession`.
+    pub cleanup_gas: u64,
+
+    /// Sum of start + all continue + all finalize + cleanup gas.
+    pub total_gas: u64,
+
+    /// Estimated cost in ETH at the given gas price (Gwei).
+    /// `None` if no gas price was provided.
+    pub estimated_eth_cost: Option<f64>,
+}
+
+impl RpcBatchGasEstimate {
+    /// Total number of transactions: 1 start + N continue + M finalize + 1 cleanup.
+    pub fn total_txs(&self) -> usize {
+        1 + self.continue_gas_per_step.len() + self.finalize_gas_per_step.len() + 1
+    }
+
+    /// Returns the average gas per continue step, or 0 if there are none.
+    pub fn avg_continue_gas(&self) -> u64 {
+        if self.continue_gas_per_step.is_empty() {
+            return 0;
+        }
+        let sum: u64 = self.continue_gas_per_step.iter().sum();
+        sum / self.continue_gas_per_step.len() as u64
+    }
+
+    /// Returns the average gas per finalize step, or 0 if there are none.
+    pub fn avg_finalize_gas(&self) -> u64 {
+        if self.finalize_gas_per_step.is_empty() {
+            return 0;
+        }
+        let sum: u64 = self.finalize_gas_per_step.iter().sum();
+        sum / self.finalize_gas_per_step.len() as u64
+    }
+
+    /// Returns the maximum gas used by any single transaction in the session.
+    pub fn max_single_tx_gas(&self) -> u64 {
+        let mut max = self.start_gas;
+        for &g in &self.continue_gas_per_step {
+            if g > max {
+                max = g;
+            }
+        }
+        for &g in &self.finalize_gas_per_step {
+            if g > max {
+                max = g;
+            }
+        }
+        // cleanup is typically small, but include for completeness
+        if self.cleanup_gas > max {
+            max = self.cleanup_gas;
+        }
+        max
+    }
+
+    /// Returns `true` if every individual transaction fits within the Ethereum
+    /// block gas limit (30M).
+    pub fn fits_in_blocks(&self) -> bool {
+        self.max_single_tx_gas() < BLOCK_GAS_LIMIT
+    }
+}
+
+/// RPC-based gas estimator for DAG batch verification.
+///
+/// Uses `eth_estimateGas` against a live provider to obtain accurate gas
+/// estimates for each phase of the batch verification protocol. This is
+/// more accurate than the pure-computation helpers (which use empirical
+/// constants) but requires an RPC connection and a deployed contract with
+/// the circuit already registered.
+///
+/// # Gas profile reference (88-layer XGBoost circuit)
+///
+/// | Phase | Observed gas |
+/// |---|---|
+/// | `startDAGBatchVerify` | ~14-17.5M |
+/// | `continueDAGBatchVerify` (x11) | ~13-28M each |
+/// | `finalizeDAGBatchVerify` (x3) | ~9-22M each |
+/// | `cleanupDAGBatchSession` | ~0.1-0.5M |
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use world_zk_sdk::{Client, DAGFixture};
+/// use world_zk_sdk::gas_estimation::RpcGasEstimator;
+///
+/// #[tokio::main]
+/// async fn main() -> anyhow::Result<()> {
+///     let client = Client::new(
+///         "http://localhost:8545",
+///         "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+///         "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+///     )?;
+///     let fixture = DAGFixture::load("path/to/fixture.json")?;
+///     let proof = fixture.to_proof_data()?;
+///
+///     let estimator = RpcGasEstimator::new(&client);
+///
+///     // Estimate gas for the start transaction
+///     let start_gas = estimator.estimate_start_gas(&proof).await?;
+///     println!("Start gas: {start_gas}");
+///
+///     Ok(())
+/// }
+/// ```
+pub struct RpcGasEstimator<'a> {
+    client: &'a Client,
+}
+
+impl<'a> RpcGasEstimator<'a> {
+    /// Create a new RPC gas estimator wrapping an SDK [`Client`].
+    pub fn new(client: &'a Client) -> Self {
+        Self { client }
+    }
+
+    /// Estimate gas for `startDAGBatchVerify`.
+    ///
+    /// Calls `eth_estimateGas` against the provider to simulate the start
+    /// transaction. The circuit must already be registered on-chain for this
+    /// to succeed.
+    ///
+    /// # Gas profile reference
+    ///
+    /// Start typically uses ~14-17.5M gas for the 88-layer XGBoost circuit.
+    /// The start phase decodes the proof transcript and stores initial session
+    /// state but does NOT process any compute layers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the RPC call fails or the contract reverts (e.g.,
+    /// circuit not registered, invalid proof format).
+    pub async fn estimate_start_gas(
+        &self,
+        proof: &ProofData,
+    ) -> anyhow::Result<u64> {
+        let provider = self.build_provider();
+        let contract = RemainderVerifier::new(self.client.contract_address(), &provider);
+
+        let gas = contract
+            .startDAGBatchVerify(
+                Bytes::copy_from_slice(&proof.proof_bytes),
+                proof.circuit_hash,
+                Bytes::copy_from_slice(&proof.public_inputs),
+                Bytes::copy_from_slice(&proof.gens_data),
+            )
+            .estimate_gas()
+            .await?;
+
+        Ok(gas)
+    }
+
+    /// Estimate gas for `continueDAGBatchVerify`.
+    ///
+    /// Calls `eth_estimateGas` to simulate a continue transaction for the
+    /// given batch session. The session must already exist on-chain (i.e.,
+    /// `startDAGBatchVerify` must have been called and mined).
+    ///
+    /// # Gas profile reference
+    ///
+    /// Each continue step processes up to `LAYERS_PER_BATCH` (8) compute
+    /// layers. Observed gas ranges from ~13M (simpler layers) to ~28M
+    /// (complex oracle expressions).
+    ///
+    /// # Arguments
+    ///
+    /// * `session_id` -- The batch session ID returned by `startDAGBatchVerify`.
+    /// * `proof` -- The same proof data used for the start call.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the session does not exist, all batches are already
+    /// processed, or the RPC call fails.
+    pub async fn estimate_continue_gas(
+        &self,
+        session_id: B256,
+        proof: &ProofData,
+    ) -> anyhow::Result<u64> {
+        let provider = self.build_provider();
+        let contract = RemainderVerifier::new(self.client.contract_address(), &provider);
+
+        let gas = contract
+            .continueDAGBatchVerify(
+                session_id,
+                Bytes::copy_from_slice(&proof.proof_bytes),
+                Bytes::copy_from_slice(&proof.public_inputs),
+                Bytes::copy_from_slice(&proof.gens_data),
+            )
+            .estimate_gas()
+            .await?;
+
+        Ok(gas)
+    }
+
+    /// Estimate gas for `finalizeDAGBatchVerify`.
+    ///
+    /// Calls `eth_estimateGas` to simulate a finalize transaction. The session
+    /// must have all compute batches processed (all continue calls done).
+    ///
+    /// # Gas profile reference
+    ///
+    /// Each finalize step processes up to `GROUPS_PER_FINALIZE_BATCH` (16)
+    /// input eval groups. Observed gas ranges from ~9M to ~22M depending
+    /// on group complexity.
+    ///
+    /// # Arguments
+    ///
+    /// * `session_id` -- The batch session ID.
+    /// * `proof` -- The same proof data used for the start call.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the session is not ready for finalization,
+    /// already finalized, or the RPC call fails.
+    pub async fn estimate_finalize_gas(
+        &self,
+        session_id: B256,
+        proof: &ProofData,
+    ) -> anyhow::Result<u64> {
+        let provider = self.build_provider();
+        let contract = RemainderVerifier::new(self.client.contract_address(), &provider);
+
+        let gas = contract
+            .finalizeDAGBatchVerify(
+                session_id,
+                Bytes::copy_from_slice(&proof.proof_bytes),
+                Bytes::copy_from_slice(&proof.public_inputs),
+                Bytes::copy_from_slice(&proof.gens_data),
+            )
+            .estimate_gas()
+            .await?;
+
+        Ok(gas)
+    }
+
+    /// Estimate gas for `cleanupDAGBatchSession`.
+    ///
+    /// Cleanup deletes session storage and is typically very cheap (~0.1-0.5M gas)
+    /// due to storage deletion refunds.
+    ///
+    /// # Arguments
+    ///
+    /// * `session_id` -- The batch session ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the session does not exist or the RPC call fails.
+    pub async fn estimate_cleanup_gas(
+        &self,
+        session_id: B256,
+    ) -> anyhow::Result<u64> {
+        let provider = self.build_provider();
+        let contract = RemainderVerifier::new(self.client.contract_address(), &provider);
+
+        let gas = contract
+            .cleanupDAGBatchSession(session_id)
+            .estimate_gas()
+            .await?;
+
+        Ok(gas)
+    }
+
+    /// Estimate total gas cost for a complete DAG batch verification session.
+    ///
+    /// This is a **dry-run** estimator that simulates the full multi-transaction
+    /// flow: start -> continue x N -> finalize x M -> cleanup. It executes
+    /// each step on a forked/simulated state by actually sending transactions
+    /// (not just estimating), so the session progresses through all phases.
+    ///
+    /// **Important**: This function sends real transactions to the provider.
+    /// Use it against a local Anvil node or a forked environment, NOT against
+    /// a live network where gas costs real ETH.
+    ///
+    /// # Gas profile reference (88-layer XGBoost circuit)
+    ///
+    /// | Phase | Typical gas | Count |
+    /// |---|---|---|
+    /// | Start | ~17.5M | 1 |
+    /// | Continue | ~13-28M | 11 |
+    /// | Finalize | ~9-22M | 3 |
+    /// | Cleanup | ~0.5M | 1 |
+    /// | **Total** | **~250M** | **16 txs** |
+    ///
+    /// # Arguments
+    ///
+    /// * `proof` -- Proof data for the circuit.
+    /// * `gas_price_gwei` -- Optional gas price in Gwei for ETH cost calculation.
+    ///   If `None`, `estimated_eth_cost` in the result will be `None`.
+    ///
+    /// # Returns
+    ///
+    /// An [`RpcBatchGasEstimate`] with per-step gas values, total gas, and
+    /// optional ETH cost.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any transaction fails (circuit not registered,
+    /// invalid proof, RPC errors, etc.).
+    pub async fn estimate_total_batch_cost(
+        &self,
+        proof: &ProofData,
+        gas_price_gwei: Option<f64>,
+    ) -> anyhow::Result<RpcBatchGasEstimate> {
+        let provider = self.build_provider();
+        let contract = RemainderVerifier::new(self.client.contract_address(), &provider);
+
+        let proof_bytes = Bytes::copy_from_slice(&proof.proof_bytes);
+        let pub_inputs = Bytes::copy_from_slice(&proof.public_inputs);
+        let gens = Bytes::copy_from_slice(&proof.gens_data);
+
+        // 1. Start — estimate then send to advance state
+        let start_gas = contract
+            .startDAGBatchVerify(
+                proof_bytes.clone(),
+                proof.circuit_hash,
+                pub_inputs.clone(),
+                gens.clone(),
+            )
+            .estimate_gas()
+            .await?;
+
+        let receipt = contract
+            .startDAGBatchVerify(
+                proof_bytes.clone(),
+                proof.circuit_hash,
+                pub_inputs.clone(),
+                gens.clone(),
+            )
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+
+        // Extract session ID from event log
+        let session_id = receipt
+            .inner
+            .logs()
+            .iter()
+            .find_map(|log| {
+                log.log_decode::<RemainderVerifier::DAGBatchSessionStarted>()
+                    .ok()
+                    .map(|e| e.inner.data.sessionId)
+            })
+            .ok_or_else(|| anyhow::anyhow!("DAGBatchSessionStarted event not found"))?;
+
+        // Query session for total batches
+        let session_result = contract.getDAGBatchSession(session_id).call().await?;
+        let total_batches = session_result.totalBatches.to::<u64>();
+
+        // 2. Continue — estimate then send each batch
+        let mut continue_gas_per_step = Vec::with_capacity(total_batches as usize);
+        for _batch in 0..total_batches {
+            let gas = contract
+                .continueDAGBatchVerify(
+                    session_id,
+                    proof_bytes.clone(),
+                    pub_inputs.clone(),
+                    gens.clone(),
+                )
+                .estimate_gas()
+                .await?;
+
+            continue_gas_per_step.push(gas);
+
+            // Send the actual transaction to advance session state
+            contract
+                .continueDAGBatchVerify(
+                    session_id,
+                    proof_bytes.clone(),
+                    pub_inputs.clone(),
+                    gens.clone(),
+                )
+                .send()
+                .await?
+                .get_receipt()
+                .await?;
+        }
+
+        // 3. Finalize — estimate then send until fully finalized
+        let mut finalize_gas_per_step = Vec::new();
+        let mut finalize_count = 0u64;
+        loop {
+            let gas = contract
+                .finalizeDAGBatchVerify(
+                    session_id,
+                    proof_bytes.clone(),
+                    pub_inputs.clone(),
+                    gens.clone(),
+                )
+                .estimate_gas()
+                .await?;
+
+            finalize_gas_per_step.push(gas);
+
+            // Send the actual transaction
+            contract
+                .finalizeDAGBatchVerify(
+                    session_id,
+                    proof_bytes.clone(),
+                    pub_inputs.clone(),
+                    gens.clone(),
+                )
+                .send()
+                .await?
+                .get_receipt()
+                .await?;
+
+            finalize_count += 1;
+
+            // Check if fully finalized
+            let session_result = contract.getDAGBatchSession(session_id).call().await?;
+            if session_result.finalized {
+                break;
+            }
+
+            if finalize_count > 100 {
+                anyhow::bail!("Finalization exceeded 100 steps during gas estimation");
+            }
+        }
+
+        // 4. Cleanup — estimate then send
+        let cleanup_gas = contract
+            .cleanupDAGBatchSession(session_id)
+            .estimate_gas()
+            .await?;
+
+        contract
+            .cleanupDAGBatchSession(session_id)
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+
+        // Sum totals
+        let total_gas = start_gas
+            + continue_gas_per_step.iter().sum::<u64>()
+            + finalize_gas_per_step.iter().sum::<u64>()
+            + cleanup_gas;
+
+        let estimated_eth_cost = gas_price_gwei.map(|gwei| estimate_total_cost_eth(total_gas, gwei));
+
+        Ok(RpcBatchGasEstimate {
+            start_gas,
+            continue_gas_per_step,
+            finalize_gas_per_step,
+            cleanup_gas,
+            total_gas,
+            estimated_eth_cost,
+        })
+    }
+
+    /// Build an alloy HTTP provider with the client's wallet.
+    fn build_provider(&self) -> impl alloy::providers::Provider + Clone {
+        ProviderBuilder::new()
+            .wallet(self.client.wallet.clone())
+            .connect_http(self.client.rpc_url.clone())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -848,5 +1343,205 @@ mod tests {
             fin_full <= FINALIZE_GAS_UPPER,
             "Finalize gas should be <= upper bound"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // RpcBatchGasEstimate struct tests
+    // -----------------------------------------------------------------------
+
+    fn make_rpc_estimate(
+        start: u64,
+        continues: Vec<u64>,
+        finalizes: Vec<u64>,
+        cleanup: u64,
+        gas_price_gwei: Option<f64>,
+    ) -> RpcBatchGasEstimate {
+        let total = start
+            + continues.iter().sum::<u64>()
+            + finalizes.iter().sum::<u64>()
+            + cleanup;
+        let estimated_eth_cost = gas_price_gwei.map(|g| estimate_total_cost_eth(total, g));
+        RpcBatchGasEstimate {
+            start_gas: start,
+            continue_gas_per_step: continues,
+            finalize_gas_per_step: finalizes,
+            cleanup_gas: cleanup,
+            total_gas: total,
+            estimated_eth_cost,
+        }
+    }
+
+    #[test]
+    fn test_rpc_estimate_total_txs() {
+        let est = make_rpc_estimate(
+            17_500_000,
+            vec![20_000_000; 11],
+            vec![15_000_000; 3],
+            500_000,
+            None,
+        );
+        // 1 start + 11 continue + 3 finalize + 1 cleanup = 16
+        assert_eq!(est.total_txs(), 16);
+    }
+
+    #[test]
+    fn test_rpc_estimate_total_gas() {
+        let est = make_rpc_estimate(
+            17_500_000,
+            vec![20_000_000; 11],
+            vec![15_000_000; 3],
+            500_000,
+            None,
+        );
+        let expected = 17_500_000 + 11 * 20_000_000 + 3 * 15_000_000 + 500_000;
+        assert_eq!(est.total_gas, expected);
+    }
+
+    #[test]
+    fn test_rpc_estimate_avg_continue_gas() {
+        let est = make_rpc_estimate(
+            17_000_000,
+            vec![13_000_000, 20_000_000, 28_000_000],
+            vec![15_000_000],
+            400_000,
+            None,
+        );
+        // avg = (13M + 20M + 28M) / 3 = 20_333_333
+        assert_eq!(est.avg_continue_gas(), 20_333_333);
+    }
+
+    #[test]
+    fn test_rpc_estimate_avg_continue_gas_empty() {
+        let est = make_rpc_estimate(
+            17_000_000,
+            vec![],
+            vec![15_000_000],
+            400_000,
+            None,
+        );
+        assert_eq!(est.avg_continue_gas(), 0);
+    }
+
+    #[test]
+    fn test_rpc_estimate_avg_finalize_gas() {
+        let est = make_rpc_estimate(
+            17_000_000,
+            vec![20_000_000],
+            vec![9_000_000, 22_000_000],
+            400_000,
+            None,
+        );
+        // avg = (9M + 22M) / 2 = 15_500_000
+        assert_eq!(est.avg_finalize_gas(), 15_500_000);
+    }
+
+    #[test]
+    fn test_rpc_estimate_avg_finalize_gas_empty() {
+        let est = make_rpc_estimate(
+            17_000_000,
+            vec![20_000_000],
+            vec![],
+            400_000,
+            None,
+        );
+        assert_eq!(est.avg_finalize_gas(), 0);
+    }
+
+    #[test]
+    fn test_rpc_estimate_max_single_tx_gas() {
+        let est = make_rpc_estimate(
+            17_000_000,
+            vec![13_000_000, 28_000_000, 20_000_000],
+            vec![9_000_000, 22_000_000],
+            400_000,
+            None,
+        );
+        assert_eq!(est.max_single_tx_gas(), 28_000_000);
+    }
+
+    #[test]
+    fn test_rpc_estimate_max_single_tx_start_is_max() {
+        let est = make_rpc_estimate(
+            29_000_000,
+            vec![13_000_000],
+            vec![9_000_000],
+            400_000,
+            None,
+        );
+        assert_eq!(est.max_single_tx_gas(), 29_000_000);
+    }
+
+    #[test]
+    fn test_rpc_estimate_fits_in_blocks_true() {
+        let est = make_rpc_estimate(
+            17_000_000,
+            vec![28_000_000],
+            vec![22_000_000],
+            400_000,
+            None,
+        );
+        assert!(est.fits_in_blocks());
+    }
+
+    #[test]
+    fn test_rpc_estimate_fits_in_blocks_false() {
+        let est = make_rpc_estimate(
+            17_000_000,
+            vec![31_000_000], // exceeds 30M block gas limit
+            vec![22_000_000],
+            400_000,
+            None,
+        );
+        assert!(!est.fits_in_blocks());
+    }
+
+    #[test]
+    fn test_rpc_estimate_eth_cost_present() {
+        let est = make_rpc_estimate(
+            17_500_000,
+            vec![20_000_000; 11],
+            vec![15_000_000; 3],
+            500_000,
+            Some(30.0),
+        );
+        assert!(est.estimated_eth_cost.is_some());
+        let cost = est.estimated_eth_cost.unwrap();
+        // total_gas = 17.5M + 220M + 45M + 0.5M = 283M
+        // cost = 283M * 30 * 1e-9 = 8.49
+        let expected = 283_000_000.0 * 30.0 * 1e-9;
+        assert!(
+            (cost - expected).abs() < 0.01,
+            "Expected ~{expected:.4}, got {cost:.4}"
+        );
+    }
+
+    #[test]
+    fn test_rpc_estimate_eth_cost_absent() {
+        let est = make_rpc_estimate(
+            17_500_000,
+            vec![20_000_000],
+            vec![15_000_000],
+            500_000,
+            None,
+        );
+        assert!(est.estimated_eth_cost.is_none());
+    }
+
+    #[test]
+    fn test_rpc_estimate_xgboost_like_session() {
+        // Simulate a realistic XGBoost 88-layer session
+        let continues = vec![
+            13_500_000, 18_000_000, 20_000_000, 22_000_000, 24_000_000,
+            25_000_000, 26_000_000, 27_000_000, 27_500_000, 28_000_000,
+            15_000_000, // last batch with fewer layers
+        ];
+        let finalizes = vec![22_000_000, 20_000_000, 9_500_000];
+        let est = make_rpc_estimate(17_500_000, continues, finalizes, 300_000, Some(30.0));
+
+        assert_eq!(est.total_txs(), 16); // 1 + 11 + 3 + 1
+        assert!(est.total_gas > 200_000_000);
+        assert!(est.total_gas < 400_000_000);
+        assert!(est.fits_in_blocks());
+        assert!(est.estimated_eth_cost.is_some());
     }
 }
