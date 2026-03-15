@@ -35,7 +35,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
@@ -44,7 +44,7 @@ jobs:
           components: clippy, rustfmt
 
       - name: Cache Rust build
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -76,7 +76,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
@@ -85,7 +85,7 @@ jobs:
           components: clippy
 
       - name: Cache Rust build
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -111,7 +111,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Build Nitro Docker image
         run: docker build -f tee/Dockerfile.nitro -t tee-enclave-nitro tee/
@@ -155,7 +155,7 @@ jobs:
         run: docker save tee-enclave-nitro | gzip > tee-enclave-nitro.tar.gz
 
       - name: Upload Docker image artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: tee-enclave-nitro-image
           path: tee-enclave-nitro.tar.gz
@@ -172,7 +172,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
@@ -189,7 +189,7 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
 
       - name: Cache Rust build (operator)
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -218,10 +218,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Download Docker image
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: tee-enclave-nitro-image
 
@@ -273,7 +273,7 @@ jobs:
 
       - name: Upload EIF artifact
         if: steps.check-nitro.outputs.available == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: tee-enclave-eif
           path: |
