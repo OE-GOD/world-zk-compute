@@ -26,7 +26,7 @@ x509-cert = "0.2"           # Parse X.509 certificates from Nitro enclave certif
 der = { version = "0.7", features = ["std", "pem"] }    # ASN.1 DER encoding/decoding for certificate validation
 # -- HTTP + config --
 axum = "0.7"
-toml = "0.8"                # Parse operator configuration files
+toml = "1.0"                # Parse operator configuration files
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
