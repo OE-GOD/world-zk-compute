@@ -301,6 +301,34 @@ networkPolicy:
   # -- Enable network policy
   enabled: true
 
+# -- Ingress configuration
+ingress:
+  # -- Enable ingress
+  enabled: false
+  # -- Ingress class name
+  className: ""
+  # -- Annotations for the ingress
+  annotations: {}
+  # -- Ingress host configuration
+  hosts: []
+  #  - host: worldzk.example.com
+  # -- TLS configuration
+  tls: []
+  #  - secretName: worldzk-tls
+  #    hosts:
+  #      - worldzk.example.com
+
+# -- Periodic wallet balance check CronJob
+balanceCheck:
+  # -- Enable balance check CronJob
+  enabled: false
+  # -- Cron schedule (default: every 6 hours)
+  schedule: "0 */6 * * *"
+  # -- Container image (uses Foundry for cast)
+  image: "ghcr.io/foundry-rs/foundry:v1.0.0"
+  # -- Minimum balance in wei (default: 0.01 ETH)
+  minBalanceWei: "10000000000000000"
+
 # -- Image pull secrets for private registries
 imagePullSecrets: []
 

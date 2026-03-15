@@ -32,6 +32,14 @@ Create chart name and version as used by the chart label.
 {{- end }}
 
 {{/*
+Common selector labels (used by enclave, prover, private-input)
+*/}}
+{{- define "worldzk.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "worldzk.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{/*
 Common labels
 */}}
 {{- define "worldzk.labels" -}}

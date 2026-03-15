@@ -1,0 +1,69 @@
+{{- if .Values.balanceCheck.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "worldzk.fullname" . }}-balance-check
+  labels:
+    {{- include "worldzk.labels" . | nindent 4 }}
+    app.kubernetes.io/component: balance-check
+spec:
+  schedule: {{ .Values.balanceCheck.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 120
+      template:
+        metadata:
+          labels:
+            {{- include "worldzk.labels" . | nindent 12 }}
+            app.kubernetes.io/component: balance-check
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+          containers:
+            - name: balance-check
+              image: {{ .Values.balanceCheck.image | default "ghcr.io/foundry-rs/foundry:v1.0.0" }}
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -e
+                  RPC_URL="${RPC_URL}"
+                  MIN_BALANCE="${MIN_BALANCE:-10000000000000000}"
+
+                  check_balance() {
+                    local name="$1" addr="$2"
+                    if [ -z "$addr" ]; then return; fi
+                    bal=$(cast balance "$addr" --rpc-url "$RPC_URL" 2>/dev/null || echo "0")
+                    if [ "$bal" -lt "$MIN_BALANCE" ] 2>/dev/null; then
+                      echo "WARNING: $name ($addr) balance low: $bal wei"
+                      exit 1
+                    else
+                      echo "OK: $name ($addr) balance: $bal wei"
+                    fi
+                  }
+
+                  check_balance "operator" "$OPERATOR_ADDRESS"
+                  check_balance "enclave" "$ENCLAVE_ADDRESS"
+                  echo "All balance checks passed."
+              envFrom:
+                - configMapRef:
+                    name: {{ include "worldzk.configMapName" . }}
+              env:
+                - name: RPC_URL
+                  value: {{ required "global.rpcUrl is required" .Values.global.rpcUrl | quote }}
+                - name: MIN_BALANCE
+                  value: {{ .Values.balanceCheck.minBalanceWei | default "10000000000000000" | quote }}
+              resources:
+                requests:
+                  memory: "32Mi"
+                  cpu: "50m"
+                limits:
+                  memory: "64Mi"
+                  cpu: "100m"
+{{- end }}

@@ -1,0 +1,57 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "worldzk.fullname" . }}
+  labels:
+    {{- include "worldzk.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.ingress.tls }}
+  tls:
+    {{- range .Values.ingress.tls }}
+    - hosts:
+        {{- range .hosts }}
+        - {{ . | quote }}
+        {{- end }}
+      secretName: {{ .secretName }}
+    {{- end }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          - path: /api/operator
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "worldzk.operator.fullname" $ }}
+                port:
+                  name: http
+          {{- if $.Values.indexer.enabled }}
+          - path: /api/indexer
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "worldzk.fullname" $ }}-indexer
+                port:
+                  name: http
+          {{- end }}
+          {{- if $.Values.enclave.enabled }}
+          - path: /api/enclave
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "worldzk.fullname" $ }}-enclave
+                port:
+                  name: http
+          {{- end }}
+    {{- end }}
+{{- end }}
