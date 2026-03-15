@@ -29,7 +29,9 @@
 
 pub mod abi;
 pub mod client;
+pub mod error;
 pub mod event_watcher;
+pub mod execution_engine;
 pub mod fixture;
 pub mod hash;
 pub mod networks;
@@ -40,6 +42,7 @@ pub mod verifier;
 
 pub use client::Client;
 pub use event_watcher::{TEEEvent, TEEEventWatcher};
+pub use execution_engine::{ExecutionEngineClient, RequestStatus};
 pub use fixture::{DAGFixture, ProofData};
 pub use hash::{
     compute_input_hash, compute_input_hash_from_json, compute_model_hash,

@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 use tracing::Instrument;
+use uuid::Uuid;
 
 use config::{Config, ModelConfig};
 use prover::ProofManager;
@@ -254,10 +255,14 @@ async fn cmd_submit(
     features_json: &str,
     model: &ModelConfig,
 ) -> anyhow::Result<()> {
+    let request_id = Uuid::new_v4();
+    let _submit_span = tracing::info_span!("submit", request_id = %request_id).entered();
+
     // 1. Parse features
     let feats: Vec<f64> = serde_json::from_str(features_json)
         .map_err(|e| anyhow::anyhow!("Invalid features JSON: {}", e))?;
     tracing::info!(
+        request_id = %request_id,
         model_name = %model.name,
         model_path = %model.path,
         "Submitting inference for {} features using model '{}'",

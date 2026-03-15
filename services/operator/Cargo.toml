@@ -17,14 +17,17 @@ tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 hex = "0.4"
 anyhow = "1"
 thiserror.workspace = true
-ciborium = "0.2"
-base64 = "0.22"
-p384 = { version = "0.13", features = ["ecdsa"] }
-ecdsa = { version = "0.16", features = ["verifying"] }
-x509-cert = "0.2"
-der = { version = "0.7", features = ["std", "pem"] }
+# -- Nitro attestation verification --
+ciborium = "0.2"            # CBOR decoding for AWS Nitro attestation documents
+base64 = "0.22"             # Base64 decoding of attestation payloads
+p384 = { version = "0.13", features = ["ecdsa"] }   # NIST P-384 curve for Nitro attestation signature verification
+ecdsa = { version = "0.16", features = ["verifying"] }  # ECDSA signature verification primitives
+x509-cert = "0.2"           # Parse X.509 certificates from Nitro enclave certificate chain
+der = { version = "0.7", features = ["std", "pem"] }    # ASN.1 DER encoding/decoding for certificate validation
+# -- HTTP + config --
 axum = "0.7"
-toml = "0.8"
+toml = "0.8"                # Parse operator configuration files
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 tempfile = "3"

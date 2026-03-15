@@ -3,6 +3,17 @@
 use std::future::Future;
 use std::time::Duration;
 
+/// Internal helper macro: emit a debug-level tracing event when the `tracing`
+/// feature is enabled.  When disabled the call compiles to nothing.
+macro_rules! trace_debug {
+    ($($arg:tt)*) => {
+        #[cfg(feature = "tracing")]
+        {
+            tracing::debug!($($arg)*);
+        }
+    };
+}
+
 /// Policy controlling retry behavior.
 #[derive(Debug, Clone)]
 pub struct RetryPolicy {
@@ -107,6 +118,7 @@ pub fn is_retryable(err: &anyhow::Error) -> bool {
 ///
 /// If `policy.total_timeout` is set, the entire operation (including inter-attempt
 /// delays) will abort once the cumulative elapsed time exceeds the limit.
+#[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
 pub async fn retry_with_backoff<F, Fut, T>(policy: &RetryPolicy, mut f: F) -> anyhow::Result<T>
 where
     F: FnMut() -> Fut,
@@ -119,17 +131,29 @@ where
         // Check total timeout before starting a new attempt.
         if let Some(total) = policy.total_timeout {
             if start.elapsed() >= total {
+                trace_debug!(
+                    attempt,
+                    elapsed_ms = start.elapsed().as_millis() as u64,
+                    "total timeout exceeded, aborting retries"
+                );
                 return Err(last_err.unwrap_or_else(|| {
                     anyhow::anyhow!("total timeout ({total:?}) exceeded after {attempt} attempt(s)")
                 }));
             }
         }
 
+        trace_debug!(attempt, max_retries = policy.max_retries, "starting attempt");
+
         // Execute the attempt, optionally wrapped in a per-attempt timeout.
         let attempt_result = if let Some(per_attempt) = policy.timeout {
             match tokio::time::timeout(per_attempt, f()).await {
                 Ok(inner) => inner,
                 Err(_elapsed) => {
+                    trace_debug!(
+                        attempt,
+                        timeout_ms = per_attempt.as_millis() as u64,
+                        "attempt timed out"
+                    );
                     Err(anyhow::anyhow!("attempt timed out after {per_attempt:?}"))
                 }
             }
@@ -138,9 +162,19 @@ where
         };
 
         match attempt_result {
-            Ok(val) => return Ok(val),
+            Ok(val) => {
+                trace_debug!(attempt, "attempt succeeded");
+                return Ok(val);
+            }
             Err(e) => {
-                if attempt == policy.max_retries || !is_retryable(&e) {
+                let retryable = is_retryable(&e);
+                trace_debug!(
+                    attempt,
+                    retryable,
+                    error = %e,
+                    "attempt failed"
+                );
+                if attempt == policy.max_retries || !retryable {
                     return Err(e);
                 }
                 last_err = Some(e);
@@ -150,14 +184,29 @@ where
                 if let Some(total) = policy.total_timeout {
                     let remaining = total.saturating_sub(start.elapsed());
                     if remaining.is_zero() {
+                        trace_debug!(
+                            attempt,
+                            "total timeout exceeded during backoff, aborting"
+                        );
                         return Err(last_err.unwrap_or_else(|| {
                             anyhow::anyhow!(
                                 "total timeout ({total:?}) exceeded after {attempt} attempt(s)"
                             )
                         }));
                     }
-                    tokio::time::sleep(delay.min(remaining)).await;
+                    let actual_delay = delay.min(remaining);
+                    trace_debug!(
+                        attempt,
+                        delay_ms = actual_delay.as_millis() as u64,
+                        "sleeping before next retry (clamped by total timeout)"
+                    );
+                    tokio::time::sleep(actual_delay).await;
                 } else {
+                    trace_debug!(
+                        attempt,
+                        delay_ms = delay.as_millis() as u64,
+                        "sleeping before next retry"
+                    );
                     tokio::time::sleep(delay).await;
                 }
             }

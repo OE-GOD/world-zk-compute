@@ -6,12 +6,14 @@
 //! backward-compatible aliases.
 
 use axum::extract::{Path, Query, RawQuery, State};
-use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
-use axum::response::{IntoResponse, Json};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, Request, StatusCode};
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use std::sync::Arc;
 use tower_http::set_header::SetResponseHeaderLayer;
+use uuid::Uuid;
 
 use super::rate_limit::{RateLimitConfig, RateLimitLayer};
 use super::websocket::{self, EventBroadcaster};
@@ -22,6 +24,9 @@ pub const API_VERSION: &str = "v1";
 
 /// X-API-Version header name (lowercase for HTTP/2 compat).
 static X_API_VERSION: HeaderName = HeaderName::from_static("x-api-version");
+
+/// X-Request-ID header name for request correlation.
+static X_REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
 
 // ---------------------------------------------------------------------------
 // Validation
@@ -157,6 +162,43 @@ fn validate_id(id: &str) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
         ));
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Request-ID middleware
+// ---------------------------------------------------------------------------
+
+/// Middleware that reads `X-Request-ID` from the incoming request header
+/// (or generates a new UUID v4 if absent), attaches it to a tracing span
+/// for the request, and includes it in the response headers.
+async fn request_id_middleware(
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> Response {
+    let request_id = request
+        .headers()
+        .get(&X_REQUEST_ID)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+
+    let span = tracing::info_span!(
+        "request",
+        request_id = %request_id,
+        method = %request.method(),
+        uri = %request.uri(),
+    );
+    let _guard = span.enter();
+
+    tracing::debug!(request_id = %request_id, "processing request");
+
+    let mut response = next.run(request).await;
+
+    if let Ok(val) = HeaderValue::from_str(&request_id) {
+        response.headers_mut().insert(X_REQUEST_ID.clone(), val);
+    }
+
+    response
 }
 
 // ---------------------------------------------------------------------------
@@ -316,6 +358,8 @@ pub fn build_app(
         .with_state(state)
         // WebSocket routes (different state type)
         .merge(ws_routes)
+        // Request correlation ID middleware
+        .layer(middleware::from_fn(request_id_middleware))
         // Per-IP rate limiting
         .layer(rate_layer)
         // Add X-API-Version header to all responses
@@ -493,14 +537,14 @@ mod tests {
     #[tokio::test]
     async fn test_list_results_filter_by_submitter() {
         let s = test_storage();
-        s.insert_result("0x01", "0xm", "0xi", "0xalice", 1)
+        s.insert_result("0x01", "0xm", "0xi", "0xaaa111", 1)
             .unwrap();
-        s.insert_result("0x02", "0xm", "0xi", "0xbob", 2)
+        s.insert_result("0x02", "0xm", "0xi", "0xbbb222", 2)
             .unwrap();
         let app = build_app(s, test_broadcaster(), test_rate_limit_config());
 
         let req = axum::http::Request::builder()
-            .uri("/api/v1/results?submitter=0xbob")
+            .uri("/api/v1/results?submitter=0xbbb222")
             .body(Body::empty())
             .unwrap();
 
@@ -510,7 +554,7 @@ mod tests {
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         let rows: Vec<ResultRow> = serde_json::from_slice(&body).unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].submitter, "0xbob");
+        assert_eq!(rows[0].submitter, "0xbbb222");
     }
 
     #[tokio::test]
@@ -1048,5 +1092,89 @@ mod tests {
             .unwrap();
         let resp = app.clone().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    // -----------------------------------------------------------------------
+    // Admin reset endpoint tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_admin_reset_requires_auth() {
+        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+
+        // No header at all
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/admin/reset")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let err: ErrorResponse = serde_json::from_slice(&body).unwrap();
+        assert!(
+            err.error.contains("missing or invalid"),
+            "expected auth error, got: {}",
+            err.error
+        );
+    }
+
+    #[tokio::test]
+    async fn test_admin_reset_wrong_key_returns_401() {
+        // Set the expected key
+        std::env::set_var("ADMIN_API_KEY", "correct-secret-key");
+        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/admin/reset")
+            .header("x-admin-key", "wrong-key")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        // Clean up
+        std::env::remove_var("ADMIN_API_KEY");
+    }
+
+    #[tokio::test]
+    async fn test_admin_reset_with_valid_key_succeeds() {
+        std::env::set_var("ADMIN_API_KEY", "test-admin-key-123");
+        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/admin/reset")
+            .header("x-admin-key", "test-admin-key-123")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["message"], "Lock state reset");
+
+        // Clean up
+        std::env::remove_var("ADMIN_API_KEY");
+    }
+
+    #[tokio::test]
+    async fn test_admin_reset_empty_env_returns_401() {
+        // Ensure ADMIN_API_KEY is not set (empty string default)
+        std::env::remove_var("ADMIN_API_KEY");
+        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/admin/reset")
+            .header("x-admin-key", "anything")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 }

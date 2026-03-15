@@ -44,7 +44,7 @@ fn seed_storage(n: usize) -> Arc<dyn Storage> {
             &format!("0x{:04x}", i),
             &format!("0xmodel_{}", i % 3),
             &format!("0xinput_{}", i),
-            &format!("0xsubmitter_{}", i % 2),
+            &format!("0xaa{:02x}", i % 2),
             (i * 10) as u64,
         )
         .unwrap();
@@ -279,12 +279,12 @@ mod rest_results {
         // seed_storage uses submitter_{i%2}, so submitter_0 for even, submitter_1 for odd
         let app = build_app(s, make_broadcaster());
         let (status, body) =
-            get_request(app, "/results?submitter=0xsubmitter_0").await;
+            get_request(app, "/results?submitter=0xaa00").await;
 
         assert_eq!(status, StatusCode::OK);
         let rows: Vec<ResultRow> = serde_json::from_slice(&body).unwrap();
         assert_eq!(rows.len(), 3); // indices 0, 2, 4
-        assert!(rows.iter().all(|r| r.submitter == "0xsubmitter_0"));
+        assert!(rows.iter().all(|r| r.submitter == "0xaa00"));
     }
 
     #[tokio::test]
@@ -324,28 +324,28 @@ mod rest_results {
     #[tokio::test]
     async fn list_results_combined_filters() {
         let s = make_storage();
-        s.insert_result("0x01", "0xm_a", "0xi", "0xalice", 10)
+        s.insert_result("0x01", "0xaaaa", "0xi", "0xcc11", 10)
             .unwrap();
-        s.insert_result("0x02", "0xm_a", "0xi", "0xbob", 20)
+        s.insert_result("0x02", "0xaaaa", "0xi", "0xdd22", 20)
             .unwrap();
-        s.insert_result("0x03", "0xm_b", "0xi", "0xalice", 30)
+        s.insert_result("0x03", "0xbbbb", "0xi", "0xcc11", 30)
             .unwrap();
         s.update_result_status("0x01", "finalized", None).unwrap();
         s.update_result_status("0x02", "finalized", None).unwrap();
 
         let app = build_app(s, make_broadcaster());
 
-        // Filter: finalized + model_hash=0xm_a => only 0x01 and 0x02
+        // Filter: finalized + model_hash=0xaaaa => only 0x01 and 0x02
         let (status, body) =
-            get_request(app.clone(), "/results?status=finalized&model_hash=0xm_a").await;
+            get_request(app.clone(), "/results?status=finalized&model_hash=0xaaaa").await;
         assert_eq!(status, StatusCode::OK);
         let rows: Vec<ResultRow> = serde_json::from_slice(&body).unwrap();
         assert_eq!(rows.len(), 2);
 
-        // Filter: submitter=0xalice + status=finalized => only 0x01
+        // Filter: submitter=0xcc11 + status=finalized => only 0x01
         let (status, body) = get_request(
             app,
-            "/results?status=finalized&submitter=0xalice",
+            "/results?status=finalized&submitter=0xcc11",
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -1064,13 +1064,19 @@ mod db_correctness {
 mod poll_behavior {
     use super::*;
 
+    /// Guard to serialize env-var–dependent Config tests (env vars are
+    /// process-global state).
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn config_default_poll_interval() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::remove_var("POLL_INTERVAL_SECS");
         std::env::remove_var("RPC_URL");
         std::env::remove_var("CONTRACT_ADDRESS");
         std::env::remove_var("DB_PATH");
         std::env::remove_var("PORT");
+        std::env::remove_var("RATE_LIMIT_PER_IP");
 
         let config = indexer::Config::from_env().unwrap();
         assert_eq!(
@@ -1081,6 +1087,7 @@ mod poll_behavior {
 
     #[test]
     fn config_custom_poll_interval() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("POLL_INTERVAL_SECS", "30");
         let config = indexer::Config::from_env().unwrap();
         assert_eq!(config.poll_interval_secs, 30);
@@ -1089,6 +1096,7 @@ mod poll_behavior {
 
     #[test]
     fn config_invalid_poll_interval_errors() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("POLL_INTERVAL_SECS", "not-a-number");
         let result = indexer::Config::from_env();
         assert!(result.is_err());

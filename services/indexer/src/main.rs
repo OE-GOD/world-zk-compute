@@ -1105,8 +1105,8 @@ mod tests {
     #[tokio::test]
     async fn test_list_results_endpoint() {
         let s = test_storage();
-        s.insert_result("0x01", "0xm", "0xi", "0xalice", 1).unwrap();
-        s.insert_result("0x02", "0xm", "0xi", "0xbob", 2).unwrap();
+        s.insert_result("0x01", "0xm", "0xi", "0xaa11", 1).unwrap();
+        s.insert_result("0x02", "0xm", "0xi", "0xbb22", 2).unwrap();
         s.update_result_status("0x02", "finalized", None).unwrap();
         let app = build_app(s, test_broadcaster());
 
@@ -1134,7 +1134,7 @@ mod tests {
         assert_eq!(rows[0].id, "0x02");
 
         let req = axum::http::Request::builder()
-            .uri("/results?submitter=0xalice")
+            .uri("/results?submitter=0xaa11")
             .body(Body::empty())
             .unwrap();
 

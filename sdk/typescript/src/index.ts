@@ -133,5 +133,15 @@ export type {
   LightGBMModel,
 } from './lightgbm';
 
+export { ExecutionEngineClient } from './execution-engine';
+export {
+  OnChainRequestStatus,
+} from './execution-engine';
+export type {
+  OnChainExecutionRequest,
+  SubmitRequestOptions,
+  OnChainProverStats,
+} from './execution-engine';
+
 export { SEPOLIA_NETWORK, ANVIL_NETWORK, NETWORKS } from './networks';
 export type { NetworkConfig } from './networks';

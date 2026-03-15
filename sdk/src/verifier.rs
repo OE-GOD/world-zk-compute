@@ -51,6 +51,7 @@ impl DAGVerifier {
     ///
     /// `description` is ABI-encoded into `descData`.
     /// `gens_data` is hashed to produce `gensHash`.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(circuit_hash = %circuit_hash, name = %name)))]
     pub async fn register_circuit(
         &self,
         circuit_hash: B256,
@@ -75,6 +76,7 @@ impl DAGVerifier {
     }
 
     /// Set the Stylus verifier address for a circuit.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(circuit_hash = %circuit_hash)))]
     pub async fn set_stylus_verifier(
         &self,
         circuit_hash: B256,
@@ -94,6 +96,7 @@ impl DAGVerifier {
     }
 
     /// Set the Groth16 verifier for a circuit.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(circuit_hash = %circuit_hash)))]
     pub async fn set_groth16_verifier(
         &self,
         circuit_hash: B256,
@@ -117,6 +120,7 @@ impl DAGVerifier {
 
     /// Verify a DAG proof in a single call (view function, no gas limit on-chain).
     /// Uses `.gas(500_000_000)` for Anvil compatibility.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(circuit_hash = %proof.circuit_hash)))]
     pub async fn verify_single_tx(&self, proof: &ProofData) -> anyhow::Result<bool> {
         let provider = self.build_provider();
         let contract = RemainderVerifier::new(self.client.contract_address(), provider);
@@ -136,6 +140,7 @@ impl DAGVerifier {
     }
 
     /// Verify a DAG proof via the Stylus verifier.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(circuit_hash = %proof.circuit_hash)))]
     pub async fn verify_stylus(&self, proof: &ProofData) -> anyhow::Result<bool> {
         let provider = self.build_provider();
         let contract = RemainderVerifier::new(self.client.contract_address(), provider);
@@ -156,9 +161,10 @@ impl DAGVerifier {
 
     // -- Batch Verification --
 
-    /// Run multi-tx batch verification: start → continue×N → finalize×M → cleanup.
+    /// Run multi-tx batch verification: start -> continueXN -> finalizeXM -> cleanup.
     ///
     /// Calls `on_progress` at each step. Returns the session ID on success.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(circuit_hash = %proof.circuit_hash)))]
     pub async fn verify_batch<F>(&self, proof: &ProofData, on_progress: F) -> anyhow::Result<B256>
     where
         F: Fn(BatchProgress),
@@ -275,6 +281,7 @@ impl DAGVerifier {
     // -- Session Query --
 
     /// Query on-chain batch session status.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(session_id = %session_id)))]
     pub async fn get_session_status(&self, session_id: B256) -> anyhow::Result<BatchSession> {
         let provider = self.build_provider();
         let contract = RemainderVerifier::new(self.client.contract_address(), provider);
@@ -282,6 +289,7 @@ impl DAGVerifier {
     }
 
     /// Check if a circuit is registered and active.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(circuit_hash = %circuit_hash)))]
     pub async fn is_circuit_active(&self, circuit_hash: B256) -> anyhow::Result<bool> {
         let provider = self.build_provider();
         let contract = RemainderVerifier::new(self.client.contract_address(), provider);

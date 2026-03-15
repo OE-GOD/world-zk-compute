@@ -51,6 +51,9 @@ jobs:
       - name: Check contract sizes (EIP-170)
         run: bash scripts/check-contract-sizes.sh
 
+      - name: Validate test fixtures
+        run: bash scripts/validate-fixtures.sh
+
       - name: Gas snapshot check
         run: |
           cd contracts

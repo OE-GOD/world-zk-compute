@@ -96,6 +96,11 @@ try:
         topic_hash,
     )
     from .async_client import AsyncTEEVerifier, AsyncEventWatcher
+    from .execution_engine import (
+        ExecutionEngineClient,
+        ExecutionRequestInfo,
+        EXECUTION_ENGINE_ABI,
+    )
 except ImportError:
     pass  # web3 not installed
 
@@ -171,6 +176,10 @@ __all__ = [
     # Async TEE Verifier & Event Watcher (requires web3 optional dependency)
     "AsyncTEEVerifier",
     "AsyncEventWatcher",
+    # ExecutionEngine (requires web3 optional dependency)
+    "ExecutionEngineClient",
+    "ExecutionRequestInfo",
+    "EXECUTION_ENGINE_ABI",
     # Hash utilities
     "compute_model_hash",
     "compute_model_hash_from_bytes",

@@ -13,8 +13,60 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 ///         Dispute path: fall back to existing RemainderVerifier DAG proof verification.
 /// @dev Uses Ownable2Step for safe admin transfers, Pausable for emergency stops,
 ///      and ReentrancyGuard to protect ETH payouts from reentrancy.
+///      Storage is packed for gas efficiency:
+///      - PackedEnclaveInfo: 2 slots (was 3) — registered+active+registeredAt packed with address key
+///      - PackedMLResult: saves 4 slots per result via uint40 timestamps and bool packing
 contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuard {
     using ECDSA for bytes32;
+
+    // ─── Packed Storage Structs ─────────────────────────────────────────────
+    // These internal structs optimize storage layout. The public interface
+    // (ITEEMLVerifier.EnclaveInfo / ITEEMLVerifier.MLResult) is unchanged.
+
+    /// @dev Packed enclave info for storage efficiency.
+    ///      Slot 0: registered (1) + active (1) + registeredAt (5) = 7 bytes (fits in one slot)
+    ///      Slot 1: enclaveImageHash (32 bytes)
+    ///      Total: 2 slots (down from 3)
+    struct PackedEnclaveInfo {
+        bool registered;
+        bool active;
+        uint40 registeredAt;
+        bytes32 enclaveImageHash;
+    }
+
+    /// @dev Packed ML result for storage efficiency.
+    ///      Slot 0: enclave (20) + submittedAt (5) + challengeDeadline (5) + finalized (1) + challenged (1) = 32
+    ///      Slot 1: submitter (20) + disputeDeadline (5) = 25 bytes
+    ///      Slot 2: challenger (20) = 20 bytes
+    ///      Slot 3: modelHash (32)
+    ///      Slot 4: inputHash (32)
+    ///      Slot 5: resultHash (32)
+    ///      Slot 6+: result (dynamic bytes)
+    ///      Slot N: challengeBond (32)
+    ///      Slot N+1: proverStakeAmount (32)
+    ///      Total: ~10 slots (down from ~14)
+    struct PackedMLResult {
+        // --- Slot 0: 20 + 5 + 5 + 1 + 1 = 32 bytes ---
+        address enclave;
+        uint40 submittedAt;
+        uint40 challengeDeadline;
+        bool finalized;
+        bool challenged;
+        // --- Slot 1: 20 + 5 = 25 bytes ---
+        address submitter;
+        uint40 disputeDeadline;
+        // --- Slot 2: 20 bytes ---
+        address challenger;
+        // --- Slot 3-5: 32 bytes each ---
+        bytes32 modelHash;
+        bytes32 inputHash;
+        bytes32 resultHash;
+        // --- Dynamic slot(s) ---
+        bytes result;
+        // --- Slot N, N+1: 32 bytes each (ETH amounts need full uint256) ---
+        uint256 challengeBond;
+        uint256 proverStakeAmount;
+    }
 
     /// @notice Address of the RemainderVerifier contract used for ZK dispute resolution
     address public remainderVerifier;
@@ -31,11 +83,11 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
     /// @notice Minimum ETH stake required to submit a result
     uint256 public proverStake = 0.1 ether;
 
-    /// @notice Registered TEE enclave information by signing key address
-    mapping(address => EnclaveInfo) public enclaves;
+    /// @dev Packed enclave storage (replaces mapping to EnclaveInfo)
+    mapping(address => PackedEnclaveInfo) internal _enclaves;
 
-    /// @dev Internal storage for submitted ML results
-    mapping(bytes32 => MLResult) internal _results;
+    /// @dev Packed result storage (replaces mapping to MLResult)
+    mapping(bytes32 => PackedMLResult) internal _results;
 
     /// @notice Whether a dispute has been resolved for a given result ID
     mapping(bytes32 => bool) public disputeResolved;
@@ -64,10 +116,13 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
     /// @inheritdoc ITEEMLVerifier
     function registerEnclave(address enclaveKey, bytes32 enclaveImageHash) external onlyOwner {
         require(enclaveKey != address(0), "TEEMLVerifier: zero enclave key");
-        require(!enclaves[enclaveKey].registered, "TEEMLVerifier: already registered");
+        require(!_enclaves[enclaveKey].registered, "TEEMLVerifier: already registered");
 
-        enclaves[enclaveKey] = EnclaveInfo({
-            registered: true, active: true, enclaveImageHash: enclaveImageHash, registeredAt: block.timestamp
+        _enclaves[enclaveKey] = PackedEnclaveInfo({
+            registered: true,
+            active: true,
+            registeredAt: uint40(block.timestamp),
+            enclaveImageHash: enclaveImageHash
         });
 
         emit EnclaveRegistered(enclaveKey, enclaveImageHash);
@@ -75,12 +130,25 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
 
     /// @inheritdoc ITEEMLVerifier
     function revokeEnclave(address enclaveKey) external onlyOwner {
-        require(enclaves[enclaveKey].registered, "TEEMLVerifier: not registered");
-        require(enclaves[enclaveKey].active, "TEEMLVerifier: already revoked");
+        require(_enclaves[enclaveKey].registered, "TEEMLVerifier: not registered");
+        require(_enclaves[enclaveKey].active, "TEEMLVerifier: already revoked");
 
-        enclaves[enclaveKey].active = false;
+        _enclaves[enclaveKey].active = false;
 
         emit EnclaveRevoked(enclaveKey);
+    }
+
+    /// @notice Read enclave info in the public interface format
+    /// @param enclaveKey The enclave's signing key address
+    /// @return info The EnclaveInfo struct (unpacked from storage)
+    function enclaves(address enclaveKey) external view returns (EnclaveInfo memory info) {
+        PackedEnclaveInfo storage p = _enclaves[enclaveKey];
+        info = EnclaveInfo({
+            registered: p.registered,
+            active: p.active,
+            enclaveImageHash: p.enclaveImageHash,
+            registeredAt: uint256(p.registeredAt)
+        });
     }
 
     /// @inheritdoc ITEEMLVerifier
@@ -139,27 +207,27 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
         bytes32 ethSignedHash = _toEthSignedMessageHash(message);
 
         address signer = ethSignedHash.recover(attestation);
-        require(enclaves[signer].registered, "TEEMLVerifier: unregistered enclave");
-        require(enclaves[signer].active, "TEEMLVerifier: enclave revoked");
+        require(_enclaves[signer].registered, "TEEMLVerifier: unregistered enclave");
+        require(_enclaves[signer].active, "TEEMLVerifier: enclave revoked");
 
         resultId = keccak256(abi.encodePacked(msg.sender, modelHash, inputHash, block.number));
         require(_results[resultId].submittedAt == 0, "TEEMLVerifier: result exists");
 
-        _results[resultId] = MLResult({
+        _results[resultId] = PackedMLResult({
             enclave: signer,
+            submittedAt: uint40(block.timestamp),
+            challengeDeadline: uint40(block.timestamp + CHALLENGE_WINDOW),
+            finalized: false,
+            challenged: false,
             submitter: msg.sender,
+            disputeDeadline: 0,
+            challenger: address(0),
             modelHash: modelHash,
             inputHash: inputHash,
             resultHash: resultHash,
             result: result,
-            submittedAt: block.timestamp,
-            challengeDeadline: block.timestamp + CHALLENGE_WINDOW,
-            disputeDeadline: 0,
             challengeBond: 0,
-            proverStakeAmount: msg.value,
-            finalized: false,
-            challenged: false,
-            challenger: address(0)
+            proverStakeAmount: msg.value
         });
 
         emit ResultSubmitted(resultId, modelHash, inputHash, msg.sender);
