@@ -207,7 +207,7 @@ async fn verify_enclave_attestation(
     if let Some(ref expected) = config.expected_pcr0 {
         nitro::validate_pcr0(&verified, expected)?;
     }
-    nitro::validate_freshness(&verified, 600)?;
+    nitro::validate_freshness(&verified, config.attestation_freshness_secs)?;
 
     tracing::info!(
         "Enclave attestation verified (cert_chain={}, nonce_verified=true)",

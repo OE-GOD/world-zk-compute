@@ -3045,6 +3045,7 @@ dependencies = [
  "clap",
  "dotenvy",
  "hex",
+ "http-body-util",
  "reqwest",
  "serde",
  "serde_json",

@@ -80,11 +80,21 @@ pub(crate) async fn handle_stats(
 }
 
 pub(crate) async fn handle_health(State(state): State<AppState>) -> impl IntoResponse {
-    Json(super::HealthResponse {
-        status: "ok".to_string(),
+    let healthy = state.storage.is_healthy();
+    let body = super::HealthResponse {
+        status: if healthy {
+            "ok".to_string()
+        } else {
+            "degraded".to_string()
+        },
         last_indexed_block: state.storage.get_last_indexed_block(),
         total_results: state.storage.get_total_results(),
-    })
+    };
+    if healthy {
+        (StatusCode::OK, Json(body))
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, Json(body))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -258,5 +268,169 @@ mod tests {
     #[tokio::test]
     async fn test_api_version_constant() {
         assert_eq!(API_VERSION, "v1");
+    }
+
+    #[tokio::test]
+    async fn test_list_results_filter_by_status() {
+        let s = test_storage();
+        s.insert_result("0x01", "0xm", "0xi", "0xa", 1).unwrap();
+        s.insert_result("0x02", "0xm", "0xi", "0xa", 2).unwrap();
+        s.update_result_status("0x02", "challenged", Some("0xc"))
+            .unwrap();
+        let app = build_app(s, test_broadcaster());
+
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/results?status=challenged")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let rows: Vec<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "0x02");
+        assert_eq!(rows[0].status, "challenged");
+        assert_eq!(rows[0].challenger.as_deref(), Some("0xc"));
+    }
+
+    #[tokio::test]
+    async fn test_list_results_filter_by_submitter() {
+        let s = test_storage();
+        s.insert_result("0x01", "0xm", "0xi", "0xalice", 1)
+            .unwrap();
+        s.insert_result("0x02", "0xm", "0xi", "0xbob", 2)
+            .unwrap();
+        let app = build_app(s, test_broadcaster());
+
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/results?submitter=0xbob")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let rows: Vec<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].submitter, "0xbob");
+    }
+
+    #[tokio::test]
+    async fn test_stats_accuracy_across_status_transitions() {
+        let s = test_storage();
+        // Insert 3 results, transition through various statuses
+        s.insert_result("0x01", "0xm", "0xi", "0xa", 1).unwrap();
+        s.insert_result("0x02", "0xm", "0xi", "0xa", 2).unwrap();
+        s.insert_result("0x03", "0xm", "0xi", "0xa", 3).unwrap();
+        s.update_result_status("0x02", "challenged", Some("0xc"))
+            .unwrap();
+        s.update_result_status("0x03", "finalized", None).unwrap();
+
+        let app = build_app(s, test_broadcaster());
+
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/stats")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let stats: StatsResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(stats.total_submitted, 1);
+        assert_eq!(stats.total_challenged, 1);
+        assert_eq!(stats.total_finalized, 1);
+        assert_eq!(stats.total_resolved, 0);
+    }
+
+    #[tokio::test]
+    async fn test_health_reports_block_number() {
+        let s = test_storage();
+        s.set_last_indexed_block(12345).unwrap();
+        s.insert_result("0x01", "0xm", "0xi", "0xa", 100)
+            .unwrap();
+        let app = build_app(s, test_broadcaster());
+
+        let req = axum::http::Request::builder()
+            .uri("/health")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let health: super::super::HealthResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(health.status, "ok");
+        assert_eq!(health.last_indexed_block, 12345);
+        assert_eq!(health.total_results, 1);
+    }
+
+    #[tokio::test]
+    async fn test_list_results_ordered_by_block_desc() {
+        let s = test_storage();
+        s.insert_result("0x01", "0xm", "0xi", "0xa", 10).unwrap();
+        s.insert_result("0x02", "0xm", "0xi", "0xa", 50).unwrap();
+        s.insert_result("0x03", "0xm", "0xi", "0xa", 30).unwrap();
+        let app = build_app(s, test_broadcaster());
+
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/results")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let rows: Vec<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].id, "0x02"); // block 50 first
+        assert_eq!(rows[1].id, "0x03"); // block 30
+        assert_eq!(rows[2].id, "0x01"); // block 10 last
+    }
+
+    #[tokio::test]
+    async fn test_list_results_with_limit() {
+        let s = test_storage();
+        for i in 0..10 {
+            s.insert_result(&format!("0x{:02x}", i), "0xm", "0xi", "0xa", i)
+                .unwrap();
+        }
+        let app = build_app(s, test_broadcaster());
+
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/results?limit=3")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let rows: Vec<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(rows.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_duplicate_insert_is_idempotent() {
+        let s = test_storage();
+        s.insert_result("0x01", "0xm", "0xi", "0xa", 1).unwrap();
+        // Second insert with same ID should be ignored (INSERT OR IGNORE)
+        s.insert_result("0x01", "0xdifferent", "0xi", "0xb", 2)
+            .unwrap();
+        let app = build_app(s, test_broadcaster());
+
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/results/0x01")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let row: ResultRow = serde_json::from_slice(&body).unwrap();
+        // Should retain original values
+        assert_eq!(row.model_hash, "0xm");
+        assert_eq!(row.submitter, "0xa");
     }
 }

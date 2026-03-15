@@ -70,7 +70,9 @@ and Prometheus metrics.
 `TEE_VERIFIER_ADDRESS` (required), `ENCLAVE_URL` (http://localhost:8080),
 `MODEL_PATH`, `PROOFS_DIR` (./proofs), `PROVER_STAKE`,
 `PROVER_URL` (optional warm prover), `WEBHOOK_URL` (Slack-compatible),
-`NITRO_VERIFICATION` (false), `ALERT_CONFIG_JSON`
+`NITRO_VERIFICATION` (false), `ALERT_CONFIG_JSON` (multi-channel alerting JSON;
+supports `slack_webhook`, `pagerduty`, `email`, `generic_webhook` channel types
+with configurable dedup and escalation; see `.env.example` for full schema and examples)
 
 Also supports TOML config via `--config <path>` with `[[models]]` multi-model registry.
 

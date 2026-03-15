@@ -344,6 +344,424 @@ contract RemainderVerifierTest is Test {
     }
 }
 
+/// @title RemainderVerifierNegativeTest
+/// @notice Negative / adversarial tests for RemainderVerifier.verifyProof
+///         using the real e2e_fixture.json proof data.
+contract RemainderVerifierNegativeTest is Test {
+    RemainderVerifier public verifier;
+    bytes32 public circuitHash;
+
+    // Loaded from fixture
+    bytes internal rawProof;
+    bytes internal gensData;
+    bytes internal pubInputs;
+
+    function setUp() public {
+        // Deploy verifier
+        verifier = new RemainderVerifier(address(this));
+
+        // Load fixture
+        string memory json = vm.readFile("test/fixtures/e2e_fixture.json");
+        rawProof = vm.parseJsonBytes(json, ".proof_hex");
+        gensData = vm.parseJsonBytes(json, ".gens_hex");
+        circuitHash = bytes32(vm.parseJsonBytes32(json, ".circuit_hash_raw"));
+
+        // Public inputs matching the fixture (values 6 and 20)
+        pubInputs = abi.encodePacked(uint256(6), uint256(20));
+
+        // Register the circuit matching the fixture topology:
+        // 3 layers (input:committed, mul, add/output)
+        uint256[] memory sizes = new uint256[](3);
+        sizes[0] = 4;
+        sizes[1] = 2;
+        sizes[2] = 2;
+        uint8[] memory types = new uint8[](3);
+        types[0] = 3; // input
+        types[1] = 1; // multiply
+        types[2] = 0; // add/subtract (output)
+        bool[] memory committed = new bool[](3);
+        committed[0] = true;
+        committed[1] = false;
+        committed[2] = false;
+
+        verifier.registerCircuit(circuitHash, 3, sizes, types, committed, "test-mul-circuit");
+    }
+
+    /// @notice Sanity: the valid proof should pass verification (baseline)
+    function test_baseline_valid_proof_passes() public {
+        // Should not revert
+        verifier.verifyOrRevert(rawProof, circuitHash, pubInputs, gensData);
+    }
+
+    /// @notice Truncated proof (first 100 bytes of a valid proof) should revert.
+    ///         100 bytes is past the 4-byte selector but too short to decode any
+    ///         meaningful GKR proof structure.
+    function test_verify_truncated_proof_reverts() public {
+        // Take only the first 100 bytes of the valid proof
+        bytes memory truncated = new bytes(100);
+        for (uint256 i = 0; i < 100; i++) {
+            truncated[i] = rawProof[i];
+        }
+
+        // The selector "REM1" is intact, but the proof body is too short to decode.
+        // This should revert during ABI decoding of the proof structure.
+        vm.expectRevert();
+        verifier.verifyProof(truncated, circuitHash, pubInputs, gensData);
+    }
+
+    /// @notice Corrupted proof: flip several bytes in the proof body.
+    ///         The proof should either revert during decoding or fail verification.
+    function test_verify_corrupted_proof_fails() public {
+        // Make a mutable copy
+        bytes memory corrupted = new bytes(rawProof.length);
+        for (uint256 i = 0; i < rawProof.length; i++) {
+            corrupted[i] = rawProof[i];
+        }
+
+        // Corrupt bytes at several positions past the selector (bytes 4-7 are proof header).
+        // Flip bytes deep in the proof body to corrupt sumcheck / commitment data.
+        // Choose offsets well past the header to hit actual proof values.
+        uint256[5] memory offsets = [uint256(100), uint256(200), uint256(500), uint256(1000), uint256(2000)];
+        for (uint256 i = 0; i < offsets.length; i++) {
+            if (offsets[i] < corrupted.length) {
+                corrupted[offsets[i]] = bytes1(uint8(corrupted[offsets[i]]) ^ 0xFF);
+            }
+        }
+
+        // The corrupted proof may revert (decode failure) or return false (verification failure).
+        // Either outcome is acceptable -- the key requirement is it must NOT return true.
+        try verifier.verifyProof(corrupted, circuitHash, pubInputs, gensData) returns (bool valid) {
+            assertFalse(valid, "Corrupted proof must not pass verification");
+        } catch {
+            // Revert is also acceptable -- corrupted data may not decode at all
+            assertTrue(true, "Corrupted proof reverted (acceptable)");
+        }
+    }
+
+    /// @notice Empty proof (zero bytes) should revert with InvalidProofLength.
+    function test_verify_empty_proof_reverts() public {
+        bytes memory empty = "";
+
+        vm.expectRevert(RemainderVerifier.InvalidProofLength.selector);
+        verifier.verifyProof(empty, circuitHash, pubInputs, gensData);
+    }
+
+    /// @notice Valid proof but with a circuit hash that does not match any registered circuit.
+    ///         Should revert with CircuitNotRegistered.
+    function test_verify_wrong_circuit_hash_fails() public {
+        // Use a circuit hash that was never registered
+        bytes32 wrongHash = keccak256("completely-wrong-circuit-hash");
+
+        vm.expectRevert(RemainderVerifier.CircuitNotRegistered.selector);
+        verifier.verifyProof(rawProof, wrongHash, pubInputs, gensData);
+    }
+
+    // ========================================================================
+    // ADDITIONAL NEGATIVE TESTS (T386)
+    // ========================================================================
+
+    /// @notice Truncated proof: only selector + 1 byte. The proof body is far too short
+    ///         to even read the first 32-byte circuit hash field, so decodeProof must revert.
+    function test_verify_selector_plus_one_byte_reverts() public {
+        bytes memory tiny = new bytes(5);
+        tiny[0] = bytes1("R");
+        tiny[1] = bytes1("E");
+        tiny[2] = bytes1("M");
+        tiny[3] = bytes1("1");
+        tiny[4] = bytes1(0x00);
+
+        // Selector is valid but the body is only 1 byte -- far too short for any decoding
+        vm.expectRevert();
+        verifier.verifyProof(tiny, circuitHash, pubInputs, gensData);
+    }
+
+    /// @notice Truncated proof: cut off mid-layer-proof. We keep the header sections
+    ///         intact but truncate partway through the first committed layer proof.
+    ///         The decoder should revert with an out-of-bounds slice.
+    function test_verify_truncated_mid_layer_reverts() public {
+        // Find a truncation point that is past the output proofs section
+        // but inside the first committed layer proof.
+        // The proof structure after the selector:
+        //   32 bytes circuit_hash
+        //   32 bytes numPubInputSections + variable pub inputs
+        //   32 bytes numOutputProofs + 64*numOutputProofs
+        //   32 bytes numLayerProofs  <-- we want to truncate just after this
+        //
+        // For a 3-layer circuit with 1 pub input section:
+        //   offset 0: circuit hash (32)
+        //   offset 32: numPubInputSections = 1 (32)
+        //   offset 64: count of section 0 = 2 (32), then 2*32 = 64 bytes of values
+        //   offset 160: numOutputProofs = 1 (32), then 1*64 = 64 bytes
+        //   offset 256: numLayerProofs = 2 (32)
+        //   offset 288: first committed layer proof data starts
+        //
+        // We truncate at offset 300 (4 bytes selector + 296 proof data), which is
+        // 12 bytes into the first committed layer proof -- not enough to read even the
+        // first G1 point (sum.x, sum.y = 64 bytes).
+
+        // Use a conservative approach: keep 60% of the valid proof and chop the rest.
+        // This ensures we are well past headers but truncated inside layer proof data.
+        uint256 cutoff = (rawProof.length * 60) / 100;
+        bytes memory truncated = new bytes(cutoff);
+        for (uint256 i = 0; i < cutoff; i++) {
+            truncated[i] = rawProof[i];
+        }
+
+        // Should revert during proof decoding (out-of-bounds calldata slice)
+        vm.expectRevert();
+        verifier.verifyProof(truncated, circuitHash, pubInputs, gensData);
+    }
+
+    /// @notice Corrupted proof: flip a single byte in the first output claim commitment
+    ///         (an EC point). This targeted corruption invalidates the commitment point
+    ///         without breaking the proof structure, so verification should fail or revert.
+    function test_verify_corrupted_single_commitment_byte_fails() public {
+        bytes memory corrupted = new bytes(rawProof.length);
+        for (uint256 i = 0; i < rawProof.length; i++) {
+            corrupted[i] = rawProof[i];
+        }
+
+        // The output claim commitments are the first EC points after the public inputs
+        // section in the proof body. For this fixture, that is approximately at
+        // offset 4 (selector) + 32 (circuit hash) + 32 (numPubSections) + ...
+        // We target an offset deep enough to be inside a commitment G1 point.
+        // Offset 200 is reliably within the output commitment section for this fixture.
+        // XOR a single byte -- this changes one coordinate of a G1 point.
+        if (corrupted.length > 200) {
+            corrupted[200] = bytes1(uint8(corrupted[200]) ^ 0x01);
+        }
+
+        // A single-byte corruption in a commitment point should cause verification
+        // failure (invalid EC point or bad Pedersen check) or a revert.
+        try verifier.verifyProof(corrupted, circuitHash, pubInputs, gensData) returns (bool valid) {
+            assertFalse(valid, "Single-byte corrupted commitment must not pass verification");
+        } catch {
+            // Revert is acceptable -- corrupted EC point may fail precompile check
+            assertTrue(true, "Single-byte corrupted proof reverted (acceptable)");
+        }
+    }
+
+    /// @notice Corrupted proof: flip bytes only in the sumcheck messages region.
+    ///         The proof should decode fine but the sumcheck verification must fail.
+    function test_verify_corrupted_sumcheck_messages_fails() public {
+        bytes memory corrupted = new bytes(rawProof.length);
+        for (uint256 i = 0; i < rawProof.length; i++) {
+            corrupted[i] = rawProof[i];
+        }
+
+        // Target the middle of the proof body where sumcheck messages live.
+        // For a ~3300 byte proof, the sumcheck messages are roughly in the
+        // 400-1500 byte range. Corrupt several bytes there.
+        uint256 midpoint = rawProof.length / 2;
+        for (uint256 i = 0; i < 8; i++) {
+            uint256 pos = midpoint + i * 32; // every 32 bytes (one field element)
+            if (pos < corrupted.length) {
+                corrupted[pos] = bytes1(uint8(corrupted[pos]) ^ 0xAA);
+            }
+        }
+
+        try verifier.verifyProof(corrupted, circuitHash, pubInputs, gensData) returns (bool valid) {
+            assertFalse(valid, "Corrupted sumcheck messages must not pass verification");
+        } catch {
+            assertTrue(true, "Corrupted sumcheck proof reverted (acceptable)");
+        }
+    }
+
+    /// @notice Zero-length claims section: construct a minimal proof with valid selector
+    ///         but zero output commitments and zero layer proofs. The verifier should
+    ///         either revert during decoding or fail during verification (no layers to verify).
+    function test_verify_zero_length_claims_section_reverts() public {
+        // Build a minimal proof body with valid structure but zero-length arrays:
+        //   selector: "REM1" (4 bytes)
+        //   circuit_hash: 32 bytes (zeros)
+        //   numPubInputSections: 0 (32 bytes)
+        //   numOutputProofs: 0 (32 bytes)
+        //   numLayerProofs: 0 (32 bytes)
+        //   numFsClaims: 0 (32 bytes)
+        //   numPubClaims: 0 (32 bytes)
+        //   numInputProofs: 0 (32 bytes)
+        bytes memory zeroProof = new bytes(4 + 7 * 32);
+        zeroProof[0] = bytes1("R");
+        zeroProof[1] = bytes1("E");
+        zeroProof[2] = bytes1("M");
+        zeroProof[3] = bytes1("1");
+        // All remaining bytes are zero, which encodes:
+        //   circuit_hash = 0x00...00
+        //   all counts = 0
+
+        // With zero layer proofs and zero input proofs, the GKR verifier will
+        // either revert (e.g., array index out of bounds) or fail verification.
+        // Either outcome is acceptable -- the proof must not succeed.
+        try verifier.verifyProof(zeroProof, circuitHash, pubInputs, gensData) returns (bool valid) {
+            assertFalse(valid, "Zero-claims proof must not pass verification");
+        } catch {
+            assertTrue(true, "Zero-claims proof reverted (acceptable)");
+        }
+    }
+
+    /// @notice Zero output commitments with non-zero layer proofs:
+    ///         The proof has a structurally valid format but the output claims array
+    ///         is empty while layer proofs reference non-existent outputs.
+    function test_verify_zero_output_commitments_fails() public {
+        // Start with a valid proof and zero out the numOutputProofs field.
+        // In the proof body (after selector), the structure is:
+        //   [0..32)   circuit_hash
+        //   [32..64)  numPubInputSections
+        //   ...variable pub input data...
+        //   [X..X+32) numOutputProofs  <-- we zero this out
+        //
+        // We find the numOutputProofs offset by parsing the pub input sections.
+        bytes memory corrupted = new bytes(rawProof.length);
+        for (uint256 i = 0; i < rawProof.length; i++) {
+            corrupted[i] = rawProof[i];
+        }
+
+        // Parse to find the numOutputProofs offset:
+        // After selector (4 bytes): circuit_hash (32) + numPubInputSections (32)
+        uint256 offset = 4 + 32; // past selector + circuit hash
+        // Read numPubInputSections
+        uint256 numPubSections;
+        assembly {
+            numPubSections := mload(add(corrupted, add(32, offset)))
+        }
+        offset += 32;
+        // Skip each pub input section
+        for (uint256 i = 0; i < numPubSections; i++) {
+            uint256 cnt;
+            assembly {
+                cnt := mload(add(corrupted, add(32, offset)))
+            }
+            offset += 32 + cnt * 32;
+        }
+
+        // Now offset points to numOutputProofs in the corrupted bytes.
+        // Zero it out (set to 0)
+        assembly {
+            mstore(add(corrupted, add(32, offset)), 0)
+        }
+
+        // With zero output commitments, the GKR verifier has nothing to verify
+        // the output layer against. This should fail.
+        try verifier.verifyProof(corrupted, circuitHash, pubInputs, gensData) returns (bool valid) {
+            assertFalse(valid, "Zero output commitments proof must not pass");
+        } catch {
+            assertTrue(true, "Zero output commitments proof reverted (acceptable)");
+        }
+    }
+
+    /// @notice Misaligned offset: insert extra bytes after the selector to shift
+    ///         all field boundaries by a non-32-byte amount. The decoder reads
+    ///         32-byte words at fixed offsets, so misalignment causes it to read
+    ///         garbage values for counts and coordinates.
+    function test_verify_misaligned_offset_reverts() public {
+        // Insert 7 extra bytes after the selector to misalign all subsequent
+        // 32-byte field reads. This is 7 bytes (not a multiple of 32).
+        uint256 extraBytes = 7;
+        bytes memory misaligned = new bytes(rawProof.length + extraBytes);
+        // Copy selector
+        for (uint256 i = 0; i < 4; i++) {
+            misaligned[i] = rawProof[i];
+        }
+        // Insert 7 garbage bytes
+        for (uint256 i = 0; i < extraBytes; i++) {
+            misaligned[4 + i] = bytes1(uint8(0xDE));
+        }
+        // Copy rest of proof body shifted by 7
+        for (uint256 i = 4; i < rawProof.length; i++) {
+            misaligned[i + extraBytes] = rawProof[i];
+        }
+
+        // The decoder will read the circuit hash starting at offset 0 of proof body,
+        // which now contains 0xDE bytes + the real circuit hash shifted by 7.
+        // The numPubInputSections field will be misread, likely as a huge number,
+        // causing an out-of-bounds revert or memory allocation failure.
+        vm.expectRevert();
+        verifier.verifyProof(misaligned, circuitHash, pubInputs, gensData);
+    }
+
+    /// @notice Misaligned offset: remove 1 byte from the middle of the proof body
+    ///         to shift all subsequent field boundaries. The decoder should revert
+    ///         because 32-byte reads will cross into adjacent fields.
+    function test_verify_offset_shift_by_one_byte_reverts() public {
+        // Remove byte at position 100 (well inside the proof body past the header)
+        bytes memory shifted = new bytes(rawProof.length - 1);
+        uint256 removeAt = 100;
+        for (uint256 i = 0; i < removeAt; i++) {
+            shifted[i] = rawProof[i];
+        }
+        for (uint256 i = removeAt + 1; i < rawProof.length; i++) {
+            shifted[i - 1] = rawProof[i];
+        }
+
+        // Removing 1 byte shifts all subsequent 32-byte fields by 1 byte,
+        // causing every read after that point to be misaligned.
+        // This should cause either a decode revert or verification failure.
+        try verifier.verifyProof(shifted, circuitHash, pubInputs, gensData) returns (bool valid) {
+            assertFalse(valid, "Byte-shifted proof must not pass verification");
+        } catch {
+            assertTrue(true, "Byte-shifted proof reverted (acceptable)");
+        }
+    }
+
+    /// @notice Proof with only the selector (exactly 4 bytes). The proof body is
+    ///         completely empty, so any attempt to decode fields should revert.
+    function test_verify_selector_only_reverts() public {
+        bytes memory selectorOnly = new bytes(4);
+        selectorOnly[0] = bytes1("R");
+        selectorOnly[1] = bytes1("E");
+        selectorOnly[2] = bytes1("M");
+        selectorOnly[3] = bytes1("1");
+
+        // The selector is valid but there is no proof body at all.
+        // The first thing decodeProof tries is reading circuit hash at offset 0..32,
+        // which will revert because the calldata slice is empty.
+        vm.expectRevert();
+        verifier.verifyProof(selectorOnly, circuitHash, pubInputs, gensData);
+    }
+
+    /// @notice Proof with an absurdly large numLayerProofs count.
+    ///         This should cause a memory allocation failure or out-of-gas revert.
+    function test_verify_huge_layer_count_reverts() public {
+        // Build a proof body with valid header but numLayerProofs = 2^64.
+        // This will cause the decoder to try allocating an impossibly large array.
+        bytes memory hugeCount = new bytes(rawProof.length);
+        for (uint256 i = 0; i < rawProof.length; i++) {
+            hugeCount[i] = rawProof[i];
+        }
+
+        // Find the numLayerProofs offset (same as zero output commitments test)
+        uint256 offset = 4 + 32; // past selector + circuit hash
+        uint256 numPubSections;
+        assembly {
+            numPubSections := mload(add(hugeCount, add(32, offset)))
+        }
+        offset += 32;
+        for (uint256 i = 0; i < numPubSections; i++) {
+            uint256 cnt;
+            assembly {
+                cnt := mload(add(hugeCount, add(32, offset)))
+            }
+            offset += 32 + cnt * 32;
+        }
+
+        // Skip numOutputProofs + output proof data
+        uint256 numOutputProofs;
+        assembly {
+            numOutputProofs := mload(add(hugeCount, add(32, offset)))
+        }
+        offset += 32 + numOutputProofs * 64;
+
+        // Now offset points to numLayerProofs. Set it to an absurdly large value.
+        assembly {
+            mstore(add(hugeCount, add(32, offset)), 0xFFFFFFFFFFFFFFFF)
+        }
+
+        // Trying to allocate 2^64 layer proofs will revert (out of gas or memory)
+        vm.expectRevert();
+        verifier.verifyProof{gas: 1_000_000}(hugeCount, circuitHash, pubInputs, gensData);
+    }
+}
+
 contract IntegrationTest is Test {
     ProgramRegistry public registry;
     ExecutionEngine public engine;

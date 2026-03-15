@@ -10,20 +10,9 @@
 //! - `POST /inputs/:request_id/upload` — Admin upload endpoint
 //! - `GET /health` — Health check
 
-mod auth;
-mod store;
-
 use alloy::primitives::Address;
-use auth::AuthRequest;
-use axum::{
-    extract::{Path, State},
-    http::StatusCode,
-    response::IntoResponse,
-    routing::{get, post},
-    Json, Router,
-};
 use clap::Parser;
-use serde::Serialize;
+use private_input_server::{build_app, store, AppState};
 use std::sync::Arc;
 use tower_http::trace::TraceLayer;
 use tracing::{info, warn};
@@ -58,40 +47,6 @@ struct Args {
     skip_chain_verification: bool,
 }
 
-/// Application state
-struct AppState {
-    /// Input storage
-    store: store::InputStore,
-    /// RPC URL for on-chain checks
-    rpc_url: String,
-    /// Engine contract address
-    engine_address: Address,
-    /// Skip on-chain verification (testing only)
-    skip_chain_verification: bool,
-}
-
-// === Response Types ===
-
-#[derive(Serialize)]
-struct UploadResponse {
-    request_id: u64,
-    digest: String,
-    size: usize,
-}
-
-#[derive(Serialize)]
-struct ErrorResponse {
-    error: String,
-}
-
-#[derive(Serialize)]
-struct HealthResponse {
-    status: String,
-    inputs_stored: usize,
-}
-
-// === Main ===
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let _ = dotenvy::dotenv();
@@ -124,12 +79,7 @@ async fn main() -> anyhow::Result<()> {
         skip_chain_verification: args.skip_chain_verification,
     });
 
-    let app = Router::new()
-        .route("/inputs/:request_id", post(fetch_input))
-        .route("/inputs/:request_id/upload", post(upload_input))
-        .route("/health", get(health_check))
-        .layer(TraceLayer::new_for_http())
-        .with_state(state);
+    let app = build_app(state).layer(TraceLayer::new_for_http());
 
     let addr = format!("{}:{}", args.host, args.port);
     info!("Starting Private Input Server on {}", addr);
@@ -145,150 +95,25 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-// === Handlers ===
-
-/// Upload input data for a request ID (admin endpoint)
-/// POST /inputs/:request_id/upload
-///
-/// Body: raw bytes (application/octet-stream)
-async fn upload_input(
-    State(state): State<Arc<AppState>>,
-    Path(request_id): Path<u64>,
-    body: axum::body::Bytes,
-) -> Result<Json<UploadResponse>, (StatusCode, Json<ErrorResponse>)> {
-    if body.is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Empty body".to_string(),
-            }),
-        ));
-    }
-
-    let size = body.len();
-    let digest = state.store.put(request_id, body.to_vec());
-
-    info!(
-        "Input uploaded: request_id={}, size={}, digest={}",
-        request_id,
-        size,
-        hex::encode(digest)
-    );
-
-    Ok(Json(UploadResponse {
-        request_id,
-        digest: format!("0x{}", hex::encode(digest)),
-        size,
-    }))
-}
-
-/// Fetch private input (authenticated prover endpoint)
-/// POST /inputs/:request_id
-///
-/// Body: JSON AuthRequest { request_id, prover_address, timestamp, signature }
-async fn fetch_input(
-    State(state): State<Arc<AppState>>,
-    Path(request_id): Path<u64>,
-    Json(auth): Json<AuthRequest>,
-) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
-    // Validate request_id matches path
-    if auth.request_id != request_id {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: format!(
-                    "Path request_id ({}) doesn't match body ({})",
-                    request_id, auth.request_id
-                ),
-            }),
-        ));
-    }
-
-    // Step 1: Verify signature and timestamp
-    let prover_address = auth::verify_auth_request(&auth).map_err(|e| {
-        (
-            e.status_code(),
-            Json(ErrorResponse {
-                error: e.to_string(),
-            }),
-        )
-    })?;
-
-    // Step 2: Verify on-chain claim (unless disabled for testing)
-    if !state.skip_chain_verification {
-        auth::verify_on_chain_claim(
-            &state.rpc_url,
-            &state.engine_address,
-            request_id,
-            &prover_address,
-        )
-        .await
-        .map_err(|e| {
-            (
-                e.status_code(),
-                Json(ErrorResponse {
-                    error: e.to_string(),
-                }),
-            )
-        })?;
-    }
-
-    // Step 3: Retrieve input data
-    let stored = state.store.get(request_id).ok_or_else(|| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: format!("No input stored for request {}", request_id),
-            }),
-        )
-    })?;
-
-    info!(
-        "Input served: request_id={}, prover={}, size={}",
-        request_id,
-        prover_address,
-        stored.data.len()
-    );
-
-    // Return raw bytes (same format the prover expects)
-    Ok((
-        StatusCode::OK,
-        [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
-        stored.data,
-    ))
-}
-
-/// Health check
-/// GET /health
-async fn health_check(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
-    Json(HealthResponse {
-        status: "healthy".to_string(),
-        inputs_stored: state.store.len(),
-    })
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use alloy::primitives::Address;
     use alloy::signers::local::PrivateKeySigner;
     use alloy::signers::Signer;
     use axum::body::Body;
-    use axum::http::Request;
+    use axum::http::{Request, StatusCode};
+    use private_input_server::{auth::AuthRequest, build_app, store, AppState, ErrorResponse};
+    use std::sync::Arc;
     use tower::util::ServiceExt;
 
-    fn test_app() -> Router {
+    fn test_app() -> axum::Router {
         let state = Arc::new(AppState {
             store: store::InputStore::new(),
             rpc_url: "http://localhost:8545".to_string(),
             engine_address: Address::ZERO,
             skip_chain_verification: true,
         });
-
-        Router::new()
-            .route("/inputs/:request_id", post(fetch_input))
-            .route("/inputs/:request_id/upload", post(upload_input))
-            .route("/health", get(health_check))
-            .with_state(state)
+        build_app(state)
     }
 
     #[tokio::test]
@@ -315,10 +140,7 @@ mod tests {
             skip_chain_verification: true,
         });
 
-        let app = Router::new()
-            .route("/inputs/:request_id", post(fetch_input))
-            .route("/inputs/:request_id/upload", post(upload_input))
-            .with_state(state);
+        let app = build_app(state);
 
         // Upload
         let upload_response = app
@@ -416,5 +238,30 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    // Ensure error response body can be parsed
+    #[tokio::test]
+    async fn test_error_response_is_json() {
+        let app = test_app();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/inputs/1/upload")
+                    .header("content-type", "application/octet-stream")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let err: ErrorResponse = serde_json::from_slice(&body).unwrap();
+        assert!(err.error.contains("Empty body"));
     }
 }

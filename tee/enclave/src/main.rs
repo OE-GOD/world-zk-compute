@@ -788,18 +788,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_env();
 
     // Load model (auto-detects XGBoost vs LightGBM unless MODEL_FORMAT is set)
-    let model_bytes = std::fs::read(&config.model_path)
-        .map_err(|e| format!("Failed to read model file '{}': {}", config.model_path, e))?;
+    let model_bytes = match std::fs::read(&config.model_path) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            tracing::error!(
+                model_path = %config.model_path,
+                error = %e,
+                "Failed to read model file. Check that MODEL_PATH is set correctly \
+                 and the file exists."
+            );
+            std::process::exit(1);
+        }
+    };
 
     // Validate model integrity (SHA-256 check against EXPECTED_MODEL_HASH if set)
     let model_sha256 =
-        validation::validate_model(&model_bytes, config.expected_model_hash.as_deref())
-            .map_err(|e| format!("Model validation failed: {}", e))?;
+        match validation::validate_model(&model_bytes, config.expected_model_hash.as_deref()) {
+            Ok(hash) => hash,
+            Err(e) => {
+                tracing::error!(
+                    model_path = %config.model_path,
+                    error = %e,
+                    "Model validation failed. The model file may be corrupted or \
+                     EXPECTED_MODEL_HASH does not match."
+                );
+                std::process::exit(1);
+            }
+        };
     tracing::info!("Model SHA-256: {}", model_sha256);
 
     let model_hash = keccak256(&model_bytes);
-    let model = model::load_model_with_format(&config.model_path, config.model_format)
-        .map_err(|e| format!("Failed to parse model '{}': {}", config.model_path, e))?;
+    let model = match model::load_model_with_format(&config.model_path, config.model_format) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::error!(
+                model_path = %config.model_path,
+                model_format = ?config.model_format,
+                error = %e,
+                "Failed to parse model. Ensure the file is valid XGBoost/LightGBM JSON \
+                 and MODEL_FORMAT is correct."
+            );
+            std::process::exit(1);
+        }
+    };
     tracing::info!("Model format: {:?}", config.model_format);
 
     // Create attestor.

@@ -17,7 +17,7 @@
 #
 # Access:
 #   Prometheus: http://localhost:9091
-#   Grafana:    http://localhost:3001 (admin/admin)
+#   Grafana:    http://localhost:3001 (admin / $GRAFANA_PASSWORD, default: admin)
 # ===============================================================================
 
 services:

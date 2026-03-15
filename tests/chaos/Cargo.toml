@@ -48,5 +48,9 @@ name = "enclave_chaos"
 path = "src/enclave_chaos.rs"
 
 [[test]]
+name = "fault_scenarios"
+path = "src/fault_scenarios.rs"
+
+[[test]]
 name = "e2e_lifecycle"
 path = "src/e2e_lifecycle.rs"

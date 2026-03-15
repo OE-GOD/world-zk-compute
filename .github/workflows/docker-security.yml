@@ -1,0 +1,49 @@
+name: Docker Security Scan
+
+permissions: read-all
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'services/admin-cli/Dockerfile'
+      - 'services/indexer/Dockerfile'
+      - 'services/operator/Dockerfile'
+      - 'tee/Dockerfile'
+      - '.github/workflows/docker-security.yml'
+  pull_request:
+    paths:
+      - 'services/admin-cli/Dockerfile'
+      - 'services/indexer/Dockerfile'
+      - 'services/operator/Dockerfile'
+      - 'tee/Dockerfile'
+      - '.github/workflows/docker-security.yml'
+  workflow_dispatch:
+
+jobs:
+  scan-dockerfiles:
+    name: Trivy Dockerfile Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    strategy:
+      fail-fast: false
+      matrix:
+        dockerfile:
+          - services/admin-cli/Dockerfile
+          - services/indexer/Dockerfile
+          - services/operator/Dockerfile
+          - tee/Dockerfile
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Trivy misconfiguration scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: 'fs'
+          scan-ref: ${{ matrix.dockerfile }}
+          scanners: 'misconfig'
+          severity: 'HIGH,CRITICAL'
+          exit-code: '1'

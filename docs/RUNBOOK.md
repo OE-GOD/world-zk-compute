@@ -22,6 +22,8 @@ Production incident response procedures for World ZK Compute.
 8. [Scaling](#8-scaling)
 9. [Load Testing Procedures](#9-load-testing-procedures)
 10. [Database Backup and Restore](#10-database-backup-and-restore)
+11. [Rolling Upgrades (Blue/Green)](#11-rolling-upgrades-bluegreen)
+12. [Attestation Expiry and Re-Registration](#12-attestation-expiry-and-re-registration)
 
 ---
 
@@ -70,6 +72,63 @@ admin-cli \
 cast send $TEE_VERIFIER "pause()" \
   --rpc-url $RPC \
   --private-key $OWNER_KEY
+```
+
+**Option C: Operator DRY_RUN mode (soft halt)**
+
+If you need to stop the operator from submitting on-chain transactions without pausing the contract itself (e.g., to investigate operator-side issues while the contract remains available for other submitters), set `DRY_RUN=true` on the operator:
+
+```bash
+# Docker Compose: set DRY_RUN and restart
+docker compose stop operator
+# Edit docker-compose.yml: add DRY_RUN: "true" to operator.environment
+docker compose up -d operator
+
+# Or set it as an environment override without editing the file
+DRY_RUN=true docker compose up -d operator
+
+# Kubernetes
+kubectl -n world-zk set env deployment/worldzk-operator DRY_RUN=true
+```
+
+When `DRY_RUN=true` (env var or `dry_run = true` in TOML config), the operator simulates the full flow (enclave calls, proof generation) but does not send on-chain transactions. This is useful for:
+
+- Validating a new operator configuration against a live chain without spending gas
+- Temporarily halting submissions while keeping the watch loop active for monitoring
+- Testing proof generation without dispute resolution
+
+To resume normal operation, set `DRY_RUN=false` (or remove it) and restart.
+
+**Option D: Stop the operator service entirely**
+
+If you need an immediate full halt of all operator activity (no polling, no proof generation, no submissions):
+
+```bash
+# Docker Compose -- graceful stop (waits for in-flight tasks up to 60s)
+docker compose stop operator
+
+# Kubernetes -- scale to zero
+kubectl -n world-zk scale deployment worldzk-operator --replicas=0
+```
+
+On SIGTERM/SIGINT, the operator:
+1. Stops accepting new events
+2. Waits up to 60 seconds for in-flight proof submissions to complete
+3. Saves final state to `operator-state.json`
+4. Exits cleanly
+
+On restart, it resumes from `last_polled_block` in the state file.
+
+**Option E: Circuit breaker (automatic, no intervention needed)**
+
+The operator has built-in circuit breakers that automatically halt RPC and chain calls after repeated failures:
+
+- **RPC circuit breaker**: Opens after 5 consecutive RPC failures. Blocks polling for 30 seconds, then retries.
+- **Chain circuit breaker**: Opens after 3 consecutive chain call failures. Blocks dispute resolution and finalization for 60 seconds.
+
+Monitor via Prometheus metrics:
+```bash
+curl -s http://localhost:9090/metrics | grep circuit_breaker
 ```
 
 ### Verification
@@ -387,6 +446,18 @@ If a dispute deadline is imminent, the submitter can extend once (30 minutes):
 cast send $TEE_VERIFIER "extendDisputeWindow(bytes32)" $RESULT_ID \
   --rpc-url $RPC --private-key $SUBMITTER_KEY
 ```
+
+### Handling In-Flight Proofs
+
+When the operator crashes, there may be proofs being generated that have not yet been submitted on-chain. On restart:
+
+1. **Pre-computed proofs are preserved.** Proofs are stored as JSON files in `PROOFS_DIR` (default: `./proofs`). The operator checks this directory when a challenge is detected and uses existing proofs without regeneration.
+
+2. **In-progress proof tasks are lost.** Any `tokio::spawn`-ed proof generation tasks that were running at crash time are abandoned. On the next poll cycle, the operator will re-detect the challenge event (if not in `processed_event_ids`) and trigger proof generation again.
+
+3. **Semaphore-blocked proofs.** The operator limits concurrent proof submissions to 10 via a semaphore. If a challenge was skipped because the semaphore was full, it was NOT marked as processed and will be retried on the next poll.
+
+4. **Graceful shutdown.** On SIGINT/SIGTERM, the operator waits up to 60 seconds for in-flight tasks to complete before saving state. If this timeout expires, remaining tasks are abandoned but the state file is still saved with the last polled block.
 
 ### Corrupt State File Recovery
 
@@ -881,6 +952,78 @@ kubectl -n world-zk exec $INDEXER_POD -- rm /data/indexer.db
 kubectl -n world-zk rollout restart deployment worldzk-indexer
 ```
 
+### Migrating from SQLite to PostgreSQL
+
+The indexer implements a `Storage` trait with both SQLite and PostgreSQL backends (`services/indexer/src/pg_storage.rs`). The PostgreSQL backend requires the `postgres` Cargo feature and the `DATABASE_URL` env var.
+
+**Step 1: Provision a PostgreSQL instance**
+
+```bash
+# Example: create a local Postgres DB for testing
+createdb indexer_db
+# Or use a managed service (RDS, Cloud SQL, etc.)
+```
+
+**Step 2: Export data from SQLite**
+
+```bash
+# Stop the indexer to avoid writes during export
+docker compose stop indexer
+
+# Export results table to CSV
+sqlite3 ./indexer.db <<SQL
+.headers on
+.mode csv
+.output /tmp/results_export.csv
+SELECT * FROM results;
+.output /tmp/indexer_state_export.csv
+SELECT * FROM indexer_state;
+SQL
+```
+
+**Step 3: Build the indexer with Postgres support**
+
+```bash
+# The indexer Dockerfile already builds with --features postgres
+docker compose build indexer
+```
+
+**Step 4: Configure and start with PostgreSQL**
+
+```bash
+# Set environment variables
+export DB_TYPE=postgres
+export DATABASE_URL="postgres://user:pass@localhost:5432/indexer_db"
+
+# Docker Compose: update indexer service environment
+# environment:
+#   DB_TYPE: postgres
+#   DATABASE_URL: "postgres://user:pass@postgres:5432/indexer_db"
+
+docker compose up -d indexer
+```
+
+The `PgStorage::new()` method auto-creates the required tables (`results`, `indexer_state`, `events`, `sync_state`) on first connection.
+
+**Step 5: Import existing data (optional)**
+
+```bash
+# Import into Postgres using psql COPY
+psql $DATABASE_URL <<SQL
+\copy results FROM '/tmp/results_export.csv' WITH (FORMAT csv, HEADER true);
+\copy indexer_state FROM '/tmp/indexer_state_export.csv' WITH (FORMAT csv, HEADER true);
+SQL
+```
+
+Alternatively, skip the import and let the indexer re-index from block 0. This is simpler but slower for large histories.
+
+**Step 6: Verify**
+
+```bash
+curl -s http://localhost:8081/health | jq .
+# Confirm last_indexed_block and total_results match expectations
+```
+
 ### Operator State File
 
 **Location:** Configured by `STATE_FILE` env var (default: `./operator-state.json`).
@@ -944,6 +1087,239 @@ docker compose cp operator:/app/proofs ./proofs-backup-$(date +%Y%m%d)
 
 ---
 
+## 11. Rolling Upgrades (Blue/Green)
+
+### Overview
+
+Use blue/green deployment to upgrade services with zero downtime. The key idea: bring up a new ("green") instance alongside the existing ("blue") one, verify it, then switch traffic and tear down the old one.
+
+### Docker Compose Blue/Green Procedure
+
+Docker Compose does not natively support blue/green, but you can achieve it by running two project instances or using service overrides.
+
+**Method: Override file with parallel services**
+
+Create a `docker-compose.green.yml` override that defines green variants of each service:
+
+```yaml
+# docker-compose.green.yml
+services:
+  enclave-green:
+    build:
+      context: ./tee
+    ports:
+      - "8082:8080"   # Different host port
+    environment:
+      MODEL_PATH: /app/model/model.json
+      PORT: "8080"
+      ENCLAVE_PRIVATE_KEY: "${GREEN_ENCLAVE_KEY}"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - backend
+
+  operator-green:
+    build:
+      context: .
+      dockerfile: services/operator/Dockerfile
+    ports:
+      - "9091:9090"   # Different host port
+    environment:
+      OPERATOR_RPC_URL: "http://anvil:8545"
+      OPERATOR_PRIVATE_KEY: "${OPERATOR_PRIVATE_KEY}"
+      ENCLAVE_URL: "http://enclave-green:8080"
+      PROVER_URL: "http://warm-prover:3000"
+      STATE_FILE: "/app/proofs/operator-state-green.json"
+    volumes:
+      - deployment-data:/deployment:ro
+      - proof-storage:/app/proofs
+    networks:
+      - backend
+```
+
+**Step 1: Build and start green services**
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.green.yml build enclave-green operator-green
+docker compose -f docker-compose.yml -f docker-compose.green.yml up -d enclave-green operator-green
+```
+
+**Step 2: Verify green services**
+
+```bash
+# Check health
+curl -s http://localhost:8082/health    # green enclave
+curl -s http://localhost:9091/health    # green operator
+
+# Submit a test inference through the green enclave
+curl -s http://localhost:8082/infer \
+  -X POST -H "Content-Type: application/json" \
+  -d '{"features": [5.0, 3.5, 1.5, 0.3]}'
+
+# If the green enclave uses a new signing key, register it on-chain first
+admin-cli --rpc-url $RPC --contract $TEE_VERIFIER \
+  --private-key $OWNER_KEY \
+  register-enclave $GREEN_ENCLAVE_ADDRESS $GREEN_IMAGE_HASH
+```
+
+**Step 3: Switch traffic (promote green to blue)**
+
+```bash
+# Stop the old blue services
+docker compose stop enclave operator
+
+# Update docker-compose.yml to point to the green image/config
+# Or rename green services to the standard names
+
+# Restart with the new configuration
+docker compose up -d enclave operator
+```
+
+**Step 4: Clean up**
+
+```bash
+# Stop green services
+docker compose -f docker-compose.yml -f docker-compose.green.yml stop enclave-green operator-green
+docker compose -f docker-compose.yml -f docker-compose.green.yml rm enclave-green operator-green
+```
+
+### Service-Specific Upgrade Notes
+
+**Enclave upgrade:**
+- New enclave image may have a different PCR0 hash and signing key
+- Register the new enclave on-chain BEFORE switching traffic (Section 2)
+- Revoke the old enclave after all pending results clear the challenge window (minimum 1 hour)
+- The enclave is stateless; no data migration needed
+
+**Operator upgrade:**
+- Copy the state file from the old operator to the new one, OR let the new operator start fresh from the latest block
+- Ensure only ONE operator is actively submitting transactions at a time to avoid nonce conflicts
+- To hand off: stop old operator, copy `operator-state.json`, start new operator
+
+**Indexer upgrade:**
+- The indexer uses SQLite with single-writer semantics; only ONE instance can run at a time
+- Use `Recreate` strategy (not rolling) to avoid concurrent writes
+- Backup the database before upgrade (see Section 10)
+- For zero-downtime indexer upgrades, migrate to PostgreSQL first
+
+**Warm prover upgrade:**
+- Stateless service; safe to restart or replace at any time
+- During transition, both old and new can serve proofs simultaneously behind a load balancer
+
+### Rollback
+
+If the green services are unhealthy:
+
+```bash
+# Stop green, restart blue
+docker compose -f docker-compose.yml -f docker-compose.green.yml stop enclave-green operator-green
+docker compose up -d enclave operator
+```
+
+---
+
+## 12. Attestation Expiry and Re-Registration
+
+### How Attestation Works
+
+The operator verifies enclave attestations when `NITRO_VERIFICATION=true`. Attestation documents are fetched from the enclave's `/attestation` endpoint and validated for:
+
+1. **Certificate chain** -- AWS Nitro root CA to enclave certificate
+2. **Nonce** -- `keccak256(chainId || blockNumber || enclaveAddress)` prevents replay
+3. **PCR0** -- matches expected enclave image hash (if `EXPECTED_PCR0` is set)
+4. **Freshness** -- attestation document must be less than a configured age:
+   - **On submit:** 600 seconds (10 minutes) (`validate_freshness(&verified, 600)`)
+   - **On register:** 300 seconds (5 minutes) (`validate_freshness(&verified, 300)`)
+
+### Attestation Cache TTL
+
+The operator caches verified attestation documents to avoid re-fetching on rapid successive submits. The cache TTL is configured by:
+
+| Setting | Default | Source |
+|---------|---------|--------|
+| `ATTESTATION_CACHE_TTL` env var | 300 seconds | `services/operator/src/config.rs` |
+| `attestation_cache_ttl` in TOML | 300 seconds | Config file |
+
+When the cache expires, the next submit triggers a fresh attestation fetch and verification.
+
+### What Happens When Attestation Expires
+
+1. **Cached attestation expires (normal operation):** The operator transparently re-fetches and re-verifies the attestation. No manual action needed. This happens automatically on the next submit when the cache age exceeds `ATTESTATION_CACHE_TTL`.
+
+2. **Enclave attestation document too old (freshness check fails):** The operator receives a fresh document from the enclave on each fetch request, so freshness failures are rare. If they occur, it means the enclave is returning stale cached documents internally. Resolution: restart the enclave.
+
+3. **PCR0 mismatch (enclave image changed):** This happens after an enclave image update. The new image has a different PCR0 hash. Resolution: update `EXPECTED_PCR0` in the operator config or re-register the enclave.
+
+4. **Certificate chain validation fails:** This can happen if the AWS Nitro CA rotates or the enclave's certificate expires. Resolution: rebuild and redeploy the enclave image to get a fresh certificate.
+
+### Re-Registering an Enclave
+
+Use the operator's `register` subcommand or the admin-cli to re-register:
+
+**Using the operator CLI (recommended for Nitro enclaves):**
+
+```bash
+# This fetches a fresh attestation, verifies it, and registers on-chain
+tee-operator register \
+  --config operator-config.toml \
+  --expected-pcr0 $EXPECTED_PCR0
+
+# In dev mode (skip attestation verification)
+tee-operator register \
+  --config operator-config.toml \
+  --skip-verify
+```
+
+The `register` command:
+1. Calls `GET /info` on the enclave to get its address
+2. Computes a chain-bound nonce from `keccak256(chainId || blockNumber || enclaveAddress)`
+3. Fetches attestation with the nonce via `GET /attestation?nonce=<hex>`
+4. Verifies: certificate chain, nonce match, PCR0, freshness (5 minutes)
+5. Calls `registerEnclave(enclaveAddress, imageHash)` on TEEMLVerifier
+
+**Using admin-cli (when you already have the address and image hash):**
+
+```bash
+admin-cli \
+  --rpc-url $RPC \
+  --contract $TEE_VERIFIER \
+  --private-key $OWNER_KEY \
+  register-enclave $ENCLAVE_ADDRESS $IMAGE_HASH
+```
+
+### Monitoring Attestation Health
+
+Check the enclave's attestation status:
+
+```bash
+# Fetch a fresh attestation document
+NONCE=$(openssl rand -hex 32)
+curl -s "http://$ENCLAVE:8080/attestation?nonce=0x${NONCE}" | jq '{is_nitro, pcr0}'
+
+# Check enclave identity
+curl -s http://$ENCLAVE:8080/info | jq '{enclave_address, model_hash}'
+
+# Verify enclave health with detailed watchdog status
+curl -s http://$ENCLAVE:8080/health/detailed | jq .
+```
+
+### Enclave Watchdog
+
+The enclave runs a background watchdog (configurable via `WATCHDOG_ENABLED`, default: `true`) that monitors:
+
+| Check | Warn Threshold | Critical Threshold |
+|-------|---------------|-------------------|
+| Error rate | > 5% | > 20% |
+| Avg latency | > 10,000 ms | > 30,000 ms |
+| Memory (RSS) | > 512 MB | > 1024 MB |
+
+The watchdog runs every 30 seconds and updates `GET /health/detailed`. If the watchdog reports `unhealthy`, the enclave's inference quality may be degraded and attestation-backed results may be unreliable.
+
+---
+
 ## Quick Reference
 
 ### Key Environment Variables
@@ -956,9 +1332,13 @@ docker compose cp operator:/app/proofs ./proofs-backup-$(date +%Y%m%d)
 | `ENCLAVE_URL` | Operator | `http://127.0.0.1:8080` |
 | `PROVER_URL` | Operator | (optional) |
 | `STATE_FILE` | Operator | `./operator-state.json` |
+| `DRY_RUN` | Operator | `false` |
 | `WEBHOOK_URL` | Operator | (optional) |
 | `MAX_PROOF_RETRIES` | Operator | `3` |
 | `PROOF_RETRY_DELAY_SECS` | Operator | `10` |
+| `NITRO_VERIFICATION` | Operator | `false` |
+| `ATTESTATION_CACHE_TTL` | Operator | `300` |
+| `EXPECTED_PCR0` | Operator | (optional) |
 | `METRICS_PORT` | Operator | `9090` |
 | `MODEL_PATH` | Enclave | `/app/model/model.json` |
 | `ENCLAVE_PRIVATE_KEY` | Enclave | (auto-generated) |
@@ -967,6 +1347,8 @@ docker compose cp operator:/app/proofs ./proofs-backup-$(date +%Y%m%d)
 | `ADMIN_API_KEY` | Enclave | (optional) |
 | `WATCHDOG_ENABLED` | Enclave | `true` |
 | `DB_PATH` | Indexer | `./indexer.db` |
+| `DB_TYPE` | Indexer | `sqlite` |
+| `DATABASE_URL` | Indexer | (required if DB_TYPE=postgres) |
 | `POLL_INTERVAL_SECS` | Indexer | `12` |
 
 ### Essential Commands
@@ -1013,54 +1395,3 @@ docker compose restart operator
 cast rpc anvil_increaseTime 3601 --rpc-url http://127.0.0.1:8545
 cast rpc anvil_mine 1 --rpc-url http://127.0.0.1:8545
 ```
-
----
-
-## 10. Load Testing
-
-### When to Run
-
-- Before production releases
-- After infrastructure changes (scaling, new regions)
-- After significant code changes to enclave/operator/indexer
-- Periodically to establish baseline metrics
-
-### Quick Start (Docker Compose)
-
-```bash
-# Full stack load test (starts all services + runs tests)
-docker compose -f docker-compose.loadtest.yml up
-
-# Results are written to ./load-test-results/
-```
-
-### Individual Scripts
-
-```bash
-# Enclave inference (default: 20 requests, 5 concurrent)
-./scripts/load-test-enclave.sh --url http://localhost:8080
-
-# Warm prover batch (default: 10 requests, 3 concurrent, batch size 4)
-./scripts/load-test-prover-batch.sh --url http://localhost:3000
-
-# Indexer REST + WebSocket
-./scripts/load-test-indexer.sh --url http://localhost:8081 --mode rest-health
-./scripts/load-test-indexer.sh --url http://localhost:8081 --mode ws-scale
-```
-
-### Performance Baselines
-
-| Metric | Target | Critical |
-|--------|--------|----------|
-| Enclave P95 latency | < 100ms | > 500ms |
-| Enclave throughput | > 50 req/s | < 10 req/s |
-| Prover batch P95 | < 5s | > 30s |
-| Indexer REST P95 | < 50ms | > 200ms |
-| WS connection success | > 99% | < 95% |
-
-### Troubleshooting
-
-- **HTTP 429 (rate limited):** Reduce `--concurrency` or increase the enclave's `MAX_REQUESTS_PER_MINUTE` env var.
-- **Connection refused:** Service not started or wrong port. Check `docker compose ps`.
-- **Timeouts under load:** Check CPU/memory limits in docker-compose. Scale up or add replicas.
-- **WebSocket failures:** Ensure `websocat` or `python3` with `websockets` is installed for ws-scale mode.

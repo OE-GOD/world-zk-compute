@@ -1,46 +1,22 @@
 version: 2
 
 updates:
-  # GitHub Actions
+  # ── GitHub Actions ─────────────────────────────────────────────────
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 10
+    groups:
+      actions:
+        patterns:
+          - "*"
 
-  # Dockerfiles
-  - package-ecosystem: "docker"
-    directory: "/services/operator"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 5
-
-  - package-ecosystem: "docker"
-    directory: "/services/indexer"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 5
-
-  - package-ecosystem: "docker"
-    directory: "/services/admin-cli"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 5
-
-  - package-ecosystem: "docker"
-    directory: "/tee"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 5
-
-  # Python SDK
-  - package-ecosystem: "pip"
-    directory: "/sdk/python"
+  # ── Rust / Cargo ───────────────────────────────────────────────────
+  # Root workspace (sdk, crates/*, services/*, tee/enclave, tests/chaos)
+  - package-ecosystem: "cargo"
+    directory: "/"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -51,7 +27,59 @@ updates:
           - "minor"
           - "patch"
 
-  # TypeScript SDK
+  # Prover (excluded from workspace)
+  - package-ecosystem: "cargo"
+    directory: "/prover"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # Private input server (excluded from workspace)
+  - package-ecosystem: "cargo"
+    directory: "/private-input-server"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # XGBoost Remainder example (excluded from workspace)
+  - package-ecosystem: "cargo"
+    directory: "/examples/xgboost-remainder"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # Stylus GKR verifier (excluded from workspace)
+  - package-ecosystem: "cargo"
+    directory: "/contracts/stylus/gkr-verifier"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # ── npm (TypeScript SDK) ───────────────────────────────────────────
   - package-ecosystem: "npm"
     directory: "/sdk/typescript"
     schedule:
@@ -64,9 +92,9 @@ updates:
           - "minor"
           - "patch"
 
-  # Rust SDK
-  - package-ecosystem: "cargo"
-    directory: "/sdk"
+  # ── pip (Python SDK) ───────────────────────────────────────────────
+  - package-ecosystem: "pip"
+    directory: "/sdk/python"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -77,67 +105,51 @@ updates:
           - "minor"
           - "patch"
 
-  # Operator service
-  - package-ecosystem: "cargo"
+  # ── Docker ─────────────────────────────────────────────────────────
+  - package-ecosystem: "docker"
+    directory: "/prover"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 10
+
+  - package-ecosystem: "docker"
     directory: "/services/operator"
     schedule:
-      interval: "weekly"
-      day: "monday"
+      interval: "monthly"
     open-pull-requests-limit: 10
-    groups:
-      minor-and-patch:
-        update-types:
-          - "minor"
-          - "patch"
 
-  # TEE enclave
-  - package-ecosystem: "cargo"
-    directory: "/tee/enclave"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 10
-    groups:
-      minor-and-patch:
-        update-types:
-          - "minor"
-          - "patch"
-
-  # Admin CLI
-  - package-ecosystem: "cargo"
-    directory: "/services/admin-cli"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 10
-    groups:
-      minor-and-patch:
-        update-types:
-          - "minor"
-          - "patch"
-
-  # Indexer service
-  - package-ecosystem: "cargo"
+  - package-ecosystem: "docker"
     directory: "/services/indexer"
     schedule:
-      interval: "weekly"
-      day: "monday"
+      interval: "monthly"
     open-pull-requests-limit: 10
-    groups:
-      minor-and-patch:
-        update-types:
-          - "minor"
-          - "patch"
 
-  # Shared watcher crate
-  - package-ecosystem: "cargo"
-    directory: "/crates/watcher"
+  - package-ecosystem: "docker"
+    directory: "/services/admin-cli"
     schedule:
-      interval: "weekly"
-      day: "monday"
+      interval: "monthly"
     open-pull-requests-limit: 10
-    groups:
-      minor-and-patch:
-        update-types:
-          - "minor"
-          - "patch"
+
+  - package-ecosystem: "docker"
+    directory: "/tee"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 10
+
+  - package-ecosystem: "docker"
+    directory: "/private-input-server"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 10
+
+  - package-ecosystem: "docker"
+    directory: "/examples/xgboost-remainder"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 10
+
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 10

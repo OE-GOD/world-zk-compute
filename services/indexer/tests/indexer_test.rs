@@ -321,3 +321,248 @@ fn test_config_defaults() {
     assert_eq!(config.port, 8081);
     assert_eq!(config.poll_interval_secs, 12);
 }
+
+// ---------------------------------------------------------------------------
+// Versioned API endpoint tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_api_versioned_results() {
+    let s = make_storage();
+    s.insert_result("0xaa", "0xm", "0xi", "0xa", 10).unwrap();
+    s.insert_result("0xbb", "0xm", "0xi", "0xa", 20).unwrap();
+
+    let app = build_app(s, make_broadcaster());
+    let req = axum::http::Request::builder()
+        .uri("/api/v1/results")
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Verify X-API-Version header is present and set to v1
+    let version_header = resp.headers().get("x-api-version").expect("missing X-API-Version header");
+    assert_eq!(version_header, "v1");
+
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let rows: Vec<ResultRow> = serde_json::from_slice(&body).unwrap();
+    assert_eq!(rows.len(), 2);
+}
+
+#[tokio::test]
+async fn test_api_versioned_stats() {
+    let s = make_storage();
+    s.insert_result("0x01", "0xm", "0xi", "0xa", 1).unwrap();
+    s.insert_result("0x02", "0xm", "0xi", "0xa", 2).unwrap();
+    s.update_result_status("0x01", "finalized", None).unwrap();
+
+    // Query both the versioned and unversioned endpoints with separate app
+    // instances (oneshot consumes the router).
+    let app_v1 = build_app(s.clone(), make_broadcaster());
+    let req_v1 = axum::http::Request::builder()
+        .uri("/api/v1/stats")
+        .body(Body::empty())
+        .unwrap();
+    let resp_v1 = app_v1.oneshot(req_v1).await.unwrap();
+    assert_eq!(resp_v1.status(), StatusCode::OK);
+    assert_eq!(resp_v1.headers().get("x-api-version").unwrap(), "v1");
+    let body_v1 = resp_v1.into_body().collect().await.unwrap().to_bytes();
+    let stats_v1: StatsResponse = serde_json::from_slice(&body_v1).unwrap();
+
+    let app_legacy = build_app(s, make_broadcaster());
+    let req_legacy = axum::http::Request::builder()
+        .uri("/stats")
+        .body(Body::empty())
+        .unwrap();
+    let resp_legacy = app_legacy.oneshot(req_legacy).await.unwrap();
+    let body_legacy = resp_legacy.into_body().collect().await.unwrap().to_bytes();
+    let stats_legacy: StatsResponse = serde_json::from_slice(&body_legacy).unwrap();
+
+    // Both endpoints must return identical data
+    assert_eq!(stats_v1.total_submitted, stats_legacy.total_submitted);
+    assert_eq!(stats_v1.total_finalized, stats_legacy.total_finalized);
+    assert_eq!(stats_v1.total_challenged, stats_legacy.total_challenged);
+    assert_eq!(stats_v1.total_resolved, stats_legacy.total_resolved);
+}
+
+#[tokio::test]
+async fn test_api_versioned_result_by_id() {
+    let s = make_storage();
+    s.insert_result("id-versioned-test", "0xmodel", "0xinput", "0xsub", 55)
+        .unwrap();
+
+    let app = build_app(s, make_broadcaster());
+    let req = axum::http::Request::builder()
+        .uri("/api/v1/results/id-versioned-test")
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.headers().get("x-api-version").unwrap(), "v1");
+
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let row: ResultRow = serde_json::from_slice(&body).unwrap();
+    assert_eq!(row.id, "id-versioned-test");
+    assert_eq!(row.model_hash, "0xmodel");
+    assert_eq!(row.block_number, 55);
+}
+
+// ---------------------------------------------------------------------------
+// Additional filter and ordering tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_api_list_filter_by_submitter() {
+    let s = make_storage();
+    s.insert_result("0x01", "0xm", "0xi", "0xa", 1).unwrap();
+    s.insert_result("0x02", "0xm", "0xi", "0xb", 2).unwrap();
+    s.insert_result("0x03", "0xm", "0xi", "0xa", 3).unwrap();
+    s.insert_result("0x04", "0xm", "0xi", "0xc", 4).unwrap();
+
+    let app = build_app(s, make_broadcaster());
+    let req = axum::http::Request::builder()
+        .uri("/results?submitter=0xa")
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let rows: Vec<ResultRow> = serde_json::from_slice(&body).unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|r| r.submitter == "0xa"));
+}
+
+#[tokio::test]
+async fn test_api_list_with_limit() {
+    let s = make_storage();
+    for i in 0..5u8 {
+        s.insert_result(&format!("0x{:02x}", i), "0xm", "0xi", "0xa", i as u64)
+            .unwrap();
+    }
+
+    let app = build_app(s, make_broadcaster());
+    let req = axum::http::Request::builder()
+        .uri("/results?limit=2")
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let rows: Vec<ResultRow> = serde_json::from_slice(&body).unwrap();
+    assert_eq!(rows.len(), 2);
+}
+
+#[tokio::test]
+async fn test_api_results_ordered_by_block_desc() {
+    let s = make_storage();
+    s.insert_result("0xold", "0xm", "0xi", "0xa", 5).unwrap();
+    s.insert_result("0xnew", "0xm", "0xi", "0xa", 100).unwrap();
+    s.insert_result("0xmid", "0xm", "0xi", "0xa", 50).unwrap();
+
+    let app = build_app(s, make_broadcaster());
+    let req = axum::http::Request::builder()
+        .uri("/results")
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let rows: Vec<ResultRow> = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(rows.len(), 3);
+    // Newest first (highest block_number)
+    assert_eq!(rows[0].id, "0xnew");
+    assert_eq!(rows[0].block_number, 100);
+    assert_eq!(rows[1].id, "0xmid");
+    assert_eq!(rows[1].block_number, 50);
+    assert_eq!(rows[2].id, "0xold");
+    assert_eq!(rows[2].block_number, 5);
+}
+
+// ---------------------------------------------------------------------------
+// Storage edge-case tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_storage_duplicate_insert_ignored() {
+    let s = make_storage();
+
+    // First insert succeeds (returns 1 row affected)
+    let n1 = s
+        .insert_result("dup-id", "0xmodel1", "0xinput1", "0xsub1", 10)
+        .unwrap();
+    assert_eq!(n1, 1);
+
+    // Second insert with same ID is silently ignored (INSERT OR IGNORE)
+    let n2 = s
+        .insert_result("dup-id", "0xmodel2", "0xinput2", "0xsub2", 20)
+        .unwrap();
+    assert_eq!(n2, 0);
+
+    // Original row is preserved, not overwritten
+    let row = s.get_result("dup-id").unwrap().unwrap();
+    assert_eq!(row.model_hash, "0xmodel1");
+    assert_eq!(row.submitter, "0xsub1");
+    assert_eq!(row.block_number, 10);
+
+    // Total count is still 1
+    assert_eq!(s.get_total_results(), 1);
+}
+
+#[test]
+fn test_storage_concurrent_access() {
+    use std::thread;
+
+    let s = make_storage();
+
+    // Spawn multiple writer threads
+    let mut handles = Vec::new();
+    for i in 0..10u32 {
+        let storage = s.clone();
+        handles.push(thread::spawn(move || {
+            storage
+                .insert_result(
+                    &format!("0x{:04x}", i),
+                    "0xm",
+                    "0xi",
+                    "0xa",
+                    i as u64,
+                )
+                .unwrap();
+        }));
+    }
+
+    // Spawn concurrent reader threads
+    for _ in 0..5 {
+        let storage = s.clone();
+        handles.push(thread::spawn(move || {
+            let _ = storage.list_results(&ResultFilter {
+                status: None,
+                submitter: None,
+                model_hash: None,
+                limit: None,
+            });
+            let _ = storage.get_stats();
+        }));
+    }
+
+    for h in handles {
+        h.join().expect("thread panicked");
+    }
+
+    // All 10 unique inserts should be present
+    assert_eq!(s.get_total_results(), 10);
+}
+
+#[test]
+fn test_storage_healthy_by_default() {
+    let s = make_storage();
+    // A freshly created storage instance should report healthy
+    assert!(s.is_healthy());
+}

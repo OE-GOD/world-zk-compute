@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 description = "Private Input Server for World ZK Compute - reference implementation for hosting private inputs behind auth"
 
+[lib]
+name = "private_input_server"
+path = "src/lib.rs"
+
 [[bin]]
 name = "private-input-server"
 path = "src/main.rs"
@@ -47,3 +51,4 @@ dotenvy = "0.15"
 [dev-dependencies]
 tempfile = "3.10"
 tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

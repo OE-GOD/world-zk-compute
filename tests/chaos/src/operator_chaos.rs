@@ -926,4 +926,296 @@ mod tests {
             );
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Test 11: RPC rate limiting (429) with circuit breaker backoff
+    //          Simulates Alchemy/Infura returning 429 Too Many Requests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_rpc_rate_limiting_429_backoff() {
+        // 1. Create a circuit breaker with a low failure threshold and a
+        //    short recovery timeout so the test completes quickly.
+        let cb = CircuitBreaker::new(CircuitBreakerConfig {
+            failure_threshold: 3,
+            recovery_timeout: Duration::from_millis(100),
+            success_threshold_for_close: 2,
+        });
+
+        assert_eq!(cb.state(), State::Closed, "breaker should start closed");
+
+        // 2. Simulate 3 consecutive 429 "rate limited" responses from the
+        //    RPC provider. Each call returns an error mimicking a 429 status.
+        for i in 0..3 {
+            let result = cb
+                .call(|| async {
+                    Err::<(), _>(anyhow::anyhow!(
+                        "HTTP 429 Too Many Requests: rate limit exceeded (Alchemy)"
+                    ))
+                })
+                .await;
+            assert!(result.is_err(), "call {} should fail with 429", i);
+        }
+
+        // 3. Verify the breaker has tripped to Open after the threshold.
+        assert_eq!(
+            cb.state(),
+            State::Open,
+            "breaker should be open after 3 consecutive 429 errors"
+        );
+        assert_eq!(cb.trip_count(), 1, "trip count should be 1");
+
+        // 4. While open, subsequent calls should be rejected immediately
+        //    without hitting the RPC (fast-fail / backoff behavior).
+        let rejected: Result<(), _> = cb
+            .call(|| async {
+                panic!("this closure should never execute when breaker is open")
+            })
+            .await;
+        assert!(rejected.is_err());
+        match rejected.unwrap_err() {
+            CircuitBreakerError::Open { remaining_secs } => {
+                assert!(
+                    remaining_secs > 0.0,
+                    "remaining_secs should be positive during backoff, got {}",
+                    remaining_secs
+                );
+            }
+            other => panic!("expected Open error during backoff, got {:?}", other),
+        }
+
+        // 5. Wait for the recovery timeout to elapse so the breaker
+        //    transitions to HalfOpen (simulates waiting before retrying).
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(
+            cb.state(),
+            State::HalfOpen,
+            "breaker should be HalfOpen after recovery timeout"
+        );
+
+        // 6. Simulate the RPC recovering: two consecutive successful calls
+        //    should close the breaker (success_threshold_for_close = 2).
+        let result = cb
+            .call(|| async { Ok::<_, anyhow::Error>("block: 0x1234") })
+            .await;
+        assert!(result.is_ok(), "first recovery call should succeed");
+        assert_eq!(
+            cb.state(),
+            State::HalfOpen,
+            "still HalfOpen after 1 success (need 2)"
+        );
+
+        let result = cb
+            .call(|| async { Ok::<_, anyhow::Error>("block: 0x1235") })
+            .await;
+        assert!(result.is_ok(), "second recovery call should succeed");
+        assert_eq!(
+            cb.state(),
+            State::Closed,
+            "breaker should be fully closed after 2 successes"
+        );
+
+        // 7. Verify metrics reflect the full lifecycle.
+        let metrics = cb.metrics();
+        assert_eq!(metrics.total_trips, 1, "exactly 1 trip during test");
+        assert_eq!(
+            metrics.consecutive_failures, 0,
+            "failures reset after recovery"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 12: DeadlineMonitor with concurrent (staggered) deadlines
+    //          Verifies multiple deadlines expiring at different times
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_deadline_monitor_concurrent_deadlines() {
+        use alloy::primitives::{Address, B256};
+
+        // 1. Create a monitor with custom thresholds for fine-grained testing:
+        //    warn at 500s, critical at 100s.
+        let mut monitor = DeadlineMonitor::with_thresholds(500, 100);
+
+        // 2. Add 8 disputes with staggered deadlines, each 1000s apart.
+        //    Dispute 0 expires at t=10000, dispute 1 at t=11000, etc.
+        let base_deadline = 10_000u64;
+        for i in 0u8..8 {
+            let mut rid_bytes = [0u8; 32];
+            rid_bytes[31] = i;
+            let rid = B256::from(rid_bytes);
+
+            let mut addr_bytes = [0u8; 20];
+            addr_bytes[19] = i + 1;
+            let challenger = Address::from(addr_bytes);
+
+            let deadline = base_deadline + (i as u64 * 1000);
+            monitor.track_dispute(rid, challenger, deadline);
+        }
+
+        assert_eq!(monitor.active_count(), 8);
+
+        // 3. At t=5000: all disputes are far from their deadlines (>4500s).
+        //    No warnings or criticals should fire.
+        let result = monitor.check_deadlines(5000);
+        assert_eq!(result.total_active, 8);
+        assert!(
+            result.warnings.is_empty(),
+            "no warnings expected when all deadlines are >4500s away"
+        );
+        assert!(result.criticals.is_empty());
+        assert!(result.expired.is_empty());
+
+        // 4. At t=9600: dispute 0 (deadline=10000) has 400s remaining,
+        //    which is within the 500s warn threshold. Others are safe.
+        let result = monitor.check_deadlines(9600);
+        assert_eq!(
+            result.warnings.len(),
+            1,
+            "only dispute 0 should be in warning range at t=9600"
+        );
+        assert!(result.criticals.is_empty());
+        assert!(result.expired.is_empty());
+
+        // 5. At t=9950: dispute 0 has 50s remaining (critical range <100s).
+        //    Dispute 1 (deadline=11000) has 1050s remaining (safe).
+        let result = monitor.check_deadlines(9950);
+        assert!(
+            !result.criticals.is_empty(),
+            "dispute 0 should be critical at t=9950 (50s remaining)"
+        );
+        assert!(result.expired.is_empty());
+
+        // 6. At t=10500: dispute 0 has expired (deadline=10000).
+        //    Dispute 1 (deadline=11000) now has 500s remaining (warn threshold).
+        let result = monitor.check_deadlines(10500);
+        assert_eq!(
+            result.expired.len(),
+            1,
+            "dispute 0 should be expired at t=10500"
+        );
+        assert!(
+            !result.warnings.is_empty(),
+            "dispute 1 should be in warning range at t=10500 (500s remaining)"
+        );
+
+        // 7. At t=17500: all 8 disputes have expired (last deadline=17000).
+        let result = monitor.check_deadlines(17500);
+        assert_eq!(
+            result.expired.len(),
+            8,
+            "all 8 disputes should be expired at t=17500"
+        );
+        assert!(result.warnings.is_empty());
+        assert!(result.criticals.is_empty());
+
+        // 8. Verify metrics tracked everything correctly.
+        let metrics = monitor.metrics();
+        assert_eq!(metrics.total_tracked, 8, "8 disputes were tracked total");
+        assert_eq!(
+            metrics.total_expired, 8,
+            "all 8 disputes should be counted as expired"
+        );
+        assert!(
+            metrics.total_warnings >= 1,
+            "at least 1 warning should have been issued"
+        );
+        assert!(
+            metrics.total_criticals >= 1,
+            "at least 1 critical should have been issued"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 13: Circuit breaker rapid Open->HalfOpen->Closed cycles
+    //          Verifies the breaker doesn't get stuck after many transitions
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_circuit_breaker_rapid_open_close_cycles() {
+        // 1. Create a circuit breaker with minimal timeouts for rapid cycling:
+        //    failure_threshold=2, recovery_timeout=10ms, success_threshold=1.
+        let cb = CircuitBreaker::new(CircuitBreakerConfig {
+            failure_threshold: 2,
+            recovery_timeout: Duration::from_millis(10),
+            success_threshold_for_close: 1,
+        });
+
+        assert_eq!(cb.state(), State::Closed, "breaker should start closed");
+        assert_eq!(cb.trip_count(), 0);
+
+        // 2. Cycle through Open->HalfOpen->Closed 10 times rapidly.
+        let num_cycles = 10;
+        for cycle in 0..num_cycles {
+            // 2a. Trip the breaker: Closed -> Open
+            assert_eq!(
+                cb.state(),
+                State::Closed,
+                "cycle {}: breaker should be closed at start of cycle",
+                cycle
+            );
+            cb.record_failure();
+            cb.record_failure(); // threshold=2 -> Open
+            assert_eq!(
+                cb.state(),
+                State::Open,
+                "cycle {}: breaker should be open after 2 failures",
+                cycle
+            );
+            assert_eq!(
+                cb.trip_count(),
+                (cycle + 1) as u64,
+                "cycle {}: trip count should increment",
+                cycle
+            );
+
+            // 2b. Wait for recovery timeout: Open -> HalfOpen
+            std::thread::sleep(Duration::from_millis(15));
+            assert_eq!(
+                cb.state(),
+                State::HalfOpen,
+                "cycle {}: breaker should be HalfOpen after recovery timeout",
+                cycle
+            );
+
+            // 2c. Record a success: HalfOpen -> Closed
+            cb.record_success();
+            assert_eq!(
+                cb.state(),
+                State::Closed,
+                "cycle {}: breaker should be closed after success in HalfOpen",
+                cycle
+            );
+        }
+
+        // 3. Verify final state is healthy after all rapid cycles.
+        assert_eq!(cb.state(), State::Closed, "breaker should end closed");
+        assert_eq!(
+            cb.trip_count(),
+            num_cycles as u64,
+            "total trips should equal number of cycles"
+        );
+        assert_eq!(
+            cb.consecutive_failures(),
+            0,
+            "consecutive failures should be 0 after recovery"
+        );
+
+        // 4. Verify metrics reflect all state transitions.
+        //    Each cycle: Closed->Open (1) + Open->HalfOpen (1) + HalfOpen->Closed (1) = 3
+        //    Total state changes = 3 * num_cycles = 30
+        let metrics = cb.metrics();
+        assert_eq!(metrics.total_trips, num_cycles as u64);
+        assert_eq!(
+            metrics.state_changes,
+            (3 * num_cycles) as u64,
+            "each cycle should produce 3 state changes (Closed->Open, Open->HalfOpen, HalfOpen->Closed)"
+        );
+
+        // 5. Confirm the breaker still functions correctly after rapid cycling:
+        //    a successful call should pass through without issues.
+        let result = cb.call_sync(|| Ok::<_, anyhow::Error>(42));
+        assert_eq!(result.unwrap(), 42, "breaker should work normally after rapid cycling");
+        assert_eq!(cb.state(), State::Closed);
+    }
 }

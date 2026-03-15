@@ -1,0 +1,78 @@
+name: Monitoring Config Lint
+
+permissions: read-all
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'monitoring/**'
+      - '.github/workflows/monitoring-lint.yml'
+  pull_request:
+    paths:
+      - 'monitoring/**'
+      - '.github/workflows/monitoring-lint.yml'
+  workflow_dispatch:
+
+jobs:
+  validate-configs:
+    name: Validate Monitoring Configs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate YAML syntax
+        run: |
+          pip install pyyaml
+          python3 -c "
+          import yaml, sys, glob
+          errors = 0
+          for path in glob.glob('monitoring/*.yml'):
+              try:
+                  with open(path) as f:
+                      yaml.safe_load(f)
+                  print(f'  OK: {path}')
+              except yaml.YAMLError as e:
+                  print(f'  FAIL: {path}: {e}')
+                  errors += 1
+          if errors:
+              sys.exit(1)
+          print('All YAML files valid.')
+          "
+
+      - name: Validate Grafana dashboard JSON
+        run: |
+          python3 -c "
+          import json, sys, glob
+          errors = 0
+          for path in glob.glob('monitoring/grafana-*.json'):
+              try:
+                  with open(path) as f:
+                      data = json.load(f)
+                  # Basic dashboard structure check
+                  if 'panels' not in data and 'rows' not in data:
+                      print(f'  WARN: {path}: no panels or rows found')
+                  else:
+                      print(f'  OK: {path}')
+              except json.JSONDecodeError as e:
+                  print(f'  FAIL: {path}: {e}')
+                  errors += 1
+          if errors:
+              sys.exit(1)
+          print('All dashboard JSON files valid.')
+          "
+
+      - name: Check for unfilled placeholders (warning only)
+        run: |
+          echo "Checking for <REPLACE_*> placeholders in monitoring configs..."
+          if grep -r '<REPLACE_' monitoring/ 2>/dev/null; then
+            echo ""
+            echo "WARNING: Unfilled placeholders found above."
+            echo "These must be replaced before production use."
+            echo "Run: ./monitoring/validate-config.sh"
+          else
+            echo "No unfilled placeholders found."
+          fi

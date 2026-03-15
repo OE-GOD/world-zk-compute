@@ -69,6 +69,7 @@ services:
     ports:
       - "3000:3000"
     environment:
+      # WARNING: Change default password in production via GRAFANA_PASSWORD env var
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
       - GF_USERS_ALLOW_SIGN_UP=false
     volumes:

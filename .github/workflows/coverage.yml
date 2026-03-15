@@ -1,0 +1,100 @@
+name: Code Coverage
+
+permissions: read-all
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'sdk/**'
+      - 'services/**'
+      - 'crates/**'
+      - 'tee/enclave/**'
+      - 'contracts/src/**'
+      - 'contracts/test/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  pull_request:
+    paths:
+      - 'sdk/**'
+      - 'services/**'
+      - 'crates/**'
+      - 'tee/enclave/**'
+      - 'contracts/src/**'
+      - 'contracts/test/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.92.0"
+
+jobs:
+  rust-coverage:
+    name: Rust Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-coverage-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-coverage-
+
+      - name: Generate coverage report
+        run: cargo llvm-cov --workspace --html --output-dir coverage-report
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-coverage-report
+          path: coverage-report/
+          retention-days: 14
+
+  solidity-coverage:
+    name: Solidity Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Generate coverage report
+        working-directory: contracts
+        run: forge coverage --report summary > coverage-summary.txt 2>&1 || true
+
+      - name: Display coverage summary
+        working-directory: contracts
+        run: cat coverage-summary.txt
+
+      - name: Upload coverage summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: solidity-coverage-report
+          path: contracts/coverage-summary.txt
+          retention-days: 14

@@ -48,7 +48,13 @@ services:
   deployer:
     image: ghcr.io/foundry-rs/foundry:v1.0.0
     volumes:
-      - ./contracts:/contracts
+      - './contracts/src:/contracts/src:ro'
+      - './contracts/script:/contracts/script:ro'
+      - './contracts/lib:/contracts/lib:ro'
+      - './contracts/foundry.toml:/contracts/foundry.toml:ro'
+      - './contracts/broadcast:/contracts/broadcast'
+      - './contracts/out:/contracts/out'
+      - './contracts/cache:/contracts/cache'
       - deployment-data:/deployment
     working_dir: /contracts
     depends_on:
@@ -99,7 +105,8 @@ services:
         cat /deployment/addresses.json
     restart: "no"
     # Security hardening
-    # Note: deployer needs write access to /contracts (broadcast) and /deployment, so no read_only
+    # Note: deployer needs write access to /contracts/broadcast and /deployment, so no read_only
+    # Source (/contracts/src) and scripts (/contracts/script) are mounted read-only
     tmpfs:
       - /tmp:noexec,nosuid,size=64m
     security_opt:

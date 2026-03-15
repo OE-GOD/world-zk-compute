@@ -422,6 +422,77 @@ jobs:
       - name: Run native tests
         run: cargo test --manifest-path contracts/stylus/gkr-verifier/Cargo.toml --target x86_64-unknown-linux-gnu
 
+  indexer-postgres:
+    name: Indexer (Postgres)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: indexer_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-indexer-pg-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-indexer-pg-
+
+      - name: Validate schema migration
+        env:
+          PGPASSWORD: test
+        run: psql -h localhost -U test -d indexer_test -f services/indexer/migrations/001_init.sql
+
+      - name: Build with postgres feature
+        run: cargo check -p tee-indexer --features postgres
+
+      - name: Run unit tests with postgres feature
+        env:
+          DATABASE_URL: postgres://test:test@localhost:5432/indexer_test
+        run: cargo test -p tee-indexer --features postgres
+
+      - name: Run postgres integration tests
+        env:
+          DATABASE_URL: postgres://test:test@localhost:5432/indexer_test
+        run: cargo test -p tee-indexer --features postgres -- --ignored
+
+      - name: Verify schema tables exist
+        env:
+          PGPASSWORD: test
+        run: |
+          echo "Checking that all expected tables were created..."
+          for table in events sync_state results indexer_state; do
+            psql -h localhost -U test -d indexer_test -c \
+              "SELECT COUNT(*) FROM ${table};" > /dev/null 2>&1 \
+              || { echo "FAIL: table '${table}' does not exist"; exit 1; }
+            echo "  OK: ${table}"
+          done
+          echo "All tables verified."
+
   workspace-check:
     name: Workspace Check
     runs-on: ubuntu-latest

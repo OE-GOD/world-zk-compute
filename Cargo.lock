@@ -4821,6 +4821,7 @@ dependencies = [
  "tee-watcher",
  "tempfile",
  "tokio",
+ "tokio-tungstenite 0.24.0",
  "tower",
  "tower-http",
  "tracing",

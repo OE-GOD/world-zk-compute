@@ -537,7 +537,7 @@ mod tests {
 
     impl AlertSender for MockSender {
         fn send(&self, channel: &AlertChannel, alert: &Alert) -> Result<(), String> {
-            let mut log = self.sent.lock().unwrap();
+            let mut log = self.sent.lock().expect("mock sender lock poisoned");
             log.push((channel.channel_type().to_string(), alert.id.clone()));
             Ok(())
         }
@@ -591,7 +591,7 @@ mod tests {
             )
             .expect("should send");
 
-        let sent = mock.sent.lock().unwrap();
+        let sent = mock.sent.lock().expect("mock sender lock poisoned");
         // Critical routes to: Slack, PagerDuty, GenericWebhook (NOT Email).
         let channel_types: Vec<&str> = sent.iter().map(|(ct, _)| ct.as_str()).collect();
         assert!(
@@ -632,7 +632,7 @@ mod tests {
         )
         .expect("should send");
 
-        let sent = mock.sent.lock().unwrap();
+        let sent = mock.sent.lock().expect("mock sender lock poisoned");
         let channel_types: Vec<&str> = sent.iter().map(|(ct, _)| ct.as_str()).collect();
         assert!(
             channel_types.contains(&"slack"),
@@ -670,7 +670,7 @@ mod tests {
         )
         .expect("should send");
 
-        let sent = mock.sent.lock().unwrap();
+        let sent = mock.sent.lock().expect("mock sender lock poisoned");
         assert!(
             sent.is_empty(),
             "info alerts should not be dispatched to any channel"
@@ -808,7 +808,7 @@ mod tests {
             "msg",
             HashMap::new(),
         )
-        .unwrap();
+        .expect("critical alert should send");
         mgr.send_alert(
             AlertSeverity::Warning,
             "rpc_error",
@@ -816,7 +816,7 @@ mod tests {
             "msg",
             HashMap::new(),
         )
-        .unwrap();
+        .expect("warning alert should send");
         mgr.send_alert(
             AlertSeverity::Info,
             "heartbeat",
@@ -824,7 +824,7 @@ mod tests {
             "msg",
             HashMap::new(),
         )
-        .unwrap();
+        .expect("info alert should send");
         mgr.send_alert(
             AlertSeverity::Critical,
             "proof_failed",
@@ -832,7 +832,7 @@ mod tests {
             "msg",
             HashMap::new(),
         )
-        .unwrap();
+        .expect("second critical alert should send");
 
         let stats = mgr.get_alert_stats();
         assert_eq!(stats.total_sent, 4);
@@ -854,7 +854,8 @@ mod tests {
 
         // Also verify serde round-trip with defaults.
         let json = r#"{"channels":[]}"#;
-        let parsed: AlertConfig = serde_json::from_str(json).unwrap();
+        let parsed: AlertConfig =
+            serde_json::from_str(json).expect("AlertConfig should deserialize from valid JSON");
         assert_eq!(parsed.dedup_window_secs, 300);
         assert_eq!(parsed.escalation_timeout_secs, 900);
     }
@@ -914,7 +915,7 @@ mod tests {
             "Warning",
             HashMap::new(),
         )
-        .unwrap();
+        .expect("warning alert should send");
         let pending = mgr.pending_escalations();
         assert_eq!(pending, 0, "warning alerts should not escalate");
     }
@@ -938,13 +939,19 @@ mod tests {
                 "Proof generation timeout",
                 meta.clone(),
             )
-            .unwrap();
+            .expect("alert with metadata should send");
 
         let active = mgr.get_active_alerts();
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].id, id);
-        assert_eq!(active[0].metadata.get("result_id").unwrap(), "0xdeadbeef");
-        assert_eq!(active[0].metadata.get("chain_id").unwrap(), "11155111");
+        assert_eq!(
+            active[0].metadata.get("result_id").expect("result_id should be in metadata"),
+            "0xdeadbeef"
+        );
+        assert_eq!(
+            active[0].metadata.get("chain_id").expect("chain_id should be in metadata"),
+            "11155111"
+        );
     }
 
     // ------------------------------------------------------------------
@@ -966,8 +973,9 @@ mod tests {
             },
         };
 
-        let json = serde_json::to_string(&alert).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&alert).expect("Alert should serialize to JSON");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&json).expect("serialized Alert should parse as JSON Value");
 
         assert_eq!(parsed["id"], "alert-00000001");
         assert_eq!(parsed["severity"], "critical");
@@ -986,14 +994,17 @@ mod tests {
             routing_key: "abc123".into(),
             service_name: "operator".into(),
         };
-        let json = serde_json::to_string(&channel).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let json =
+            serde_json::to_string(&channel).expect("AlertChannel should serialize to JSON");
+        let parsed: serde_json::Value = serde_json::from_str(&json)
+            .expect("serialized AlertChannel should parse as JSON Value");
         assert_eq!(parsed["type"], "pager_duty");
         assert_eq!(parsed["routing_key"], "abc123");
         assert_eq!(parsed["service_name"], "operator");
 
         // Round-trip.
-        let deser: AlertChannel = serde_json::from_str(&json).unwrap();
+        let deser: AlertChannel = serde_json::from_str(&json)
+            .expect("AlertChannel should round-trip through JSON");
         assert_eq!(deser.channel_type(), "pagerduty");
     }
 

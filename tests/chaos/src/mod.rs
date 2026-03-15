@@ -6,4 +6,5 @@
 
 pub mod e2e_lifecycle;
 pub mod enclave_chaos;
+pub mod fault_scenarios;
 pub mod operator_chaos;

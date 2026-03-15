@@ -10,6 +10,7 @@ use alloy::rpc::types::Filter;
 use axum::Router;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tee_watcher::{parse_log, TEEEvent};
 use tracing::{error, info, warn};
@@ -98,6 +99,13 @@ pub trait Storage: Send + Sync {
     fn get_total_results(&self) -> u64;
 
     fn apply_event(&self, event: &TEEEvent) -> anyhow::Result<()>;
+
+    /// Returns `true` if the storage backend is healthy.
+    /// Implementations should return `false` after unrecoverable errors
+    /// such as mutex lock poisoning.
+    fn is_healthy(&self) -> bool {
+        true
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -106,6 +114,9 @@ pub trait Storage: Send + Sync {
 
 pub struct SqliteStorage {
     conn: Mutex<Connection>,
+    /// Set to `true` when a mutex lock-poisoning event is detected.
+    /// Once set, the `/health` endpoint will report degraded status.
+    lock_poisoned: AtomicBool,
 }
 
 impl SqliteStorage {
@@ -113,6 +124,7 @@ impl SqliteStorage {
         let conn = Connection::open(path)?;
         let storage = Self {
             conn: Mutex::new(conn),
+            lock_poisoned: AtomicBool::new(false),
         };
         storage.init_tables()?;
         Ok(storage)
@@ -122,15 +134,18 @@ impl SqliteStorage {
         let conn = Connection::open_in_memory()?;
         let storage = Self {
             conn: Mutex::new(conn),
+            lock_poisoned: AtomicBool::new(false),
         };
         storage.init_tables()?;
         Ok(storage)
     }
 
     fn lock(&self) -> anyhow::Result<std::sync::MutexGuard<'_, Connection>> {
-        self.conn
-            .lock()
-            .map_err(|_| anyhow::anyhow!("storage lock poisoned"))
+        self.conn.lock().map_err(|e| {
+            tracing::error!("Storage mutex lock poisoned: {}", e);
+            self.lock_poisoned.store(true, Ordering::SeqCst);
+            anyhow::anyhow!("storage lock poisoned")
+        })
     }
 
     fn init_tables(&self) -> anyhow::Result<()> {
@@ -289,6 +304,7 @@ impl Storage for SqliteStorage {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!("Lock poisoned in get_last_indexed_block - returning 0: {}", e);
+                self.lock_poisoned.store(true, Ordering::SeqCst);
                 return 0;
             }
         };
@@ -317,6 +333,7 @@ impl Storage for SqliteStorage {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!("Lock poisoned in get_total_results - returning 0: {}", e);
+                self.lock_poisoned.store(true, Ordering::SeqCst);
                 return 0;
             }
         };
@@ -368,6 +385,10 @@ impl Storage for SqliteStorage {
             }
         }
         Ok(())
+    }
+
+    fn is_healthy(&self) -> bool {
+        !self.lock_poisoned.load(Ordering::SeqCst)
     }
 }
 

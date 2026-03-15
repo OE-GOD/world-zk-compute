@@ -38,6 +38,7 @@ pub struct ConfigFile {
     pub nitro_verification: Option<bool>,
     pub expected_pcr0: Option<String>,
     pub attestation_cache_ttl: Option<u64>,
+    pub attestation_freshness_secs: Option<u64>,
     pub prover_url: Option<String>,
     pub metrics_port: Option<u16>,
     pub max_proof_retries: Option<u32>,
@@ -97,6 +98,8 @@ pub struct Config {
     pub expected_pcr0: Option<String>,
     /// Attestation cache TTL in seconds.
     pub attestation_cache_ttl: u64,
+    /// Maximum age in seconds for a valid attestation document (default: 600 = 10 min).
+    pub attestation_freshness_secs: u64,
     /// URL of the warm prover HTTP service (optional).
     /// Not yet consumed by all code paths; kept for forward compatibility.
     #[allow(dead_code)]
@@ -212,6 +215,19 @@ impl Config {
             .or(file_cfg.attestation_cache_ttl)
             .unwrap_or(300);
 
+        let attestation_freshness_secs = std::env::var("ATTESTATION_FRESHNESS_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .or(file_cfg.attestation_freshness_secs)
+            .unwrap_or(600);
+
+        if attestation_freshness_secs > 1800 {
+            tracing::warn!(
+                "ATTESTATION_FRESHNESS_SECS={} exceeds 30 minutes — consider clock skew risks",
+                attestation_freshness_secs
+            );
+        }
+
         let prover_url = std::env::var("PROVER_URL").ok().or(file_cfg.prover_url);
 
         let metrics_port = std::env::var("METRICS_PORT")
@@ -293,6 +309,7 @@ impl Config {
             nitro_verification,
             expected_pcr0,
             attestation_cache_ttl,
+            attestation_freshness_secs,
             prover_url,
             metrics_port,
             max_proof_retries,
