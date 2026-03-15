@@ -1,5 +1,5 @@
 # Private Input Server — minimal Python stdlib HTTP server
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 # Security: create non-root user
 RUN groupadd --gid 1000 appuser && \
