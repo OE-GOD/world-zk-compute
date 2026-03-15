@@ -114,7 +114,6 @@ jobs:
         id: notes
         run: |
           TAG="${{ steps.version.outputs.tag }}"
-          # Get commits since last tag
           PREV_TAG=$(git tag --sort=-version:refname | head -2 | tail -1)
           if [ -n "$PREV_TAG" ]; then
             NOTES=$(git log "${PREV_TAG}..${TAG}" --oneline --no-merges 2>/dev/null || echo "Initial release")
@@ -144,3 +143,82 @@ jobs:
             ${{ steps.notes.outputs.notes }}
           draft: false
           prerelease: ${{ contains(steps.version.outputs.tag, '-') }}
+
+  publish-npm:
+    name: Publish TypeScript SDK to npm
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: ${{ secrets.NPM_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Extract version
+        id: version
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        working-directory: sdk/typescript
+        run: npm ci
+
+      - name: Build
+        working-directory: sdk/typescript
+        run: npm run build
+
+      - name: Set package version
+        working-directory: sdk/typescript
+        run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version --allow-same-version
+
+      - name: Publish to npm
+        working-directory: sdk/typescript
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-pypi:
+    name: Publish Python SDK to PyPI
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: ${{ secrets.PYPI_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Extract version
+        id: version
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Install build tools
+        run: pip install build twine
+
+      - name: Set package version
+        working-directory: sdk/python
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          sed -i "s/^version = .*/version = \"${VERSION}\"/" pyproject.toml
+
+      - name: Build distribution
+        working-directory: sdk/python
+        run: python -m build
+
+      - name: Publish to PyPI
+        working-directory: sdk/python
+        run: python -m twine upload dist/*
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}

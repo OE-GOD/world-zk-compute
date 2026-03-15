@@ -7,7 +7,7 @@ metadata:
     {{- include "worldzk.labels" . | nindent 4 }}
     app.kubernetes.io/component: balance-check
 spec:
-  schedule: {{ .Values.balanceCheck.schedule | quote }}
+  schedule: "0 * * * *"
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
@@ -33,23 +33,47 @@ spec:
                 - -c
                 - |
                   set -e
+
                   RPC_URL="${RPC_URL}"
-                  MIN_BALANCE="${MIN_BALANCE:-10000000000000000}"
+                  THRESHOLD="${BALANCE_THRESHOLD:-0.01}"
+                  # Convert threshold from ETH to wei (multiply by 1e18)
+                  # cast to-wei handles decimal ETH values
+                  MIN_WEI=$(cast to-wei "$THRESHOLD" 2>/dev/null || echo "10000000000000000")
+
+                  echo "Balance check started"
+                  echo "  RPC:       $RPC_URL"
+                  echo "  Threshold: $THRESHOLD ETH ($MIN_WEI wei)"
+                  echo ""
+
+                  STATUS=0
 
                   check_balance() {
-                    local name="$1" addr="$2"
-                    if [ -z "$addr" ]; then return; fi
+                    local name="$1"
+                    local addr="$2"
+                    if [ -z "$addr" ]; then
+                      echo "SKIP: $name (no address configured)"
+                      return
+                    fi
+
                     bal=$(cast balance "$addr" --rpc-url "$RPC_URL" 2>/dev/null || echo "0")
-                    if [ "$bal" -lt "$MIN_BALANCE" ] 2>/dev/null; then
-                      echo "WARNING: $name ($addr) balance low: $bal wei"
-                      exit 1
+                    bal_eth=$(cast from-wei "$bal" 2>/dev/null || echo "unknown")
+
+                    if [ "$bal" -lt "$MIN_WEI" ] 2>/dev/null; then
+                      echo "WARNING: $name ($addr) balance LOW: $bal_eth ETH ($bal wei)"
+                      STATUS=1
                     else
-                      echo "OK: $name ($addr) balance: $bal wei"
+                      echo "OK: $name ($addr) balance: $bal_eth ETH"
                     fi
                   }
 
                   check_balance "operator" "$OPERATOR_ADDRESS"
-                  check_balance "enclave" "$ENCLAVE_ADDRESS"
+                  check_balance "enclave"  "$ENCLAVE_ADDRESS"
+
+                  echo ""
+                  if [ "$STATUS" -ne 0 ]; then
+                    echo "One or more wallets are below the threshold."
+                    exit 1
+                  fi
                   echo "All balance checks passed."
               envFrom:
                 - configMapRef:
@@ -57,8 +81,20 @@ spec:
               env:
                 - name: RPC_URL
                   value: {{ required "global.rpcUrl is required" .Values.global.rpcUrl | quote }}
-                - name: MIN_BALANCE
-                  value: {{ .Values.balanceCheck.minBalanceWei | default "10000000000000000" | quote }}
+                - name: BALANCE_THRESHOLD
+                  value: {{ .Values.balanceCheck.threshold | default "0.01" | quote }}
+                - name: OPERATOR_ADDRESS
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "worldzk.secretName" . }}
+                      key: operator-address
+                      optional: true
+                - name: ENCLAVE_ADDRESS
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "worldzk.secretName" . }}
+                      key: enclave-address
+                      optional: true
               resources:
                 requests:
                   memory: "32Mi"

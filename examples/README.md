@@ -138,6 +138,49 @@ XGBoost decision tree ensemble inference inside the zkVM — covers model-based 
 ./scripts/e2e-test.sh --example xgboost-inference
 ```
 
+### 6. XGBoost Remainder — GKR+Hyrax ZKML (`xgboost-remainder/`)
+
+XGBoost decision tree inference proved with the Remainder GKR+Hyrax proof system (not RISC Zero).
+
+**Key differences from `xgboost-inference/`:**
+- Uses Remainder's GKR+Hyrax protocol instead of RISC Zero zkVM
+- Native circuit representation (88-layer DAG topology)
+- On-chain verification via `RemainderVerifier.sol` (direct, batch, or Groth16 hybrid)
+- Optional gnark Groth16 wrapper for SNARK-compressed proofs
+
+**Gas costs:**
+
+| Mode | Gas | Transactions |
+|------|-----|-------------|
+| Direct GKR | ~7.6M | 1 |
+| DAG Direct | ~213M | 1 |
+| DAG Batch | ~13-28M/tx | 15 |
+| DAG Groth16 | ~252M | 1 |
+
+```bash
+cd xgboost-remainder
+cargo test                            # 34 tests
+cargo run --bin gen_dag_groth16_witness  # Generate Groth16 witness
+```
+
+### 7. Recursive Wrapper (`recursive-wrapper/`)
+
+Recursive proof composition for aggregating multiple proofs into a single proof.
+
+```bash
+cd recursive-wrapper
+cargo test
+```
+
+### SDK Quickstart Examples
+
+| Example | Language | Directory |
+|---------|----------|-----------|
+| Python Quickstart | Python | `sdk-python-quickstart/` |
+| TypeScript Quickstart | TypeScript | `sdk-typescript-quickstart/` |
+| Rust Quickstart | Rust | `sdk-rust-quickstart/` |
+| Sepolia Quickstart | Shell + SDK | `sepolia-quickstart/` |
+
 ## Multi-zkVM Benchmarks
 
 The same detection algorithms can be run on multiple zkVMs for side-by-side comparison.
@@ -148,6 +191,7 @@ Currently supported: **RISC Zero** and **SP1**.
 | Example | RISC Zero | SP1 |
 |---------|-----------|-----|
 | Anomaly Detector | `anomaly-detector/` | `anomaly-detector-sp1/` |
+| Rule Engine | `rule-engine/` | `rule-engine-sp1/` |
 
 ### Prerequisites
 

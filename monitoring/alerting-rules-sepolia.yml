@@ -1,0 +1,171 @@
+# Prometheus alerting rules for world-zk-compute operator and enclave services.
+#
+# Load this file in your prometheus.yml under rule_files:
+#   rule_files:
+#     - "alerting-rules-sepolia.yml"
+#
+# Sepolia-specific alerts for wallet health, operator submissions, enclave
+# performance, indexer liveness, dispute detection, and network conditions.
+
+groups:
+  # ---------------------------------------------------------------------------
+  # Sepolia Wallet Alerts
+  # ---------------------------------------------------------------------------
+  - name: sepolia-wallet
+    rules:
+      - alert: wallet_balance_low
+        expr: wallet_balance_eth{environment="sepolia"} < 0.01
+        for: 0m
+        labels:
+          severity: critical
+          chain: sepolia
+          environment: sepolia
+        annotations:
+          summary: "Wallet balance critically low on {{ $labels.instance }}"
+          description: "The wallet balance on {{ $labels.instance }} is {{ $value | printf \"%.6f\" }} ETH, which is below the 0.01 ETH threshold. The operator will be unable to submit results or resolve disputes. Fund the wallet immediately using a Sepolia faucet."
+
+      - alert: WalletBalanceDepleting
+        expr: predict_linear(wallet_balance_eth{environment="sepolia"}[1h], 86400) < 0
+        for: 5m
+        labels:
+          severity: warning
+          chain: sepolia
+          environment: sepolia
+        annotations:
+          summary: "Wallet balance depleting on {{ $labels.instance }}"
+          description: "At the current rate of spending, the wallet on {{ $labels.instance }} is predicted to reach zero within 24 hours (current balance: {{ $value | printf \"%.6f\" }} ETH). Top up the wallet from a Sepolia faucet before funds run out."
+
+  # ---------------------------------------------------------------------------
+  # Sepolia Operator Alerts
+  # ---------------------------------------------------------------------------
+  - name: sepolia-operator
+    rules:
+      - alert: operator_no_submissions_5m
+        expr: rate(operator_proofs_submitted{environment="sepolia"}[5m]) == 0 and up{job="operator"} == 1
+        for: 5m
+        labels:
+          severity: warning
+          chain: sepolia
+          environment: sepolia
+        annotations:
+          summary: "No TEE result submissions from {{ $labels.instance }}"
+          description: "The operator on {{ $labels.instance }} has not submitted any TEE results in the last 5 minutes despite being up. This may indicate upstream enclave failures, empty request queues, or transaction submission issues."
+
+      - alert: OperatorHighGasUsage
+        expr: rate(operator_gas_used_total{environment="sepolia"}[5m]) / rate(operator_proofs_submitted{environment="sepolia"}[5m]) > 500000
+        for: 5m
+        labels:
+          severity: info
+          chain: sepolia
+          environment: sepolia
+        annotations:
+          summary: "High gas usage per transaction on {{ $labels.instance }}"
+          description: "The average gas used per operator transaction on {{ $labels.instance }} exceeds 500,000 (current: {{ $value | printf \"%.0f\" }}). Review submitted transaction calldata for unexpected complexity or contract inefficiencies."
+
+  # ---------------------------------------------------------------------------
+  # Sepolia Enclave Alerts
+  # ---------------------------------------------------------------------------
+  - name: sepolia-enclave
+    rules:
+      - alert: enclave_high_error_rate
+        expr: rate(enclave_total_errors{environment="sepolia"}[5m]) / rate(enclave_total_inferences{environment="sepolia"}[5m]) > 0.10
+        for: 5m
+        labels:
+          severity: warning
+          chain: sepolia
+          environment: sepolia
+        annotations:
+          summary: "High error rate on enclave {{ $labels.instance }}"
+          description: "The enclave error rate on {{ $labels.instance }} exceeds 10% over the last 5 minutes (current: {{ $value | printf \"%.2f\" }}). Check enclave logs for inference failures, malformed requests, or resource exhaustion."
+
+      - alert: EnclaveHighLatency
+        expr: enclave_avg_inference_ms{environment="sepolia"} > 10000
+        for: 5m
+        labels:
+          severity: warning
+          chain: sepolia
+          environment: sepolia
+        annotations:
+          summary: "High inference latency on enclave {{ $labels.instance }}"
+          description: "The average inference latency on {{ $labels.instance }} exceeds 10 seconds (current: {{ $value | printf \"%.0f\" }}ms). This may indicate resource contention, model complexity issues, or hardware degradation in the TEE."
+
+  # ---------------------------------------------------------------------------
+  # Sepolia Indexer Alerts
+  # ---------------------------------------------------------------------------
+  - name: sepolia-indexer
+    rules:
+      - alert: indexer_lag_high
+        expr: (sepolia_latest_block_number - indexer_last_indexed_block{environment="sepolia"}) > 100
+        for: 5m
+        labels:
+          severity: warning
+          chain: sepolia
+          environment: sepolia
+        annotations:
+          summary: "Indexer falling behind on {{ $labels.instance }}"
+          description: "The indexer on {{ $labels.instance }} is {{ $value }} blocks behind the chain head (threshold: 100). This may indicate slow processing, RPC issues, or database bottlenecks. Events and state may be stale."
+
+      - alert: IndexerDown
+        expr: up{job="indexer", environment="sepolia"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          chain: sepolia
+          environment: sepolia
+        annotations:
+          summary: "Indexer instance {{ $labels.instance }} is down"
+          description: "The indexer service on {{ $labels.instance }} has been unreachable for more than 5 minutes. On-chain events will not be tracked and the API will serve stale data until the indexer recovers."
+
+  # ---------------------------------------------------------------------------
+  # Sepolia Dispute Alerts
+  # ---------------------------------------------------------------------------
+  - name: sepolia-disputes
+    rules:
+      - alert: DisputeFiled
+        expr: increase(challenges_detected{environment="sepolia"}[1m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          chain: sepolia
+          environment: sepolia
+        annotations:
+          summary: "Dispute filed detected on {{ $labels.instance }}"
+          description: "A new challenge has been detected on {{ $labels.instance }} ({{ $value }} new challenge(s)). Immediate investigation is required to determine whether the dispute is legitimate and to trigger proof generation if needed."
+
+      - alert: DisputeUnresolved
+        expr: active_disputes{environment="sepolia"} > 0
+        for: 30m
+        labels:
+          severity: critical
+          chain: sepolia
+          environment: sepolia
+        annotations:
+          summary: "Unresolved dispute on {{ $labels.instance }}"
+          description: "There are {{ $value }} active dispute(s) on {{ $labels.instance }} that have remained unresolved for more than 30 minutes. Prolonged unresolved disputes risk stake slashing. Verify that the operator is generating and submitting proofs."
+
+  # ---------------------------------------------------------------------------
+  # Sepolia Network Alerts
+  # ---------------------------------------------------------------------------
+  - name: sepolia-network
+    rules:
+      - alert: GasPriceSpike
+        expr: sepolia_gas_price_gwei > 50
+        for: 5m
+        labels:
+          severity: warning
+          chain: sepolia
+          environment: sepolia
+        annotations:
+          summary: "Sepolia gas price exceeds 50 gwei"
+          description: "The Sepolia gas price has been above 50 gwei for more than 5 minutes (current: {{ $value | printf \"%.1f\" }} gwei). This is unusually high for a testnet and may cause elevated transaction costs. Consider deferring non-urgent operations."
+
+      - alert: RPCErrors
+        expr: rate(rpc_errors_total{environment="sepolia"}[5m]) / rate(rpc_requests_total{environment="sepolia"}[5m]) > 0.01
+        for: 5m
+        labels:
+          severity: warning
+          chain: sepolia
+          environment: sepolia
+        annotations:
+          summary: "RPC error rate elevated on {{ $labels.instance }}"
+          description: "The RPC error rate on {{ $labels.instance }} exceeds 1% over the last 5 minutes (current: {{ $value | printf \"%.4f\" }}). This may indicate provider instability, rate limiting, or network issues. Consider switching to a backup RPC endpoint."

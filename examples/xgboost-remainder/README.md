@@ -1,24 +1,67 @@
 # XGBoost Remainder (GKR + Hyrax) Example
 
-## Overview
-
-Proves XGBoost decision tree inference using the Remainder proof system (GKR protocol
-with Hyrax polynomial commitments). The prover demonstrates that a given feature vector
-produces a specific classification without revealing the input features.
+Proves XGBoost decision tree inference using the Remainder proof system
+(GKR protocol with Hyrax polynomial commitments). The prover demonstrates
+that a given feature vector produces a specific classification without
+revealing the input features.
 
 ## Architecture
 
-The system builds an 88-layer DAG circuit encoding the full XGBoost inference pipeline:
+The system encodes the full XGBoost inference pipeline as an 88-layer
+DAG circuit:
 
-1. **Leaf selection** -- MLE fold selects the correct leaf per tree using binary path bits
-2. **Comparison verification** -- bit decomposition proves each tree traversal decision
-   matches `feature[i] >= threshold` comparisons
-3. **Aggregation** -- pairwise sum of selected leaves across all trees
-4. **Output** -- proves the aggregate equals the claimed prediction class
+### Phase 1a -- Leaf selection
 
-Proof verification can happen on-chain via Solidity contracts in `contracts/src/remainder/`,
-either directly (~254M gas for the full DAG) or via multi-transaction batch verification
-(15 transactions, each under 30M gas).
+Each tree's leaf values are arranged in a table indexed by path bits.
+An MLE fold (using binary path bits as selectors) picks the correct
+leaf for each tree, then a pairwise aggregation sums the selected
+leaves across all trees.
+
+### Phase 1b -- Comparison verification
+
+For every internal node in every tree, bit decomposition proves that
+each traversal decision matches the `feature[i] >= threshold` comparison.
+The diff `feature - threshold` is decomposed into K=18 bits; the sign
+bit must equal the corresponding path bit. Positions beyond the real
+tree depth are masked by an `is_real` flag.
+
+### DAG topology
+
+The circuit has 88 compute layers organized as a DAG (not a simple
+chain). Layers include fold operations, pairwise sums, comparison
+checks, and virtual-tree parallel folds for threshold/feature/is_real
+tables. The DAG topology is described by point templates, oracle
+expressions, and atom-to-commitment mappings.
+
+## Directory structure
+
+```
+xgboost-remainder/
+  Cargo.toml
+  src/
+    lib.rs                re-exports
+    circuit.rs            GKR circuit builder (Phase 1a + 1b)
+    model.rs              XGBoost/LightGBM JSON model loading
+    abi_encode.rs          ABI encoding for Solidity verifier calldata
+    cache.rs              proof caching utilities
+    server.rs             warm prover HTTP server (axum)
+    main.rs               CLI entry point
+    lightgbm.rs           LightGBM model parser
+    proof_abi.rs           proof ABI types
+    bin/                  utility binaries (fixture generators, etc.)
+  gnark-wrapper/          Go gnark Groth16 wrapper circuit
+    circuit.go            simple GKR wrapper
+    dag_circuit.go        DAG GKR wrapper (variable-width layers)
+    dag_main.go           DAG prove/verify commands
+    poseidon.go           gnark Poseidon circuit
+    gnark-wrapper         compiled binary (arm64)
+  benches/
+    prover_bench.rs       criterion benchmarks
+  tests/
+    server_integration.rs warm prover HTTP integration tests
+  sample_model.json       sample XGBoost model for testing
+  sample_input.json       sample input features
+```
 
 ## Build
 
@@ -27,46 +70,114 @@ cd examples/xgboost-remainder
 cargo build --release
 ```
 
-Requires the Remainder_CE dependency (fetched from GitHub automatically).
+Requires the `Remainder_CE` dependency (fetched from GitHub automatically
+via the git dependency in Cargo.toml).
 
 ## Run
 
-**One-shot mode** -- build circuit, prove, and output ABI-encoded proof:
+**One-shot mode** -- build circuit, prove, output ABI-encoded proof:
 
 ```bash
-cargo run --release -- --model model.json --input input.json --output proof.json
+cargo run --release -- --model sample_model.json --input sample_input.json --output proof.json
 ```
 
 **Execute-only mode** -- run inference without generating a proof:
 
 ```bash
-cargo run --release -- --model model.json --input input.json --execute-only
+cargo run --release -- --model sample_model.json --input sample_input.json --execute-only
 ```
 
 **Warm server mode** -- precompile the circuit once, serve proofs via HTTP:
 
 ```bash
-cargo run --release -- --model model.json --serve --port 3000
+cargo run --release -- --model sample_model.json --serve --port 3000
 ```
 
-Supports XGBoost (`--model-format xgboost`) and LightGBM (`--model-format lightgbm`)
-JSON model files.
+Supports XGBoost (`--model-format xgboost`) and LightGBM
+(`--model-format lightgbm`) JSON model files.
 
 ## Testing
 
 ```bash
+# Run all tests (34+ tests, ~95s in release mode)
 cargo test --release
 ```
 
-Runs 34+ tests including circuit construction, prove-and-verify round trips, JSON model
-parsing, and fixture generation for on-chain verification tests.
+Tests include:
+- Circuit construction for various tree depths
+- Prove-and-verify round trips (5 tests)
+- XGBoost JSON model parsing (4 tests)
+- Fixture generation for on-chain contract tests
+- LightGBM model parsing
 
-## Key Files
+## Generating fixtures
 
-| File | Purpose |
-|------|---------|
-| `src/main.rs` | CLI entry point (one-shot and server modes) |
-| `src/circuit.rs` | GKR circuit builder for XGBoost inference |
-| `src/model.rs` | XGBoost/LightGBM model loading and utilities |
-| `src/abi_encode.rs` | ABI encoding for Solidity verifier calldata |
-| `src/server.rs` | Warm prover HTTP server (axum) |
+The test suite generates fixtures used by the Solidity verifier tests:
+
+```bash
+# Generate the phase1a DAG fixture for contract tests
+cargo test --release gen_phase1a_fixture -- --nocapture
+# Output: contracts/test/fixtures/phase1a_dag_fixture.json (~475KB)
+```
+
+## Generating Groth16 proofs
+
+For the hybrid Groth16 verification path:
+
+```bash
+# 1. Generate the DAG Groth16 witness from a proof
+cargo run --release --bin gen_dag_groth16_witness -- \
+  --model sample_model.json --input sample_input.json
+
+# 2. Run the gnark wrapper to produce the Groth16 proof
+cat witness.json | ./gnark-wrapper/gnark-wrapper prove-dag-json --config-json
+
+# 3. The output includes the Groth16 proof and the Solidity verifier contract
+```
+
+## gnark-wrapper usage
+
+The Go gnark wrapper compiles a Groth16 circuit that wraps the GKR
+verification's Fr-arithmetic portion:
+
+```bash
+cd gnark-wrapper
+
+# Simple GKR circuit
+go run . prove --witness witness.json
+
+# DAG GKR circuit (reads witness JSON from stdin)
+cat witness.json | go run . prove-dag-json --config-json
+
+# Show circuit info
+go run . dag-info --config-json < witness.json
+```
+
+The wrapper auto-exports a Solidity verifier contract
+(`DAGRemainderGroth16Verifier.sol`) with embedded verification keys.
+
+## On-chain verification
+
+Proofs generated by this example are verified by Solidity contracts in
+`contracts/src/remainder/`:
+
+| Contract | Purpose |
+|----------|---------|
+| `RemainderVerifier.sol` | Main entry point (direct + Groth16 hybrid) |
+| `GKRDAGVerifier.sol` | DAG compute layer verification library |
+| `GKRDAGHybridVerifier.sol` | Hybrid transcript replay + EC checks |
+| `DAGBatchVerifier.sol` | Multi-tx batch verification (15 txs, each <30M gas) |
+| `HyraxVerifier.sol` | Hyrax polynomial commitment verification |
+| `SumcheckVerifier.sol` | Sumcheck protocol verification |
+| `PoseidonSponge.sol` | Poseidon hash (Fiat-Shamir transcript) |
+
+**Gas costs**:
+- Direct DAG verification: ~254M gas (exceeds block limit, needs batching)
+- Batch verification: 15 transactions, each under 30M gas
+- Groth16 hybrid: ~251M gas (EC operations dominate)
+
+## Related
+
+- [Main project README](../../README.md)
+- [Contracts](../../contracts/src/remainder/) -- Solidity verifier contracts
+- [Contract tests](../../contracts/test/) -- Solidity tests using fixtures from this crate
