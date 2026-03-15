@@ -7,6 +7,7 @@ const DEFAULT_PROVER_CONNECT_TIMEOUT_SECS: u64 = 10;
 
 /// Default request timeout for prover HTTP requests (seconds).
 /// Proving can take several minutes, so default is generous.
+#[allow(dead_code)]
 const DEFAULT_PROVER_REQUEST_TIMEOUT_SECS: u64 = 300;
 
 /// How the operator communicates with the prover.
@@ -36,6 +37,7 @@ pub struct ProofManager {
     proofs_dir: PathBuf,
     mode: ProverMode,
     max_retries: u32,
+    #[allow(dead_code)]
     retry_delay_secs: u64,
     /// Base delay in milliseconds for retry backoff.
     retry_base_delay_ms: u64,
@@ -45,6 +47,7 @@ pub struct ProofManager {
 }
 
 impl ProofManager {
+    #[allow(dead_code)]
     pub fn new(
         precompute_bin: &str,
         model_path: &str,
@@ -88,6 +91,7 @@ impl ProofManager {
     }
 
     /// Create a ProofManager with explicit retry parameters (millisecond precision).
+    #[allow(dead_code)]
     pub fn with_retry_config(
         precompute_bin: &str,
         model_path: &str,

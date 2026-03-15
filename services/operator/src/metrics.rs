@@ -277,6 +277,7 @@ async fn json_metrics_handler(State(state): State<Arc<MetricsState>>) -> Json<Me
 /// - `/metrics/json` — JSON metrics (backward compatibility)
 ///
 /// It should be spawned as a background task via `tokio::spawn`.
+#[allow(dead_code)]
 pub async fn serve_metrics(state: Arc<MetricsState>, port: u16) {
     // Versioned API routes under /api/v1/ with X-API-Version header
     let versioned = Router::new()

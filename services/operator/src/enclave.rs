@@ -50,6 +50,7 @@ struct HealthResponse {
 
 impl EnclaveClient {
     /// Create a new client using env var `ENCLAVE_TIMEOUT_SECS` or defaults.
+    #[allow(dead_code)]
     pub fn new(base_url: &str) -> Self {
         let timeout_secs = std::env::var("ENCLAVE_TIMEOUT_SECS")
             .ok()

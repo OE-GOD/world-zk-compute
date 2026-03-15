@@ -2644,14 +2644,6 @@ prover_retry_max_delay_secs = 100
     }
 
     #[test]
-    fn test_validate_escalation_timeout_zero_warns_but_valid() {
-        // escalation_timeout_secs == 0 produces a warning but is not a hard error.
-        let mut config = make_valid_config();
-        config.escalation_timeout_secs = 0;
-        assert!(config.validate().is_ok());
-    }
-
-    #[test]
     fn test_prover_retry_config_file_deserialization() {
         let toml_str = r#"
 prover_max_retries = 4

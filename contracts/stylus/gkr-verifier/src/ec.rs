@@ -191,6 +191,22 @@ fn call_precompile(addr: u64, input: &[u8], output_len: usize) -> Vec<u8> {
         bytes
     }));
 
+    // SAFETY: This is a static call (read-only) to a well-known EVM precompile
+    // address (0x02 = SHA-256, 0x06 = ecAdd, 0x07 = ecMul). The safety
+    // invariants are:
+    //   1. The `address` is one of the three BN254/SHA-256 precompiles hard-coded
+    //      into the EVM specification. These always exist and have deterministic
+    //      behavior.
+    //   2. The `input` buffer is a properly-sized, correctly-encoded byte array
+    //      assembled by the calling function (ec_add, ec_mul, or sha256) from
+    //      validated G1 affine coordinates and/or scalars. The precompile will
+    //      return an error (caught below) if the encoding is malformed.
+    //   3. `RawCall::new_static()` ensures no state mutation, so calling this
+    //      cannot corrupt contract storage or send value.
+    //   4. `limit_return_data(0, output_len)` bounds the output read to the
+    //      expected precompile return size, preventing buffer over-reads.
+    // The unsafe block is required because `RawCall::call` performs a raw EVM
+    // STATICCALL, which the Rust type system cannot verify will succeed.
     let result = unsafe {
         RawCall::new_static()
             .limit_return_data(0, output_len)

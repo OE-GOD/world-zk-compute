@@ -51,7 +51,7 @@ const MAX_QUERY_STRING_LENGTH: usize = 4096;
 const VALID_STATUSES: &[&str] = &["submitted", "challenged", "finalized", "resolved"];
 
 /// Valid values for the `sort_by` query parameter.
-const VALID_SORT_BY: &[&str] = &["block_number", "status", "submitter"];
+const VALID_SORT_BY: &[&str] = &["block_number", "submitted_at", "status"];
 
 /// Valid values for the `sort_order` query parameter.
 const VALID_SORT_ORDER: &[&str] = &["asc", "desc"];

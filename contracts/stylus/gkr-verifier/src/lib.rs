@@ -28,11 +28,28 @@ extern crate alloc;
 /// Assertion macro that strips error message strings from WASM builds.
 /// On native, behaves like `assert!` with the message; on WASM, uses
 /// `unreachable()` intrinsic to revert without embedding string data.
+///
+/// # Safety of `core::arch::wasm32::unreachable()`
+///
+/// The `unreachable` intrinsic is marked `unsafe` because it triggers the WASM
+/// `unreachable` trap instruction, which unconditionally aborts execution. It is
+/// safe to use here because:
+///   1. It is only reached when `$cond` is false, i.e., a verification invariant
+///      has been violated and the program must abort.
+///   2. In the Stylus WASM runtime, trapping is the correct way to revert a
+///      transaction -- it is equivalent to a Solidity `revert()`.
+///   3. No memory or state is accessed after the trap; the instruction has
+///      return type `!` (never), so no subsequent code can observe invalid state.
+///   4. This is preferred over `panic!()` because it avoids embedding format
+///      strings in the WASM binary, keeping the binary under Stylus's 24KB limit.
 #[cfg(target_arch = "wasm32")]
 macro_rules! verify {
     ($cond:expr $(, $msg:expr)* $(,)?) => {
         if !$cond {
-            core::arch::wasm32::unreachable();
+            // SAFETY: We are aborting execution because a verification check
+            // failed. The WASM `unreachable` trap is the correct abort mechanism
+            // in the Stylus runtime. No code executes after this point.
+            unsafe { core::arch::wasm32::unreachable() }
         }
     };
 }
