@@ -20,6 +20,29 @@ contract MockCallback is IExecutionCallback {
     }
 }
 
+/// @notice Mock callback that always reverts with a reason string
+contract RevertingCallback is IExecutionCallback {
+    function onExecutionComplete(uint256, bytes32, bytes calldata) external pure {
+        revert("callback failed intentionally");
+    }
+}
+
+/// @notice Mock callback that reverts with a custom error
+contract CustomErrorCallback is IExecutionCallback {
+    error CustomCallbackError(uint256 code);
+
+    function onExecutionComplete(uint256, bytes32, bytes calldata) external pure {
+        revert CustomCallbackError(42);
+    }
+}
+
+/// @notice Mock callback that reverts with no data (empty revert)
+contract EmptyRevertCallback is IExecutionCallback {
+    function onExecutionComplete(uint256, bytes32, bytes calldata) external pure {
+        revert();
+    }
+}
+
 contract ExecutionEngineTest is Test {
     ExecutionEngine public engine;
     ProgramRegistry public registry;
@@ -33,6 +56,11 @@ contract ExecutionEngineTest is Test {
     bytes32 public imageId = bytes32(uint256(1));
     bytes32 public inputDigest = keccak256("test inputs");
     string public inputUrl = "ipfs://QmTest";
+
+    // Re-declare events for vm.expectEmit usage in tests
+    event Paused(address account);
+    event Unpaused(address account);
+    event CallbackFailed(uint256 indexed requestId, address indexed callbackContract, bytes reason);
 
     function setUp() public {
         vm.startPrank(deployer);
@@ -58,7 +86,8 @@ contract ExecutionEngineTest is Test {
 
     function testRequestExecution() public {
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         assertEq(requestId, 1);
 
@@ -86,7 +115,8 @@ contract ExecutionEngineTest is Test {
 
     function testCancelExecution() public {
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         uint256 balanceBefore = requester.balance;
 
@@ -106,7 +136,8 @@ contract ExecutionEngineTest is Test {
 
     function testClaimExecution() public {
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         vm.prank(prover);
         engine.claimExecution(requestId);
@@ -118,7 +149,8 @@ contract ExecutionEngineTest is Test {
 
     function testClaimExecutionExpiredRequest() public {
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         // Fast forward past expiration
         vm.warp(block.timestamp + 3601);
@@ -130,7 +162,8 @@ contract ExecutionEngineTest is Test {
 
     function testReclaimAfterDeadline() public {
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         // First prover claims
         vm.prank(prover);
@@ -154,7 +187,8 @@ contract ExecutionEngineTest is Test {
 
     function testSubmitProof() public {
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         vm.prank(prover);
         engine.claimExecution(requestId);
@@ -181,7 +215,8 @@ contract ExecutionEngineTest is Test {
 
     function testSubmitProofNotClaimant() public {
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         vm.prank(prover);
         engine.claimExecution(requestId);
@@ -194,7 +229,8 @@ contract ExecutionEngineTest is Test {
 
     function testSubmitProofAfterDeadline() public {
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         vm.prank(prover);
         engine.claimExecution(requestId);
@@ -213,7 +249,8 @@ contract ExecutionEngineTest is Test {
 
     function testTipDecay() public {
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         // At t=0, tip should be max
         uint256 tip0 = engine.getCurrentTip(requestId);
@@ -236,7 +273,8 @@ contract ExecutionEngineTest is Test {
 
     function testProverStats() public {
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         vm.prank(prover);
         engine.claimExecution(requestId);
@@ -312,7 +350,8 @@ contract ExecutionEngineTest is Test {
         vm.warp(2000);
 
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         vm.warp(2100);
         vm.prank(prover);
@@ -369,7 +408,8 @@ contract ExecutionEngineTest is Test {
         vm.warp(uint256(nearMax));
 
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         ExecutionEngine.ExecutionRequest memory req = engine.getRequest(requestId);
         assertEq(req.createdAt, nearMax);
@@ -658,7 +698,8 @@ contract ExecutionEngineTest is Test {
     function testPausedClaimExecutionReverts() public {
         // Create request before pausing
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         vm.prank(deployer);
         engine.pause();
@@ -671,7 +712,8 @@ contract ExecutionEngineTest is Test {
     function testPausedSubmitProofReverts() public {
         // Create request and claim before pausing
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         vm.prank(prover);
         engine.claimExecution(requestId);
@@ -687,7 +729,8 @@ contract ExecutionEngineTest is Test {
     function testCancelExecutionWorksWhilePaused() public {
         // Create request before pausing
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         vm.prank(deployer);
         engine.pause();
@@ -713,7 +756,8 @@ contract ExecutionEngineTest is Test {
 
         // Request should work again after unpause
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
         assertEq(requestId, 1);
     }
 
@@ -854,7 +898,8 @@ contract ExecutionEngineTest is Test {
     function testFullPauseCancelUnpauseFlow() public {
         // 1. Create a request
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         // 2. Pause the engine
         vm.prank(deployer);
@@ -888,6 +933,453 @@ contract ExecutionEngineTest is Test {
         engine.submitProof(newRequestId, hex"deadbeef", hex"cafebabe");
 
         ExecutionEngine.ExecutionRequest memory req = engine.getRequest(newRequestId);
+        assertEq(uint256(req.status), uint256(ExecutionEngine.RequestStatus.Completed));
+    }
+
+    // ========================================================================
+    // T458: PAUSABLE MODIFIER COVERAGE TESTS
+    // ========================================================================
+
+    function testPausedViewFunctionsStillWork() public {
+        // Create a request before pausing
+        vm.prank(requester);
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+
+        vm.prank(deployer);
+        engine.pause();
+
+        // All view functions should still work when paused
+        uint256 tip = engine.getCurrentTip(requestId);
+        assertGt(tip, 0, "getCurrentTip should work when paused");
+
+        ExecutionEngine.ExecutionRequest memory req = engine.getRequest(requestId);
+        assertEq(req.id, requestId, "getRequest should work when paused");
+
+        uint256[] memory pending = engine.getPendingRequests(0, 10);
+        assertEq(pending.length, 1, "getPendingRequests should work when paused");
+
+        (uint256 completed, uint256 earnings) = engine.getProverStats(prover);
+        assertEq(completed, 0, "getProverStats should work when paused");
+        assertEq(earnings, 0);
+
+        // Constants should be readable
+        assertEq(engine.MIN_TIP(), 0.0001 ether);
+        assertEq(engine.DEFAULT_EXPIRATION(), 1 hours);
+        assertEq(engine.CLAIM_WINDOW(), 10 minutes);
+
+        // State getters should work
+        assertEq(engine.nextRequestId(), 2);
+        assertEq(engine.protocolFeeBps(), 250);
+        assertEq(engine.feeRecipient(), feeRecipient);
+        assertTrue(engine.paused());
+    }
+
+    /// @notice T458: verify whenNotPaused modifier on requestExecution (both overloads)
+    function test_requestExecution_reverts_when_paused() public {
+        vm.prank(deployer);
+        engine.pause();
+
+        // 5-param overload
+        vm.prank(requester);
+        vm.expectRevert(Pausable.EnforcedPause.selector);
+        engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+
+        // 6-param overload with inputType
+        vm.prank(requester);
+        vm.expectRevert(Pausable.EnforcedPause.selector);
+        engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600, 1);
+    }
+
+    /// @notice T458: vm.expectEmit for Paused(address) event
+    function test_pause_emits_event() public {
+        // Paused event: no indexed topics beyond the signature, data = (address account)
+        vm.expectEmit(false, false, false, true, address(engine));
+        emit Paused(deployer);
+
+        vm.prank(deployer);
+        engine.pause();
+    }
+
+    /// @notice T458: vm.expectEmit for Unpaused(address) event
+    function test_unpause_emits_event() public {
+        vm.prank(deployer);
+        engine.pause();
+
+        vm.expectEmit(false, false, false, true, address(engine));
+        emit Unpaused(deployer);
+
+        vm.prank(deployer);
+        engine.unpause();
+    }
+
+    /// @notice T458: pausing when already paused should revert with EnforcedPause
+    function test_double_pause_reverts() public {
+        vm.prank(deployer);
+        engine.pause();
+        assertTrue(engine.paused(), "should be paused after first call");
+
+        vm.prank(deployer);
+        vm.expectRevert(Pausable.EnforcedPause.selector);
+        engine.pause();
+    }
+
+    /// @notice T458: non-owner address cannot call pause()
+    function test_non_owner_cannot_pause() public {
+        address attacker = address(0xBAD);
+
+        vm.prank(attacker);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, attacker));
+        engine.pause();
+
+        // Also verify requester (a funded but non-owner address) cannot pause
+        vm.prank(requester);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, requester));
+        engine.pause();
+    }
+
+    /// @notice T458: non-owner address cannot call unpause()
+    function test_non_owner_cannot_unpause() public {
+        vm.prank(deployer);
+        engine.pause();
+
+        address attacker = address(0xBAD);
+
+        vm.prank(attacker);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, attacker));
+        engine.unpause();
+
+        // Also verify requester cannot unpause
+        vm.prank(requester);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, requester));
+        engine.unpause();
+    }
+
+    function testPausedAdminFunctionsStillWork() public {
+        vm.prank(deployer);
+        engine.pause();
+
+        // Admin functions should work even when paused
+        vm.startPrank(deployer);
+        engine.setProtocolFee(500);
+        assertEq(engine.protocolFeeBps(), 500, "setProtocolFee should work when paused");
+
+        engine.setFeeRecipient(address(0xFEE));
+        assertEq(engine.feeRecipient(), address(0xFEE), "setFeeRecipient should work when paused");
+
+        engine.setReputation(address(0x5E70));
+        assertEq(address(engine.reputation()), address(0x5E70), "setReputation should work when paused");
+
+        // Can also unpause
+        engine.unpause();
+        assertFalse(engine.paused(), "unpause should work");
+        vm.stopPrank();
+    }
+
+    function testCannotPauseWhenAlreadyPaused() public {
+        vm.prank(deployer);
+        engine.pause();
+
+        vm.prank(deployer);
+        vm.expectRevert(Pausable.EnforcedPause.selector);
+        engine.pause();
+    }
+
+    function testCannotUnpauseWhenNotPaused() public {
+        vm.prank(deployer);
+        vm.expectRevert(Pausable.ExpectedPause.selector);
+        engine.unpause();
+    }
+
+    function testPausedSetProtocolFeeRevertsForNonOwner() public {
+        vm.prank(deployer);
+        engine.pause();
+
+        vm.prank(requester);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, requester));
+        engine.setProtocolFee(500);
+    }
+
+    // ========================================================================
+    // T462: CALLBACK FAILURE EVENT EMISSION TESTS
+    // ========================================================================
+
+    function testCallbackFailureEmitsEventWithReason() public {
+        RevertingCallback revertingCallback = new RevertingCallback();
+
+        vm.prank(requester);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(
+            imageId, inputDigest, inputUrl, address(revertingCallback), 3600
+        );
+
+        vm.prank(prover);
+        engine.claimExecution(requestId);
+
+        vm.recordLogs();
+        vm.prank(prover);
+        engine.submitProof(requestId, hex"deadbeef", hex"cafebabe");
+
+        // Proof should succeed even though callback failed
+        ExecutionEngine.ExecutionRequest memory req = engine.getRequest(requestId);
+        assertEq(uint256(req.status), uint256(ExecutionEngine.RequestStatus.Completed));
+
+        // Check CallbackFailed event was emitted with reason bytes
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bool foundCallback = false;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics[0] == keccak256("CallbackFailed(uint256,address,bytes)")) {
+                assertEq(uint256(logs[i].topics[1]), requestId, "requestId mismatch");
+                assertEq(
+                    address(uint160(uint256(logs[i].topics[2]))),
+                    address(revertingCallback),
+                    "callback address mismatch"
+                );
+                // Decode reason from data
+                bytes memory reason = abi.decode(logs[i].data, (bytes));
+                assertTrue(reason.length > 0, "reason should not be empty for string revert");
+                foundCallback = true;
+                break;
+            }
+        }
+        assertTrue(foundCallback, "CallbackFailed event not emitted");
+    }
+
+    function testCallbackFailureWithCustomError() public {
+        CustomErrorCallback customCallback = new CustomErrorCallback();
+
+        vm.prank(requester);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(
+            imageId, inputDigest, inputUrl, address(customCallback), 3600
+        );
+
+        vm.prank(prover);
+        engine.claimExecution(requestId);
+
+        vm.recordLogs();
+        vm.prank(prover);
+        engine.submitProof(requestId, hex"deadbeef", hex"cafebabe");
+
+        // Should complete successfully
+        ExecutionEngine.ExecutionRequest memory req = engine.getRequest(requestId);
+        assertEq(uint256(req.status), uint256(ExecutionEngine.RequestStatus.Completed));
+
+        // Check event
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bool found = false;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics[0] == keccak256("CallbackFailed(uint256,address,bytes)")) {
+                bytes memory reason = abi.decode(logs[i].data, (bytes));
+                assertTrue(reason.length > 0, "reason should contain custom error data");
+                found = true;
+                break;
+            }
+        }
+        assertTrue(found, "CallbackFailed event not emitted for custom error");
+    }
+
+    function testCallbackFailureWithEmptyRevert() public {
+        EmptyRevertCallback emptyCallback = new EmptyRevertCallback();
+
+        vm.prank(requester);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(
+            imageId, inputDigest, inputUrl, address(emptyCallback), 3600
+        );
+
+        vm.prank(prover);
+        engine.claimExecution(requestId);
+
+        vm.recordLogs();
+        vm.prank(prover);
+        engine.submitProof(requestId, hex"deadbeef", hex"cafebabe");
+
+        // Should complete successfully despite callback failure
+        ExecutionEngine.ExecutionRequest memory req = engine.getRequest(requestId);
+        assertEq(uint256(req.status), uint256(ExecutionEngine.RequestStatus.Completed));
+
+        // Check event emitted with empty reason
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bool found = false;
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics[0] == keccak256("CallbackFailed(uint256,address,bytes)")) {
+                bytes memory reason = abi.decode(logs[i].data, (bytes));
+                assertEq(reason.length, 0, "reason should be empty for bare revert");
+                found = true;
+                break;
+            }
+        }
+        assertTrue(found, "CallbackFailed event not emitted for empty revert");
+    }
+
+    function testCallbackSuccessDoesNotEmitCallbackFailed() public {
+        MockCallback successCallback = new MockCallback();
+
+        vm.prank(requester);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(
+            imageId, inputDigest, inputUrl, address(successCallback), 3600
+        );
+
+        vm.prank(prover);
+        engine.claimExecution(requestId);
+
+        vm.recordLogs();
+        vm.prank(prover);
+        engine.submitProof(requestId, hex"deadbeef", hex"cafebabe");
+
+        // Callback should have been called successfully
+        assertEq(successCallback.lastRequestId(), requestId);
+
+        // No CallbackFailed event should be emitted
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        for (uint256 i = 0; i < logs.length; i++) {
+            assertTrue(
+                logs[i].topics[0] != keccak256("CallbackFailed(uint256,address,bytes)"),
+                "CallbackFailed should not be emitted on success"
+            );
+        }
+    }
+
+    function testCallbackFailureDoesNotRevertTransaction() public {
+        RevertingCallback revertingCallback = new RevertingCallback();
+
+        vm.prank(requester);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(
+            imageId, inputDigest, inputUrl, address(revertingCallback), 3600
+        );
+
+        vm.prank(prover);
+        engine.claimExecution(requestId);
+
+        uint256 proverBalanceBefore = prover.balance;
+
+        vm.prank(prover);
+        engine.submitProof(requestId, hex"deadbeef", hex"cafebabe");
+
+        // Prover should still get paid
+        uint256 proverBalanceAfter = prover.balance;
+        assertGt(proverBalanceAfter, proverBalanceBefore, "prover should be paid despite callback failure");
+
+        // Request should be completed
+        ExecutionEngine.ExecutionRequest memory req = engine.getRequest(requestId);
+        assertEq(uint256(req.status), uint256(ExecutionEngine.RequestStatus.Completed));
+    }
+
+    function testNoCallbackContractNoCallbackFailedEvent() public {
+        // Request with no callback contract (address(0))
+        vm.prank(requester);
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+
+        vm.prank(prover);
+        engine.claimExecution(requestId);
+
+        vm.recordLogs();
+        vm.prank(prover);
+        engine.submitProof(requestId, hex"deadbeef", hex"cafebabe");
+
+        // No CallbackFailed event
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        for (uint256 i = 0; i < logs.length; i++) {
+            assertTrue(
+                logs[i].topics[0] != keccak256("CallbackFailed(uint256,address,bytes)"),
+                "CallbackFailed should not be emitted when no callback"
+            );
+        }
+    }
+
+    /// @notice T462: vm.expectEmit test for CallbackFailed event with string revert reason
+    function test_callbackFailed_emits_event_with_reason() public {
+        RevertingCallback revertingCallback = new RevertingCallback();
+
+        vm.prank(requester);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(
+            imageId, inputDigest, inputUrl, address(revertingCallback), 3600
+        );
+
+        vm.prank(prover);
+        engine.claimExecution(requestId);
+
+        // Expect CallbackFailed event: check indexed requestId and callbackContract, skip non-indexed data
+        vm.expectEmit(true, true, false, false, address(engine));
+        emit CallbackFailed(requestId, address(revertingCallback), "");
+
+        vm.prank(prover);
+        engine.submitProof(requestId, hex"deadbeef", hex"cafebabe");
+
+        // Verify proof still succeeds despite callback failure
+        ExecutionEngine.ExecutionRequest memory req = engine.getRequest(requestId);
+        assertEq(uint256(req.status), uint256(ExecutionEngine.RequestStatus.Completed));
+    }
+
+    /// @notice T462: vm.expectEmit test for CallbackFailed event with custom error
+    function test_callbackFailed_emits_event_with_custom_error() public {
+        CustomErrorCallback customCallback = new CustomErrorCallback();
+
+        vm.prank(requester);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(
+            imageId, inputDigest, inputUrl, address(customCallback), 3600
+        );
+
+        vm.prank(prover);
+        engine.claimExecution(requestId);
+
+        // Expect CallbackFailed event with matching indexed fields
+        vm.expectEmit(true, true, false, false, address(engine));
+        emit CallbackFailed(requestId, address(customCallback), "");
+
+        vm.prank(prover);
+        engine.submitProof(requestId, hex"deadbeef", hex"cafebabe");
+
+        ExecutionEngine.ExecutionRequest memory req = engine.getRequest(requestId);
+        assertEq(uint256(req.status), uint256(ExecutionEngine.RequestStatus.Completed));
+    }
+
+    /// @notice T462: vm.expectEmit test for CallbackFailed event with empty revert
+    function test_callbackFailed_emits_event_with_empty_revert() public {
+        EmptyRevertCallback emptyCallback = new EmptyRevertCallback();
+
+        vm.prank(requester);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(
+            imageId, inputDigest, inputUrl, address(emptyCallback), 3600
+        );
+
+        vm.prank(prover);
+        engine.claimExecution(requestId);
+
+        // Expect CallbackFailed with empty reason bytes
+        vm.expectEmit(true, true, false, true, address(engine));
+        emit CallbackFailed(requestId, address(emptyCallback), "");
+
+        vm.prank(prover);
+        engine.submitProof(requestId, hex"deadbeef", hex"cafebabe");
+
+        ExecutionEngine.ExecutionRequest memory req = engine.getRequest(requestId);
+        assertEq(uint256(req.status), uint256(ExecutionEngine.RequestStatus.Completed));
+    }
+
+    /// @notice T462: address(0) callback skips the call entirely, no CallbackFailed event
+    function test_zero_address_callback_skips_call() public {
+        vm.prank(requester);
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+
+        vm.prank(prover);
+        engine.claimExecution(requestId);
+
+        vm.recordLogs();
+        vm.prank(prover);
+        engine.submitProof(requestId, hex"deadbeef", hex"cafebabe");
+
+        // Verify no CallbackFailed event was emitted
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        for (uint256 i = 0; i < logs.length; i++) {
+            assertTrue(
+                logs[i].topics[0] != keccak256("CallbackFailed(uint256,address,bytes)"),
+                "CallbackFailed must not be emitted for address(0) callback"
+            );
+        }
+
+        // Proof should still complete
+        ExecutionEngine.ExecutionRequest memory req = engine.getRequest(requestId);
         assertEq(uint256(req.status), uint256(ExecutionEngine.RequestStatus.Completed));
     }
 }

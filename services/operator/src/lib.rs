@@ -2,6 +2,7 @@
 pub mod alerting;
 pub mod audit;
 pub mod circuit_breaker;
+pub mod config;
 pub mod deadline_monitor;
 pub mod middleware;
 pub mod notifications;

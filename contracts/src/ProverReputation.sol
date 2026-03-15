@@ -436,8 +436,11 @@ contract ProverReputation {
     // ========================================================================
 
     /// @notice Get score with time decay applied
-    /// @dev Uses capped iteration (max 120 periods = ~10 years) to prevent gas DoS.
-    /// Beyond 120 periods of inactivity, score is effectively 0 (0.99^120 ≈ 0.30).
+    /// @dev Reverts if block.timestamp < lastJobAt (indicates clock manipulation or
+    /// corrupt state). Clamps the elapsed time to MAX_DECAY_PERIOD (365 days = 12
+    /// periods) so that long-absent provers retain ~88.6% of their score rather than
+    /// decaying towards zero. A secondary cap at 120 iterations guards against gas DoS
+    /// if MAX_DECAY_PERIOD is ever raised.
     function _getScoreWithDecay(address prover) internal view returns (uint256) {
         Reputation storage rep = reputations[prover];
 
@@ -445,20 +448,26 @@ contract ProverReputation {
             return uint256(rep.score);
         }
 
-        // Safety: if lastJobAt is somehow in the future, return raw score (no decay)
-        if (block.timestamp < uint256(rep.lastJobAt)) {
-            return uint256(rep.score);
-        }
+        // Defensive check: block.timestamp must not be before lastJobAt.
+        // This guards against corrupted state or unexpected clock behaviour.
+        if (block.timestamp < uint256(rep.lastJobAt)) revert InvalidTimestamp();
 
         uint256 timeSinceLastJob = block.timestamp - uint256(rep.lastJobAt);
+
+        // Clamp elapsed time to MAX_DECAY_PERIOD so that extremely long absences
+        // do not decay the score beyond the 365-day ceiling (12 periods, ~88.6% retained).
+        if (timeSinceLastJob > MAX_DECAY_PERIOD) {
+            timeSinceLastJob = MAX_DECAY_PERIOD;
+        }
+
         uint256 decayPeriods = timeSinceLastJob / DECAY_PERIOD;
 
         if (decayPeriods == 0) {
             return uint256(rep.score);
         }
 
-        // Cap iterations to prevent gas DoS for long-inactive provers
-        // 120 periods ≈ 10 years, score * 0.99^120 ≈ 30% — anything beyond is negligible
+        // Secondary cap: prevent gas DoS if MAX_DECAY_PERIOD is ever raised.
+        // 120 periods ≈ 10 years, score * 0.99^120 ≈ 30%.
         uint256 maxPeriods = 120;
         if (decayPeriods > maxPeriods) {
             decayPeriods = maxPeriods;

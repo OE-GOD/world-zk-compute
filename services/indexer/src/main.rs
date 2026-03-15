@@ -152,6 +152,14 @@ pub trait Storage: Send + Sync {
         true
     }
 
+    /// Run a lightweight connectivity check against the database.
+    ///
+    /// Returns `Ok(())` if the database is reachable and can execute a
+    /// trivial query, or an error describing the failure.
+    fn check_connectivity(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     /// Attempt to reset the lock-poisoned state so the service can recover.
     /// Returns `true` if the reset was performed, `false` if not supported.
     fn reset_lock_state(&self) -> bool {
@@ -313,11 +321,23 @@ impl Storage for SqliteStorage {
             sql.push_str(&format!(" AND model_hash = ?{}", param_values.len()));
         }
 
+        // Cursor-based pagination: skip rows up to and including the cursor ID.
+        // Works with the default sort order (block_number DESC, id ASC).
+        if let Some(ref after_id) = filter.after_id {
+            param_values.push(Box::new(after_id.clone()));
+            let p = param_values.len();
+            sql.push_str(&format!(
+                " AND (block_number < (SELECT block_number FROM results WHERE id = ?{p}) \
+                 OR (block_number = (SELECT block_number FROM results WHERE id = ?{p}) \
+                 AND id > ?{p}))"
+            ));
+        }
+
         // Sorting: whitelist allowed columns to prevent SQL injection
         let order_col = match filter.sort_by.as_deref() {
             Some("block_number") => "block_number",
-            Some("submitted_at") => "timestamp",
             Some("status") => "status",
+            Some("submitter") => "submitter",
             _ => "block_number",
         };
         let order_dir = match filter.sort_order.as_deref() {
@@ -331,11 +351,13 @@ impl Storage for SqliteStorage {
         param_values.push(Box::new(limit as i64));
         sql.push_str(&format!(" LIMIT ?{}", param_values.len()));
 
-        // Offset-based pagination
-        if let Some(offset) = filter.offset {
-            if offset > 0 {
-                param_values.push(Box::new(offset as i64));
-                sql.push_str(&format!(" OFFSET ?{}", param_values.len()));
+        // Offset-based pagination (mutually exclusive with after_id)
+        if filter.after_id.is_none() {
+            if let Some(offset) = filter.offset {
+                if offset > 0 {
+                    param_values.push(Box::new(offset as i64));
+                    sql.push_str(&format!(" OFFSET ?{}", param_values.len()));
+                }
             }
         }
 
@@ -493,6 +515,12 @@ impl Storage for SqliteStorage {
         !self.lock_poisoned.load(Ordering::SeqCst)
     }
 
+    fn check_connectivity(&self) -> anyhow::Result<()> {
+        let conn = self.lock()?;
+        let _: i64 = conn.query_row("SELECT 1", [], |r| r.get(0))?;
+        Ok(())
+    }
+
     fn reset_lock_state(&self) -> bool {
         self.lock_poisoned.store(false, Ordering::SeqCst);
         tracing::info!("Lock-poisoned flag has been reset via admin endpoint");
@@ -628,6 +656,9 @@ pub struct ResultFilter {
     pub limit: Option<u32>,
     /// Numeric offset for pagination.
     pub offset: Option<u32>,
+    /// Cursor-based pagination: return results after this ID.
+    /// Mutually exclusive with `offset`.
+    pub after_id: Option<String>,
     /// Column to sort by. Allowed: `block_number`, `status`, `submitter`.
     pub sort_by: Option<String>,
     /// Sort direction. Allowed: `asc`, `desc` (default `desc`).
@@ -641,6 +672,7 @@ pub struct PaginatedResponse<T> {
     pub total: u64,
     pub limit: u32,
     pub offset: u32,
+    pub has_more: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -656,6 +688,16 @@ pub struct HealthResponse {
     pub status: String,
     pub last_indexed_block: u64,
     pub total_results: u64,
+}
+
+/// Response body for the `/ready` readiness probe.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReadinessResponse {
+    pub ready: bool,
+    pub last_indexed_block: u64,
+    /// Human-readable reason when `ready` is `false`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -699,19 +741,21 @@ async fn shutdown_signal() {
         else {
             tracing::warn!("failed to install SIGTERM handler, using ctrl-c only");
             ctrl_c.await.ok();
+            info!("shutting down gracefully");
             return;
         };
         tokio::select! {
-            _ = ctrl_c => { info!("received SIGINT, shutting down"); }
-            _ = sigterm.recv() => { info!("received SIGTERM, shutting down"); }
+            _ = ctrl_c => { info!("received SIGINT"); }
+            _ = sigterm.recv() => { info!("received SIGTERM"); }
         }
     }
 
     #[cfg(not(unix))]
     {
         ctrl_c.await.ok();
-        info!("received SIGINT, shutting down");
     }
+
+    info!("shutting down gracefully");
 }
 
 // ---------------------------------------------------------------------------
@@ -735,6 +779,8 @@ async fn main() -> anyhow::Result<()> {
         }
         std::process::exit(1);
     }
+
+    let start_time = std::time::Instant::now();
 
     info!("tee-indexer starting");
     info!("  rpc_url:          {}", config.rpc_url);

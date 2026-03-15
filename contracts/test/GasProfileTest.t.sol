@@ -190,9 +190,9 @@ contract GasProfileTest is Test {
         uint256 gasUsed = gasBefore - gasleft();
 
         // Verify
-        (bool registered, bool active,,) = teeVerifier.enclaves(newEnclaveKey);
-        assertTrue(registered);
-        assertTrue(active);
+        ITEEMLVerifier.EnclaveInfo memory info = teeVerifier.enclaves(newEnclaveKey);
+        assertTrue(info.registered);
+        assertTrue(info.active);
 
         emit log_named_uint("gas_registerEnclave", gasUsed);
     }

@@ -144,11 +144,16 @@ export type {
   OnChainProverStats,
 } from './execution-engine';
 
-export { checkHealth } from './health';
+export { checkHealth, checkReady } from './health';
 export type {
   IndexerHealthResponse,
+  IndexerReadyResponse,
   CheckHealthOptions,
+  CheckReadyOptions,
 } from './health';
+
+export { ProverRegistryClient } from './prover-registry';
+export type { OnChainProverInfo } from './prover-registry';
 
 export { SEPOLIA_NETWORK, ANVIL_NETWORK, NETWORKS } from './networks';
 export type { NetworkConfig } from './networks';

@@ -226,6 +226,7 @@ impl TEEEventWatcher {
     /// Returns a tuple of `(events, next_block)` where `next_block` is the block
     /// number to use for the next call (latest + 1). If `from_block` is beyond the
     /// latest block, returns an empty vec and `from_block` unchanged.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(from_block)))]
     pub async fn poll_events(&self, from_block: u64) -> anyhow::Result<(Vec<TEEEvent>, u64)> {
         let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
 

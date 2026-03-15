@@ -3821,6 +3821,141 @@ contract GKRDAGVerifierTest is Test {
         verifier.registerDAGCircuit(circuitHash, descData, "xgboost-phase1a-dup", gensHash);
     }
 
+    /// @notice Test registration reverts when numComputeLayers == 0
+    function test_register_dag_circuit_no_compute_layers_reverts() public {
+        (, bytes memory gensHex,, , GKRDAGVerifier.DAGCircuitDescription memory desc) = _loadFixture();
+
+        // Override numComputeLayers to 0
+        desc.numComputeLayers = 0;
+        desc.layerTypes = new uint8[](0);
+        desc.numSumcheckRounds = new uint256[](0);
+        desc.atomOffsets = new uint256[](1);
+        desc.atomOffsets[0] = 0;
+        desc.oracleProductOffsets = new uint256[](1);
+        desc.oracleProductOffsets[0] = 0;
+
+        bytes32 hash = bytes32(uint256(0xdead01));
+        bytes32 gensHash = keccak256(gensHex);
+
+        vm.expectRevert("no compute layers");
+        verifier.registerDAGCircuit(hash, abi.encode(desc), "bad-circuit", gensHash);
+    }
+
+    /// @notice Test registration reverts when numInputLayers == 0
+    function test_register_dag_circuit_no_input_layers_reverts() public {
+        (, bytes memory gensHex,,, GKRDAGVerifier.DAGCircuitDescription memory desc) = _loadFixture();
+
+        // Override numInputLayers to 0
+        desc.numInputLayers = 0;
+        desc.inputIsCommitted = new bool[](0);
+
+        bytes32 hash = bytes32(uint256(0xdead02));
+        bytes32 gensHash = keccak256(gensHex);
+
+        vm.expectRevert("no input layers");
+        verifier.registerDAGCircuit(hash, abi.encode(desc), "bad-circuit", gensHash);
+    }
+
+    /// @notice Test registration reverts when numComputeLayers > 256 (gas DOS protection)
+    function test_register_dag_circuit_too_many_compute_layers_reverts() public {
+        (, bytes memory gensHex,,, GKRDAGVerifier.DAGCircuitDescription memory desc) = _loadFixture();
+
+        // Override numComputeLayers to 257
+        desc.numComputeLayers = 257;
+        // Resize layerTypes to match (so the "too many compute layers" check fires first)
+        desc.layerTypes = new uint8[](257);
+        desc.numSumcheckRounds = new uint256[](257);
+        desc.atomOffsets = new uint256[](258);
+        desc.oracleProductOffsets = new uint256[](258);
+
+        bytes32 hash = bytes32(uint256(0xdead03));
+        bytes32 gensHash = keccak256(gensHex);
+
+        vm.expectRevert("too many compute layers");
+        verifier.registerDAGCircuit(hash, abi.encode(desc), "bad-circuit", gensHash);
+    }
+
+    /// @notice Test registration reverts when numInputLayers > 64
+    function test_register_dag_circuit_too_many_input_layers_reverts() public {
+        (, bytes memory gensHex,,, GKRDAGVerifier.DAGCircuitDescription memory desc) = _loadFixture();
+
+        desc.numInputLayers = 65;
+        desc.inputIsCommitted = new bool[](65);
+
+        bytes32 hash = bytes32(uint256(0xdead04));
+        bytes32 gensHash = keccak256(gensHex);
+
+        vm.expectRevert("too many input layers");
+        verifier.registerDAGCircuit(hash, abi.encode(desc), "bad-circuit", gensHash);
+    }
+
+    /// @notice Test registration reverts on numSumcheckRounds length mismatch
+    function test_register_dag_circuit_sumcheck_rounds_mismatch_reverts() public {
+        (, bytes memory gensHex,,, GKRDAGVerifier.DAGCircuitDescription memory desc) = _loadFixture();
+
+        // Make numSumcheckRounds too short
+        desc.numSumcheckRounds = new uint256[](desc.numComputeLayers - 1);
+
+        bytes32 hash = bytes32(uint256(0xdead05));
+        bytes32 gensHash = keccak256(gensHex);
+
+        vm.expectRevert("numSumcheckRounds length mismatch");
+        verifier.registerDAGCircuit(hash, abi.encode(desc), "bad-circuit", gensHash);
+    }
+
+    /// @notice Test registration reverts on inputIsCommitted length mismatch
+    function test_register_dag_circuit_input_committed_mismatch_reverts() public {
+        (, bytes memory gensHex,,, GKRDAGVerifier.DAGCircuitDescription memory desc) = _loadFixture();
+
+        // Make inputIsCommitted wrong length
+        desc.inputIsCommitted = new bool[](desc.numInputLayers + 1);
+
+        bytes32 hash = bytes32(uint256(0xdead06));
+        bytes32 gensHash = keccak256(gensHex);
+
+        vm.expectRevert("inputIsCommitted length mismatch");
+        verifier.registerDAGCircuit(hash, abi.encode(desc), "bad-circuit", gensHash);
+    }
+
+    /// @notice Test registration reverts on oracleProductOffsets length mismatch
+    function test_register_dag_circuit_oracle_offsets_mismatch_reverts() public {
+        (, bytes memory gensHex,,, GKRDAGVerifier.DAGCircuitDescription memory desc) = _loadFixture();
+
+        // Make oracleProductOffsets wrong length
+        desc.oracleProductOffsets = new uint256[](desc.numComputeLayers);
+
+        bytes32 hash = bytes32(uint256(0xdead07));
+        bytes32 gensHash = keccak256(gensHex);
+
+        vm.expectRevert("oracleProductOffsets length mismatch");
+        verifier.registerDAGCircuit(hash, abi.encode(desc), "bad-circuit", gensHash);
+    }
+
+    /// @notice Test registration reverts on atomTargetLayers length mismatch
+    function test_register_dag_circuit_atom_targets_mismatch_reverts() public {
+        (, bytes memory gensHex,,, GKRDAGVerifier.DAGCircuitDescription memory desc) = _loadFixture();
+
+        // Truncate atomTargetLayers
+        uint256 totalAtoms = desc.atomOffsets[desc.numComputeLayers];
+        desc.atomTargetLayers = new uint256[](totalAtoms - 1);
+
+        bytes32 hash = bytes32(uint256(0xdead08));
+        bytes32 gensHash = keccak256(gensHex);
+
+        vm.expectRevert("atomTargetLayers length mismatch");
+        verifier.registerDAGCircuit(hash, abi.encode(desc), "bad-circuit", gensHash);
+    }
+
+    /// @notice Test registration reverts on zero circuit hash
+    function test_register_dag_circuit_zero_hash_reverts() public {
+        (, bytes memory gensHex,,, GKRDAGVerifier.DAGCircuitDescription memory desc) = _loadFixture();
+
+        bytes32 gensHash = keccak256(gensHex);
+
+        vm.expectRevert("Circuit hash cannot be zero");
+        verifier.registerDAGCircuit(bytes32(0), abi.encode(desc), "bad-circuit", gensHash);
+    }
+
     function _stripSelector(bytes memory proof) internal pure returns (bytes memory) {
         bytes memory data = new bytes(proof.length - 4);
         for (uint256 i = 0; i < data.length; i++) {

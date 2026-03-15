@@ -2,7 +2,7 @@ use serde::Deserialize;
 use std::time::Duration;
 
 /// Default connection timeout for enclave HTTP requests (seconds).
-const DEFAULT_ENCLAVE_CONNECT_TIMEOUT_SECS: u64 = 10;
+const DEFAULT_ENCLAVE_CONNECT_TIMEOUT_SECS: u64 = 5;
 
 /// Default request timeout for enclave HTTP requests (seconds).
 const DEFAULT_ENCLAVE_REQUEST_TIMEOUT_SECS: u64 = 30;
@@ -49,6 +49,7 @@ struct HealthResponse {
 }
 
 impl EnclaveClient {
+    /// Create a new client using env var `ENCLAVE_TIMEOUT_SECS` or defaults.
     pub fn new(base_url: &str) -> Self {
         let timeout_secs = std::env::var("ENCLAVE_TIMEOUT_SECS")
             .ok()
@@ -58,6 +59,18 @@ impl EnclaveClient {
         let request_timeout = timeout_secs.unwrap_or(DEFAULT_ENCLAVE_REQUEST_TIMEOUT_SECS);
 
         Self::with_timeouts(base_url, connect_timeout, request_timeout)
+    }
+
+    /// Create a new client using a pre-resolved config timeout (seconds).
+    ///
+    /// This avoids redundant env-var reads when the caller already loaded
+    /// the timeout value via `Config::from_env()`.
+    pub fn with_config_timeout(base_url: &str, request_timeout_secs: u64) -> Self {
+        Self::with_timeouts(
+            base_url,
+            DEFAULT_ENCLAVE_CONNECT_TIMEOUT_SECS,
+            request_timeout_secs,
+        )
     }
 
     /// Create a new client with explicit timeout values (in seconds).
@@ -185,7 +198,13 @@ mod tests {
 
     #[test]
     fn test_default_timeout_constants() {
-        assert_eq!(DEFAULT_ENCLAVE_CONNECT_TIMEOUT_SECS, 10);
+        assert_eq!(DEFAULT_ENCLAVE_CONNECT_TIMEOUT_SECS, 5);
         assert_eq!(DEFAULT_ENCLAVE_REQUEST_TIMEOUT_SECS, 30);
+    }
+
+    #[test]
+    fn test_enclave_client_with_config_timeout() {
+        let client = EnclaveClient::with_config_timeout("http://example.com/", 60);
+        assert_eq!(client.base_url, "http://example.com");
     }
 }

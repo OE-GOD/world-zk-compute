@@ -154,6 +154,7 @@ impl ProverRegistryClient {
     ///
     /// * `stake` - Amount of staking tokens to deposit (must be >= minStake).
     /// * `endpoint` - Optional P2P endpoint for coordination.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     pub async fn register_prover(
         &self,
         stake: U256,
@@ -176,6 +177,7 @@ impl ProverRegistryClient {
     ///
     /// Stops receiving new jobs. The prover can later withdraw stake below
     /// the minimum while deactivated.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     pub async fn deregister_prover(&self) -> anyhow::Result<alloy::primitives::B256> {
         let provider = self.build_provider();
         let contract = ProverRegistry::new(self.client.contract_address(), provider);

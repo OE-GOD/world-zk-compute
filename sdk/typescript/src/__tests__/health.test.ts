@@ -1,9 +1,9 @@
 /**
- * Tests for the standalone checkHealth() function.
+ * Tests for the standalone checkHealth() and checkReady() functions.
  */
 import { describe, it, expect, afterEach } from 'vitest';
-import { checkHealth } from '../health';
-import type { IndexerHealthResponse } from '../health';
+import { checkHealth, checkReady } from '../health';
+import type { IndexerHealthResponse, IndexerReadyResponse } from '../health';
 import { ServiceHealthError, TimeoutError, NetworkError } from '../errors';
 
 const originalFetch = globalThis.fetch;
@@ -243,5 +243,148 @@ describe('checkHealth', () => {
       uptimeSeconds: 42,
     };
     expect(_mock.status).toBe('ok');
+  });
+});
+
+describe('checkReady', () => {
+  afterEach(() => {
+    restoreFetch();
+  });
+
+  it('returns a typed ready response when all checks pass', async () => {
+    mockFetch(async () =>
+      new Response(
+        JSON.stringify({
+          ready: true,
+          checks: { db: 'ok', indexing: 'ok' },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const ready = await checkReady('http://localhost:8081');
+
+    expect(ready.ready).toBe(true);
+    expect(ready.checks.db).toBe('ok');
+    expect(ready.checks.indexing).toBe('ok');
+  });
+
+  it('returns ready=false without throwing when a check fails', async () => {
+    mockFetch(async () =>
+      new Response(
+        JSON.stringify({
+          ready: false,
+          checks: { db: 'connection refused', indexing: 'ok' },
+        }),
+        { status: 503, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const ready = await checkReady('http://localhost:8081');
+
+    expect(ready.ready).toBe(false);
+    expect(ready.checks.db).toBe('connection refused');
+    expect(ready.checks.indexing).toBe('ok');
+  });
+
+  it('defaults missing checks to "unknown"', async () => {
+    mockFetch(async () =>
+      new Response(
+        JSON.stringify({ ready: true }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const ready = await checkReady('http://localhost:8081');
+
+    expect(ready.ready).toBe(true);
+    expect(ready.checks.db).toBe('unknown');
+    expect(ready.checks.indexing).toBe('unknown');
+  });
+
+  it('defaults ready to false when missing', async () => {
+    mockFetch(async () =>
+      new Response(
+        JSON.stringify({ checks: { db: 'ok', indexing: 'ok' } }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const ready = await checkReady('http://localhost:8081');
+
+    expect(ready.ready).toBe(false);
+  });
+
+  it('constructs the correct /ready URL path', async () => {
+    let requestedUrl = '';
+    mockFetch(async (input: RequestInfo | URL) => {
+      requestedUrl = typeof input === 'string' ? input : input.toString();
+      return new Response(
+        JSON.stringify({ ready: true, checks: { db: 'ok', indexing: 'ok' } }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    });
+
+    await checkReady('http://my-indexer:9090');
+
+    expect(requestedUrl).toBe('http://my-indexer:9090/ready');
+  });
+
+  it('strips trailing slash from indexer URL', async () => {
+    let requestedUrl = '';
+    mockFetch(async (input: RequestInfo | URL) => {
+      requestedUrl = typeof input === 'string' ? input : input.toString();
+      return new Response(
+        JSON.stringify({ ready: true, checks: { db: 'ok', indexing: 'ok' } }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    });
+
+    await checkReady('http://localhost:8081/');
+
+    expect(requestedUrl).toBe('http://localhost:8081/ready');
+  });
+
+  it('throws NetworkError when fetch fails', async () => {
+    mockFetch(async () => {
+      throw new Error('Connection refused');
+    });
+
+    await expect(checkReady('http://localhost:8081')).rejects.toThrow(
+      NetworkError,
+    );
+
+    try {
+      await checkReady('http://localhost:8081');
+    } catch (e) {
+      expect(e).toBeInstanceOf(NetworkError);
+      expect((e as NetworkError).message).toContain('Connection refused');
+    }
+  });
+
+  it('throws TimeoutError when request exceeds timeout', async () => {
+    mockFetch(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      return new Promise<Response>((_resolve, reject) => {
+        if (init?.signal) {
+          init.signal.addEventListener('abort', () => {
+            reject(
+              new DOMException('The operation was aborted.', 'AbortError'),
+            );
+          });
+        }
+      });
+    });
+
+    await expect(
+      checkReady('http://localhost:8081', { timeout: 50 }),
+    ).rejects.toThrow(TimeoutError);
+  });
+
+  it('exports IndexerReadyResponse type correctly', () => {
+    const _mock: IndexerReadyResponse = {
+      ready: true,
+      checks: { db: 'ok', indexing: 'ok' },
+    };
+    expect(_mock.ready).toBe(true);
   });
 });

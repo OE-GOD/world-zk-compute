@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use super::rate_limit::{RateLimitConfig, RateLimitLayer};
 use super::websocket::{self, EventBroadcaster};
-use super::{AppState, ResultFilter, ResultRow, StatsResponse, Storage};
+use super::{AppState, PaginatedResponse, ResultFilter, ResultRow, StatsResponse, Storage};
 
 /// The current API version string.
 pub const API_VERSION: &str = "v1";
@@ -35,6 +35,9 @@ static X_REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
 /// Maximum allowed value for the `limit` query parameter.
 const MAX_LIMIT: u32 = 1000;
 
+/// Maximum allowed value for `offset + limit` to prevent deep pagination abuse.
+const MAX_OFFSET_PLUS_LIMIT: u32 = 10_000;
+
 /// Maximum allowed length for a result ID path parameter.
 const MAX_ID_LENGTH: usize = 128;
 
@@ -48,7 +51,7 @@ const MAX_QUERY_STRING_LENGTH: usize = 4096;
 const VALID_STATUSES: &[&str] = &["submitted", "challenged", "finalized", "resolved"];
 
 /// Valid values for the `sort_by` query parameter.
-const VALID_SORT_BY: &[&str] = &["block_number", "status", "submitter"];
+const VALID_SORT_BY: &[&str] = &["block_number", "submitted_at", "status"];
 
 /// Valid values for the `sort_order` query parameter.
 const VALID_SORT_ORDER: &[&str] = &["asc", "desc"];
@@ -284,7 +287,7 @@ pub(crate) async fn handle_list_results(
     };
 
     // Get the total count of matching results (ignoring limit/offset/after_id).
-    let total_count = state
+    let total = state
         .storage
         .count_results(&filter)
         .map_err(map_storage_err)?;
@@ -296,23 +299,31 @@ pub(crate) async fn handle_list_results(
         .map_err(map_storage_err)?;
 
     // Determine if there are more results beyond this page.
-    let limit = filter.limit.unwrap_or(50).min(1000) as u64;
-    let offset = filter.offset.unwrap_or(0) as u64;
+    let limit = filter.limit.unwrap_or(50).min(1000);
+    let offset = filter.offset.unwrap_or(0);
     let has_more = if filter.after_id.is_some() {
         // For cursor-based pagination, there are more if we got a full page.
-        rows.len() as u64 >= limit
+        rows.len() as u32 >= limit
     } else {
-        // For offset-based pagination, compare offset + limit against total.
-        offset + limit < total_count
+        // For offset-based pagination, compare offset + rows against total.
+        (offset as u64) + (rows.len() as u64) < total
     };
 
-    let mut response = Json(rows).into_response();
-    let headers = response.headers_mut();
+    let paginated = PaginatedResponse {
+        data: rows,
+        total,
+        limit,
+        offset,
+        has_more,
+    };
 
-    if let Ok(val) = HeaderValue::from_str(&total_count.to_string()) {
-        headers.insert(HeaderName::from_static("x-total-count"), val);
+    // Build response with pagination headers for clients that prefer them.
+    let mut response = Json(paginated).into_response();
+    let hdrs = response.headers_mut();
+    if let Ok(val) = HeaderValue::from_str(&total.to_string()) {
+        hdrs.insert(HeaderName::from_static("x-total-count"), val);
     }
-    headers.insert(
+    hdrs.insert(
         HeaderName::from_static("x-has-more"),
         HeaderValue::from_static(if has_more { "true" } else { "false" }),
     );
@@ -373,6 +384,65 @@ pub(crate) async fn handle_health(State(state): State<AppState>) -> impl IntoRes
     }
 }
 
+/// Individual check status for the readiness probe.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ReadinessChecks {
+    /// Database connectivity: `"ok"` or `"error"`.
+    pub db: String,
+    /// Indexing progress: `"ok"` if at least one block has been indexed, `"stale"` otherwise.
+    pub indexing: String,
+}
+
+/// Extended readiness response with per-check detail.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ReadinessResponse {
+    /// Overall readiness: `true` only when all checks pass.
+    pub ready: bool,
+    /// Per-subsystem check results.
+    pub checks: ReadinessChecks,
+    /// The last indexed block number (0 if none indexed yet).
+    pub last_indexed_block: u64,
+}
+
+/// Readiness probe for Kubernetes.
+///
+/// Returns 200 if and only if storage is healthy **and** the indexer has
+/// processed at least one block (`last_indexed_block > 0`). Otherwise
+/// returns 503 Service Unavailable so K8s does not route traffic to a
+/// pod that has not caught up yet.
+///
+/// The response includes a `checks` object with individual check statuses:
+/// - `db`: `"ok"` when the storage backend is healthy, `"error"` otherwise.
+/// - `indexing`: `"ok"` when at least one block has been indexed, `"stale"` otherwise.
+pub(crate) async fn handle_ready(State(state): State<AppState>) -> impl IntoResponse {
+    let db_healthy = state.storage.is_healthy();
+    let last_block = state.storage.get_last_indexed_block();
+    let indexing_ok = last_block > 0;
+    let ready = db_healthy && indexing_ok;
+
+    let body = ReadinessResponse {
+        ready,
+        checks: ReadinessChecks {
+            db: if db_healthy {
+                "ok".to_string()
+            } else {
+                "error".to_string()
+            },
+            indexing: if indexing_ok {
+                "ok".to_string()
+            } else {
+                "stale".to_string()
+            },
+        },
+        last_indexed_block: last_block,
+    };
+    if ready {
+        (StatusCode::OK, Json(body))
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, Json(body))
+    }
+}
+
 pub(crate) async fn handle_admin_reset(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -385,6 +455,19 @@ pub(crate) async fn handle_admin_reset(
         .unwrap_or("");
 
     if expected_key.is_empty() || provided_key != expected_key {
+        let client_ip = headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.split(',').next())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        tracing::warn!(
+            target: "audit",
+            event = "admin_reset_denied",
+            client_ip = %client_ip,
+            reason = "invalid_or_missing_api_key",
+            "Admin reset authentication failed"
+        );
         return Err((
             StatusCode::UNAUTHORIZED,
             Json(ErrorResponse {
@@ -394,6 +477,19 @@ pub(crate) async fn handle_admin_reset(
     }
 
     state.storage.reset_lock_state();
+
+    let client_ip = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    tracing::info!(
+        target: "audit",
+        event = "admin_reset",
+        client_ip = %client_ip,
+        "Admin reset executed successfully"
+    );
 
     Ok(Json(serde_json::json!({
         "status": "ok",
@@ -448,6 +544,7 @@ pub fn build_app(
         .route("/stats", get(handle_stats))
         // Unversioned infrastructure endpoints
         .route("/health", get(handle_health))
+        .route("/ready", get(handle_ready))
         .with_state(state)
         // WebSocket routes (different state type)
         .merge(ws_routes)
@@ -510,8 +607,11 @@ mod tests {
         assert_eq!(version, "v1");
 
         let body = resp.into_body().collect().await.unwrap().to_bytes();
-        let rows: Vec<ResultRow> = serde_json::from_slice(&body).unwrap();
-        assert_eq!(rows.len(), 1);
+        let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page.data.len(), 1);
+        assert_eq!(page.total, 1);
+        assert_eq!(page.offset, 0);
+        assert!(!page.has_more);
     }
 
     #[tokio::test]
@@ -620,11 +720,11 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
 
         let body = resp.into_body().collect().await.unwrap().to_bytes();
-        let rows: Vec<ResultRow> = serde_json::from_slice(&body).unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].id, "0x02");
-        assert_eq!(rows[0].status, "challenged");
-        assert_eq!(rows[0].challenger.as_deref(), Some("0xc"));
+        let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page.data.len(), 1);
+        assert_eq!(page.data[0].id, "0x02");
+        assert_eq!(page.data[0].status, "challenged");
+        assert_eq!(page.data[0].challenger.as_deref(), Some("0xc"));
     }
 
     #[tokio::test]
@@ -645,9 +745,9 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
 
         let body = resp.into_body().collect().await.unwrap().to_bytes();
-        let rows: Vec<ResultRow> = serde_json::from_slice(&body).unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].submitter, "0xbbb222");
+        let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page.data.len(), 1);
+        assert_eq!(page.data[0].submitter, "0xbbb222");
     }
 
     #[tokio::test]
@@ -717,11 +817,11 @@ mod tests {
 
         let resp = app.oneshot(req).await.unwrap();
         let body = resp.into_body().collect().await.unwrap().to_bytes();
-        let rows: Vec<ResultRow> = serde_json::from_slice(&body).unwrap();
-        assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0].id, "0x02"); // block 50 first
-        assert_eq!(rows[1].id, "0x03"); // block 30
-        assert_eq!(rows[2].id, "0x01"); // block 10 last
+        let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page.data.len(), 3);
+        assert_eq!(page.data[0].id, "0x02"); // block 50 first
+        assert_eq!(page.data[1].id, "0x03"); // block 30
+        assert_eq!(page.data[2].id, "0x01"); // block 10 last
     }
 
     #[tokio::test]
@@ -740,8 +840,11 @@ mod tests {
 
         let resp = app.oneshot(req).await.unwrap();
         let body = resp.into_body().collect().await.unwrap().to_bytes();
-        let rows: Vec<ResultRow> = serde_json::from_slice(&body).unwrap();
-        assert_eq!(rows.len(), 3);
+        let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page.data.len(), 3);
+        assert_eq!(page.total, 10);
+        assert_eq!(page.limit, 3);
+        assert!(page.has_more);
     }
 
     #[tokio::test]

@@ -12,14 +12,20 @@ import "../src/MockRiscZeroVerifier.sol";
 ///     --rpc-url http://localhost:8545 --broadcast -vvv
 ///
 ///   Env vars:
-///     PRIVATE_KEY  — deployer private key (required)
+///     PRIVATE_KEY  — deployer private key (optional; defaults to Anvil account 0)
 contract DeployMocks is Script {
+    /// @dev Anvil's default account 0 private key — used when PRIVATE_KEY is not set.
+    uint256 constant ANVIL_DEFAULT_KEY = 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80;
+
     function run() external {
-        uint256 deployerKey = vm.envUint("PRIVATE_KEY");
+        uint256 deployerKey = vm.envOr("PRIVATE_KEY", ANVIL_DEFAULT_KEY);
         address deployer = vm.addr(deployerKey);
 
         console.log("=== MOCK CONTRACTS DEPLOYMENT ===");
         console.log("Deployer:", deployer);
+        if (deployerKey == ANVIL_DEFAULT_KEY) {
+            console.log("(using Anvil default key - set PRIVATE_KEY to override)");
+        }
         console.log("");
 
         vm.startBroadcast(deployerKey);

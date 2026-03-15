@@ -119,6 +119,8 @@ export interface ClientOptions {
   apiKey?: string;
   timeout?: number;
   maxRetries?: number;
+  /** Base URL of the indexer service (e.g. `"http://localhost:8081"`). */
+  indexerUrl?: string;
 }
 
 export interface Pagination {

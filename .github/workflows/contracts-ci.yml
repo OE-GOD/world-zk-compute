@@ -7,9 +7,11 @@ on:
     branches: [main]
     paths:
       - 'contracts/**'
+      - 'scripts/check-gas-regression.sh'
   pull_request:
     paths:
       - 'contracts/**'
+      - 'scripts/check-gas-regression.sh'
   workflow_dispatch:
 
 jobs:
@@ -54,8 +56,8 @@ jobs:
       - name: Validate test fixtures
         run: bash scripts/validate-fixtures.sh
 
-      - name: Gas regression check (>10% = failure)
-        run: bash scripts/check-gas-regression.sh 10
+      - name: Gas regression check (>10% increase = failure, >30M single-tx = failure)
+        run: bash scripts/check-gas-regression.sh 10 30000000
 
       - name: Upload gas snapshot artifact
         uses: actions/upload-artifact@v4
@@ -64,6 +66,15 @@ jobs:
           name: gas-snapshot
           path: contracts/.gas-snapshot-new
           retention-days: 30
+
+      - name: Annotate PR with gas summary
+        if: always() && github.event_name == 'pull_request'
+        run: |
+          if [ -f contracts/.gas-snapshot-new ]; then
+            total_tests=$(wc -l < contracts/.gas-snapshot-new | tr -d ' ')
+            max_gas=$(grep -o 'gas: [0-9]*' contracts/.gas-snapshot-new | grep -o '[0-9]*' | sort -n | tail -1)
+            echo "::notice::Gas snapshot: ${total_tests} tests, max single-test gas: ${max_gas}"
+          fi
 
   coverage:
     name: Solidity Coverage

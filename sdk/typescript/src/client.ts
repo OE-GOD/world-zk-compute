@@ -30,6 +30,8 @@ import {
   ReputationTier,
   RequestStatus,
 } from './types';
+import { checkHealth } from './health';
+import type { IndexerHealthResponse, CheckHealthOptions } from './health';
 
 const DEFAULT_BASE_URL = 'https://api.worldzk.compute/v1';
 const DEFAULT_TIMEOUT = 30000;
@@ -163,6 +165,7 @@ export class Client {
   private readonly apiKey?: string;
   private readonly timeout: number;
   private readonly maxRetries: number;
+  private readonly indexerUrl?: string;
 
   readonly requests: RequestsClient;
   readonly programs: ProgramsClient;
@@ -173,6 +176,7 @@ export class Client {
     this.apiKey = options.apiKey;
     this.timeout = options.timeout ?? DEFAULT_TIMEOUT;
     this.maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
+    this.indexerUrl = options.indexerUrl;
 
     this.requests = new RequestsClient(this);
     this.programs = new ProgramsClient(this);
@@ -319,6 +323,30 @@ export class Client {
       uptimeSeconds: (data.uptime_seconds as number) ?? 0,
       proverCount: (data.prover_count as number) ?? 0,
     };
+  }
+
+  /**
+   * Check the health of the configured indexer service.
+   *
+   * Delegates to the standalone {@link checkHealth} function using the
+   * client-level `indexerUrl` (or an override supplied in `options`).
+   *
+   * @param options - Optional overrides for indexer URL and timeout.
+   * @returns The parsed {@link IndexerHealthResponse}.
+   *
+   * @throws {Error} If no indexer URL is configured and none is provided.
+   * @throws {ServiceHealthError} If the indexer reports a non-"ok" status.
+   * @throws {TimeoutError} If the request exceeds the configured timeout.
+   * @throws {NetworkError} If the request fails due to a network issue.
+   */
+  async indexerHealth(
+    options: CheckHealthOptions & { indexerUrl?: string } = {},
+  ): Promise<IndexerHealthResponse> {
+    const url = options.indexerUrl ?? this.indexerUrl;
+    if (!url) {
+      throw new Error('Indexer URL is required');
+    }
+    return checkHealth(url, { timeout: options.timeout });
   }
 }
 

@@ -66,6 +66,12 @@ pub struct ConfigFile {
     /// When set, takes precedence over `tee_verifier_address` for multi-contract watching.
     #[serde(default)]
     pub contracts: Vec<String>,
+    /// Total request timeout for enclave HTTP requests (seconds).
+    /// Default: 30.
+    pub enclave_timeout_secs: Option<u64>,
+    /// Total request timeout for prover HTTP requests (seconds).
+    /// Default: 300 (proof generation can take several minutes).
+    pub prover_timeout_secs: Option<u64>,
 }
 
 impl ConfigFile {
@@ -148,6 +154,13 @@ pub struct Config {
     /// Built from: `CONTRACT_ADDRESSES` env var (comma-separated),
     /// or `contracts` array in TOML, falling back to `tee_verifier_address`.
     pub contract_addresses: Vec<String>,
+    /// Total request timeout for enclave HTTP requests (seconds).
+    /// Env var: `ENCLAVE_TIMEOUT_SECS`. Default: 30.
+    pub enclave_timeout_secs: u64,
+    /// Total request timeout for prover HTTP requests (seconds).
+    /// Proof generation can take several minutes, so default is generous.
+    /// Env var: `PROVER_TIMEOUT_SECS`. Default: 300.
+    pub prover_timeout_secs: u64,
 }
 
 impl Config {
@@ -297,6 +310,18 @@ impl Config {
             .or(file_cfg.state_file)
             .unwrap_or_else(|| "./operator-state.json".to_string());
 
+        let enclave_timeout_secs = std::env::var("ENCLAVE_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .or(file_cfg.enclave_timeout_secs)
+            .unwrap_or(30);
+
+        let prover_timeout_secs = std::env::var("PROVER_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .or(file_cfg.prover_timeout_secs)
+            .unwrap_or(300);
+
         // Build the contract addresses list.
         // Priority: CONTRACT_ADDRESSES env var > contracts array in TOML > tee_verifier_address.
         let contract_addresses = if let Ok(addrs_str) = std::env::var("CONTRACT_ADDRESSES") {
@@ -358,6 +383,8 @@ impl Config {
             dry_run,
             state_file,
             contract_addresses,
+            enclave_timeout_secs,
+            prover_timeout_secs,
         })
     }
 
@@ -684,6 +711,8 @@ mod tests {
             "DRY_RUN",
             "STATE_FILE",
             "CONTRACT_ADDRESSES",
+            "ENCLAVE_TIMEOUT_SECS",
+            "PROVER_TIMEOUT_SECS",
         ] {
             std::env::remove_var(var);
         }
@@ -1784,5 +1813,124 @@ rpc_url = "https://rpc.example.com"
 "#;
         let cf = ConfigFile::from_toml_str(toml_str).unwrap();
         assert!(cf.contracts.is_empty());
+    }
+
+    // ======================== HTTP timeout config tests ========================
+
+    #[test]
+    fn test_timeout_defaults() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_all_env_vars();
+
+        std::env::set_var("OPERATOR_PRIVATE_KEY", "0xkey");
+        std::env::set_var("TEE_VERIFIER_ADDRESS", "0xaddr");
+
+        let config = Config::from_env(None).unwrap();
+        assert_eq!(config.enclave_timeout_secs, 30);
+        assert_eq!(config.prover_timeout_secs, 300);
+
+        clear_all_env_vars();
+    }
+
+    #[test]
+    fn test_timeout_from_env() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_all_env_vars();
+
+        std::env::set_var("OPERATOR_PRIVATE_KEY", "0xkey");
+        std::env::set_var("TEE_VERIFIER_ADDRESS", "0xaddr");
+        std::env::set_var("ENCLAVE_TIMEOUT_SECS", "60");
+        std::env::set_var("PROVER_TIMEOUT_SECS", "600");
+
+        let config = Config::from_env(None).unwrap();
+        assert_eq!(config.enclave_timeout_secs, 60);
+        assert_eq!(config.prover_timeout_secs, 600);
+
+        clear_all_env_vars();
+    }
+
+    #[test]
+    fn test_timeout_from_toml() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_all_env_vars();
+
+        let toml_str = r#"
+private_key = "0xkey"
+tee_verifier_address = "0xaddr"
+enclave_timeout_secs = 45
+prover_timeout_secs = 500
+"#;
+        let mut tmpfile = tempfile::NamedTempFile::new().unwrap();
+        tmpfile.write_all(toml_str.as_bytes()).unwrap();
+        let path = tmpfile.path().to_str().unwrap().to_string();
+
+        let config = Config::from_env(Some(&path)).unwrap();
+        assert_eq!(config.enclave_timeout_secs, 45);
+        assert_eq!(config.prover_timeout_secs, 500);
+
+        clear_all_env_vars();
+    }
+
+    #[test]
+    fn test_timeout_env_overrides_toml() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_all_env_vars();
+
+        let toml_str = r#"
+private_key = "0xkey"
+tee_verifier_address = "0xaddr"
+enclave_timeout_secs = 45
+prover_timeout_secs = 500
+"#;
+        let mut tmpfile = tempfile::NamedTempFile::new().unwrap();
+        tmpfile.write_all(toml_str.as_bytes()).unwrap();
+        let path = tmpfile.path().to_str().unwrap().to_string();
+
+        std::env::set_var("ENCLAVE_TIMEOUT_SECS", "10");
+        std::env::set_var("PROVER_TIMEOUT_SECS", "120");
+
+        let config = Config::from_env(Some(&path)).unwrap();
+        assert_eq!(config.enclave_timeout_secs, 10);
+        assert_eq!(config.prover_timeout_secs, 120);
+
+        clear_all_env_vars();
+    }
+
+    #[test]
+    fn test_timeout_invalid_env_uses_default() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_all_env_vars();
+
+        std::env::set_var("OPERATOR_PRIVATE_KEY", "0xkey");
+        std::env::set_var("TEE_VERIFIER_ADDRESS", "0xaddr");
+        std::env::set_var("ENCLAVE_TIMEOUT_SECS", "not_a_number");
+        std::env::set_var("PROVER_TIMEOUT_SECS", "");
+
+        let config = Config::from_env(None).unwrap();
+        assert_eq!(config.enclave_timeout_secs, 30);
+        assert_eq!(config.prover_timeout_secs, 300);
+
+        clear_all_env_vars();
+    }
+
+    #[test]
+    fn test_timeout_config_file_deserialization() {
+        let toml_str = r#"
+enclave_timeout_secs = 15
+prover_timeout_secs = 900
+"#;
+        let cf = ConfigFile::from_toml_str(toml_str).unwrap();
+        assert_eq!(cf.enclave_timeout_secs, Some(15));
+        assert_eq!(cf.prover_timeout_secs, Some(900));
+    }
+
+    #[test]
+    fn test_timeout_config_file_missing_defaults_none() {
+        let toml_str = r#"
+rpc_url = "https://rpc.example.com"
+"#;
+        let cf = ConfigFile::from_toml_str(toml_str).unwrap();
+        assert!(cf.enclave_timeout_secs.is_none());
+        assert!(cf.prover_timeout_secs.is_none());
     }
 }

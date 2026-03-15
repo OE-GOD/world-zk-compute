@@ -544,12 +544,13 @@ contract ProverReputationTest is Test {
         vm.prank(reporter);
         rep.recordSuccess(prover1, 1000, 0);
 
-        // Warp 20 years (way beyond 120 period cap)
+        // Warp 20 years (way beyond MAX_DECAY_PERIOD of 365 days)
         vm.warp(block.timestamp + 7300 days);
 
-        // Should not revert or run out of gas -- decay capped at 120 iterations
+        // Should not revert or run out of gas -- elapsed time clamped to MAX_DECAY_PERIOD
+        // 365 days / 30-day period = 12 periods => 5050 * 0.99^12 = 4480
         uint256 score = rep.getScore(prover1);
-        assertTrue(score < 5050, "score should have decayed significantly");
+        assertEq(score, 4480, "score clamped to MAX_DECAY_PERIOD (12 periods)");
     }
 
     // ========================================================================
@@ -965,6 +966,87 @@ contract ProverReputationTest is Test {
     function test_getSlashHistory_unregisteredReturnsEmpty() public view {
         ProverReputation.SlashEvent[] memory history = rep.getSlashHistory(stranger);
         assertEq(history.length, 0, "no slash history for unregistered");
+    }
+
+    // ========================================================================
+    // Decay timestamp safety and MAX_DECAY_PERIOD clamping
+    // ========================================================================
+
+    /// @dev Just registered + one success, no time elapsed. Decay should be zero.
+    function test_decay_zero_time() public {
+        _registerProver(prover1);
+
+        vm.prank(reporter);
+        rep.recordSuccess(prover1, 1000, 0); // score = 5050
+
+        // No time passes -- query score in the same block
+        uint256 score = rep.getScore(prover1);
+        assertEq(score, 5050, "no decay when zero time has elapsed");
+    }
+
+    /// @dev 1 day elapsed (< DECAY_PERIOD of 30 days). No decay period completes.
+    function test_decay_one_day() public {
+        _registerProver(prover1);
+
+        vm.prank(reporter);
+        rep.recordSuccess(prover1, 1000, 0); // score = 5050
+
+        vm.warp(block.timestamp + 1 days);
+
+        uint256 score = rep.getScore(prover1);
+        assertEq(score, 5050, "no decay after only 1 day (within 30-day period)");
+    }
+
+    /// @dev Exactly MAX_DECAY_PERIOD (365 days) elapsed. Should produce 12 full
+    /// decay periods (365 / 30 = 12 with remainder 5 days).
+    /// 5050 * 0.99^12 = 4480 (integer arithmetic).
+    function test_decay_max_period() public {
+        _registerProver(prover1);
+
+        vm.prank(reporter);
+        rep.recordSuccess(prover1, 1000, 0); // score = 5050
+
+        vm.warp(block.timestamp + 365 days);
+
+        // 12 periods of 1% multiplicative decay on 5050:
+        // P1:  5050-50=5000  P2:  5000-50=4950  P3:  4950-49=4901
+        // P4:  4901-49=4852  P5:  4852-48=4804  P6:  4804-48=4756
+        // P7:  4756-47=4709  P8:  4709-47=4662  P9:  4662-46=4616
+        // P10: 4616-46=4570  P11: 4570-45=4525  P12: 4525-45=4480
+        uint256 score = rep.getScore(prover1);
+        assertEq(score, 4480, "12 periods of decay at exactly MAX_DECAY_PERIOD");
+    }
+
+    /// @dev Far beyond MAX_DECAY_PERIOD (e.g. 10 years). The elapsed time should be
+    /// clamped to MAX_DECAY_PERIOD, so the result must equal the 365-day case (4480).
+    function test_decay_beyond_max() public {
+        _registerProver(prover1);
+
+        vm.prank(reporter);
+        rep.recordSuccess(prover1, 1000, 0); // score = 5050
+
+        // Warp 10 years into the future
+        vm.warp(block.timestamp + 3650 days);
+
+        // Clamped to MAX_DECAY_PERIOD = 365 days = 12 periods => same result as test_decay_max_period
+        uint256 score = rep.getScore(prover1);
+        assertEq(score, 4480, "decay clamped to MAX_DECAY_PERIOD even after 10 years");
+    }
+
+    /// @dev The InvalidTimestamp revert fires when block.timestamp < lastJobAt.
+    /// We simulate this by warping backward after recording a job.
+    function test_decay_reverts_on_invalid_timestamp() public {
+        _registerProver(prover1);
+
+        // Record a success at current timestamp
+        vm.prank(reporter);
+        rep.recordSuccess(prover1, 1000, 0);
+
+        // Warp backward so block.timestamp < lastJobAt
+        vm.warp(block.timestamp - 1);
+
+        vm.expectRevert(ProverReputation.InvalidTimestamp.selector);
+        rep.getScore(prover1);
     }
 
     // ========================================================================

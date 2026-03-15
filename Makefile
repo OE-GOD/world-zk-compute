@@ -9,11 +9,11 @@
         test-xgboost test-stylus \
         build build-contracts build-rust \
         fmt fmt-sol fmt-rust lint lint-sol lint-rust \
-        deploy-local deploy-sepolia deploy-multichain deploy-sepolia-tee \
+        deploy-local deploy-mocks deploy-sepolia deploy-multichain deploy-sepolia-tee \
         docker-up docker-down docker-gpu docker-sepolia docker-sepolia-down \
         load-test load-test-enclave load-test-prover load-test-batch load-test-indexer \
         sepolia-e2e check-sepolia-balances test-sepolia-sdk \
-        bench clean verify snapshot snapshot-check gas-report help \
+        bench clean verify snapshot snapshot-check snapshot-update gas-report help \
         smoke-test audit docs check preflight sepolia-status
 
 # ── Test ─────────────────────────────────────────────────────────────────────
@@ -124,6 +124,9 @@ lint-rust: ## Run Rust clippy on all crates
 deploy-local: ## Deploy to local Anvil (start Anvil first)
 	bash scripts/deploy.sh --chain local --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 
+deploy-mocks: ## Deploy mock contracts to local Anvil for SDK testing
+	cd contracts && forge script script/DeployMocks.s.sol:DeployMocks --rpc-url http://localhost:8545 --broadcast -vvv
+
 deploy-sepolia: ## Deploy to Arbitrum Sepolia (set DEPLOYER_PRIVATE_KEY)
 	bash scripts/deploy-sepolia.sh
 
@@ -191,11 +194,16 @@ bench: ## Run Rust benchmarks
 
 # ── Gas ──────────────────────────────────────────────────────────────────────
 
-snapshot: ## Generate Solidity gas snapshot
-	cd contracts && forge snapshot --match-contract GasProfileTest
+snapshot: ## Generate Solidity gas snapshot (all tests)
+	cd contracts && forge snapshot
 
-snapshot-check: ## Check for gas regressions
-	cd contracts && forge snapshot --check --match-contract GasProfileTest
+snapshot-check: ## Check for gas regressions (>10% threshold + 30M block limit)
+	bash scripts/check-gas-regression.sh 10 30000000
+
+snapshot-update: ## Update committed gas snapshot baseline
+	cd contracts && forge snapshot
+	@echo ""
+	@echo "Baseline updated. Run: git add contracts/.gas-snapshot"
 
 gas-report: ## Print gas report for all tests
 	cd contracts && forge test --gas-report

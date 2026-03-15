@@ -282,6 +282,16 @@ where
                 })
             }
             Err(info) => {
+                // Audit log: rate limit violation
+                tracing::warn!(
+                    target: "audit",
+                    event = "rate_limit_exceeded",
+                    client_ip = %ip,
+                    limit = info.limit,
+                    retry_after_secs = info.reset_secs,
+                    "Rate limit exceeded for client"
+                );
+
                 let response = rate_limit_response(&info);
                 Box::pin(async move { Ok(response) })
             }

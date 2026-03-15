@@ -392,6 +392,7 @@ impl ExecutionEngineClient {
     /// Get the status of an execution request.
     ///
     /// Returns a parsed `RequestStatus` enum value.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(request_id)))]
     pub async fn get_request_status(&self, request_id: u64) -> anyhow::Result<RequestStatus> {
         let req = self.get_request(request_id).await?;
         RequestStatus::from_u8(req.status).ok_or_else(|| {
@@ -402,6 +403,7 @@ impl ExecutionEngineClient {
     /// Get the current tip for a request (decreases over time via linear decay).
     ///
     /// Returns 0 if the request is completed or cancelled.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(request_id)))]
     pub async fn get_current_tip(&self, request_id: u64) -> anyhow::Result<U256> {
         let provider = self.build_provider();
         let contract = ExecutionEngine::new(self.client.contract_address(), provider);
@@ -420,6 +422,7 @@ impl ExecutionEngineClient {
     ///
     /// * `offset` - Number of matching requests to skip.
     /// * `limit` - Maximum number of request IDs to return.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(offset, limit)))]
     pub async fn get_pending_requests(
         &self,
         offset: u64,
@@ -437,6 +440,7 @@ impl ExecutionEngineClient {
     }
 
     /// Get prover statistics (completed count and total earnings).
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(prover = %prover)))]
     pub async fn get_prover_stats(
         &self,
         prover: Address,
@@ -449,6 +453,7 @@ impl ExecutionEngineClient {
     }
 
     /// Get the next request ID that will be assigned.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     pub async fn next_request_id(&self) -> anyhow::Result<U256> {
         let provider = self.build_provider();
         let contract = ExecutionEngine::new(self.client.contract_address(), provider);
@@ -458,6 +463,7 @@ impl ExecutionEngineClient {
     }
 
     /// Get the current protocol fee in basis points (100 = 1%).
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     pub async fn protocol_fee_bps(&self) -> anyhow::Result<U256> {
         let provider = self.build_provider();
         let contract = ExecutionEngine::new(self.client.contract_address(), provider);
@@ -467,6 +473,7 @@ impl ExecutionEngineClient {
     }
 
     /// Get the fee recipient address.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     pub async fn fee_recipient(&self) -> anyhow::Result<Address> {
         let provider = self.build_provider();
         let contract = ExecutionEngine::new(self.client.contract_address(), provider);
@@ -483,6 +490,7 @@ impl ExecutionEngineClient {
     ///
     /// Blocks `requestExecution`, `claimExecution`, and `submitProof`.
     /// `cancelExecution` remains available so users can recover funds.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     pub async fn pause(&self) -> anyhow::Result<B256> {
         let provider = self.build_provider();
         let contract = ExecutionEngine::new(self.client.contract_address(), provider);
@@ -492,6 +500,7 @@ impl ExecutionEngineClient {
     }
 
     /// Unpause the contract (owner only).
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     pub async fn unpause(&self) -> anyhow::Result<B256> {
         let provider = self.build_provider();
         let contract = ExecutionEngine::new(self.client.contract_address(), provider);
@@ -501,6 +510,7 @@ impl ExecutionEngineClient {
     }
 
     /// Set the protocol fee in basis points (owner only, max 10% = 1000 bps).
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(fee_bps)))]
     pub async fn set_protocol_fee(&self, fee_bps: u64) -> anyhow::Result<B256> {
         let provider = self.build_provider();
         let contract = ExecutionEngine::new(self.client.contract_address(), provider);
@@ -516,6 +526,7 @@ impl ExecutionEngineClient {
     }
 
     /// Set the fee recipient address (owner only).
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(recipient = %recipient)))]
     pub async fn set_fee_recipient(&self, recipient: Address) -> anyhow::Result<B256> {
         let provider = self.build_provider();
         let contract = ExecutionEngine::new(self.client.contract_address(), provider);
@@ -533,6 +544,7 @@ impl ExecutionEngineClient {
     /// Set or update the reputation contract (owner only).
     ///
     /// Pass `Address::ZERO` to disable reputation tracking.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(reputation = %reputation)))]
     pub async fn set_reputation(&self, reputation: Address) -> anyhow::Result<B256> {
         let provider = self.build_provider();
         let contract = ExecutionEngine::new(self.client.contract_address(), provider);
@@ -558,6 +570,7 @@ impl ExecutionEngineClient {
     /// alias for `claim_job` that makes the dispute-reclaim intent explicit.
     ///
     /// For TEE-style disputes (challenge/resolve), use the `TEEVerifier` client.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(request_id)))]
     pub async fn dispute_result(&self, request_id: u64) -> anyhow::Result<B256> {
         // In the ExecutionEngine contract, disputing an expired claim is done
         // by calling claimExecution again after the claim deadline has passed.

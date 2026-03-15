@@ -238,7 +238,7 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
     /// @inheritdoc ITEEMLVerifier
     /// @dev Sets up a DISPUTE_WINDOW deadline for ZK proof submission.
     function challenge(bytes32 resultId) external payable whenNotPaused {
-        MLResult storage r = _results[resultId];
+        PackedMLResult storage r = _results[resultId];
         require(r.submittedAt != 0, "TEEMLVerifier: result not found");
         require(!r.finalized, "TEEMLVerifier: already finalized");
         require(!r.challenged, "TEEMLVerifier: already challenged");
@@ -248,7 +248,7 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
         r.challenged = true;
         r.challenger = msg.sender;
         r.challengeBond = msg.value;
-        r.disputeDeadline = block.timestamp + DISPUTE_WINDOW;
+        r.disputeDeadline = uint40(block.timestamp + DISPUTE_WINDOW);
 
         emit ResultChallenged(resultId, msg.sender);
     }
@@ -265,7 +265,7 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
         bytes calldata publicInputs,
         bytes calldata gensData
     ) external nonReentrant {
-        MLResult storage r = _results[resultId];
+        PackedMLResult storage r = _results[resultId];
         require(r.challenged, "TEEMLVerifier: not challenged");
         require(!disputeResolved[resultId], "TEEMLVerifier: already resolved");
         require(remainderVerifier != address(0), "TEEMLVerifier: no verifier set");
@@ -288,7 +288,7 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
 
     /// @inheritdoc ITEEMLVerifier
     function resolveDisputeByTimeout(bytes32 resultId) external nonReentrant {
-        MLResult storage r = _results[resultId];
+        PackedMLResult storage r = _results[resultId];
         require(r.challenged, "TEEMLVerifier: not challenged");
         require(!disputeResolved[resultId], "TEEMLVerifier: already resolved");
         require(block.timestamp >= r.disputeDeadline, "TEEMLVerifier: deadline not reached");
@@ -300,16 +300,16 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
 
     /// @inheritdoc ITEEMLVerifier
     function extendDisputeWindow(bytes32 resultId) external {
-        MLResult storage r = _results[resultId];
+        PackedMLResult storage r = _results[resultId];
         require(r.challenged, "TEEMLVerifier: not challenged");
         require(!disputeResolved[resultId], "TEEMLVerifier: already resolved");
         require(r.submitter == msg.sender, "TEEMLVerifier: not submitter");
         require(disputeExtensions[resultId] < MAX_EXTENSIONS, "TEEMLVerifier: max extensions reached");
 
         disputeExtensions[resultId] += 1;
-        r.disputeDeadline += EXTENSION_PERIOD;
+        r.disputeDeadline = uint40(uint256(r.disputeDeadline) + EXTENSION_PERIOD);
 
-        emit DisputeExtended(resultId, r.disputeDeadline);
+        emit DisputeExtended(resultId, uint256(r.disputeDeadline));
     }
 
     // ─── Finalize ────────────────────────────────────────────────────────────
@@ -317,7 +317,7 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
     /// @inheritdoc ITEEMLVerifier
     /// @dev Returns the prover's stake via low-level call for contract wallet compatibility.
     function finalize(bytes32 resultId) external nonReentrant {
-        MLResult storage r = _results[resultId];
+        PackedMLResult storage r = _results[resultId];
         require(r.submittedAt != 0, "TEEMLVerifier: result not found");
         require(block.timestamp >= r.challengeDeadline, "TEEMLVerifier: window not passed");
         require(!r.challenged, "TEEMLVerifier: result is challenged");
@@ -339,14 +339,30 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
 
     /// @inheritdoc ITEEMLVerifier
     function getResult(bytes32 resultId) external view returns (MLResult memory) {
-        return _results[resultId];
+        PackedMLResult storage p = _results[resultId];
+        return MLResult({
+            enclave: p.enclave,
+            submitter: p.submitter,
+            modelHash: p.modelHash,
+            inputHash: p.inputHash,
+            resultHash: p.resultHash,
+            result: p.result,
+            submittedAt: uint256(p.submittedAt),
+            challengeDeadline: uint256(p.challengeDeadline),
+            disputeDeadline: uint256(p.disputeDeadline),
+            challengeBond: p.challengeBond,
+            proverStakeAmount: p.proverStakeAmount,
+            finalized: p.finalized,
+            challenged: p.challenged,
+            challenger: p.challenger
+        });
     }
 
     /// @inheritdoc ITEEMLVerifier
     /// @dev Returns true if: (1) finalized without challenge, or (2) challenged and dispute
     ///      resolved in prover's favor.
     function isResultValid(bytes32 resultId) external view returns (bool) {
-        MLResult storage r = _results[resultId];
+        PackedMLResult storage r = _results[resultId];
         if (r.finalized && !r.challenged) {
             return true;
         }
@@ -363,7 +379,7 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
     /// @param resultId The disputed result identifier
     /// @param r Storage reference to the MLResult
     /// @param proofValid Whether the ZK proof verified successfully
-    function _settleDispute(bytes32 resultId, MLResult storage r, bool proofValid) internal {
+    function _settleDispute(bytes32 resultId, PackedMLResult storage r, bool proofValid) internal {
         disputeResolved[resultId] = true;
         disputeProverWon[resultId] = proofValid;
         r.finalized = true;

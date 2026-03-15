@@ -1,5 +1,5 @@
 mod chain;
-mod config;
+use tee_operator::config;
 pub mod deadline_monitor;
 mod enclave;
 mod metrics;
@@ -272,7 +272,8 @@ async fn cmd_submit(
     );
 
     // 2. Call enclave /infer
-    let enclave_client = enclave::EnclaveClient::new(&config.enclave_url);
+    let enclave_client =
+        enclave::EnclaveClient::with_config_timeout(&config.enclave_url, config.enclave_timeout_secs);
 
     let health = enclave_client.health().await?;
     if !health {
@@ -436,13 +437,12 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
         &config.private_key,
         &config.tee_verifier_address,
     )?);
-    let proof_mgr = Arc::new(ProofManager::with_config_timeout(
+    let proof_mgr = Arc::new(ProofManager::new(
         &config.precompute_bin,
         &config.model_path,
         &config.proofs_dir,
         config.max_proof_retries,
         config.proof_retry_delay_secs,
-        config.prover_timeout_secs,
     ));
 
     // Initialize webhook notifier (None if WEBHOOK_URL is not set)
@@ -493,27 +493,28 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
 
     let shutdown = Arc::new(ShutdownState::new());
 
+    // Initialize metrics state before shutdown handler so it can be marked
+    let metrics_state = Arc::new(metrics::MetricsState::new());
+
     // Spawn shutdown signal handler
+    let (metrics_shutdown_tx, metrics_shutdown_rx) = tokio::sync::watch::channel(false);
     {
         let shutdown = shutdown.clone();
+        let ms = metrics_state.clone();
         tokio::spawn(async move {
-            let reason = shutdown_signal().await;
-            tracing::info!(
-                signal = reason,
-                "shutting down gracefully, reason: {}",
-                reason
-            );
-            shutdown.signal_shutdown(reason);
+            shutdown_signal().await;
+            tracing::info!("shutting down gracefully");
+            shutdown.signal_shutdown();
+            ms.mark_shutting_down();
+            let _ = metrics_shutdown_tx.send(true);
         });
     }
 
-    // Initialize metrics and spawn HTTP server (shutdown-aware health endpoint)
-    let metrics_state = Arc::new(metrics::MetricsState::new());
+    // Spawn HTTP metrics server with graceful shutdown support
     {
         let ms = metrics_state.clone();
-        let sd = shutdown.clone();
         tokio::spawn(async move {
-            metrics::serve_metrics_with_shutdown(ms, metrics_port, sd).await;
+            metrics::serve_metrics_with_shutdown(ms, metrics_port, metrics_shutdown_rx).await;
         });
     }
 
@@ -654,9 +655,18 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
                             let cb = chain_cb.clone();
                             shutdown.track_task_start();
                             let sd = shutdown.clone();
+                            let mut cancel_rx = shutdown.subscribe_cancel();
                             tokio::spawn(
                                 async move {
-                                    handle_challenge(&chain, &pm, rid, &am, &ms, &cb).await;
+                                    tokio::select! {
+                                        _ = handle_challenge(&chain, &pm, rid, &am, &ms, &cb) => {},
+                                        _ = cancel_rx.changed() => {
+                                            tracing::info!(
+                                                result_id = %rid,
+                                                "cancelling in-flight dispute task due to shutdown"
+                                            );
+                                        },
+                                    }
                                     sd.track_task_done();
                                     drop(permit);
                                 }
@@ -737,19 +747,25 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
         }
 
         // Use select to allow shutdown to interrupt the sleep
+        let mut cancel_rx = shutdown.subscribe_cancel();
         tokio::select! {
             _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {},
-            _ = async {
-                while !shutdown.is_shutting_down() {
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                }
-            } => {
+            _ = cancel_rx.changed() => {
                 break;
             },
         }
     }
 
-    // Graceful shutdown: wait for in-flight tasks
+    // Graceful shutdown: log reason
+    let reason = shutdown.reason().unwrap_or_else(|| "unknown".to_string());
+    tracing::info!(
+        reason = %reason,
+        in_flight_tasks = shutdown.in_flight_count(),
+        "initiating graceful shutdown sequence"
+    );
+
+    // Set health endpoint to unhealthy (already done via ShutdownState sharing)
+    // Wait for in-flight tasks to complete
     let in_flight = shutdown.in_flight_count();
     if in_flight > 0 {
         tracing::info!(
@@ -764,8 +780,10 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
         if remaining > 0 {
             tracing::warn!(
                 remaining_tasks = remaining,
-                "Shutdown timeout — exiting with in-flight tasks"
+                "Shutdown timeout -- exiting with in-flight tasks"
             );
+        } else {
+            tracing::info!("All in-flight tasks completed");
         }
     }
 
@@ -781,7 +799,10 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
         );
     }
 
-    tracing::info!("Shutdown complete");
+    // Flush pending logs and tracer spans
+    tracing_setup::shutdown_tracer_provider();
+
+    tracing::info!(reason = %reason, "shutdown complete");
     Ok(())
 }
 
@@ -809,7 +830,8 @@ async fn cmd_register(
     expected_pcr0: Option<&str>,
     skip_verify: bool,
 ) -> anyhow::Result<()> {
-    let enclave_client = enclave::EnclaveClient::new(&config.enclave_url);
+    let enclave_client =
+        enclave::EnclaveClient::new(&config.enclave_url);
 
     // 1. Get enclave address first (needed for nonce computation)
     let info = enclave_client.info().await?;

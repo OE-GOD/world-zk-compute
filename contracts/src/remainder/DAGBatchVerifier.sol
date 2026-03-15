@@ -5,9 +5,19 @@ import {PoseidonSponge} from "./PoseidonSponge.sol";
 
 /// @title DAGBatchVerifier
 /// @notice Multi-transaction batch verification for DAG circuits that exceed block gas limits.
-/// @dev Splits the ~252M gas single-tx DAG verification into ~12 batches of ~20M gas each.
-///      The full proof is re-supplied via calldata each batch (cheaper than storing in storage).
-///      Only sponge state, bindings, and output eval are persisted between batches.
+/// @dev Full DAG verification for the XGBoost 88-layer circuit costs ~254M gas in a single
+///      transaction, far exceeding the Ethereum 30M block gas limit. This library splits
+///      verification into multiple transactions (start + continue + finalize), each staying
+///      under 30M gas. The full proof is re-supplied via calldata each batch (~16 gas/byte,
+///      cheaper than persisting in storage at ~20K gas/slot). Only sponge state, bindings,
+///      and output eval are persisted between batches.
+///
+///      Gas profile for 88-layer XGBoost circuit (15 total txs):
+///        - Start:    ~17.5M gas (1 tx -- setup, transcript init, output challenge squeeze)
+///        - Continue: ~13-28M gas per tx (11 txs -- 8 compute layers each)
+///        - Finalize: ~9-22M gas per tx (3 txs -- 16 input eval groups each)
+///
+///      Smaller circuits with fewer layers/groups will use fewer transactions.
 library DAGBatchVerifier {
     // ========================================================================
     // CONSTANTS
@@ -34,6 +44,18 @@ library DAGBatchVerifier {
     ///
     ///      The value 8 provides the best balance: fewest transactions while staying
     ///      safely under the 30M block gas limit for all observed layer combinations.
+    ///
+    ///      Adjusting for different circuits:
+    ///        Smaller circuits with fewer or simpler layers (fewer sumcheck rounds,
+    ///        fewer atoms per layer) can safely increase this value. For example,
+    ///        a 20-layer circuit with 2-round sumchecks may tolerate 16 layers/batch.
+    ///        To determine the right value for a new circuit:
+    ///          1. Deploy and run single-tx verification on a high-gas-limit testnet
+    ///             (e.g., Anvil with --gas-limit 500000000) to measure total gas.
+    ///          2. Divide total gas by number of compute layers for avg per-layer cost.
+    ///          3. Set LAYERS_PER_BATCH = floor(25M / avg_per_layer_gas) to leave ~5M
+    ///             margin for storage I/O and proof decoding overhead per batch.
+    ///        The 30M limit is Ethereum mainnet; L2s with higher limits allow larger batches.
     uint256 internal constant LAYERS_PER_BATCH = 8;
 
     /// @notice Number of committed input eval groups processed per finalize transaction
@@ -54,6 +76,18 @@ library DAGBatchVerifier {
     ///          Would exceed 30M for large circuits. Not viable.
     ///
     ///      Total verification pipeline: 1 start + 11 continue + 3 finalize = 15 txs.
+    ///
+    ///      Adjusting for different circuits:
+    ///        The number of eval groups equals the number of committed input claims
+    ///        (each claim creates its own singleton group; claims with matching R-halves
+    ///        also join earlier groups). Circuits with fewer committed inputs have fewer
+    ///        groups and may process them all in a single finalize call.
+    ///        To tune for a new circuit:
+    ///          1. Count committed input claims from the proof (numGroups == numClaims).
+    ///          2. Run single finalize on a high-gas-limit testnet to measure total gas.
+    ///          3. Set GROUPS_PER_FINALIZE_BATCH = floor(25M / avg_per_group_gas).
+    ///        Circuits with only public (non-committed) inputs skip PODP finalization
+    ///        entirely, since public input verification uses MLE evaluation instead.
     uint256 internal constant GROUPS_PER_FINALIZE_BATCH = 16;
 
     // ========================================================================

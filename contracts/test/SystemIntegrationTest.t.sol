@@ -219,8 +219,8 @@ contract SystemIntegrationTest is Test {
     function test_teeSubmitAndFinalize() public {
         // Register enclave
         teeVerifier.registerEnclave(enclaveKey, bytes32(uint256(0xBEEF)));
-        (bool registered,,,) = teeVerifier.enclaves(enclaveKey);
-        assertTrue(registered);
+        ITEEMLVerifier.EnclaveInfo memory enclaveInfo = teeVerifier.enclaves(enclaveKey);
+        assertTrue(enclaveInfo.registered);
 
         // Create attestation
         bytes memory result = "prediction: 0.95";
@@ -650,8 +650,8 @@ contract SystemIntegrationTest is Test {
         // New admin can operate
         vm.prank(newAdmin);
         teeVerifier.registerEnclave(enclaveKey, bytes32(uint256(0xBEEF)));
-        (bool reg,,,) = teeVerifier.enclaves(enclaveKey);
-        assertTrue(reg);
+        ITEEMLVerifier.EnclaveInfo memory regInfo = teeVerifier.enclaves(enclaveKey);
+        assertTrue(regInfo.registered);
     }
 
     // ========================================================================

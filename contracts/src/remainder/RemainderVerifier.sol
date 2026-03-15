@@ -1022,9 +1022,32 @@ contract RemainderVerifier is Ownable2Step, Pausable {
         require(dagCircuits[circuitHash].circuitHash == bytes32(0), "DAG circuit already registered");
 
         GKRDAGVerifier.DAGCircuitDescription memory desc = abi.decode(descData, (GKRDAGVerifier.DAGCircuitDescription));
-        require(desc.numComputeLayers > 0, "numComputeLayers must be > 0");
+
+        // --- Bounds checks (prevent gas DOS from oversized circuits) ---
+        require(desc.numComputeLayers > 0, "no compute layers");
+        require(desc.numInputLayers > 0, "no input layers");
+        require(desc.numComputeLayers <= 256, "too many compute layers");
+        require(desc.numInputLayers <= 64, "too many input layers");
+
+        // --- Array length consistency checks ---
         require(desc.layerTypes.length == desc.numComputeLayers, "layerTypes length mismatch");
+        require(desc.numSumcheckRounds.length == desc.numComputeLayers, "numSumcheckRounds length mismatch");
         require(desc.atomOffsets.length == desc.numComputeLayers + 1, "atomOffsets length mismatch");
+        require(desc.inputIsCommitted.length == desc.numInputLayers, "inputIsCommitted length mismatch");
+        require(
+            desc.oracleProductOffsets.length == desc.numComputeLayers + 1, "oracleProductOffsets length mismatch"
+        );
+
+        // --- Atom array consistency ---
+        uint256 totalAtoms = desc.atomOffsets[desc.numComputeLayers];
+        require(desc.atomTargetLayers.length == totalAtoms, "atomTargetLayers length mismatch");
+        require(desc.atomCommitIdxs.length == totalAtoms, "atomCommitIdxs length mismatch");
+        require(desc.ptOffsets.length == totalAtoms + 1, "ptOffsets length mismatch");
+
+        // --- Oracle array consistency ---
+        uint256 totalProducts = desc.oracleProductOffsets[desc.numComputeLayers];
+        require(desc.oracleResultIdxs.length == totalProducts, "oracleResultIdxs length mismatch");
+        require(desc.oracleExprCoeffs.length == totalProducts, "oracleExprCoeffs length mismatch");
 
         dagCircuits[circuitHash] = DAGCircuitConfig({
             circuitHash: circuitHash, description: desc, active: true, name: name, gensHash: gensHash

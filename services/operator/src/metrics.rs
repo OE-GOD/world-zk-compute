@@ -35,6 +35,8 @@ pub struct MetricsState {
     #[allow(dead_code)] // accessed via .load()/.store(); clippy false positive on atomic fields
     pub webhook_failures: AtomicU64,
     pub start_time: Instant,
+    /// Set to `true` during graceful shutdown so health endpoints report unhealthy.
+    pub shutting_down: AtomicBool,
 }
 
 impl Default for MetricsState {
@@ -56,7 +58,18 @@ impl MetricsState {
             last_block_polled: AtomicU64::new(0),
             webhook_failures: AtomicU64::new(0),
             start_time: Instant::now(),
+            shutting_down: AtomicBool::new(false),
         }
+    }
+
+    /// Mark this metrics state as shutting down. Health endpoints will report unhealthy.
+    pub fn mark_shutting_down(&self) {
+        self.shutting_down.store(true, Ordering::SeqCst);
+    }
+
+    /// Returns true if the service is in shutdown state.
+    pub fn is_shutting_down(&self) -> bool {
+        self.shutting_down.load(Ordering::SeqCst)
     }
 
     /// Record a new result submission.
@@ -187,24 +200,35 @@ struct MetricsJsonResponse {
     webhook_failures: u64,
 }
 
-async fn health_handler(State(state): State<Arc<MetricsState>>) -> Json<HealthResponse> {
-    Json(HealthResponse {
-        status: "ok".to_string(),
+async fn health_handler(
+    State(state): State<Arc<MetricsState>>,
+) -> (axum::http::StatusCode, Json<HealthResponse>) {
+    let status_str = if state.is_shutting_down() {
+        "shutting_down"
+    } else {
+        "ok"
+    };
+    let body = HealthResponse {
+        status: status_str.to_string(),
         uptime_secs: state.start_time.elapsed().as_secs(),
         last_block_polled: state.last_block_polled.load(Ordering::Relaxed),
-    })
+    };
+    if state.is_shutting_down() {
+        (axum::http::StatusCode::SERVICE_UNAVAILABLE, Json(body))
+    } else {
+        (axum::http::StatusCode::OK, Json(body))
+    }
 }
 
 /// Readiness probe for Kubernetes.
 ///
 /// Returns 200 if and only if the operator has polled at least one block
-/// (`last_block_polled > 0`), indicating it has connected to the chain and
-/// started processing. Otherwise returns 503.
+/// (`last_block_polled > 0`) and is not shutting down. Otherwise returns 503.
 async fn ready_handler(
     State(state): State<Arc<MetricsState>>,
 ) -> (axum::http::StatusCode, Json<ReadinessResponse>) {
     let last_block = state.last_block_polled.load(Ordering::Relaxed);
-    let ready = last_block > 0;
+    let ready = last_block > 0 && !state.is_shutting_down();
     let body = ReadinessResponse {
         ready,
         last_block_polled: last_block,
@@ -291,13 +315,12 @@ pub async fn serve_metrics(state: Arc<MetricsState>, port: u16) {
 /// Serve the metrics HTTP server with graceful shutdown support.
 ///
 /// Listens on `0.0.0.0:{port}` and shuts down when the `shutdown_rx` watch
-/// channel receives `true`. The `_shutdown_state` parameter is accepted for
-/// API compatibility with the operator's `ShutdownState` but is not used
-/// directly — shutdown is signalled via the watch channel.
-pub async fn serve_metrics_with_shutdown<S: Send + Sync + 'static>(
+/// channel receives `true`. On shutdown, the `MetricsState.shutting_down` flag
+/// is set so that the health endpoint reports unhealthy (503) before the
+/// server finishes draining connections.
+pub async fn serve_metrics_with_shutdown(
     state: Arc<MetricsState>,
     port: u16,
-    _shutdown_state: Arc<S>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) {
     let versioned = Router::new()
@@ -313,7 +336,7 @@ pub async fn serve_metrics_with_shutdown<S: Send + Sync + 'static>(
         .route("/metrics", get(prometheus_metrics_handler))
         .route("/metrics/json", get(json_metrics_handler))
         .nest("/api/v1", versioned)
-        .with_state(state);
+        .with_state(state.clone());
 
     let addr = format!("0.0.0.0:{}", port);
     tracing::info!("Metrics server (with shutdown) listening on {}", addr);
@@ -328,6 +351,9 @@ pub async fn serve_metrics_with_shutdown<S: Send + Sync + 'static>(
 
     let server = axum::serve(listener, app).with_graceful_shutdown(async move {
         let _ = shutdown_rx.wait_for(|v| *v).await;
+        // Mark the metrics state so health/ready endpoints return 503
+        // during the graceful drain period.
+        state.mark_shutting_down();
         tracing::info!("Metrics server shutting down");
     });
 

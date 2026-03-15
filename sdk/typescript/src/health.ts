@@ -6,10 +6,13 @@
  *
  * @example
  * ```typescript
- * import { checkHealth } from '@worldzk/sdk';
+ * import { checkHealth, checkReady } from '@worldzk/sdk';
  *
  * const health = await checkHealth('http://localhost:8081');
  * console.log(health.status, health.lastIndexedBlock);
+ *
+ * const ready = await checkReady('http://localhost:8081');
+ * console.log(ready.ready, ready.checks);
  * ```
  */
 
@@ -31,8 +34,35 @@ export interface IndexerHealthResponse {
   uptimeSeconds?: number;
 }
 
+/**
+ * Response returned by the indexer's `GET /ready` endpoint.
+ *
+ * Provides a top-level readiness flag together with per-subsystem checks
+ * (e.g. database connectivity, indexing pipeline health).
+ */
+export interface IndexerReadyResponse {
+  /** `true` when all subsystem checks pass. */
+  ready: boolean;
+  /** Per-subsystem readiness details. */
+  checks: {
+    /** Database connectivity status (`"ok"` or an error description). */
+    db: string;
+    /** Indexing pipeline status (`"ok"` or an error description). */
+    indexing: string;
+  };
+}
+
 /** Options for {@link checkHealth}. */
 export interface CheckHealthOptions {
+  /**
+   * Request timeout in milliseconds.
+   * @default 5000
+   */
+  timeout?: number;
+}
+
+/** Options for {@link checkReady}. */
+export interface CheckReadyOptions {
   /**
    * Request timeout in milliseconds.
    * @default 5000
@@ -126,6 +156,84 @@ export async function checkHealth(
       throw new NetworkError(
         'WZK-5000',
         `Indexer health check failed: ${e.message}`,
+        0,
+      );
+    }
+
+    throw e;
+  }
+}
+
+/**
+ * Check the readiness of an indexer service.
+ *
+ * Makes a `GET /ready` request to the given indexer URL and returns a typed
+ * {@link IndexerReadyResponse}. This is a standalone function that does not
+ * require a {@link Client} instance.
+ *
+ * Unlike {@link checkHealth}, this function does **not** throw when the
+ * service reports `ready: false` -- it simply returns the response so
+ * callers can inspect individual checks.
+ *
+ * @param indexerUrl - Base URL of the indexer (e.g. `"http://localhost:8081"`).
+ * @param options - Optional timeout configuration.
+ * @returns The parsed readiness response.
+ *
+ * @throws {TimeoutError} If the request exceeds the configured timeout.
+ * @throws {NetworkError} If the request fails due to a network issue (connection refused, DNS failure, etc.).
+ *
+ * @example
+ * ```typescript
+ * const ready = await checkReady('http://localhost:8081');
+ * if (!ready.ready) {
+ *   console.error('DB:', ready.checks.db, 'Indexing:', ready.checks.indexing);
+ * }
+ * ```
+ */
+export async function checkReady(
+  indexerUrl: string,
+  options: CheckReadyOptions = {},
+): Promise<IndexerReadyResponse> {
+  const url = indexerUrl.replace(/\/$/, '');
+  const timeoutMs = options.timeout ?? DEFAULT_HEALTH_TIMEOUT;
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(`${url}/ready`, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    const data = (await response.json()) as Record<string, unknown>;
+
+    const ready = (data.ready as boolean) ?? false;
+    const rawChecks = (data.checks as Record<string, unknown>) ?? {};
+
+    return {
+      ready,
+      checks: {
+        db: (rawChecks.db as string) ?? 'unknown',
+        indexing: (rawChecks.indexing as string) ?? 'unknown',
+      },
+    };
+  } catch (e) {
+    clearTimeout(timeoutId);
+
+    if (e instanceof Error) {
+      if (e.name === 'AbortError') {
+        throw new TimeoutError(
+          `Indexer ready check timed out after ${timeoutMs}ms`,
+          timeoutMs,
+        );
+      }
+      throw new NetworkError(
+        'WZK-5000',
+        `Indexer ready check failed: ${e.message}`,
         0,
       );
     }

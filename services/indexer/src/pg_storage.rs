@@ -652,6 +652,12 @@ impl Storage for PgStorage {
         })
     }
 
+    fn count_results(&self, filter: &ResultFilter) -> anyhow::Result<u64> {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(self.count_results_async(filter))
+        })
+    }
+
     fn get_stats(&self) -> anyhow::Result<StatsResponse> {
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(self.get_stats_async())
