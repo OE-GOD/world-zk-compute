@@ -25,7 +25,7 @@ serde_json = "1"
 
 # HTTP server (for mock webhook + enclave tests)
 axum = "0.7"
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.13", features = ["json"] }
 
 # Alloy primitives for B256/Address types (used by DeadlineMonitor)
 alloy = { version = "1.0", features = ["full", "provider-anvil-node"] }
