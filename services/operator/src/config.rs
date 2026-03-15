@@ -81,6 +81,11 @@ pub struct ConfigFile {
     /// Prover-specific retry: maximum delay in seconds for exponential backoff cap (default: 300).
     /// Env var: `PROVER_RETRY_MAX_DELAY_SECS`.
     pub prover_retry_max_delay_secs: Option<u64>,
+    /// Time in seconds before an unacknowledged critical alert is escalated.
+    /// Default: 900 (15 minutes). A value of 0 means immediate escalation,
+    /// which is almost certainly unintended.
+    /// Env var: `ESCALATION_TIMEOUT_SECS`.
+    pub escalation_timeout_secs: Option<u64>,
 }
 
 impl ConfigFile {
@@ -180,6 +185,11 @@ pub struct Config {
     /// Prevents retries from waiting indefinitely as backoff grows.
     /// Env var: `PROVER_RETRY_MAX_DELAY_SECS`.
     pub prover_retry_max_delay_secs: u64,
+    /// Time in seconds before an unacknowledged critical alert is escalated.
+    /// A value of 0 means immediate escalation, which is almost certainly
+    /// unintended (likely a misconfiguration). Default: 900 (15 minutes).
+    /// Env var: `ESCALATION_TIMEOUT_SECS`.
+    pub escalation_timeout_secs: u64,
 }
 
 impl Config {
@@ -360,6 +370,12 @@ impl Config {
             .or(file_cfg.prover_retry_max_delay_secs)
             .unwrap_or(300);
 
+        let escalation_timeout_secs = std::env::var("ESCALATION_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .or(file_cfg.escalation_timeout_secs)
+            .unwrap_or(900);
+
         // Build the contract addresses list.
         // Priority: CONTRACT_ADDRESSES env var > contracts array in TOML > tee_verifier_address.
         let contract_addresses = if let Ok(addrs_str) = std::env::var("CONTRACT_ADDRESSES") {
@@ -426,10 +442,16 @@ impl Config {
             prover_max_retries,
             prover_retry_delay_secs,
             prover_retry_max_delay_secs,
+            escalation_timeout_secs,
         };
 
         // Run validation during config loading so issues are caught early.
+        // Hard errors are returned immediately; soft warnings are emitted via tracing::warn.
         if let Err(validation_errors) = config.validate() {
+            // Log all issues before returning the combined error.
+            for msg in &validation_errors {
+                tracing::error!(msg = %msg, "Config validation error");
+            }
             return Err(anyhow::anyhow!(
                 "Configuration validation failed:\n  - {}",
                 validation_errors.join("\n  - ")
@@ -521,9 +543,12 @@ impl Config {
     /// - RPC URL uses `https://` or `wss://` for non-localhost targets (warns on `http://`)
     /// - Private key is valid hex (64 hex chars or `0x`-prefixed 66 chars)
     /// - Contract addresses are valid Ethereum addresses (`0x` + 40 hex chars)
-    /// - `metrics_port` is in range 1024-65535 (0 = random port, documented)
+    /// - `metrics_port` is 0 (disabled/OS-assigned) or in range 1024-65535
     /// - `prover_max_retries` <= 10 (warns if higher)
+    /// - `retry_max_attempts` <= 10 (warns if higher, errors above 100)
     /// - Prover retry backoff cap >= base delay
+    /// - `enclave_url` is a valid URL with scheme and host
+    /// - `escalation_timeout_secs` > 0 (warns if 0 -- immediate escalation is likely unintended)
     /// - Numeric config values are in reasonable ranges
     /// - URL fields have valid schemes
     ///
@@ -648,6 +673,12 @@ impl Config {
                 "retry_max_attempts {} exceeds maximum of 100",
                 self.retry_max_attempts
             ));
+        } else if self.retry_max_attempts > 10 {
+            tracing::warn!(
+                retry_max_attempts = self.retry_max_attempts,
+                "retry_max_attempts is greater than 10. High retry counts can delay \
+                 error recovery and waste resources. Consider reducing it."
+            );
         }
 
         if self.retry_base_delay_ms == 0 || self.retry_base_delay_ms > 60_000 {
@@ -671,12 +702,25 @@ impl Config {
             ));
         }
 
-        // Enclave URL scheme
+        // Enclave URL: must have valid scheme and a host component.
         if !self.enclave_url.starts_with("http://") && !self.enclave_url.starts_with("https://") {
             errors.push(format!(
                 "enclave_url '{}' is invalid: must start with http:// or https://",
                 self.enclave_url
             ));
+        } else {
+            // Verify the URL has a host (not just a bare scheme like "http://")
+            let after_scheme = if self.enclave_url.starts_with("https://") {
+                &self.enclave_url[8..]
+            } else {
+                &self.enclave_url[7..]
+            };
+            if after_scheme.is_empty() || after_scheme == "/" {
+                errors.push(format!(
+                    "enclave_url '{}' is missing a host (e.g., http://127.0.0.1:8080)",
+                    self.enclave_url
+                ));
+            }
         }
 
         // Webhook URL scheme (if set)
@@ -687,6 +731,17 @@ impl Config {
                     url
                 ));
             }
+        }
+
+        // Escalation timeout: 0 means immediate escalation, which is almost
+        // certainly a misconfiguration (every critical alert would trigger
+        // immediate re-notification on every check cycle).
+        if self.escalation_timeout_secs == 0 {
+            tracing::warn!(
+                "escalation_timeout_secs is 0 (immediate escalation). This means every \
+                 unacknowledged critical alert will be re-escalated on every check cycle. \
+                 This is likely unintended -- consider setting it to at least 60 seconds."
+            );
         }
 
         if errors.is_empty() {
@@ -807,16 +862,24 @@ mod tests {
             "NITRO_VERIFICATION",
             "EXPECTED_PCR0",
             "ATTESTATION_CACHE_TTL",
+            "ATTESTATION_FRESHNESS_SECS",
             "PROVER_URL",
             "METRICS_PORT",
             "MAX_PROOF_RETRIES",
             "PROOF_RETRY_DELAY_SECS",
             "WEBHOOK_URL",
+            "RETRY_MAX_ATTEMPTS",
+            "RETRY_BASE_DELAY_MS",
+            "RETRY_MAX_DELAY_MS",
             "DRY_RUN",
             "STATE_FILE",
             "CONTRACT_ADDRESSES",
             "ENCLAVE_TIMEOUT_SECS",
             "PROVER_TIMEOUT_SECS",
+            "PROVER_MAX_RETRIES",
+            "PROVER_RETRY_DELAY_SECS",
+            "PROVER_RETRY_MAX_DELAY_SECS",
+            "ESCALATION_TIMEOUT_SECS",
         ] {
             std::env::remove_var(var);
         }
@@ -896,8 +959,8 @@ rpc_url = "https://rpc.example.com"
         let _lock = ENV_LOCK.lock().unwrap();
         clear_all_env_vars();
 
-        std::env::set_var("OPERATOR_PRIVATE_KEY", "0xdeadbeef");
-        std::env::set_var("TEE_VERIFIER_ADDRESS", "0x1234");
+        std::env::set_var("OPERATOR_PRIVATE_KEY", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
+        std::env::set_var("TEE_VERIFIER_ADDRESS", "0x1111111111111111111111111111111111111111");
 
         let config = Config::from_env(None).unwrap();
         assert_eq!(config.rpc_url, "http://127.0.0.1:8545");
@@ -922,8 +985,8 @@ rpc_url = "https://rpc.example.com"
 
         let toml_str = r#"
 rpc_url = "https://from-toml.example.com"
-private_key = "0xtomlkey"
-tee_verifier_address = "0xtomladdr"
+private_key = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+tee_verifier_address = "0x3333333333333333333333333333333333333333"
 enclave_url = "http://toml-enclave:9999"
 model_path = "/toml/model.json"
 proofs_dir = "/toml/proofs"
@@ -943,8 +1006,8 @@ proof_retry_delay_secs = 20
 
         let config = Config::from_env(Some(&path)).unwrap();
         assert_eq!(config.rpc_url, "https://from-toml.example.com");
-        assert_eq!(config.private_key, "0xtomlkey");
-        assert_eq!(config.tee_verifier_address, "0xtomladdr");
+        assert_eq!(config.private_key, "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc");
+        assert_eq!(config.tee_verifier_address, "0x3333333333333333333333333333333333333333");
         assert_eq!(config.enclave_url, "http://toml-enclave:9999");
         assert_eq!(config.model_path, "/toml/model.json");
         assert_eq!(config.proofs_dir, "/toml/proofs");
@@ -971,8 +1034,8 @@ proof_retry_delay_secs = 20
 
         let toml_str = r#"
 rpc_url = "https://from-toml.example.com"
-private_key = "0xtomlkey"
-tee_verifier_address = "0xtomladdr"
+private_key = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+tee_verifier_address = "0x3333333333333333333333333333333333333333"
 nitro_verification = false
 attestation_cache_ttl = 900
 metrics_port = 8888
@@ -983,8 +1046,8 @@ metrics_port = 8888
 
         // Set env vars that should override TOML values
         std::env::set_var("OPERATOR_RPC_URL", "https://from-env.example.com");
-        std::env::set_var("OPERATOR_PRIVATE_KEY", "0xenvkey");
-        std::env::set_var("TEE_VERIFIER_ADDRESS", "0xenvaddr");
+        std::env::set_var("OPERATOR_PRIVATE_KEY", "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        std::env::set_var("TEE_VERIFIER_ADDRESS", "0x2222222222222222222222222222222222222222");
         std::env::set_var("NITRO_VERIFICATION", "true");
         std::env::set_var("ATTESTATION_CACHE_TTL", "120");
         std::env::set_var("METRICS_PORT", "7777");
@@ -993,8 +1056,8 @@ metrics_port = 8888
 
         // Env vars should win
         assert_eq!(config.rpc_url, "https://from-env.example.com");
-        assert_eq!(config.private_key, "0xenvkey");
-        assert_eq!(config.tee_verifier_address, "0xenvaddr");
+        assert_eq!(config.private_key, "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        assert_eq!(config.tee_verifier_address, "0x2222222222222222222222222222222222222222");
         assert!(config.nitro_verification);
         assert_eq!(config.attestation_cache_ttl, 120);
         assert_eq!(config.metrics_port, 7777);
@@ -1024,7 +1087,7 @@ metrics_port = 8888
 
         // Config file has private_key but not tee_verifier_address
         let toml_str = r#"
-private_key = "0xsomekey"
+private_key = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
 "#;
         let mut tmpfile = tempfile::NamedTempFile::new().unwrap();
         tmpfile.write_all(toml_str.as_bytes()).unwrap();
@@ -1070,8 +1133,8 @@ private_key = "0xsomekey"
         clear_all_env_vars();
 
         let toml_str = r#"
-private_key = "0xtomlkey"
-tee_verifier_address = "0xtomladdr"
+private_key = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+tee_verifier_address = "0x3333333333333333333333333333333333333333"
 max_proof_retries = 2
 proof_retry_delay_secs = 5
 "#;
@@ -1135,8 +1198,8 @@ path = "/app/model.json"
         let _lock = ENV_LOCK.lock().unwrap();
         clear_all_env_vars();
 
-        std::env::set_var("OPERATOR_PRIVATE_KEY", "0xkey");
-        std::env::set_var("TEE_VERIFIER_ADDRESS", "0xaddr");
+        std::env::set_var("OPERATOR_PRIVATE_KEY", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
+        std::env::set_var("TEE_VERIFIER_ADDRESS", "0x1111111111111111111111111111111111111111");
         std::env::set_var("MODEL_PATH", "/custom/model.json");
 
         let config = Config::from_env(None).unwrap();
@@ -1155,8 +1218,8 @@ path = "/app/model.json"
         clear_all_env_vars();
 
         let toml_str = r#"
-private_key = "0xkey"
-tee_verifier_address = "0xaddr"
+private_key = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+tee_verifier_address = "0x1111111111111111111111111111111111111111"
 model_path = "/old/model.json"
 
 [[models]]
@@ -1188,8 +1251,8 @@ path = "/new/model-v2.json"
         clear_all_env_vars();
 
         let toml_str = r#"
-private_key = "0xkey"
-tee_verifier_address = "0xaddr"
+private_key = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+tee_verifier_address = "0x1111111111111111111111111111111111111111"
 
 [[models]]
 name = "model-a"
@@ -1239,8 +1302,8 @@ model_format = "lightgbm"
 
         let toml_str = format!(
             r#"
-private_key = "0xkey"
-tee_verifier_address = "0xaddr"
+private_key = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+tee_verifier_address = "0x1111111111111111111111111111111111111111"
 
 [[models]]
 name = "valid-model"
@@ -1264,8 +1327,8 @@ path = "{}"
         clear_all_env_vars();
 
         let toml_str = r#"
-private_key = "0xkey"
-tee_verifier_address = "0xaddr"
+private_key = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+tee_verifier_address = "0x1111111111111111111111111111111111111111"
 
 [[models]]
 name = "missing-model"
@@ -1303,8 +1366,8 @@ path = "/nonexistent/model-file-abc123.json"
 
         let toml_str = format!(
             r#"
-private_key = "0xkey"
-tee_verifier_address = "0xaddr"
+private_key = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+tee_verifier_address = "0x1111111111111111111111111111111111111111"
 
 [[models]]
 name = "bad-format"
@@ -1349,8 +1412,8 @@ model_format = "tensorflow"
 
         let toml_str = format!(
             r#"
-private_key = "0xkey"
-tee_verifier_address = "0xaddr"
+private_key = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+tee_verifier_address = "0x1111111111111111111111111111111111111111"
 
 [[models]]
 name = "hashed-model"
@@ -1382,8 +1445,8 @@ model_hash = "{}"
 
         let toml_str = format!(
             r#"
-private_key = "0xkey"
-tee_verifier_address = "0xaddr"
+private_key = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+tee_verifier_address = "0x1111111111111111111111111111111111111111"
 
 [[models]]
 name = "bad-hash"
@@ -1423,8 +1486,8 @@ model_hash = "{}"
 
         let toml_str = format!(
             r#"
-private_key = "0xkey"
-tee_verifier_address = "0xaddr"
+private_key = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+tee_verifier_address = "0x1111111111111111111111111111111111111111"
 
 [[models]]
 name = "no-prefix"
@@ -1450,8 +1513,8 @@ model_hash = "{}"
 
         // When MODEL_PATH is set via env var and no [[models]] section exists,
         // a default model entry should be created from it.
-        std::env::set_var("OPERATOR_PRIVATE_KEY", "0xkey");
-        std::env::set_var("TEE_VERIFIER_ADDRESS", "0xaddr");
+        std::env::set_var("OPERATOR_PRIVATE_KEY", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
+        std::env::set_var("TEE_VERIFIER_ADDRESS", "0x1111111111111111111111111111111111111111");
         std::env::set_var("MODEL_PATH", "/env/model.json");
 
         let config = Config::from_env(None).unwrap();
@@ -1470,8 +1533,8 @@ model_hash = "{}"
         // When model_path is set in TOML but no [[models]] section,
         // a default model entry should be created from model_path.
         let toml_str = r#"
-private_key = "0xkey"
-tee_verifier_address = "0xaddr"
+private_key = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+tee_verifier_address = "0x1111111111111111111111111111111111111111"
 model_path = "/toml/model.json"
 "#;
         let mut tmpfile = tempfile::NamedTempFile::new().unwrap();
@@ -1489,8 +1552,8 @@ model_path = "/toml/model.json"
     #[test]
     fn test_multiple_models_with_all_fields() {
         let toml_str = r#"
-private_key = "0xkey"
-tee_verifier_address = "0xaddr"
+private_key = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+tee_verifier_address = "0x1111111111111111111111111111111111111111"
 
 [[models]]
 name = "xgboost-iris"
@@ -1524,8 +1587,8 @@ path = "/models/auto.json"
     #[test]
     fn test_webhook_url_from_toml() {
         let toml_str = r#"
-private_key = "0xkey"
-tee_verifier_address = "0xaddr"
+private_key = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+tee_verifier_address = "0x1111111111111111111111111111111111111111"
 webhook_url = "https://hooks.slack.com/services/T00/B00/XXXX"
 "#;
         let cf = ConfigFile::from_toml_str(toml_str).unwrap();
@@ -1540,8 +1603,8 @@ webhook_url = "https://hooks.slack.com/services/T00/B00/XXXX"
         let _lock = ENV_LOCK.lock().unwrap();
         clear_all_env_vars();
 
-        std::env::set_var("OPERATOR_PRIVATE_KEY", "0xkey");
-        std::env::set_var("TEE_VERIFIER_ADDRESS", "0xaddr");
+        std::env::set_var("OPERATOR_PRIVATE_KEY", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
+        std::env::set_var("TEE_VERIFIER_ADDRESS", "0x1111111111111111111111111111111111111111");
 
         let config = Config::from_env(None).unwrap();
         assert!(config.webhook_url.is_none());
@@ -1554,8 +1617,8 @@ webhook_url = "https://hooks.slack.com/services/T00/B00/XXXX"
         let _lock = ENV_LOCK.lock().unwrap();
         clear_all_env_vars();
 
-        std::env::set_var("OPERATOR_PRIVATE_KEY", "0xkey");
-        std::env::set_var("TEE_VERIFIER_ADDRESS", "0xaddr");
+        std::env::set_var("OPERATOR_PRIVATE_KEY", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
+        std::env::set_var("TEE_VERIFIER_ADDRESS", "0x1111111111111111111111111111111111111111");
         std::env::set_var("WEBHOOK_URL", "https://hooks.example.com/webhook");
 
         let config = Config::from_env(None).unwrap();
@@ -1573,8 +1636,8 @@ webhook_url = "https://hooks.slack.com/services/T00/B00/XXXX"
         clear_all_env_vars();
 
         let toml_str = r#"
-private_key = "0xkey"
-tee_verifier_address = "0xaddr"
+private_key = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+tee_verifier_address = "0x1111111111111111111111111111111111111111"
 webhook_url = "https://toml-webhook.example.com"
 "#;
         let mut tmpfile = tempfile::NamedTempFile::new().unwrap();
@@ -1599,8 +1662,8 @@ webhook_url = "https://toml-webhook.example.com"
         let _lock = ENV_LOCK.lock().unwrap();
         clear_all_env_vars();
 
-        std::env::set_var("OPERATOR_PRIVATE_KEY", "0xkey");
-        std::env::set_var("TEE_VERIFIER_ADDRESS", "0xaddr");
+        std::env::set_var("OPERATOR_PRIVATE_KEY", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
+        std::env::set_var("TEE_VERIFIER_ADDRESS", "0x1111111111111111111111111111111111111111");
 
         let config = Config::from_env(None).unwrap();
         assert!(!config.dry_run);
@@ -1613,8 +1676,8 @@ webhook_url = "https://toml-webhook.example.com"
         let _lock = ENV_LOCK.lock().unwrap();
         clear_all_env_vars();
 
-        std::env::set_var("OPERATOR_PRIVATE_KEY", "0xkey");
-        std::env::set_var("TEE_VERIFIER_ADDRESS", "0xaddr");
+        std::env::set_var("OPERATOR_PRIVATE_KEY", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
+        std::env::set_var("TEE_VERIFIER_ADDRESS", "0x1111111111111111111111111111111111111111");
         std::env::set_var("DRY_RUN", "true");
 
         let config = Config::from_env(None).unwrap();
@@ -1629,8 +1692,8 @@ webhook_url = "https://toml-webhook.example.com"
         clear_all_env_vars();
 
         let toml_str = r#"
-private_key = "0xkey"
-tee_verifier_address = "0xaddr"
+private_key = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+tee_verifier_address = "0x1111111111111111111111111111111111111111"
 dry_run = true
 "#;
         let mut tmpfile = tempfile::NamedTempFile::new().unwrap();
@@ -1649,8 +1712,8 @@ dry_run = true
         clear_all_env_vars();
 
         let toml_str = r#"
-private_key = "0xkey"
-tee_verifier_address = "0xaddr"
+private_key = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+tee_verifier_address = "0x1111111111111111111111111111111111111111"
 dry_run = true
 "#;
         let mut tmpfile = tempfile::NamedTempFile::new().unwrap();
@@ -1674,7 +1737,7 @@ dry_run = true
 
         // When only TEE_VERIFIER_ADDRESS is set (no CONTRACT_ADDRESSES),
         // contract_addresses should contain just that one address.
-        std::env::set_var("OPERATOR_PRIVATE_KEY", "0xkey");
+        std::env::set_var("OPERATOR_PRIVATE_KEY", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
         std::env::set_var(
             "TEE_VERIFIER_ADDRESS",
             "0x1111111111111111111111111111111111111111",
@@ -1700,7 +1763,7 @@ dry_run = true
         let _lock = ENV_LOCK.lock().unwrap();
         clear_all_env_vars();
 
-        std::env::set_var("OPERATOR_PRIVATE_KEY", "0xkey");
+        std::env::set_var("OPERATOR_PRIVATE_KEY", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
         std::env::set_var(
             "TEE_VERIFIER_ADDRESS",
             "0x1111111111111111111111111111111111111111",
@@ -1739,7 +1802,7 @@ dry_run = true
         let _lock = ENV_LOCK.lock().unwrap();
         clear_all_env_vars();
 
-        std::env::set_var("OPERATOR_PRIVATE_KEY", "0xkey");
+        std::env::set_var("OPERATOR_PRIVATE_KEY", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
         std::env::set_var(
             "TEE_VERIFIER_ADDRESS",
             "0x1111111111111111111111111111111111111111",
@@ -1773,7 +1836,7 @@ dry_run = true
         let _lock = ENV_LOCK.lock().unwrap();
         clear_all_env_vars();
 
-        std::env::set_var("OPERATOR_PRIVATE_KEY", "0xkey");
+        std::env::set_var("OPERATOR_PRIVATE_KEY", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
         std::env::set_var(
             "TEE_VERIFIER_ADDRESS",
             "0x1111111111111111111111111111111111111111",
@@ -1797,7 +1860,7 @@ dry_run = true
         clear_all_env_vars();
 
         let toml_str = r#"
-private_key = "0xkey"
+private_key = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
 tee_verifier_address = "0x1111111111111111111111111111111111111111"
 contracts = [
     "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -1838,7 +1901,7 @@ contracts = [
         clear_all_env_vars();
 
         let toml_str = r#"
-private_key = "0xkey"
+private_key = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
 tee_verifier_address = "0x1111111111111111111111111111111111111111"
 contracts = [
     "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -1872,7 +1935,7 @@ contracts = [
 
         // Empty contracts array in TOML should fall back to tee_verifier_address
         let toml_str = r#"
-private_key = "0xkey"
+private_key = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
 tee_verifier_address = "0x1111111111111111111111111111111111111111"
 contracts = []
 "#;
@@ -1926,8 +1989,8 @@ rpc_url = "https://rpc.example.com"
         let _lock = ENV_LOCK.lock().unwrap();
         clear_all_env_vars();
 
-        std::env::set_var("OPERATOR_PRIVATE_KEY", "0xkey");
-        std::env::set_var("TEE_VERIFIER_ADDRESS", "0xaddr");
+        std::env::set_var("OPERATOR_PRIVATE_KEY", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
+        std::env::set_var("TEE_VERIFIER_ADDRESS", "0x1111111111111111111111111111111111111111");
 
         let config = Config::from_env(None).unwrap();
         assert_eq!(config.enclave_timeout_secs, 30);
@@ -1941,8 +2004,8 @@ rpc_url = "https://rpc.example.com"
         let _lock = ENV_LOCK.lock().unwrap();
         clear_all_env_vars();
 
-        std::env::set_var("OPERATOR_PRIVATE_KEY", "0xkey");
-        std::env::set_var("TEE_VERIFIER_ADDRESS", "0xaddr");
+        std::env::set_var("OPERATOR_PRIVATE_KEY", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
+        std::env::set_var("TEE_VERIFIER_ADDRESS", "0x1111111111111111111111111111111111111111");
         std::env::set_var("ENCLAVE_TIMEOUT_SECS", "60");
         std::env::set_var("PROVER_TIMEOUT_SECS", "600");
 
@@ -1959,8 +2022,8 @@ rpc_url = "https://rpc.example.com"
         clear_all_env_vars();
 
         let toml_str = r#"
-private_key = "0xkey"
-tee_verifier_address = "0xaddr"
+private_key = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+tee_verifier_address = "0x1111111111111111111111111111111111111111"
 enclave_timeout_secs = 45
 prover_timeout_secs = 500
 "#;
@@ -1981,8 +2044,8 @@ prover_timeout_secs = 500
         clear_all_env_vars();
 
         let toml_str = r#"
-private_key = "0xkey"
-tee_verifier_address = "0xaddr"
+private_key = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+tee_verifier_address = "0x1111111111111111111111111111111111111111"
 enclave_timeout_secs = 45
 prover_timeout_secs = 500
 "#;
@@ -2005,8 +2068,8 @@ prover_timeout_secs = 500
         let _lock = ENV_LOCK.lock().unwrap();
         clear_all_env_vars();
 
-        std::env::set_var("OPERATOR_PRIVATE_KEY", "0xkey");
-        std::env::set_var("TEE_VERIFIER_ADDRESS", "0xaddr");
+        std::env::set_var("OPERATOR_PRIVATE_KEY", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
+        std::env::set_var("TEE_VERIFIER_ADDRESS", "0x1111111111111111111111111111111111111111");
         std::env::set_var("ENCLAVE_TIMEOUT_SECS", "not_a_number");
         std::env::set_var("PROVER_TIMEOUT_SECS", "");
 
@@ -2036,5 +2099,579 @@ rpc_url = "https://rpc.example.com"
         let cf = ConfigFile::from_toml_str(toml_str).unwrap();
         assert!(cf.enclave_timeout_secs.is_none());
         assert!(cf.prover_timeout_secs.is_none());
+    }
+
+    // ======================== validate() tests ========================
+
+    /// Helper: build a Config with valid defaults for validation tests.
+    /// This bypasses `from_env` so we can test `validate()` in isolation
+    /// without touching environment variables.
+    fn make_valid_config() -> Config {
+        Config {
+            rpc_url: "https://rpc.example.com".to_string(),
+            private_key: "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+                .to_string(),
+            tee_verifier_address: "0x1111111111111111111111111111111111111111".to_string(),
+            enclave_url: "http://127.0.0.1:8080".to_string(),
+            model_path: "./model.json".to_string(),
+            proofs_dir: "./proofs".to_string(),
+            prover_stake_wei: "100000000000000000".to_string(),
+            precompute_bin: "precompute_proof".to_string(),
+            nitro_verification: false,
+            expected_pcr0: None,
+            attestation_cache_ttl: 300,
+            attestation_freshness_secs: 600,
+            prover_url: None,
+            metrics_port: 9090,
+            max_proof_retries: 3,
+            proof_retry_delay_secs: 10,
+            webhook_url: None,
+            retry_max_attempts: 3,
+            retry_base_delay_ms: 1000,
+            retry_max_delay_ms: 30000,
+            models: vec![ModelConfig {
+                name: "default".to_string(),
+                path: "./model.json".to_string(),
+                model_format: "auto".to_string(),
+                model_hash: None,
+            }],
+            dry_run: false,
+            state_file: "./operator-state.json".to_string(),
+            contract_addresses: vec![
+                "0x1111111111111111111111111111111111111111".to_string(),
+            ],
+            enclave_timeout_secs: 30,
+            prover_timeout_secs: 300,
+            prover_max_retries: 3,
+            prover_retry_delay_secs: 5,
+            prover_retry_max_delay_secs: 300,
+            escalation_timeout_secs: 900,
+        }
+    }
+
+    #[test]
+    fn test_validate_valid_config() {
+        let config = make_valid_config();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_valid_config_with_0x_private_key() {
+        let mut config = make_valid_config();
+        config.private_key =
+            "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890".to_string();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_invalid_rpc_url_no_scheme() {
+        let mut config = make_valid_config();
+        config.rpc_url = "rpc.example.com".to_string();
+        let errors = config.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("rpc_url")));
+    }
+
+    #[test]
+    fn test_validate_invalid_rpc_url_ftp() {
+        let mut config = make_valid_config();
+        config.rpc_url = "ftp://rpc.example.com".to_string();
+        let errors = config.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("rpc_url")));
+    }
+
+    #[test]
+    fn test_validate_valid_rpc_url_ws() {
+        let mut config = make_valid_config();
+        config.rpc_url = "ws://127.0.0.1:8545".to_string();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_valid_rpc_url_wss() {
+        let mut config = make_valid_config();
+        config.rpc_url = "wss://rpc.example.com".to_string();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_invalid_private_key_too_short() {
+        let mut config = make_valid_config();
+        config.private_key = "abcdef".to_string();
+        let errors = config.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("private_key")));
+    }
+
+    #[test]
+    fn test_validate_invalid_private_key_non_hex() {
+        let mut config = make_valid_config();
+        config.private_key =
+            "zzzzzz1234567890abcdef1234567890abcdef1234567890abcdef1234567890".to_string();
+        let errors = config.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("private_key")));
+    }
+
+    #[test]
+    fn test_validate_invalid_tee_verifier_address_no_0x() {
+        let mut config = make_valid_config();
+        config.tee_verifier_address = "1111111111111111111111111111111111111111".to_string();
+        config.contract_addresses = vec![config.tee_verifier_address.clone()];
+        let errors = config.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("tee_verifier_address")));
+    }
+
+    #[test]
+    fn test_validate_invalid_tee_verifier_address_too_short() {
+        let mut config = make_valid_config();
+        config.tee_verifier_address = "0x1234".to_string();
+        config.contract_addresses = vec![config.tee_verifier_address.clone()];
+        let errors = config.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("tee_verifier_address")));
+    }
+
+    #[test]
+    fn test_validate_invalid_contract_address() {
+        let mut config = make_valid_config();
+        config.contract_addresses = vec![
+            "0x1111111111111111111111111111111111111111".to_string(),
+            "not-an-address".to_string(),
+        ];
+        let errors = config.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("contract_addresses[1]")));
+    }
+
+    #[test]
+    fn test_validate_invalid_enclave_url() {
+        let mut config = make_valid_config();
+        config.enclave_url = "ftp://enclave:8080".to_string();
+        let errors = config.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("enclave_url")));
+    }
+
+    #[test]
+    fn test_validate_enclave_url_missing_host() {
+        let mut config = make_valid_config();
+        config.enclave_url = "http://".to_string();
+        let errors = config.validate().unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.contains("enclave_url") && e.contains("missing a host")),
+            "Expected error about missing host, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_validate_enclave_url_bare_scheme_with_slash() {
+        let mut config = make_valid_config();
+        config.enclave_url = "https:///".to_string();
+        // "https:///" has an empty host followed by a path slash -- should fail
+        // after_scheme = "/" which is caught as missing host
+        let errors = config.validate().unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.contains("enclave_url")),
+            "Expected enclave_url error, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_validate_valid_enclave_url_with_port() {
+        let mut config = make_valid_config();
+        config.enclave_url = "https://enclave.internal:8443".to_string();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_invalid_webhook_url() {
+        let mut config = make_valid_config();
+        config.webhook_url = Some("not-a-url".to_string());
+        let errors = config.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("webhook_url")));
+    }
+
+    // -- metrics_port validation --
+
+    #[test]
+    fn test_validate_metrics_port_zero_is_valid() {
+        // 0 = disabled / OS-assigned; should not trigger an error.
+        let mut config = make_valid_config();
+        config.metrics_port = 0;
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_metrics_port_privileged_range() {
+        let mut config = make_valid_config();
+        config.metrics_port = 80;
+        let errors = config.validate().unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.contains("metrics_port") && e.contains("privileged")),
+            "Expected metrics_port privileged error, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_validate_metrics_port_valid_range() {
+        let mut config = make_valid_config();
+        config.metrics_port = 1024;
+        assert!(config.validate().is_ok());
+
+        config.metrics_port = 65535;
+        assert!(config.validate().is_ok());
+    }
+
+    // -- escalation_timeout_secs validation --
+
+    #[test]
+    fn test_validate_escalation_timeout_zero_warns_but_valid() {
+        // escalation_timeout_secs = 0 triggers a tracing::warn but is NOT a hard error.
+        let mut config = make_valid_config();
+        config.escalation_timeout_secs = 0;
+        // Should still pass (warning only, no error).
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_escalation_timeout_nonzero_is_valid() {
+        let mut config = make_valid_config();
+        config.escalation_timeout_secs = 60;
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_escalation_timeout_default_from_env() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_all_env_vars();
+
+        std::env::set_var(
+            "OPERATOR_PRIVATE_KEY",
+            "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+        );
+        std::env::set_var(
+            "TEE_VERIFIER_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
+
+        let config = Config::from_env(None).unwrap();
+        assert_eq!(config.escalation_timeout_secs, 900);
+
+        clear_all_env_vars();
+    }
+
+    #[test]
+    fn test_escalation_timeout_from_env_var() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_all_env_vars();
+
+        std::env::set_var(
+            "OPERATOR_PRIVATE_KEY",
+            "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+        );
+        std::env::set_var(
+            "TEE_VERIFIER_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
+        std::env::set_var("ESCALATION_TIMEOUT_SECS", "120");
+
+        let config = Config::from_env(None).unwrap();
+        assert_eq!(config.escalation_timeout_secs, 120);
+
+        clear_all_env_vars();
+    }
+
+    #[test]
+    fn test_escalation_timeout_from_toml() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_all_env_vars();
+
+        let toml_str = r#"
+private_key = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+tee_verifier_address = "0x1111111111111111111111111111111111111111"
+escalation_timeout_secs = 300
+"#;
+        let mut tmpfile = tempfile::NamedTempFile::new().unwrap();
+        tmpfile.write_all(toml_str.as_bytes()).unwrap();
+        let path = tmpfile.path().to_str().unwrap().to_string();
+
+        let config = Config::from_env(Some(&path)).unwrap();
+        assert_eq!(config.escalation_timeout_secs, 300);
+
+        clear_all_env_vars();
+    }
+
+    // -- retry_max_attempts warning --
+
+    #[test]
+    fn test_validate_retry_max_attempts_above_10_warns_but_valid() {
+        // retry_max_attempts between 11-100 produces a warning but is valid.
+        let mut config = make_valid_config();
+        config.retry_max_attempts = 15;
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_retry_max_attempts_above_100_errors() {
+        let mut config = make_valid_config();
+        config.retry_max_attempts = 200;
+        let errors = config.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("retry_max_attempts")));
+    }
+
+    #[test]
+    fn test_validate_retry_base_delay_zero_errors() {
+        let mut config = make_valid_config();
+        config.retry_base_delay_ms = 0;
+        let errors = config.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("retry_base_delay_ms")));
+    }
+
+    #[test]
+    fn test_validate_retry_max_delay_less_than_base() {
+        let mut config = make_valid_config();
+        config.retry_base_delay_ms = 5000;
+        config.retry_max_delay_ms = 1000;
+        let errors = config.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("retry_max_delay_ms")));
+    }
+
+    // -- prover retry validation --
+
+    #[test]
+    fn test_validate_prover_retry_delay_zero_errors() {
+        let mut config = make_valid_config();
+        config.prover_retry_delay_secs = 0;
+        let errors = config.validate().unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.contains("prover_retry_delay_secs")),
+            "Expected prover_retry_delay_secs error, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_validate_prover_retry_max_delay_less_than_base_errors() {
+        let mut config = make_valid_config();
+        config.prover_retry_delay_secs = 10;
+        config.prover_retry_max_delay_secs = 5;
+        let errors = config.validate().unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.contains("prover_retry_max_delay_secs")),
+            "Expected prover_retry_max_delay_secs error, got: {:?}",
+            errors
+        );
+    }
+
+    // -- multiple errors at once --
+
+    #[test]
+    fn test_validate_multiple_errors() {
+        let mut config = make_valid_config();
+        config.rpc_url = "bad-url".to_string();
+        config.private_key = "short".to_string();
+        config.tee_verifier_address = "bad-addr".to_string();
+        config.contract_addresses = vec!["bad-addr".to_string()];
+        let errors = config.validate().unwrap_err();
+        // Should collect multiple errors
+        assert!(
+            errors.len() >= 3,
+            "Expected at least 3 errors, got {}: {:?}",
+            errors.len(),
+            errors
+        );
+    }
+
+    // -- validate_for_command --
+
+    #[test]
+    fn test_validate_for_command_calls_validate() {
+        let mut config = make_valid_config();
+        config.rpc_url = "bad-url".to_string();
+        let result = config.validate_for_command("submit");
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("rpc_url")));
+    }
+
+    // ======================== Prover retry env var tests ========================
+
+    #[test]
+    fn test_prover_retry_defaults() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_all_env_vars();
+
+        std::env::set_var(
+            "OPERATOR_PRIVATE_KEY",
+            "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+        );
+        std::env::set_var(
+            "TEE_VERIFIER_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
+
+        let config = Config::from_env(None).unwrap();
+        assert_eq!(config.prover_max_retries, 3);
+        assert_eq!(config.prover_retry_delay_secs, 5);
+        assert_eq!(config.prover_retry_max_delay_secs, 300);
+
+        clear_all_env_vars();
+    }
+
+    #[test]
+    fn test_prover_retry_from_env_vars() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_all_env_vars();
+
+        std::env::set_var(
+            "OPERATOR_PRIVATE_KEY",
+            "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+        );
+        std::env::set_var(
+            "TEE_VERIFIER_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
+        std::env::set_var("PROVER_MAX_RETRIES", "5");
+        std::env::set_var("PROVER_RETRY_DELAY_SECS", "10");
+        std::env::set_var("PROVER_RETRY_MAX_DELAY_SECS", "600");
+
+        let config = Config::from_env(None).unwrap();
+        assert_eq!(config.prover_max_retries, 5);
+        assert_eq!(config.prover_retry_delay_secs, 10);
+        assert_eq!(config.prover_retry_max_delay_secs, 600);
+
+        clear_all_env_vars();
+    }
+
+    #[test]
+    fn test_prover_retry_from_toml() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_all_env_vars();
+
+        let toml_str = r#"
+private_key = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+tee_verifier_address = "0x1111111111111111111111111111111111111111"
+prover_max_retries = 7
+prover_retry_delay_secs = 15
+prover_retry_max_delay_secs = 900
+"#;
+        let mut tmpfile = tempfile::NamedTempFile::new().unwrap();
+        tmpfile.write_all(toml_str.as_bytes()).unwrap();
+        let path = tmpfile.path().to_str().unwrap().to_string();
+
+        let config = Config::from_env(Some(&path)).unwrap();
+        assert_eq!(config.prover_max_retries, 7);
+        assert_eq!(config.prover_retry_delay_secs, 15);
+        assert_eq!(config.prover_retry_max_delay_secs, 900);
+
+        clear_all_env_vars();
+    }
+
+    #[test]
+    fn test_prover_retry_env_overrides_toml() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_all_env_vars();
+
+        let toml_str = r#"
+private_key = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+tee_verifier_address = "0x1111111111111111111111111111111111111111"
+prover_max_retries = 2
+prover_retry_delay_secs = 3
+prover_retry_max_delay_secs = 100
+"#;
+        let mut tmpfile = tempfile::NamedTempFile::new().unwrap();
+        tmpfile.write_all(toml_str.as_bytes()).unwrap();
+        let path = tmpfile.path().to_str().unwrap().to_string();
+
+        std::env::set_var("PROVER_MAX_RETRIES", "8");
+        std::env::set_var("PROVER_RETRY_DELAY_SECS", "20");
+        std::env::set_var("PROVER_RETRY_MAX_DELAY_SECS", "1200");
+
+        let config = Config::from_env(Some(&path)).unwrap();
+        assert_eq!(config.prover_max_retries, 8);
+        assert_eq!(config.prover_retry_delay_secs, 20);
+        assert_eq!(config.prover_retry_max_delay_secs, 1200);
+
+        clear_all_env_vars();
+    }
+
+    #[test]
+    fn test_prover_retry_invalid_env_uses_default() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_all_env_vars();
+
+        std::env::set_var(
+            "OPERATOR_PRIVATE_KEY",
+            "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+        );
+        std::env::set_var(
+            "TEE_VERIFIER_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
+        std::env::set_var("PROVER_MAX_RETRIES", "not_a_number");
+        std::env::set_var("PROVER_RETRY_DELAY_SECS", "");
+        std::env::set_var("PROVER_RETRY_MAX_DELAY_SECS", "xyz");
+
+        let config = Config::from_env(None).unwrap();
+        // Invalid values should fall back to defaults
+        assert_eq!(config.prover_max_retries, 3);
+        assert_eq!(config.prover_retry_delay_secs, 5);
+        assert_eq!(config.prover_retry_max_delay_secs, 300);
+
+        clear_all_env_vars();
+    }
+
+    #[test]
+    fn test_validate_prover_max_retries_above_10_warns_but_valid() {
+        // prover_max_retries > 10 produces a warning but is not a hard error.
+        let mut config = make_valid_config();
+        config.prover_max_retries = 15;
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_rpc_url_http_non_localhost_warns_but_valid() {
+        // Using http:// for a non-localhost URL produces a warning but is valid.
+        let mut config = make_valid_config();
+        config.rpc_url = "http://rpc.mainnet.example.com".to_string();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_rpc_url_http_localhost_no_warning() {
+        // Using http:// for localhost should not produce a warning.
+        let mut config = make_valid_config();
+        config.rpc_url = "http://127.0.0.1:8545".to_string();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_escalation_timeout_zero_warns_but_valid() {
+        // escalation_timeout_secs == 0 produces a warning but is not a hard error.
+        let mut config = make_valid_config();
+        config.escalation_timeout_secs = 0;
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_prover_retry_config_file_deserialization() {
+        let toml_str = r#"
+prover_max_retries = 4
+prover_retry_delay_secs = 8
+prover_retry_max_delay_secs = 500
+"#;
+        let cf = ConfigFile::from_toml_str(toml_str).unwrap();
+        assert_eq!(cf.prover_max_retries, Some(4));
+        assert_eq!(cf.prover_retry_delay_secs, Some(8));
+        assert_eq!(cf.prover_retry_max_delay_secs, Some(500));
+    }
+
+    #[test]
+    fn test_prover_retry_config_file_missing_defaults_none() {
+        let toml_str = r#"
+rpc_url = "https://rpc.example.com"
+"#;
+        let cf = ConfigFile::from_toml_str(toml_str).unwrap();
+        assert!(cf.prover_max_retries.is_none());
+        assert!(cf.prover_retry_delay_secs.is_none());
+        assert!(cf.prover_retry_max_delay_secs.is_none());
     }
 }

@@ -1628,6 +1628,29 @@ contract RemainderVerifier is Ownable2Step, Pausable {
     // ========================================================================
     // BATCH DAG VERIFICATION
     // ========================================================================
+    //
+    // Security Model:
+    //
+    // 1. SESSION IDENTITY: sessionId = keccak256(sender, circuitHash, block.number).
+    //    This means the same caller verifying the same circuit in the same block would
+    //    collide. In practice this is benign (the caller overwrites their own session).
+    //
+    // 2. AUTHORIZATION: Only the session creator (msg.sender at startDAGBatchVerify time)
+    //    can call continue, finalize, and cleanup. This is enforced by comparing
+    //    msg.sender against session.verifier stored at creation.
+    //
+    // 3. NO REPLAY ACROSS BLOCKS: Since block.number is part of the session ID, a
+    //    finalized-and-cleaned session cannot be "restarted" in a different block -- it
+    //    would produce a different session ID. Within the same block, overwriting is
+    //    possible but only by the same sender.
+    //
+    // 4. PROOF INTEGRITY: The Poseidon sponge state is persisted between batches. An
+    //    attacker who cannot call continue (due to auth) cannot corrupt the transcript.
+    //    The proof is re-decoded from calldata each batch, so the same proof must be
+    //    supplied consistently (the sponge state would diverge otherwise, failing
+    //    subsequent sumcheck verifications).
+    //
+    // ========================================================================
 
     event DAGBatchSessionStarted(bytes32 indexed sessionId, bytes32 indexed circuitHash, uint256 totalBatches);
     event DAGBatchCompleted(bytes32 indexed sessionId, uint256 batchIdx);
@@ -2151,6 +2174,23 @@ contract RemainderVerifier is Ownable2Step, Pausable {
     }
 
     /// @notice Clean up storage for a finalized batch session (optional, for gas refund)
+    /// @dev AUTHORIZATION: Only the session creator can clean up, matching the auth model for
+    ///      continue and finalize. This prevents a third party from cleaning up a session that
+    ///      another contract might still be reading.
+    ///
+    ///      GARBAGE COLLECTION: Cleanup zeroes out the 14-slot session struct and all three
+    ///      cross-batch arrays (bindings, offsets, output challenges). This triggers SSTORE-to-zero
+    ///      gas refunds (EIP-3529: up to 4,800 gas refund per slot). For the 88-layer XGBoost
+    ///      circuit, cleanup refunds ~1.5M-2M gas worth of storage clearing.
+    ///
+    ///      PRECONDITION: The session must be finalized (session.finalized == true). Attempting to
+    ///      clean up an in-progress or not-yet-finalized session reverts with "Batch: not finalized".
+    ///      This ensures that cleanup cannot be used to abort a verification mid-flight.
+    ///
+    ///      IDEMPOTENCY: After cleanup, calling this function again will revert because the loaded
+    ///      session will have all-zero fields (circuitHash == 0 is not checked, but finalized == false
+    ///      after zeroing triggers the "not finalized" require).
+    /// @param sessionId The session to clean up (must be finalized)
     function cleanupDAGBatchSession(bytes32 sessionId) external {
         DAGBatchVerifier.DAGBatchSession memory session = DAGBatchVerifier.loadSession(sessionId);
         require(session.finalized, "Batch: not finalized");
@@ -2159,6 +2199,18 @@ contract RemainderVerifier is Ownable2Step, Pausable {
     }
 
     /// @notice Query batch session status
+    /// @dev Returns the current state of a batch verification session. All fields are zero if the
+    ///      session does not exist or has been cleaned up. This function is view-only and has no
+    ///      access control -- anyone can query any session's status. This is intentional for
+    ///      monitoring and UI integration.
+    /// @param sessionId The session to query (keccak256 of sender + circuitHash + blockNumber)
+    /// @return circuitHash The circuit being verified in this session
+    /// @return nextBatchIdx The next compute batch index to process (equals totalBatches when
+    ///         all compute layers are done)
+    /// @return totalBatches Total number of compute batch transactions required
+    /// @return finalized Whether all verification (compute + input layers) is complete
+    /// @return finalizeInputIdx Current input layer index during finalization phase
+    /// @return finalizeGroupsDone Number of eval groups verified so far in current committed input
     function getDAGBatchSession(bytes32 sessionId)
         external
         view

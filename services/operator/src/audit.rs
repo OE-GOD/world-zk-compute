@@ -153,9 +153,27 @@ pub fn log_result_finalized(
     );
 }
 
+
+/// Log an audit event for proof verification submission.
+pub fn log_proof_verification_submitted(
+    result_id: &str,
+    circuit_hash: &str,
+    proof_size: usize,
+) {
+    tracing::info!(
+        target: "audit",
+        event = "proof_verification_submitted",
+        result_id = %result_id,
+        circuit_hash = %circuit_hash,
+        proof_size = proof_size,
+        "Submitting proof for on-chain verification"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
 
     /// Verify that audit log functions do not panic when called without a
     /// global subscriber (the tracing macros gracefully no-op in that case).
@@ -185,6 +203,7 @@ mod tests {
             true,
         );
         log_result_finalized("0xresult6", "0xtx3");
+        log_proof_verification_submitted("0xresult7", "0xcircuit1", 1024);
     }
 
     /// Verify that audit events use the correct target for filtering.
@@ -212,11 +231,12 @@ mod tests {
         log_config_loaded("http://rpc", "0xcontract", false, true);
         log_result_finalized("0xresult", "0xtx");
         log_prover_slashed("0xresult", false);
+        log_proof_verification_submitted("0xresult", "0xcircuit", 2048);
 
         let events = captured.lock().unwrap();
         assert!(
-            events.len() >= 8,
-            "Expected at least 8 audit events, got {}: {:?}",
+            events.len() >= 9,
+            "Expected at least 9 audit events, got {}: {:?}",
             events.len(),
             *events
         );
@@ -230,6 +250,7 @@ mod tests {
         assert!(events.iter().any(|e| e == "config_loaded"));
         assert!(events.iter().any(|e| e == "result_finalized"));
         assert!(events.iter().any(|e| e == "prover_slashed"));
+        assert!(events.iter().any(|e| e == "proof_verification_submitted"));
     }
 
     /// A minimal tracing layer that captures event names from the "audit" target.

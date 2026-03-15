@@ -455,11 +455,24 @@ impl PgStorage {
             sql.push_str(&format!(" AND model_hash = ${param_count}"));
         }
 
+        // Cursor-based pagination: skip rows up to and including the cursor ID.
+        // Works with the default sort order (block_number DESC, id ASC).
+        if let Some(ref after_id) = filter.after_id {
+            bind_values.push(after_id.clone());
+            param_count += 1;
+            let p = param_count;
+            sql.push_str(&format!(
+                " AND (block_number < (SELECT block_number FROM results WHERE id = ${p}) \
+                 OR (block_number = (SELECT block_number FROM results WHERE id = ${p}) \
+                 AND id > ${p}))"
+            ));
+        }
+
         // Sorting: whitelist allowed columns to prevent SQL injection.
         let order_col = match filter.sort_by.as_deref() {
             Some("block_number") => "block_number",
-            Some("submitted_at") => "timestamp",
             Some("status") => "status",
+            Some("submitter") => "submitter",
             _ => "block_number",
         };
         let order_dir = match filter.sort_order.as_deref() {
@@ -473,8 +486,12 @@ impl PgStorage {
         param_count += 1;
         sql.push_str(&format!(" LIMIT ${param_count}"));
 
-        // Offset-based pagination
-        let offset = filter.offset.unwrap_or(0) as i64;
+        // Offset-based pagination (mutually exclusive with after_id)
+        let offset = if filter.after_id.is_none() {
+            filter.offset.unwrap_or(0) as i64
+        } else {
+            0
+        };
         if offset > 0 {
             param_count += 1;
             sql.push_str(&format!(" OFFSET ${param_count}"));

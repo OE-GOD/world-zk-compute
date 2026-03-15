@@ -846,4 +846,98 @@ mod tests {
             "missing 'last_block_polled' field"
         );
     }
+
+    // --- Shutdown-aware endpoint tests ---
+
+    #[test]
+    fn test_metrics_state_shutting_down_default() {
+        let state = MetricsState::new();
+        assert!(!state.is_shutting_down());
+    }
+
+    #[test]
+    fn test_metrics_state_mark_shutting_down() {
+        let state = MetricsState::new();
+        state.mark_shutting_down();
+        assert!(state.is_shutting_down());
+    }
+
+    #[tokio::test]
+    async fn test_health_returns_503_during_shutdown() {
+        let state = Arc::new(MetricsState::new());
+        state.last_block_polled.store(100, Ordering::Relaxed);
+        state.mark_shutting_down();
+
+        let app = Router::new()
+            .route("/health", get(health_handler))
+            .with_state(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let resp = reqwest::get(format!("http://{}/health", addr))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 503);
+
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["status"], "shutting_down");
+    }
+
+    #[tokio::test]
+    async fn test_ready_returns_503_during_shutdown() {
+        let state = Arc::new(MetricsState::new());
+        state.last_block_polled.store(100, Ordering::Relaxed);
+        // Even though blocks have been polled, shutdown should make it 503
+        state.mark_shutting_down();
+
+        let app = Router::new()
+            .route("/ready", get(ready_handler))
+            .with_state(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let resp = reqwest::get(format!("http://{}/ready", addr))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 503);
+
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["ready"], false);
+    }
+
+    #[tokio::test]
+    async fn test_health_returns_ok_before_shutdown() {
+        let state = Arc::new(MetricsState::new());
+        state.last_block_polled.store(42, Ordering::Relaxed);
+        // Not shutting down
+
+        let app = Router::new()
+            .route("/health", get(health_handler))
+            .with_state(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let resp = reqwest::get(format!("http://{}/health", addr))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["status"], "ok");
+    }
 }

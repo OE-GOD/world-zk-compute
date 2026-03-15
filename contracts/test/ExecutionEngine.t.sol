@@ -1024,6 +1024,16 @@ contract ExecutionEngineTest is Test {
         engine.pause();
     }
 
+    /// @notice T458: unpausing when not paused should revert with ExpectedPause
+    function test_unpause_when_not_paused_reverts() public {
+        // Contract starts in unpaused state -- calling unpause should revert
+        assertFalse(engine.paused(), "precondition: contract should not be paused");
+
+        vm.prank(deployer);
+        vm.expectRevert(Pausable.ExpectedPause.selector);
+        engine.unpause();
+    }
+
     /// @notice T458: non-owner address cannot call pause()
     function test_non_owner_cannot_pause() public {
         address attacker = address(0xBAD);

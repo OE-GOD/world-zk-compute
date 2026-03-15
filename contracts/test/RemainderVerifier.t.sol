@@ -427,6 +427,76 @@ contract RemainderVerifierTest is Test {
         bool[] memory committed = new bool[](1);
         verifier.registerCircuit(keccak256("blocked"), 1, sizes, types, committed, "blocked");
     }
+
+    // ========================================================================
+    // T465: CIRCUIT REGISTRATION VALIDATION TESTS
+    // ========================================================================
+
+    function test_registerCircuit_zeroNumLayers_reverts() public {
+        vm.prank(admin);
+        uint256[] memory sizes = new uint256[](0);
+        uint8[] memory types = new uint8[](0);
+        bool[] memory committed = new bool[](0);
+
+        vm.expectRevert("numLayers must be > 0");
+        verifier.registerCircuit(keccak256("zero-layers"), 0, sizes, types, committed, "zero-layers");
+    }
+
+    function test_registerCircuit_zeroCircuitHash_reverts() public {
+        vm.prank(admin);
+        uint256[] memory sizes = new uint256[](1);
+        sizes[0] = 4;
+        uint8[] memory types = new uint8[](1);
+        types[0] = 3;
+        bool[] memory committed = new bool[](1);
+
+        vm.expectRevert("Circuit hash cannot be zero");
+        verifier.registerCircuit(bytes32(0), 1, sizes, types, committed, "zero-hash");
+    }
+
+    function test_registerCircuit_duplicate_reverts() public {
+        // circuitHash already registered in setUp
+        vm.prank(admin);
+        uint256[] memory sizes = new uint256[](4);
+        sizes[0] = 8;
+        sizes[1] = 4;
+        sizes[2] = 4;
+        sizes[3] = 1;
+        uint8[] memory types = new uint8[](4);
+        types[0] = 3;
+        types[1] = 1;
+        types[2] = 0;
+        types[3] = 0;
+        bool[] memory committed = new bool[](4);
+        committed[0] = true;
+
+        vm.expectRevert("Circuit already registered");
+        verifier.registerCircuit(circuitHash, 4, sizes, types, committed, "duplicate");
+    }
+
+    function test_registerCircuitWithGens_zeroNumLayers_reverts() public {
+        vm.prank(admin);
+        uint256[] memory sizes = new uint256[](0);
+        uint8[] memory types = new uint8[](0);
+        bool[] memory committed = new bool[](0);
+
+        vm.expectRevert("numLayers must be > 0");
+        verifier.registerCircuitWithGens(
+            keccak256("zero-layers-gens"), 0, sizes, types, committed, "zero-layers-gens", bytes32(uint256(1))
+        );
+    }
+
+    function test_registerCircuit_layerSizeMismatch_reverts() public {
+        vm.prank(admin);
+        uint256[] memory sizes = new uint256[](2);
+        sizes[0] = 4;
+        sizes[1] = 2;
+        uint8[] memory types = new uint8[](3);
+        bool[] memory committed = new bool[](3);
+
+        vm.expectRevert("Layer sizes length mismatch");
+        verifier.registerCircuit(keccak256("mismatch"), 3, sizes, types, committed, "mismatch");
+    }
 }
 
 /// @title RemainderVerifierTestDAGSecurity

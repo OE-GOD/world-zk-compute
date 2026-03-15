@@ -399,6 +399,7 @@ contract ProverReputationTest is Test {
         _registerProver(prover1);
 
         rep.slash(prover1, "offense 1", 1000);
+        vm.warp(block.timestamp + 1 hours + 1); // respect cooldown
         rep.slash(prover1, "offense 2", 2000);
 
         ProverReputation.SlashEvent[] memory history = rep.getSlashHistory(prover1);
@@ -416,6 +417,8 @@ contract ProverReputationTest is Test {
         // First slash: 20% of 5000 = 1000 penalty => 4000
         rep.slash(prover1, "first", 2000);
         assertEq(rep.getReputation(prover1).score, 4000, "score after first slash");
+
+        vm.warp(block.timestamp + 1 hours + 1); // respect cooldown
 
         // Second slash: 50% of 4000 = 2000 penalty => 2000
         rep.slash(prover1, "second", 5000);
@@ -1047,6 +1050,159 @@ contract ProverReputationTest is Test {
 
         vm.expectRevert(ProverReputation.InvalidTimestamp.selector);
         rep.getScore(prover1);
+    }
+
+    // ========================================================================
+    // T468: TIMESTAMP OVERFLOW AND COOLDOWN TESTS
+    // ========================================================================
+
+    event SlashCooldownUpdated(uint256 oldCooldown, uint256 newCooldown);
+
+    function test_timestampOverflow_registerReverts() public {
+        vm.warp(uint256(type(uint64).max) + 1);
+
+        vm.expectRevert(ProverReputation.TimestampOverflow.selector);
+        vm.prank(prover1);
+        rep.register();
+    }
+
+    function test_timestampOverflow_recordSuccessReverts() public {
+        _registerProver(prover1);
+
+        vm.warp(uint256(type(uint64).max) + 1);
+
+        vm.expectRevert(ProverReputation.TimestampOverflow.selector);
+        vm.prank(reporter);
+        rep.recordSuccess(prover1, 1000, 0);
+    }
+
+    function test_timestampOverflow_recordFailureReverts() public {
+        _registerProver(prover1);
+
+        vm.warp(uint256(type(uint64).max) + 1);
+
+        vm.expectRevert(ProverReputation.TimestampOverflow.selector);
+        vm.prank(reporter);
+        rep.recordFailure(prover1, "fail");
+    }
+
+    function test_timestampOverflow_recordAbandonReverts() public {
+        _registerProver(prover1);
+
+        vm.warp(uint256(type(uint64).max) + 1);
+
+        vm.expectRevert(ProverReputation.TimestampOverflow.selector);
+        vm.prank(reporter);
+        rep.recordAbandon(prover1, 1);
+    }
+
+    function test_timestampOverflow_slashReverts() public {
+        _registerProver(prover1);
+
+        vm.warp(uint256(type(uint64).max) + 1);
+
+        vm.expectRevert(ProverReputation.TimestampOverflow.selector);
+        rep.slash(prover1, "bad", 1000);
+    }
+
+    function test_timestampSafety_maxUint64Works() public {
+        vm.warp(uint256(type(uint64).max));
+
+        vm.prank(prover1);
+        rep.register();
+
+        ProverReputation.Reputation memory r = rep.getReputation(prover1);
+        assertEq(r.lastUpdateAt, type(uint64).max, "lastUpdateAt should be max uint64");
+    }
+
+    function test_slashCooldown_default() public view {
+        assertEq(rep.slashCooldown(), 1 hours, "default cooldown should be 1 hour");
+    }
+
+    function test_slashCooldown_preventsRapidSlashing() public {
+        _registerProver(prover1);
+
+        rep.slash(prover1, "first offense", 1000);
+
+        vm.expectRevert(ProverReputation.SlashCooldownActive.selector);
+        rep.slash(prover1, "second offense", 1000);
+    }
+
+    function test_slashCooldown_allowsSlashAfterCooldown() public {
+        _registerProver(prover1);
+
+        rep.slash(prover1, "first offense", 1000);
+
+        vm.warp(block.timestamp + 1 hours + 1);
+
+        rep.slash(prover1, "second offense", 1000);
+
+        ProverReputation.SlashEvent[] memory history = rep.getSlashHistory(prover1);
+        assertEq(history.length, 2, "should have 2 slash events");
+    }
+
+    function test_setSlashCooldown_success() public {
+        uint256 newCooldown = 2 hours;
+        rep.setSlashCooldown(newCooldown);
+        assertEq(rep.slashCooldown(), newCooldown, "cooldown should be updated");
+    }
+
+    function test_setSlashCooldown_emitsEvent() public {
+        vm.expectEmit(false, false, false, true);
+        emit SlashCooldownUpdated(1 hours, 2 hours);
+
+        rep.setSlashCooldown(2 hours);
+    }
+
+    function test_setSlashCooldown_rejectsZero() public {
+        vm.expectRevert(ProverReputation.InvalidCooldown.selector);
+        rep.setSlashCooldown(0);
+    }
+
+    function test_setSlashCooldown_rejectsBelowMinimum() public {
+        vm.expectRevert(ProverReputation.InvalidCooldown.selector);
+        rep.setSlashCooldown(30);
+    }
+
+    function test_setSlashCooldown_rejectsAboveMaximum() public {
+        vm.expectRevert(ProverReputation.InvalidCooldown.selector);
+        rep.setSlashCooldown(31 days);
+    }
+
+    function test_setSlashCooldown_acceptsMinimum() public {
+        rep.setSlashCooldown(1 minutes);
+        assertEq(rep.slashCooldown(), 1 minutes);
+    }
+
+    function test_setSlashCooldown_acceptsMaximum() public {
+        rep.setSlashCooldown(30 days);
+        assertEq(rep.slashCooldown(), 30 days);
+    }
+
+    function test_setSlashCooldown_onlyOwner() public {
+        vm.expectRevert(ProverReputation.NotOwner.selector);
+        vm.prank(stranger);
+        rep.setSlashCooldown(2 hours);
+    }
+
+    function test_slashCooldown_customCooldownIsRespected() public {
+        _registerProver(prover1);
+
+        rep.setSlashCooldown(1 days);
+
+        rep.slash(prover1, "first", 1000);
+
+        vm.warp(block.timestamp + 2 hours);
+        vm.expectRevert(ProverReputation.SlashCooldownActive.selector);
+        rep.slash(prover1, "second", 1000);
+
+        vm.warp(block.timestamp + 22 hours + 1);
+        rep.slash(prover1, "second", 1000);
+    }
+
+    function test_cooldownConstants() public view {
+        assertEq(rep.MIN_COOLDOWN(), 1 minutes, "MIN_COOLDOWN = 1 minute");
+        assertEq(rep.MAX_COOLDOWN(), 30 days, "MAX_COOLDOWN = 30 days");
     }
 
     // ========================================================================

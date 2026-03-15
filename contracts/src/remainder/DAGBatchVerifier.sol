@@ -349,6 +349,19 @@ library DAGBatchVerifier {
         }
     }
 
+    /// @notice Generate a deterministic session ID from the caller, circuit, and block number
+    /// @dev The session ID binds a verification session to a specific (sender, circuit, block) tuple.
+    ///      COLLISION NOTE: If the same sender starts two sessions for the same circuit in the same
+    ///      block, the session IDs will collide and the second start will overwrite the first. This
+    ///      is by design -- callers needing parallel verification of the same circuit should use
+    ///      different sender addresses or spread calls across blocks.
+    ///      REPLAY PROTECTION: Since block.number is included, sessions cannot be reused or replayed
+    ///      across blocks. A cleaned-up session from block N will have a different ID if recreated
+    ///      in block M (where M != N).
+    /// @param sender The address initiating the verification (typically msg.sender)
+    /// @param circuitHash The circuit being verified
+    /// @param blockNum The block number at session creation time
+    /// @return The unique session identifier
     function generateSessionId(address sender, bytes32 circuitHash, uint256 blockNum) internal pure returns (bytes32) {
         return keccak256(abi.encodePacked(sender, circuitHash, blockNum));
     }

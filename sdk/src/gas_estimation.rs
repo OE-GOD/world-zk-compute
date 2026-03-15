@@ -1,9 +1,14 @@
 //! Gas estimation utilities for DAG batch verification.
 //!
-//! Provides pure-computation helpers that estimate the gas cost of a full
-//! multi-transaction DAG batch verification session on the `RemainderVerifier`
-//! contract. No RPC calls are made; all calculations use on-chain constants and
-//! empirical gas measurements from the 88-layer XGBoost reference circuit.
+//! This module provides two categories of gas estimation:
+//!
+//! 1. **Pure-computation helpers** ([`estimate_batch_session`], [`estimate_start_gas`],
+//!    [`estimate_continue_gas`], [`estimate_finalize_gas`], etc.) that use empirical
+//!    constants from the 88-layer XGBoost reference circuit. No RPC calls required.
+//!
+//! 2. **RPC-based estimators** ([`RpcGasEstimator`]) that call `eth_estimateGas`
+//!    against a live provider for accurate per-transaction gas estimates. Requires
+//!    an RPC connection and a deployed contract with the circuit registered.
 //!
 //! # On-chain constants
 //!
@@ -446,7 +451,7 @@ pub fn estimate_input_groups(num_layers: u32) -> u32 {
 // RPC-based gas estimation (eth_estimateGas)
 // ---------------------------------------------------------------------------
 
-use alloy::primitives::{Address, Bytes, B256};
+use alloy::primitives::{Bytes, B256};
 use alloy::providers::ProviderBuilder;
 
 use crate::abi::RemainderVerifier;

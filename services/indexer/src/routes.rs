@@ -51,7 +51,7 @@ const MAX_QUERY_STRING_LENGTH: usize = 4096;
 const VALID_STATUSES: &[&str] = &["submitted", "challenged", "finalized", "resolved"];
 
 /// Valid values for the `sort_by` query parameter.
-const VALID_SORT_BY: &[&str] = &["block_number", "submitted_at", "status", "submitter"];
+const VALID_SORT_BY: &[&str] = &["block_number", "status", "submitter"];
 
 /// Valid values for the `sort_order` query parameter.
 const VALID_SORT_ORDER: &[&str] = &["asc", "desc"];
@@ -394,16 +394,6 @@ pub(crate) struct ReadinessChecks {
 }
 
 /// Readiness response with per-check detail.
-///
-/// Example (ready):
-/// ```json
-/// { "ready": true, "checks": { "db": "ok", "indexing": "ok" }, "last_indexed_block": 42 }
-/// ```
-///
-/// Example (not ready):
-/// ```json
-/// { "ready": false, "checks": { "db": "ok", "indexing": "stale" }, "last_indexed_block": 0 }
-/// ```
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ReadinessResponse {
     /// Overall readiness: `true` only when all checks pass.
@@ -862,6 +852,119 @@ mod tests {
         assert_eq!(page.total, 10);
         assert_eq!(page.limit, 3);
         assert!(page.has_more);
+    }
+
+    #[tokio::test]
+    async fn test_list_results_sort_by_block_number_asc() {
+        let s = test_storage();
+        s.insert_result("0x01", "0xm", "0xi", "0xa", 10).unwrap();
+        s.insert_result("0x02", "0xm", "0xi", "0xa", 50).unwrap();
+        s.insert_result("0x03", "0xm", "0xi", "0xa", 30).unwrap();
+        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/results?sort_by=block_number&sort_order=asc")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page.data.len(), 3);
+        assert_eq!(page.data[0].id, "0x01"); // block 10 first (ascending)
+        assert_eq!(page.data[1].id, "0x03"); // block 30
+        assert_eq!(page.data[2].id, "0x02"); // block 50 last
+    }
+
+    #[tokio::test]
+    async fn test_list_results_sort_by_status() {
+        let s = test_storage();
+        s.insert_result("0x01", "0xm", "0xi", "0xa", 1).unwrap();
+        s.insert_result("0x02", "0xm", "0xi", "0xa", 2).unwrap();
+        s.insert_result("0x03", "0xm", "0xi", "0xa", 3).unwrap();
+        s.update_result_status("0x02", "challenged", Some("0xc")).unwrap();
+        s.update_result_status("0x03", "finalized", None).unwrap();
+        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/results?sort_by=status&sort_order=asc")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page.data.len(), 3);
+        // Alphabetically ascending: challenged < finalized < submitted
+        assert_eq!(page.data[0].status, "challenged");
+        assert_eq!(page.data[1].status, "finalized");
+        assert_eq!(page.data[2].status, "submitted");
+    }
+
+    #[tokio::test]
+    async fn test_list_results_invalid_sort_by_returns_400() {
+        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/results?sort_by=id")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let err: ErrorResponse = serde_json::from_slice(&body).unwrap();
+        assert!(
+            err.error.contains("invalid sort_by"),
+            "expected 'invalid sort_by' in error, got: {}",
+            err.error
+        );
+    }
+
+    #[tokio::test]
+    async fn test_list_results_invalid_sort_order_returns_400() {
+        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/results?sort_order=random")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let err: ErrorResponse = serde_json::from_slice(&body).unwrap();
+        assert!(
+            err.error.contains("invalid sort_order"),
+            "expected 'invalid sort_order' in error, got: {}",
+            err.error
+        );
+    }
+
+    #[tokio::test]
+    async fn test_list_results_default_sort_is_block_desc() {
+        let s = test_storage();
+        s.insert_result("0x01", "0xm", "0xi", "0xa", 10).unwrap();
+        s.insert_result("0x02", "0xm", "0xi", "0xa", 50).unwrap();
+        s.insert_result("0x03", "0xm", "0xi", "0xa", 30).unwrap();
+        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+
+        // No sort_by or sort_order -> defaults to block_number DESC
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/results")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page.data[0].block_number, 50);
+        assert_eq!(page.data[1].block_number, 30);
+        assert_eq!(page.data[2].block_number, 10);
     }
 
     #[tokio::test]
@@ -1601,16 +1704,10 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
 
         let body = resp.into_body().collect().await.unwrap().to_bytes();
-        let readiness: super::super::ReadinessResponse =
-            serde_json::from_slice(&body).unwrap();
+        let readiness: super::ReadinessResponse = serde_json::from_slice(&body).unwrap();
         assert!(!readiness.ready);
         assert_eq!(readiness.last_indexed_block, 0);
-        assert!(readiness.reason.is_some());
-        assert!(
-            readiness.reason.as_ref().unwrap().contains("no blocks indexed"),
-            "expected 'no blocks indexed' in reason, got: {:?}",
-            readiness.reason
-        );
+        assert_eq!(readiness.checks.indexing, "stale", "indexing check should be stale when no blocks indexed");
     }
 
     #[tokio::test]
@@ -1628,16 +1725,17 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
 
         let body = resp.into_body().collect().await.unwrap().to_bytes();
-        let readiness: super::super::ReadinessResponse =
-            serde_json::from_slice(&body).unwrap();
+        let readiness: super::ReadinessResponse = serde_json::from_slice(&body).unwrap();
         assert!(readiness.ready);
         assert_eq!(readiness.last_indexed_block, 42);
-        assert!(readiness.reason.is_none());
+        assert_eq!(readiness.checks.db, "ok");
+        assert_eq!(readiness.checks.indexing, "ok");
     }
 
     #[tokio::test]
-    async fn test_ready_returns_200_reason_omitted_in_json() {
-        // When ready=true, the "reason" key should be omitted from JSON
+    async fn test_ready_checks_json_structure() {
+        // Verify the response includes the expected fields and omits
+        // "reason" when the service is ready (skip_serializing_if).
         let s = test_storage();
         s.set_last_indexed_block(10).unwrap();
         let app = build_app(s, test_broadcaster(), test_rate_limit_config());
@@ -1652,9 +1750,18 @@ mod tests {
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["ready"], true);
         assert!(
+            v.get("last_indexed_block").is_some(),
+            "missing 'last_indexed_block' field"
+        );
+        // "reason" field was removed; verify it is not present
+        assert!(
             v.get("reason").is_none(),
-            "reason should be omitted when ready=true, got: {:?}",
-            v.get("reason")
+            "reason field should not exist"
+        );
+        // "checks" should be present
+        assert!(
+            v.get("checks").is_some(),
+            "missing 'checks' field"
         );
     }
 
@@ -1677,15 +1784,9 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
 
         let body = resp.into_body().collect().await.unwrap().to_bytes();
-        let readiness: super::super::ReadinessResponse =
-            serde_json::from_slice(&body).unwrap();
+        let readiness: super::ReadinessResponse = serde_json::from_slice(&body).unwrap();
         assert!(!readiness.ready);
-        assert!(readiness.reason.is_some());
-        assert!(
-            readiness.reason.as_ref().unwrap().contains("lock poisoned"),
-            "expected 'lock poisoned' in reason, got: {:?}",
-            readiness.reason
-        );
+        assert_eq!(readiness.checks.db, "error", "db check should be error when storage is unhealthy");
     }
 
     #[tokio::test]
@@ -1703,10 +1804,10 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
 
         let body = resp.into_body().collect().await.unwrap().to_bytes();
-        let readiness: super::super::ReadinessResponse =
-            serde_json::from_slice(&body).unwrap();
+        let readiness: super::ReadinessResponse = serde_json::from_slice(&body).unwrap();
         assert!(readiness.ready);
-        assert!(readiness.reason.is_none());
+        assert_eq!(readiness.checks.db, "ok");
+        assert_eq!(readiness.checks.indexing, "ok");
     }
 
     #[tokio::test]

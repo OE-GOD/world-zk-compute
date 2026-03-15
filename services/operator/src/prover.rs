@@ -3,7 +3,7 @@ use std::time::Duration;
 use tokio::process::Command;
 
 /// Default connection timeout for prover HTTP requests (seconds).
-const DEFAULT_PROVER_CONNECT_TIMEOUT_SECS: u64 = 5;
+const DEFAULT_PROVER_CONNECT_TIMEOUT_SECS: u64 = 10;
 
 /// Default request timeout for prover HTTP requests (seconds).
 /// Proving can take several minutes, so default is generous.
@@ -127,11 +127,9 @@ impl ProofManager {
     ) -> Self {
         let mode = ProverMode::from_env();
 
-        let request_timeout = request_timeout_secs;
-
         let http_client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(DEFAULT_PROVER_CONNECT_TIMEOUT_SECS))
-            .timeout(Duration::from_secs(request_timeout))
+            .timeout(Duration::from_secs(request_timeout_secs))
             .build()
             .expect("failed to build prover HTTP client");
 
@@ -141,7 +139,7 @@ impl ProofManager {
             max_retries,
             retry_base_delay_ms,
             retry_max_delay_ms,
-            request_timeout,
+            request_timeout_secs,
         );
         Self {
             precompute_bin: precompute_bin.to_string(),
@@ -250,6 +248,19 @@ impl ProofManager {
         Ok(())
     }
 
+    /// Minimum acceptable response body size in bytes.
+    /// Any proof response smaller than this is almost certainly invalid.
+    const MIN_RESPONSE_SIZE: usize = 10;
+
+    /// Generate a proof by calling the warm prover HTTP endpoint.
+    ///
+    /// Validates the response before writing to disk:
+    /// 1. HTTP status must be success (2xx)
+    /// 2. Content-Type must be JSON-compatible (if present)
+    /// 3. Response body must be non-empty and meet minimum size threshold
+    /// 4. Response body must be valid JSON
+    /// 5. JSON must contain a recognized proof field (`proof`, `proof_hex`, or `receipt`)
+    /// 6. If `proof_hex` format, the value must be a non-empty hex string
     async fn generate_proof_http(
         &self,
         prover_url: &str,
@@ -272,24 +283,105 @@ impl ProofManager {
             .send()
             .await?;
 
+        // 1. Validate HTTP status.
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
+            tracing::warn!(
+                result_id = result_id,
+                endpoint = %endpoint,
+                status = %status,
+                body_preview = %if text.len() > 200 { &text[..200] } else { &text },
+                "Prover HTTP request returned non-success status"
+            );
             anyhow::bail!("Prover HTTP request failed ({}): {}", status, text);
         }
 
-        let body = resp.text().await?;
-        if body.is_empty() {
-            anyhow::bail!("Prover returned empty response body");
+        // 2. Check Content-Type header: if present and not JSON-compatible, reject early.
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_lowercase());
+        if let Some(ref ct) = content_type {
+            if !ct.contains("json") && !ct.contains("octet-stream") {
+                tracing::warn!(
+                    result_id = result_id,
+                    endpoint = %endpoint,
+                    content_type = %ct,
+                    "Prover response has unexpected Content-Type"
+                );
+                anyhow::bail!(
+                    "Prover response has unexpected Content-Type: {}; expected JSON",
+                    ct
+                );
+            }
         }
 
+        // 3. Validate response body is non-empty and meets minimum size.
+        let body = resp.text().await?;
+        if body.is_empty() {
+            tracing::warn!(
+                result_id = result_id,
+                endpoint = %endpoint,
+                "Prover returned empty response body"
+            );
+            anyhow::bail!("Prover returned empty response body");
+        }
+        if body.len() < Self::MIN_RESPONSE_SIZE {
+            tracing::warn!(
+                result_id = result_id,
+                endpoint = %endpoint,
+                body_len = body.len(),
+                body_preview = %body,
+                "Prover response too small ({} bytes, minimum {} bytes)",
+                body.len(),
+                Self::MIN_RESPONSE_SIZE,
+            );
+            anyhow::bail!(
+                "Prover response too small ({} bytes, minimum {} bytes)",
+                body.len(),
+                Self::MIN_RESPONSE_SIZE,
+            );
+        }
+
+        // 4. Validate the response is valid JSON.
         let json_value: serde_json::Value = serde_json::from_str(&body).map_err(|e| {
+            tracing::warn!(
+                result_id = result_id,
+                endpoint = %endpoint,
+                body_preview = %if body.len() > 200 { &body[..200] } else { &body },
+                error = %e,
+                "Prover response is not valid JSON"
+            );
             anyhow::anyhow!("Prover response is not valid JSON: {}", e)
         })?;
 
+        // 5. Validate that the JSON contains at least one recognized proof field.
+        let has_proof_field = json_value.get("proof").is_some()
+            || json_value.get("proof_hex").is_some()
+            || json_value.get("receipt").is_some();
+        if !has_proof_field {
+            tracing::warn!(
+                result_id = result_id,
+                endpoint = %endpoint,
+                keys = ?json_value.as_object().map(|o| o.keys().collect::<Vec<_>>()),
+                "Prover response JSON missing required proof field (expected 'proof', 'proof_hex', or 'receipt')"
+            );
+            anyhow::bail!(
+                "Prover response JSON missing required field: expected 'proof', 'proof_hex', or 'receipt'"
+            );
+        }
+
+        // 6. If proof_hex format, validate the hex string is non-empty.
         if let Some(proof_hex) = json_value.get("proof_hex").and_then(|v| v.as_str()) {
             let stripped = proof_hex.strip_prefix("0x").unwrap_or(proof_hex);
             if stripped.is_empty() {
+                tracing::warn!(
+                    result_id = result_id,
+                    endpoint = %endpoint,
+                    "Prover response contains empty proof_hex"
+                );
                 anyhow::bail!("Prover response contains empty proof_hex");
             }
         }
@@ -433,7 +525,7 @@ mod tests {
 
     #[test]
     fn test_default_prover_timeout_constants() {
-        assert_eq!(DEFAULT_PROVER_CONNECT_TIMEOUT_SECS, 5);
+        assert_eq!(DEFAULT_PROVER_CONNECT_TIMEOUT_SECS, 10);
         assert_eq!(DEFAULT_PROVER_REQUEST_TIMEOUT_SECS, 300);
     }
 
@@ -513,5 +605,288 @@ mod tests {
         let pm = ProofManager::with_retry_config("x", "y", "/tmp/test", 100, 1, 60000, 600000);
         assert_eq!(pm.compute_retry_delay_ms(21), 600000);
         assert_eq!(pm.compute_retry_delay_ms(100), 600000);
+    }
+
+    // ======================== HTTP response validation tests ========================
+
+    /// Helper: spawn a mock HTTP server that returns a fixed response on the first connection.
+    async fn spawn_mock_server(response: String) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://127.0.0.1:{}", addr.port());
+        let handle = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let io = tokio::io::BufStream::new(stream);
+            use tokio::io::AsyncReadExt;
+            use tokio::io::AsyncWriteExt;
+            let mut io = io;
+            let mut buf = vec![0u8; 4096];
+            let _ = io.read(&mut buf).await;
+            let _ = io.write_all(response.as_bytes()).await;
+            let _ = io.flush().await;
+        });
+        (url, handle)
+    }
+
+    /// Helper: create a ProofManager for testing (subprocess mode is fine since we call
+    /// generate_proof_http directly with the mock URL).
+    fn make_test_pm(dir: &tempfile::TempDir) -> ProofManager {
+        // Force subprocess mode so the constructor does not need the mock URL.
+        std::env::remove_var("PROVER_URL");
+        std::env::remove_var("PROVER_TIMEOUT_SECS");
+        ProofManager::new("x", "y", dir.path().to_str().unwrap(), 0, 1)
+    }
+
+    #[tokio::test]
+    async fn test_generate_proof_http_validates_empty_body() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let pm = make_test_pm(&dir);
+
+        let (mock_url, _h) = spawn_mock_server(
+            "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_string(),
+        )
+        .await;
+
+        let result = pm
+            .generate_proof_http(&mock_url, "test-empty-body", "[1.0, 2.0]")
+            .await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("empty"),
+            "Expected empty body error, got: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_generate_proof_http_validates_too_small_response() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let pm = make_test_pm(&dir);
+
+        let body = "short"; // 5 bytes, under MIN_RESPONSE_SIZE=10
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body,
+        );
+        let (mock_url, _h) = spawn_mock_server(resp).await;
+
+        let result = pm
+            .generate_proof_http(&mock_url, "test-too-small", "[1.0, 2.0]")
+            .await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("too small"),
+            "Expected too-small error, got: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_generate_proof_http_validates_invalid_json() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let pm = make_test_pm(&dir);
+
+        let body = "this is not json at all!!!";
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body,
+        );
+        let (mock_url, _h) = spawn_mock_server(resp).await;
+
+        let result = pm
+            .generate_proof_http(&mock_url, "test-bad-json", "[1.0, 2.0]")
+            .await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("not valid JSON"),
+            "Expected JSON validation error, got: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_generate_proof_http_validates_empty_proof_hex() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let pm = make_test_pm(&dir);
+
+        let body = r#"{"proof_hex":"","circuit_hash":"0x1234","public_inputs_hex":"0xab","gens_hex":"0xcd"}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body,
+        );
+        let (mock_url, _h) = spawn_mock_server(resp).await;
+
+        let result = pm
+            .generate_proof_http(&mock_url, "test-empty-hex", "[1.0, 2.0]")
+            .await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("empty proof_hex"),
+            "Expected empty proof_hex error, got: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_generate_proof_http_rejects_non_200() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let pm = make_test_pm(&dir);
+
+        let body = "Internal Server Error";
+        let resp = format!(
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body,
+        );
+        let (mock_url, _h) = spawn_mock_server(resp).await;
+
+        let result = pm
+            .generate_proof_http(&mock_url, "test-500", "[1.0, 2.0]")
+            .await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("500"),
+            "Expected HTTP 500 error, got: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_generate_proof_http_rejects_unexpected_content_type() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let pm = make_test_pm(&dir);
+
+        let body = "<html><body>Error page</body></html>";
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body,
+        );
+        let (mock_url, _h) = spawn_mock_server(resp).await;
+
+        let result = pm
+            .generate_proof_http(&mock_url, "test-html", "[1.0, 2.0]")
+            .await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Content-Type"),
+            "Expected Content-Type error, got: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_generate_proof_http_rejects_missing_proof_field() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let pm = make_test_pm(&dir);
+
+        let body = r#"{"status":"ok","message":"no proof here"}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body,
+        );
+        let (mock_url, _h) = spawn_mock_server(resp).await;
+
+        let result = pm
+            .generate_proof_http(&mock_url, "test-no-proof-field", "[1.0, 2.0]")
+            .await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("missing required field"),
+            "Expected missing field error, got: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_generate_proof_http_accepts_valid_proof_hex_response() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let pm = make_test_pm(&dir);
+
+        let body = r#"{"proof_hex":"0xdeadbeef","circuit_hash":"0x1234","public_inputs_hex":"0xab","gens_hex":"0xcd"}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body,
+        );
+        let (mock_url, _h) = spawn_mock_server(resp).await;
+
+        let result = pm
+            .generate_proof_http(&mock_url, "test-valid-hex", "[1.0, 2.0]")
+            .await;
+        assert!(result.is_ok(), "Expected success, got: {:?}", result);
+
+        // Verify the file was written.
+        let proof_path = dir.path().join("test-valid-hex.json");
+        assert!(proof_path.exists(), "Proof file should have been saved");
+        let contents = std::fs::read_to_string(&proof_path).unwrap();
+        assert!(contents.contains("deadbeef"));
+    }
+
+    #[tokio::test]
+    async fn test_generate_proof_http_accepts_receipt_field() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let pm = make_test_pm(&dir);
+
+        let body = r#"{"receipt":"base64encodeddata","image_id":"0xabcd"}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body,
+        );
+        let (mock_url, _h) = spawn_mock_server(resp).await;
+
+        let result = pm
+            .generate_proof_http(&mock_url, "test-receipt", "[1.0, 2.0]")
+            .await;
+        assert!(
+            result.is_ok(),
+            "Expected success with 'receipt' field, got: {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn test_generate_proof_http_accepts_proof_field() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let pm = make_test_pm(&dir);
+
+        let body = r#"{"proof":{"seal":"0x1234","journal":"0xabcd"}}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body,
+        );
+        let (mock_url, _h) = spawn_mock_server(resp).await;
+
+        let result = pm
+            .generate_proof_http(&mock_url, "test-proof-obj", "[1.0, 2.0]")
+            .await;
+        assert!(
+            result.is_ok(),
+            "Expected success with 'proof' field, got: {:?}",
+            result
+        );
     }
 }

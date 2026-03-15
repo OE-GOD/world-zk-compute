@@ -424,7 +424,7 @@ impl ShutdownState {
 
     /// Return the shutdown reason, if set.
     fn reason(&self) -> Option<String> {
-        self.reason.lock().unwrap().clone()
+        self.reason.lock().ok().and_then(|r| r.clone())
     }
 }
 
@@ -1328,5 +1328,106 @@ mod tests {
             }
             _ => panic!("expected Watch command"),
         }
+    }
+
+    // --- Graceful shutdown with reason tests ---
+
+    #[test]
+    fn test_shutdown_reason_initially_none() {
+        let state = ShutdownState::new();
+        assert!(state.reason().is_none());
+    }
+
+    #[test]
+    fn test_shutdown_with_reason_stores_reason() {
+        let state = ShutdownState::new();
+        state.signal_shutdown_with_reason("SIGTERM");
+        assert!(state.is_shutting_down());
+        assert_eq!(state.reason(), Some("SIGTERM".to_string()));
+    }
+
+    #[test]
+    fn test_shutdown_with_reason_sigint() {
+        let state = ShutdownState::new();
+        state.signal_shutdown_with_reason("SIGINT");
+        assert!(state.is_shutting_down());
+        assert_eq!(state.reason(), Some("SIGINT".to_string()));
+    }
+
+    #[test]
+    fn test_signal_shutdown_no_args_stores_unknown() {
+        let state = ShutdownState::new();
+        state.signal_shutdown();
+        assert!(state.is_shutting_down());
+        assert_eq!(state.reason(), Some("unknown".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_cancel_subscription_fires_on_shutdown() {
+        let state = Arc::new(ShutdownState::new());
+        let mut rx = state.subscribe_cancel();
+
+        // Should not be cancelled yet
+        assert!(!*rx.borrow());
+
+        // Signal shutdown
+        state.signal_shutdown_with_reason("SIGTERM");
+
+        // The receiver should see the cancellation
+        rx.changed().await.unwrap();
+        assert!(*rx.borrow());
+    }
+
+    #[tokio::test]
+    async fn test_cancel_subscription_wakes_spawned_task() {
+        let state = Arc::new(ShutdownState::new());
+        let mut rx = state.subscribe_cancel();
+
+        state.track_task_start();
+        let sd = state.clone();
+        let handle = tokio::spawn(async move {
+            // Wait for cancel signal via watch channel
+            let _ = rx.changed().await;
+            sd.track_task_done();
+        });
+
+        // Brief delay then signal shutdown
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert_eq!(state.in_flight_count(), 1);
+        state.signal_shutdown_with_reason("SIGINT");
+
+        handle.await.unwrap();
+        assert_eq!(state.in_flight_count(), 0);
+        assert_eq!(state.reason(), Some("SIGINT".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_multiple_cancel_subscribers() {
+        let state = Arc::new(ShutdownState::new());
+
+        let mut rx1 = state.subscribe_cancel();
+        let mut rx2 = state.subscribe_cancel();
+        let mut rx3 = state.subscribe_cancel();
+
+        state.signal_shutdown_with_reason("SIGTERM");
+
+        // All receivers should fire
+        rx1.changed().await.unwrap();
+        rx2.changed().await.unwrap();
+        rx3.changed().await.unwrap();
+
+        assert!(*rx1.borrow());
+        assert!(*rx2.borrow());
+        assert!(*rx3.borrow());
+    }
+
+    #[test]
+    fn test_shutdown_state_seqcst_ordering() {
+        // Verify SeqCst is used for the shutting_down flag
+        let state = ShutdownState::new();
+        assert!(!state.is_shutting_down());
+        state.signal_shutdown_with_reason("test");
+        // SeqCst ensures this is immediately visible
+        assert!(state.is_shutting_down());
     }
 }
