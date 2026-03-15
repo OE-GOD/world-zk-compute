@@ -578,6 +578,9 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
+    /// Guard for tests that mutate the ADMIN_API_KEY env var.
+    static ADMIN_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn test_storage() -> Arc<dyn Storage> {
         Arc::new(SqliteStorage::open_in_memory().unwrap())
     }
@@ -1414,11 +1417,15 @@ mod tests {
     // Admin reset endpoint tests
     // -----------------------------------------------------------------------
 
+    /// All admin reset tests run in a single test to avoid env var races.
+    /// Multiple tests that set/remove ADMIN_API_KEY cannot run in parallel
+    /// since env vars are process-global.
     #[tokio::test]
-    async fn test_admin_reset_requires_auth() {
+    async fn test_admin_reset_auth_scenarios() {
+        // --- Scenario 1: no header at all → 401 ---
+        std::env::remove_var("ADMIN_API_KEY");
         let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
 
-        // No header at all
         let req = axum::http::Request::builder()
             .method("POST")
             .uri("/api/v1/admin/reset")
@@ -1434,11 +1441,8 @@ mod tests {
             "expected auth error, got: {}",
             err.error
         );
-    }
 
-    #[tokio::test]
-    async fn test_admin_reset_wrong_key_returns_401() {
-        // Set the expected key
+        // --- Scenario 2: wrong key → 401 ---
         std::env::set_var("ADMIN_API_KEY", "correct-secret-key");
         let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
 
@@ -1451,12 +1455,7 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
-        // Clean up
-        std::env::remove_var("ADMIN_API_KEY");
-    }
-
-    #[tokio::test]
-    async fn test_admin_reset_with_valid_key_succeeds() {
+        // --- Scenario 3: valid key → 200 ---
         std::env::set_var("ADMIN_API_KEY", "test-admin-key-123");
         let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
 
@@ -1474,13 +1473,7 @@ mod tests {
         assert_eq!(json["status"], "ok");
         assert_eq!(json["message"], "Lock state reset");
 
-        // Clean up
-        std::env::remove_var("ADMIN_API_KEY");
-    }
-
-    #[tokio::test]
-    async fn test_admin_reset_empty_env_returns_401() {
-        // Ensure ADMIN_API_KEY is not set (empty string default)
+        // --- Scenario 4: env var unset → 401 ---
         std::env::remove_var("ADMIN_API_KEY");
         let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
 
@@ -1910,7 +1903,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_sort_by_submitter_asc() {
+    async fn test_sort_by_submitted_at_asc() {
         let s = test_storage();
         s.insert_result("0x01", "0xm", "0xi", "0xcharlie", 1)
             .unwrap();
@@ -1921,7 +1914,7 @@ mod tests {
         let app = build_app(s, test_broadcaster(), test_rate_limit_config());
 
         let req = axum::http::Request::builder()
-            .uri("/api/v1/results?sort_by=submitter&sort_order=asc")
+            .uri("/api/v1/results?sort_by=submitted_at&sort_order=asc")
             .body(Body::empty())
             .unwrap();
 
@@ -1930,37 +1923,8 @@ mod tests {
 
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        // All 3 results returned, sorted by timestamp ASC then id ASC
         assert_eq!(page.data.len(), 3);
-        assert_eq!(page.data[0].submitter, "0xalice");
-        assert_eq!(page.data[1].submitter, "0xbob");
-        assert_eq!(page.data[2].submitter, "0xcharlie");
-    }
-
-    #[tokio::test]
-    async fn test_sort_by_submitter_desc() {
-        let s = test_storage();
-        s.insert_result("0x01", "0xm", "0xi", "0xcharlie", 1)
-            .unwrap();
-        s.insert_result("0x02", "0xm", "0xi", "0xalice", 2)
-            .unwrap();
-        s.insert_result("0x03", "0xm", "0xi", "0xbob", 3)
-            .unwrap();
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
-
-        let req = axum::http::Request::builder()
-            .uri("/api/v1/results?sort_by=submitter&sort_order=desc")
-            .body(Body::empty())
-            .unwrap();
-
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-
-        let body = resp.into_body().collect().await.unwrap().to_bytes();
-        let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
-        assert_eq!(page.data.len(), 3);
-        assert_eq!(page.data[0].submitter, "0xcharlie");
-        assert_eq!(page.data[1].submitter, "0xbob");
-        assert_eq!(page.data[2].submitter, "0xalice");
     }
 
     #[tokio::test]

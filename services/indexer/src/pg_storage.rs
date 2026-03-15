@@ -471,8 +471,8 @@ impl PgStorage {
         // Sorting: whitelist allowed columns to prevent SQL injection.
         let order_col = match filter.sort_by.as_deref() {
             Some("block_number") => "block_number",
-            Some("submitted_at") => "timestamp",
             Some("status") => "status",
+            Some("submitter") => "submitter",
             _ => "block_number",
         };
         let order_dir = match filter.sort_order.as_deref() {

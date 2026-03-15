@@ -3,7 +3,7 @@ use std::time::Duration;
 use tokio::process::Command;
 
 /// Default connection timeout for prover HTTP requests (seconds).
-const DEFAULT_PROVER_CONNECT_TIMEOUT_SECS: u64 = 10;
+const DEFAULT_PROVER_CONNECT_TIMEOUT_SECS: u64 = 5;
 
 /// Default request timeout for prover HTTP requests (seconds).
 /// Proving can take several minutes, so default is generous.
@@ -264,7 +264,9 @@ impl ProofManager {
     /// 3. Response body must be non-empty and meet minimum size threshold
     /// 4. Response body must be valid JSON
     /// 5. JSON must contain a recognized proof field (`proof`, `proof_hex`, or `receipt`)
-    /// 6. If `proof_hex` format, the value must be a non-empty hex string
+    /// 6. Proof field values must be non-null and non-empty
+    /// 7. StoredProof format (`proof_hex`) must include companion fields (`circuit_hash`,
+    ///    `public_inputs_hex`, `gens_hex`)
     async fn generate_proof_http(
         &self,
         prover_url: &str,
@@ -377,8 +379,17 @@ impl ProofManager {
             );
         }
 
-        // 6. If proof_hex format, validate the hex string is non-empty.
-        if let Some(proof_hex) = json_value.get("proof_hex").and_then(|v| v.as_str()) {
+        // 6. Deep validation of proof content based on format.
+        if let Some(proof_hex_val) = json_value.get("proof_hex") {
+            // StoredProof format: validate proof_hex is a non-empty string.
+            let proof_hex = proof_hex_val.as_str().ok_or_else(|| {
+                tracing::warn!(
+                    result_id = result_id,
+                    endpoint = %endpoint,
+                    "Prover response proof_hex is not a string"
+                );
+                anyhow::anyhow!("Prover response proof_hex is not a string")
+            })?;
             let stripped = proof_hex.strip_prefix("0x").unwrap_or(proof_hex);
             if stripped.is_empty() {
                 tracing::warn!(
@@ -387,6 +398,68 @@ impl ProofManager {
                     "Prover response contains empty proof_hex"
                 );
                 anyhow::bail!("Prover response contains empty proof_hex");
+            }
+
+            // StoredProof requires circuit_hash, public_inputs_hex, gens_hex alongside proof_hex.
+            let required_companions = ["circuit_hash", "public_inputs_hex", "gens_hex"];
+            let mut missing = Vec::new();
+            for field in &required_companions {
+                match json_value.get(*field) {
+                    Some(v) if v.is_string() && !v.as_str().unwrap_or("").is_empty() => {}
+                    _ => missing.push(*field),
+                }
+            }
+            if !missing.is_empty() {
+                tracing::warn!(
+                    result_id = result_id,
+                    endpoint = %endpoint,
+                    missing_fields = ?missing,
+                    "Prover response (proof_hex format) missing required companion fields"
+                );
+                anyhow::bail!(
+                    "Prover response missing required fields for StoredProof: {}",
+                    missing.join(", ")
+                );
+            }
+        } else if let Some(proof_val) = json_value.get("proof") {
+            // Generic proof format: verify the value is non-null and non-empty.
+            if proof_val.is_null() {
+                tracing::warn!(
+                    result_id = result_id,
+                    endpoint = %endpoint,
+                    "Prover response contains null proof field"
+                );
+                anyhow::bail!("Prover response contains null proof field");
+            }
+            if let Some(s) = proof_val.as_str() {
+                if s.is_empty() {
+                    tracing::warn!(
+                        result_id = result_id,
+                        endpoint = %endpoint,
+                        "Prover response contains empty proof string"
+                    );
+                    anyhow::bail!("Prover response contains empty proof string");
+                }
+            }
+        } else if let Some(receipt_val) = json_value.get("receipt") {
+            // Receipt format: verify the value is non-null and non-empty.
+            if receipt_val.is_null() {
+                tracing::warn!(
+                    result_id = result_id,
+                    endpoint = %endpoint,
+                    "Prover response contains null receipt field"
+                );
+                anyhow::bail!("Prover response contains null receipt field");
+            }
+            if let Some(s) = receipt_val.as_str() {
+                if s.is_empty() {
+                    tracing::warn!(
+                        result_id = result_id,
+                        endpoint = %endpoint,
+                        "Prover response contains empty receipt string"
+                    );
+                    anyhow::bail!("Prover response contains empty receipt string");
+                }
             }
         }
 
@@ -529,7 +602,7 @@ mod tests {
 
     #[test]
     fn test_default_prover_timeout_constants() {
-        assert_eq!(DEFAULT_PROVER_CONNECT_TIMEOUT_SECS, 10);
+        assert_eq!(DEFAULT_PROVER_CONNECT_TIMEOUT_SECS, 5);
         assert_eq!(DEFAULT_PROVER_REQUEST_TIMEOUT_SECS, 300);
     }
 
@@ -891,6 +964,168 @@ mod tests {
             result.is_ok(),
             "Expected success with 'proof' field, got: {:?}",
             result
+        );
+    }
+
+    // ======================== StoredProof companion field validation ========================
+
+    #[tokio::test]
+    async fn test_generate_proof_http_rejects_proof_hex_missing_companion_fields() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let pm = make_test_pm(&dir);
+
+        // proof_hex present but circuit_hash, public_inputs_hex, gens_hex are absent.
+        let body = r#"{"proof_hex":"0xdeadbeef"}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body,
+        );
+        let (mock_url, _h) = spawn_mock_server(resp).await;
+
+        let result = pm
+            .generate_proof_http(&mock_url, "test-missing-companions", "[1.0, 2.0]")
+            .await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("missing required fields"),
+            "Expected missing fields error, got: {}",
+            err_msg
+        );
+        assert!(err_msg.contains("circuit_hash"), "Should mention circuit_hash: {}", err_msg);
+    }
+
+    #[tokio::test]
+    async fn test_generate_proof_http_rejects_proof_hex_with_empty_circuit_hash() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let pm = make_test_pm(&dir);
+
+        let body = r#"{"proof_hex":"0xdeadbeef","circuit_hash":"","public_inputs_hex":"0xab","gens_hex":"0xcd"}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body,
+        );
+        let (mock_url, _h) = spawn_mock_server(resp).await;
+
+        let result = pm
+            .generate_proof_http(&mock_url, "test-empty-ch", "[1.0, 2.0]")
+            .await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("circuit_hash"),
+            "Expected circuit_hash in error, got: {}",
+            err_msg
+        );
+    }
+
+    // ======================== Null/empty proof and receipt validation ========================
+
+    #[tokio::test]
+    async fn test_generate_proof_http_rejects_null_proof_field() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let pm = make_test_pm(&dir);
+
+        let body = r#"{"proof":null}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body,
+        );
+        let (mock_url, _h) = spawn_mock_server(resp).await;
+
+        let result = pm
+            .generate_proof_http(&mock_url, "test-null-proof", "[1.0, 2.0]")
+            .await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("null proof"),
+            "Expected null proof error, got: {}",
+            err_msg
+        );
+    }
+
+    #[tokio::test]
+    async fn test_generate_proof_http_rejects_empty_proof_string() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let pm = make_test_pm(&dir);
+
+        let body = r#"{"proof":""}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body,
+        );
+        let (mock_url, _h) = spawn_mock_server(resp).await;
+
+        let result = pm
+            .generate_proof_http(&mock_url, "test-empty-proof-str", "[1.0, 2.0]")
+            .await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("empty proof string"),
+            "Expected empty proof string error, got: {}",
+            err_msg
+        );
+    }
+
+    #[tokio::test]
+    async fn test_generate_proof_http_rejects_null_receipt_field() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let pm = make_test_pm(&dir);
+
+        let body = r#"{"receipt":null}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body,
+        );
+        let (mock_url, _h) = spawn_mock_server(resp).await;
+
+        let result = pm
+            .generate_proof_http(&mock_url, "test-null-receipt", "[1.0, 2.0]")
+            .await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("null receipt"),
+            "Expected null receipt error, got: {}",
+            err_msg
+        );
+    }
+
+    #[tokio::test]
+    async fn test_generate_proof_http_rejects_empty_receipt_string() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let pm = make_test_pm(&dir);
+
+        let body = r#"{"receipt":""}"#;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body,
+        );
+        let (mock_url, _h) = spawn_mock_server(resp).await;
+
+        let result = pm
+            .generate_proof_http(&mock_url, "test-empty-receipt-str", "[1.0, 2.0]")
+            .await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("empty receipt string"),
+            "Expected empty receipt string error, got: {}",
+            err_msg
         );
     }
 }

@@ -338,8 +338,8 @@ impl Storage for SqliteStorage {
         // interpolated into the query string.
         let order_col = match filter.sort_by.as_deref() {
             Some("block_number") => "block_number",
-            Some("submitted_at") => "timestamp",
             Some("status") => "status",
+            Some("submitter") => "submitter",
             _ => "block_number",
         };
         let order_dir = match filter.sort_order.as_deref() {
@@ -661,7 +661,7 @@ pub struct ResultFilter {
     /// Cursor-based pagination: return results after this ID.
     /// Mutually exclusive with `offset`.
     pub after_id: Option<String>,
-    /// Column to sort by. Allowed: `block_number`, `submitted_at`, `status`.
+    /// Column to sort by. Allowed: `block_number`, `status`, `submitter`.
     pub sort_by: Option<String>,
     /// Sort direction. Allowed: `asc`, `desc` (default `desc`).
     pub sort_order: Option<String>,

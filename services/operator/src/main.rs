@@ -392,6 +392,9 @@ impl ShutdownState {
     }
 
     /// Signal shutdown without a specific reason.
+    /// Only used in tests (production code always provides a reason via
+    /// `signal_shutdown_with_reason`).
+    #[cfg(test)]
     fn signal_shutdown(&self) {
         self.signal_shutdown_with_reason("unknown");
     }
@@ -468,10 +471,11 @@ async fn cmd_watch(config: &Config, metrics_port: u16, dry_run: bool) -> anyhow:
         .parse()
         .map_err(|e| anyhow::anyhow!("Invalid contract address: {}", e))?;
     let watcher = EventWatcher::new(&config.rpc_url, contract_addr);
-    let chain_client = Arc::new(chain::ChainClient::new(
+    let chain_client = Arc::new(chain::ChainClient::new_with_dry_run(
         &config.rpc_url,
         &config.private_key,
         &config.tee_verifier_address,
+        dry_run,
     )?);
     let proof_mgr = Arc::new(ProofManager::with_config_timeout(
         &config.precompute_bin,
