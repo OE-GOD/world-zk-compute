@@ -10929,7 +10929,7 @@ dependencies = [
  "hex",
  "k256",
  "once_cell",
- "rand 0.8.5",
+ "rand 0.10.0",
  "reqwest 0.12.28",
  "risc0-zkvm",
  "serde",
