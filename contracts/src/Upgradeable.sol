@@ -352,6 +352,7 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
             inputDigest: inputDigest,
             requester: msg.sender,
             createdAt: uint48(block.timestamp),
+            // forge-lint: disable-next-line(unsafe-typecast)
             expiresAt: uint48(block.timestamp + (expirationSeconds > 0 ? expirationSeconds : 1 hours)),
             callbackContract: callbackContract,
             status: 0, // Pending
@@ -381,6 +382,7 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
             inputDigest: inputDigest,
             requester: msg.sender,
             createdAt: uint48(block.timestamp),
+            // forge-lint: disable-next-line(unsafe-typecast)
             expiresAt: uint48(block.timestamp + (expirationSeconds > 0 ? expirationSeconds : 1 hours)),
             callbackContract: callbackContract,
             status: 0, // Pending
@@ -401,6 +403,7 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
 
         req.status = 1; // Claimed
         req.claimedBy = msg.sender;
+        // forge-lint: disable-next-line(unsafe-typecast)
         req.claimDeadline = uint48(block.timestamp + 10 minutes);
 
         emit ExecutionClaimed(requestId, msg.sender);

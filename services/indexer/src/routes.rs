@@ -51,7 +51,7 @@ const MAX_QUERY_STRING_LENGTH: usize = 4096;
 const VALID_STATUSES: &[&str] = &["submitted", "challenged", "finalized", "resolved"];
 
 /// Valid values for the `sort_by` query parameter.
-const VALID_SORT_BY: &[&str] = &["block_number", "submitted_at", "status"];
+const VALID_SORT_BY: &[&str] = &["block_number", "submitted_at", "status", "submitter"];
 
 /// Valid values for the `sort_order` query parameter.
 const VALID_SORT_ORDER: &[&str] = &["asc", "desc"];
@@ -904,6 +904,32 @@ mod tests {
         assert_eq!(page.data[0].status, "challenged");
         assert_eq!(page.data[1].status, "finalized");
         assert_eq!(page.data[2].status, "submitted");
+    }
+
+    #[tokio::test]
+    async fn test_list_results_sort_by_submitted_at() {
+        let s = test_storage();
+        s.insert_result("0x01", "0xm", "0xi", "0xa", 10).unwrap();
+        s.insert_result("0x02", "0xm", "0xi", "0xa", 20).unwrap();
+        s.insert_result("0x03", "0xm", "0xi", "0xa", 30).unwrap();
+        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+
+        // submitted_at maps to the timestamp column; all default to 0 in
+        // test storage, so the secondary tiebreaker (id ASC) determines order.
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/results?sort_by=submitted_at&sort_order=asc")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page.data.len(), 3);
+        // All timestamps are 0, so tiebreak is id ASC
+        assert_eq!(page.data[0].id, "0x01");
+        assert_eq!(page.data[1].id, "0x02");
+        assert_eq!(page.data[2].id, "0x03");
     }
 
     #[tokio::test]
@@ -1903,7 +1929,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_sort_by_submitted_at_asc() {
+    async fn test_sort_by_submitter_asc() {
         let s = test_storage();
         s.insert_result("0x01", "0xm", "0xi", "0xcharlie", 1)
             .unwrap();
@@ -1914,7 +1940,7 @@ mod tests {
         let app = build_app(s, test_broadcaster(), test_rate_limit_config());
 
         let req = axum::http::Request::builder()
-            .uri("/api/v1/results?sort_by=submitted_at&sort_order=asc")
+            .uri("/api/v1/results?sort_by=submitter&sort_order=asc")
             .body(Body::empty())
             .unwrap();
 
@@ -1923,8 +1949,37 @@ mod tests {
 
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
-        // All 3 results returned, sorted by timestamp ASC then id ASC
         assert_eq!(page.data.len(), 3);
+        assert_eq!(page.data[0].submitter, "0xalice");
+        assert_eq!(page.data[1].submitter, "0xbob");
+        assert_eq!(page.data[2].submitter, "0xcharlie");
+    }
+
+    #[tokio::test]
+    async fn test_sort_by_submitter_desc() {
+        let s = test_storage();
+        s.insert_result("0x01", "0xm", "0xi", "0xcharlie", 1)
+            .unwrap();
+        s.insert_result("0x02", "0xm", "0xi", "0xalice", 2)
+            .unwrap();
+        s.insert_result("0x03", "0xm", "0xi", "0xbob", 3)
+            .unwrap();
+        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/results?sort_by=submitter&sort_order=desc")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(page.data.len(), 3);
+        assert_eq!(page.data[0].submitter, "0xcharlie");
+        assert_eq!(page.data[1].submitter, "0xbob");
+        assert_eq!(page.data[2].submitter, "0xalice");
     }
 
     #[tokio::test]

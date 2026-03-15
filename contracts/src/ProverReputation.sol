@@ -187,6 +187,7 @@ contract ProverReputation {
             avgProofTimeMs: 0,
             lastJobAt: 0,
             lastUpdateAt: uint64(block.timestamp),
+            // forge-lint: disable-next-line(unsafe-typecast)
             score: uint32(INITIAL_SCORE),
             tier: uint8(Tier.Unranked),
             isRegistered: true,
@@ -225,6 +226,7 @@ contract ProverReputation {
         rep.lastUpdateAt = uint64(block.timestamp);
 
         // Update rolling average proof time
+        // forge-lint: disable-next-line(unsafe-typecast)
         uint64 proofTime64 = uint64(proofTimeMs);
         if (rep.avgProofTimeMs == 0) {
             rep.avgProofTimeMs = proofTime64;
@@ -495,7 +497,7 @@ contract ProverReputation {
     }
 
     /// @notice Update tier based on score
-    function _updateTier(address prover, uint256 oldScore) internal {
+    function _updateTier(address prover, uint256 /* oldScore */) internal {
         Reputation storage rep = reputations[prover];
         uint8 oldTier = rep.tier;
         uint8 newTier = _calculateTier(rep.score);

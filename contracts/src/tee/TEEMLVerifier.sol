@@ -121,6 +121,7 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
         _enclaves[enclaveKey] = PackedEnclaveInfo({
             registered: true,
             active: true,
+            // forge-lint: disable-next-line(unsafe-typecast)
             registeredAt: uint40(block.timestamp),
             enclaveImageHash: enclaveImageHash
         });
@@ -215,7 +216,9 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
 
         _results[resultId] = PackedMLResult({
             enclave: signer,
+            // forge-lint: disable-next-line(unsafe-typecast)
             submittedAt: uint40(block.timestamp),
+            // forge-lint: disable-next-line(unsafe-typecast)
             challengeDeadline: uint40(block.timestamp + CHALLENGE_WINDOW),
             finalized: false,
             challenged: false,
@@ -248,6 +251,7 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
         r.challenged = true;
         r.challenger = msg.sender;
         r.challengeBond = msg.value;
+        // forge-lint: disable-next-line(unsafe-typecast)
         r.disputeDeadline = uint40(block.timestamp + DISPUTE_WINDOW);
 
         emit ResultChallenged(resultId, msg.sender);
@@ -307,6 +311,7 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
         require(disputeExtensions[resultId] < MAX_EXTENSIONS, "TEEMLVerifier: max extensions reached");
 
         disputeExtensions[resultId] += 1;
+        // forge-lint: disable-next-line(unsafe-typecast)
         r.disputeDeadline = uint40(uint256(r.disputeDeadline) + EXTENSION_PERIOD);
 
         emit DisputeExtended(resultId, uint256(r.disputeDeadline));

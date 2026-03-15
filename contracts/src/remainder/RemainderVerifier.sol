@@ -1911,7 +1911,7 @@ contract RemainderVerifier is Ownable2Step, Pausable {
 
     function _decodeBatchProof(bytes calldata proof, bytes calldata publicInputs)
         private
-        view
+        pure
         returns (GKRVerifier.GKRProof memory gkrProof)
     {
         GKRDAGVerifier.DAGInputLayerProof[] memory dip;
@@ -1995,7 +1995,7 @@ contract RemainderVerifier is Ownable2Step, Pausable {
         bytes calldata proof,
         bytes calldata publicInputs,
         bytes calldata gensData
-    ) private returns (bool done, uint256 groupsDone, uint256 totalGroups) {
+    ) private view returns (bool done, uint256 groupsDone, uint256 totalGroups) {
         GKRDAGVerifier.VerifyContext memory ctx;
         PoseidonSponge.Sponge memory sponge;
         (ctx, sponge) = _buildFinalizeContext(sessionId, session, proof, publicInputs, gensData);

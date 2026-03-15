@@ -70,7 +70,7 @@ contract DeployRemainder is Script {
         console.log("Admin:", deployer);
     }
 
-    function _runVerification(RemainderVerifier verifier, Fixture memory f) private {
+    function _runVerification(RemainderVerifier verifier, Fixture memory f) private view {
         string memory json = vm.readFile("test/fixtures/dag_groth16_e2e_fixture.json");
 
         uint256[8] memory groth16Proof;

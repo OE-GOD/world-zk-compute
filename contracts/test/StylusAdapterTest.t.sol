@@ -104,6 +104,7 @@ contract StylusAdapterTest is Test {
     function test_verify_dag_proof_stylus_success() public {
         verifier.setDAGStylusVerifier(circuitHash, address(mockStylus));
 
+        // forge-lint: disable-next-line(unsafe-typecast)
         bytes memory proof = abi.encodePacked(bytes4("REM1"), bytes32(uint256(1)));
         bytes memory publicInputs = abi.encodePacked(uint256(42));
         bytes memory gensData = new bytes(0);
@@ -116,6 +117,7 @@ contract StylusAdapterTest is Test {
     function test_verify_dag_proof_stylus_returns_false() public {
         verifier.setDAGStylusVerifier(circuitHash, address(mockStylusFalse));
 
+        // forge-lint: disable-next-line(unsafe-typecast)
         bytes memory proof = abi.encodePacked(bytes4("REM1"), bytes32(uint256(1)));
         bytes memory publicInputs = new bytes(0);
         bytes memory gensData = new bytes(0);
@@ -128,6 +130,7 @@ contract StylusAdapterTest is Test {
     function test_verify_dag_proof_stylus_revert_propagated() public {
         verifier.setDAGStylusVerifier(circuitHash, address(mockStylusReverts));
 
+        // forge-lint: disable-next-line(unsafe-typecast)
         bytes memory proof = abi.encodePacked(bytes4("REM1"), bytes32(uint256(1)));
         bytes memory publicInputs = new bytes(0);
         bytes memory gensData = new bytes(0);
@@ -139,6 +142,7 @@ contract StylusAdapterTest is Test {
     /// @notice Test unregistered circuit reverts
     function test_verify_dag_proof_stylus_unregistered_reverts() public {
         bytes32 unknownHash = bytes32(uint256(0xdead));
+        // forge-lint: disable-next-line(unsafe-typecast)
         bytes memory proof = abi.encodePacked(bytes4("REM1"), bytes32(uint256(1)));
 
         vm.expectRevert(RemainderVerifier.CircuitNotRegistered.selector);
@@ -147,6 +151,7 @@ contract StylusAdapterTest is Test {
 
     /// @notice Test no Stylus verifier configured reverts
     function test_verify_dag_proof_stylus_not_configured_reverts() public {
+        // forge-lint: disable-next-line(unsafe-typecast)
         bytes memory proof = abi.encodePacked(bytes4("REM1"), bytes32(uint256(1)));
 
         vm.expectRevert("Stylus verifier not configured");
@@ -157,6 +162,7 @@ contract StylusAdapterTest is Test {
     function test_verify_dag_proof_stylus_invalid_selector_reverts() public {
         verifier.setDAGStylusVerifier(circuitHash, address(mockStylus));
 
+        // forge-lint: disable-next-line(unsafe-typecast)
         bytes memory proof = abi.encodePacked(bytes4("FAKE"), bytes32(uint256(1)));
 
         vm.expectRevert(RemainderVerifier.InvalidProofSelector.selector);
@@ -199,6 +205,7 @@ contract StylusAdapterTest is Test {
         verifier.registerDAGCircuit(circuitHash2, abi.encode(desc), "test-gens", gensHash);
         verifier.setDAGStylusVerifier(circuitHash2, address(mockStylus));
 
+        // forge-lint: disable-next-line(unsafe-typecast)
         bytes memory proof = abi.encodePacked(bytes4("REM1"), bytes32(uint256(1)));
         bytes memory wrongGens = abi.encodePacked(uint256(1), uint256(2));
 

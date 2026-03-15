@@ -372,7 +372,7 @@ library GKRVerifier {
     ///      Shred a occupies positions 0..M-1, shred b occupies positions M..2M-1
     ///      After sumcheck binding r, claims are at points (0, r) and (1, r)
     ///      where the first variable selects the shred and r selects within the shred
-    function _deriveInputClaimPoints(uint256[] memory mulBindings, uint256 inputSize)
+    function _deriveInputClaimPoints(uint256[] memory mulBindings, uint256 /* inputSize */)
         private
         pure
         returns (uint256[][] memory claimPoints)

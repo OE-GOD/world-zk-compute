@@ -357,7 +357,7 @@ library GKRDAGVerifier {
         _absorbCommitments(lp.commitments, sponge);
 
         // Compute RLC eval and beta from all incoming claims
-        (HyraxVerifier.G1Point memory rlcEval, uint256 rlcBeta) =
+        (, uint256 rlcBeta) =
             _computeRlcEvalAndBeta(layerIdx, ctx, bindings, rlcCoeffs);
 
         // Verify sumcheck and PoP
@@ -593,7 +593,6 @@ library GKRDAGVerifier {
         PoseidonSponge.Sponge memory sponge,
         HyraxVerifier.PedersenGens memory gens
     ) private view {
-        uint256 numClaims = claimPoints.length;
         uint256 numRows = dagProof.commitmentRows.length;
         uint256 n = claimPoints[0].length;
         uint256 lHalfLen = _log2(numRows > 0 ? numRows : 1);
@@ -801,6 +800,7 @@ library GKRDAGVerifier {
         pure
         returns (uint256[] memory result)
     {
+        // forge-lint: disable-next-line(incorrect-shift)
         uint256 tensorLen = 1 << lHalfLen;
         result = new uint256[](tensorLen);
 
@@ -839,6 +839,7 @@ library GKRDAGVerifier {
 
     /// @notice Tensor product matching Rust's initialize_tensor (reverse order).
     function _initializeTensor(uint256[] memory coords) private pure returns (uint256[] memory table) {
+        // forge-lint: disable-next-line(incorrect-shift)
         uint256 size = 1 << coords.length;
         table = new uint256[](size);
         table[0] = 1;
@@ -861,6 +862,7 @@ library GKRDAGVerifier {
     ///      This matches initialize_tensor's reverse processing order.
     function evaluateMLEFromData(uint256[] memory data, uint256[] memory point) internal pure returns (uint256) {
         uint256 n = point.length;
+        // forge-lint: disable-next-line(incorrect-shift)
         require(data.length <= (1 << n), "GKRDAGVerifier: data too large");
 
         uint256 result = 0;

@@ -167,6 +167,7 @@ contract RiscZeroVerifierAdapterTest is Test {
         // Test with a larger journal to ensure sha256 works on bigger data
         bytes memory largeJournal = new bytes(1024);
         for (uint256 i = 0; i < 1024; i++) {
+            // forge-lint: disable-next-line(unsafe-typecast)
             largeJournal[i] = bytes1(uint8(i % 256));
         }
         adapter.verify(TEST_SEAL, TEST_IMAGE_ID, largeJournal);
@@ -200,7 +201,9 @@ contract RiscZeroVerifierRouterTest is Test {
     address public admin = address(this);
     address public nonAdmin = address(0xBEEF);
 
+    // forge-lint: disable-next-line(unsafe-typecast)
     bytes4 constant SELECTOR_A = bytes4(hex"73c457ba"); // risc0 v3.0 selector
+    // forge-lint: disable-next-line(unsafe-typecast)
     bytes4 constant SELECTOR_B = bytes4(hex"c101b42b"); // risc0 v1.2 selector
 
     bytes32 constant TEST_IMAGE_ID = bytes32(uint256(0xABCD));
@@ -411,6 +414,7 @@ contract RiscZeroVerifierRouterTest is Test {
     function test_verify_revertsForUnknownSelector() public {
         router.addVerifier(SELECTOR_A, address(verifierA), "Test");
 
+        // forge-lint: disable-next-line(unsafe-typecast)
         bytes4 unknownSelector = bytes4(hex"ffffffff");
         bytes memory seal = abi.encodePacked(unknownSelector, hex"deadbeef");
 
@@ -455,6 +459,7 @@ contract RiscZeroVerifierRouterTest is Test {
         router.setDefaultVerifier(address(defaultV));
 
         // Use a selector with no registered verifier
+        // forge-lint: disable-next-line(unsafe-typecast)
         bytes4 unknownSelector = bytes4(hex"aaaaaaaa");
         bytes memory seal = abi.encodePacked(unknownSelector, hex"deadbeef");
 
@@ -517,6 +522,7 @@ contract RiscZeroVerifierRouterTest is Test {
     }
 
     function test_verifyIntegrity_revertsForNoVerifier() public {
+        // forge-lint: disable-next-line(unsafe-typecast)
         bytes memory seal = abi.encodePacked(bytes4(hex"ffffffff"), hex"deadbeef");
 
         vm.expectRevert(RiscZeroVerifierRouter.NoVerifierFound.selector);
@@ -549,10 +555,12 @@ contract RiscZeroVerifierRouterTest is Test {
     function test_hasVerifier_trueWhenDefaultSet() public {
         // Any selector returns true when a default verifier is set
         router.setDefaultVerifier(address(verifierA));
+        // forge-lint: disable-next-line(unsafe-typecast)
         assertTrue(router.hasVerifier(bytes4(hex"ffffffff")));
     }
 
     function test_hasVerifier_falseForUnknownNoDefault() public view {
+        // forge-lint: disable-next-line(unsafe-typecast)
         assertFalse(router.hasVerifier(bytes4(hex"ffffffff")));
     }
 
@@ -591,6 +599,7 @@ contract RiscZeroIntegrationTest is Test {
     PassthroughVerifier public backendVerifier;
 
     address public admin = address(this);
+    // forge-lint: disable-next-line(unsafe-typecast)
     bytes4 constant SELECTOR = bytes4(hex"73c457ba");
     bytes32 constant IMAGE_ID = bytes32(uint256(0xCAFE));
 
@@ -632,6 +641,7 @@ contract RiscZeroIntegrationTest is Test {
     }
 
     function test_fullChain_unknownSelectorReverts() public {
+        // forge-lint: disable-next-line(unsafe-typecast)
         bytes4 unknownSelector = bytes4(hex"ffffffff");
         bytes memory proofData = abi.encodePacked(unknownSelector, hex"aabbccdd");
         bytes memory journal = hex"deadbeef";
@@ -642,6 +652,7 @@ contract RiscZeroIntegrationTest is Test {
 
     function test_fullChain_multipleVerifiers() public {
         // Register a second verifier with a different selector
+        // forge-lint: disable-next-line(unsafe-typecast)
         bytes4 selectorV2 = bytes4(hex"c101b42b");
         PassthroughVerifier backendV2 = new PassthroughVerifier();
         router.addVerifier(selectorV2, address(backendV2), "Backend STARK");
@@ -666,6 +677,7 @@ contract RiscZeroIntegrationTest is Test {
         router.setDefaultVerifier(address(defaultV));
 
         // Use a selector with no registered verifier
+        // forge-lint: disable-next-line(unsafe-typecast)
         bytes4 randomSelector = bytes4(hex"99887766");
         bytes memory proofData = abi.encodePacked(randomSelector, hex"aabbccdd");
         bytes memory journal = hex"cafe";

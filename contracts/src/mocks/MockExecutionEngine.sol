@@ -169,6 +169,7 @@ contract MockExecutionEngine {
             inputDigest: inputDigest,
             requester: msg.sender,
             createdAt: uint48(block.timestamp),
+            // forge-lint: disable-next-line(unsafe-typecast)
             expiresAt: uint48(block.timestamp + expiration),
             callbackContract: callbackContract,
             status: RequestStatus.Pending,
@@ -206,6 +207,7 @@ contract MockExecutionEngine {
             inputDigest: inputDigest,
             requester: msg.sender,
             createdAt: uint48(block.timestamp),
+            // forge-lint: disable-next-line(unsafe-typecast)
             expiresAt: uint48(block.timestamp + expiration),
             callbackContract: callbackContract,
             status: RequestStatus.Pending,

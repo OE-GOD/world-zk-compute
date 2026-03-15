@@ -84,7 +84,6 @@ library HyraxVerifier {
     /// @param proof The evaluation proof
     /// @param lCoeffs The L tensor coefficients (from sumcheck challenges)
     /// @param rCoeffs The R tensor coefficients (from sumcheck challenges)
-    /// @param claimedEval The claimed evaluation value (unused in PODP, kept for API)
     /// @param podpChallenge The Fiat-Shamir challenge for the PODP protocol
     /// @param gens Pedersen generators for commitment verification
     /// @return valid Whether the proof is valid
@@ -92,7 +91,7 @@ library HyraxVerifier {
         EvalProof memory proof,
         uint256[] memory lCoeffs,
         uint256[] memory rCoeffs,
-        uint256 claimedEval,
+        uint256, /* claimedEval */
         uint256 podpChallenge,
         PedersenGens memory gens
     ) internal view returns (bool) {

@@ -643,7 +643,7 @@ contract RemainderVerifierNegativeTest is Test {
     }
 
     /// @notice Sanity: the valid proof should pass verification (baseline)
-    function test_baseline_valid_proof_passes() public {
+    function test_baseline_valid_proof_passes() public view {
         // Should not revert
         verifier.verifyOrRevert(rawProof, circuitHash, pubInputs, gensData);
     }
@@ -1440,7 +1440,7 @@ contract E2ETranscriptReplayTest is Test {
     }
 
     /// @notice Validates that decoded EC commitment points match fixture values
-    function test_e2e_commitment_points_match_fixture() public {
+    function test_e2e_commitment_points_match_fixture() public view {
         string memory json = vm.readFile("test/fixtures/e2e_fixture.json");
         bytes memory rawProof = vm.parseJsonBytes(json, ".proof_hex");
         bytes memory proofData = new bytes(rawProof.length - 4);
@@ -1593,7 +1593,7 @@ contract PedersenGensDecoderTest is Test {
     }
 
     /// @notice Test that all generator points are on the BN254 curve
-    function test_all_gens_on_curve() public {
+    function test_all_gens_on_curve() public view {
         bytes memory gensData = _loadGens();
         HyraxVerifier.PedersenGens memory gens = this._decodeGensCalldata(gensData);
 
@@ -1708,7 +1708,7 @@ contract E2EProofDecodeTest is Test {
     }
 
     /// @notice Test adapter publicData splitting convention
-    function test_adapter_public_data_split() public {
+    function test_adapter_public_data_split() public view {
         // Create combined publicData: [pubInputsLen] [pubInputs] [gensData]
         bytes memory pubInputs = abi.encodePacked(uint256(6), uint256(20));
 
@@ -1828,7 +1828,7 @@ contract E2EProofDecodeTest is Test {
         // Use this._readUint to read from calldata-based decoding
         // Instead, decode via verifier and then manually parse claims offset
         bytes memory pubInputs = abi.encodePacked(uint256(6), uint256(20));
-        (GKRVerifier.GKRProof memory proof, uint256[] memory pubIn) = verifier.decodeProofCounted(proofData, pubInputs);
+        verifier.decodeProofCounted(proofData, pubInputs);
 
         // Use separate calldata call to read claims
         (
@@ -2109,6 +2109,7 @@ contract E2EProofDecodeTest is Test {
 
     function _loadAndSetupTranscript()
         internal
+        view
         returns (
             GKRVerifier.GKRProof memory proof,
             HyraxVerifier.PedersenGens memory gens,
@@ -2366,7 +2367,7 @@ contract TranscriptSetupTest is Test {
     }
 
     /// @notice Test SHA-256 hash chain on EC commitment points matches fixture values
-    function test_sha256_hash_chain_ec_points() public {
+    function test_sha256_hash_chain_ec_points() public view {
         string memory json = vm.readFile("test/fixtures/e2e_fixture.json");
         uint256[] memory ecCoords = new uint256[](4);
         ecCoords[0] = vm.parseJsonUint(json, ".transcript_trace.input_commitment_points[0].x");
@@ -2383,7 +2384,7 @@ contract TranscriptSetupTest is Test {
     }
 
     /// @notice Test full transcript setup produces correct first challenge
-    function test_full_transcript_setup() public {
+    function test_full_transcript_setup() public view {
         string memory json = vm.readFile("test/fixtures/e2e_fixture.json");
         bytes memory rawProof = vm.parseJsonBytes(json, ".proof_hex");
         bytes32 circuitHash = bytes32(vm.parseJsonBytes32(json, ".circuit_hash_raw"));
@@ -2862,7 +2863,7 @@ contract GKRHybridVerifierTest is Test {
     /// @notice Test that the transcript replay matches the direct GKR transcript
     /// @dev Both the hybrid replay and the direct GKR verification should produce
     ///      the same first output challenge (first squeeze after setup)
-    function test_hybrid_transcript_matches_direct_gkr() public {
+    function test_hybrid_transcript_matches_direct_gkr() public view {
         (bytes memory proofHex,, bytes32 circuitHash) = _loadE2EFixture();
 
         // Load public values ABI from combined fixture
@@ -3498,7 +3499,7 @@ contract GKRHybridVerifierTest is Test {
         bytes32 circuitHash,
         bytes memory publicValuesAbi,
         uint256[] memory groth16Outputs
-    ) internal returns (uint256[] memory groth16Inputs) {
+    ) internal view returns (uint256[] memory groth16Inputs) {
         bytes memory proofData = new bytes(innerProof.length - 4);
         for (uint256 i = 4; i < innerProof.length; i++) {
             proofData[i - 4] = innerProof[i];
@@ -3749,7 +3750,7 @@ contract GKRHybridVerifierTest is Test {
     }
 
     /// @notice Regression: committed input circuit still passes E2E (new check is no-op)
-    function test_hybrid_committed_still_passes_e2e() public {
+    function test_hybrid_committed_still_passes_e2e() public view {
         // This is the same as test_combined_e2e_full_verification but explicitly
         // verifies the new code path doesn't break committed-input circuits.
         (
@@ -4051,7 +4052,7 @@ contract GKRDAGVerifierTest is Test {
     function test_dag_transcript_trace() public {
         (
             bytes memory proofHex,
-            bytes memory gensHex,
+            ,
             bytes32 circuitHash,,
             GKRDAGVerifier.DAGCircuitDescription memory desc
         ) = _loadFixture();
@@ -4962,7 +4963,7 @@ contract DAGBatchVerifierTest is Test {
     // ========================================================================
 
     /// @notice Single-tx DAG verification still works alongside batch verification
-    function test_dag_single_tx_still_works() public {
+    function test_dag_single_tx_still_works() public view {
         bool valid = verifier.verifyDAGProof(proofHex, circuitHash, publicInputsHex, gensHex);
         assertTrue(valid, "single-tx DAG verification should still pass");
     }

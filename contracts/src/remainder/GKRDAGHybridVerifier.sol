@@ -180,7 +180,6 @@ library GKRDAGHybridVerifier {
 
             if (desc.inputIsCommitted[inputIdx]) {
                 // Collect and sort claim points (must match GKRDAGVerifier's order)
-                uint256 numClaims = _countClaimsFor(targetLayer, desc);
                 uint256[][] memory claimPoints = _collectClaimPoints(targetLayer, desc, allBindings);
 
                 // Sort claims lexicographically and group by R-half
