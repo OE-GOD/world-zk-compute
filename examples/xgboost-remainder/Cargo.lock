@@ -608,6 +608,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "bincode"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd6a120d2e16b3e1b4a24bd70f23b12d3e16b81f113364a26935f8db7245452d"
+
+[[package]]
 name = "bit-set"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1409,7 +1415,7 @@ dependencies = [
  "anyhow",
  "ark-serialize 0.5.0",
  "ark-std 0.5.0",
- "bincode",
+ "bincode 1.3.3",
  "clap",
  "criterion",
  "hyrax",
@@ -1851,7 +1857,7 @@ source = "git+https://github.com/worldcoin/Remainder_CE.git?branch=main#c7ffef1f
 dependencies = [
  "anyhow",
  "ark-std 0.5.0",
- "bincode",
+ "bincode 1.3.3",
  "clap",
  "criterion",
  "ff 0.13.1",
@@ -4565,7 +4571,7 @@ dependencies = [
  "alloy-sol-types",
  "anyhow",
  "axum",
- "bincode",
+ "bincode 3.0.0",
  "clap",
  "criterion",
  "ff 0.13.1",
