@@ -299,7 +299,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            sdk/target
+            target
           key: ${{ runner.os }}-cargo-sdk-publish-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-sdk-publish-

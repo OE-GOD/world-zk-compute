@@ -1,6 +1,6 @@
 [package]
 name = "world-zk-sdk"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 description = "Rust SDK for World ZK Compute — on-chain DAG circuit verification"
 license = "Apache-2.0"

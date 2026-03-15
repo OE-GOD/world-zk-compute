@@ -181,7 +181,6 @@ pub fn init_tracing_with_config(config: &TracingConfig) {
 /// Once the `opentelemetry` crate is wired in, this function should call
 /// `opentelemetry::global::shutdown_tracer_provider()` to flush any pending
 /// spans before the process exits.
-#[allow(dead_code)] // Will be wired in when opentelemetry crate is added
 pub fn shutdown_tracer_provider() {
     tracing::debug!(
         "Tracer provider shutdown requested (no-op until opentelemetry crate is added)"
@@ -197,7 +196,6 @@ pub fn shutdown_tracer_provider() {
 /// Create a tracing span for an inference request.
 ///
 /// Records the model name and number of input features.
-#[allow(dead_code)] // Available for structured tracing in handler hot path
 pub fn span_inference(model_name: &str, num_features: usize) -> Span {
     tracing::info_span!(
         "inference",
@@ -211,7 +209,6 @@ pub fn span_inference(model_name: &str, num_features: usize) -> Span {
 /// Create a tracing span for an attestation generation or verification flow.
 ///
 /// Records the attestation type (e.g. "nitro", "mock") and the chain ID.
-#[allow(dead_code)] // Available for structured tracing in attestation flow
 pub fn span_attestation(attestation_type: &str, chain_id: u64) -> Span {
     tracing::info_span!(
         "attestation",
@@ -225,7 +222,6 @@ pub fn span_attestation(attestation_type: &str, chain_id: u64) -> Span {
 /// Create a tracing span for model loading / hot-reload.
 ///
 /// Records the model file path and format.
-#[allow(dead_code)] // Available for structured tracing in model reload flow
 pub fn span_model_load(model_path: &str, model_format: &str) -> Span {
     tracing::info_span!(
         "model_load",

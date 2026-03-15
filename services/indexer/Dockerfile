@@ -13,6 +13,8 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
+# Copy workspace root for dependency resolution
+COPY Cargo.toml Cargo.lock ./
 # Copy shared crates (indexer depends on crates/watcher via path)
 COPY crates/ crates/
 COPY services/indexer/ services/indexer/

@@ -56,7 +56,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            sdk/target
+            target
           key: ${{ runner.os }}-cargo-sdk-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-sdk-
@@ -91,7 +91,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            services/operator/target
+            target
           key: ${{ runner.os }}-cargo-operator-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-operator-
@@ -126,7 +126,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            services/admin-cli/target
+            target
           key: ${{ runner.os }}-cargo-admin-cli-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-admin-cli-
@@ -161,7 +161,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            services/indexer/target
+            target
           key: ${{ runner.os }}-cargo-indexer-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-indexer-
@@ -196,7 +196,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            crates/watcher/target
+            target
           key: ${{ runner.os }}-cargo-watcher-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-watcher-
@@ -231,7 +231,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            crates/events/target
+            target
           key: ${{ runner.os }}-cargo-events-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-events-
@@ -266,7 +266,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            tee/enclave/target
+            target
           key: ${{ runner.os }}-cargo-enclave-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-enclave-
@@ -389,3 +389,63 @@ jobs:
 
       - name: Run chaos tests
         run: cargo test -p chaos-tests
+
+  stylus-verifier:
+    name: Stylus GKR Verifier
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contracts/stylus/gkr-verifier/target
+          key: ${{ runner.os }}-cargo-stylus-${{ hashFiles('contracts/stylus/gkr-verifier/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-stylus-
+
+      - name: Check WASM build
+        run: cargo check --manifest-path contracts/stylus/gkr-verifier/Cargo.toml --target wasm32-unknown-unknown
+
+      - name: Run native tests
+        run: cargo test --manifest-path contracts/stylus/gkr-verifier/Cargo.toml --target x86_64-unknown-linux-gnu
+
+  workspace-check:
+    name: Workspace Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-workspace-check-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-workspace-check-
+
+      - name: Check all workspace packages
+        run: cargo check --workspace

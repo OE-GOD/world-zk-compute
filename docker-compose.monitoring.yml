@@ -48,7 +48,8 @@ services:
       - ./monitoring/grafana-indexer.json:/var/lib/grafana/dashboards/indexer.json:ro
       - grafana-data:/var/lib/grafana
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: admin
+      # WARNING: Change default password in production via GRAFANA_PASSWORD env var
+      GF_SECURITY_ADMIN_PASSWORD: '${GRAFANA_PASSWORD:-admin}'
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/operator.json
     restart: unless-stopped
     security_opt:

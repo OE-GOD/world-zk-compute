@@ -29,6 +29,7 @@ use metrics::{Metrics, MetricsSnapshot};
 use model::XgboostModel;
 use model_registry::ModelRegistry;
 use nitro::{AttestationDocument, NitroAttestor};
+use tracing_setup::{span_attestation, span_inference, span_model_load};
 use watchdog::{DetailedHealth, ReplayProtection, Watchdog};
 
 // ---------------------------------------------------------------------------
@@ -42,6 +43,7 @@ struct ModelState {
     model: XgboostModel,
     model_hash: alloy_primitives::B256,
     #[allow(dead_code)]
+    // Retained for hot-reload (written in reload_model, not read elsewhere yet)
     model_bytes: Vec<u8>,
     /// Human-readable model name (derived from the model file path).
     model_name: String,
@@ -315,6 +317,18 @@ async fn attestation(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(query): axum::extract::Query<AttestationQuery>,
 ) -> Result<Json<AttestationDocument>, (StatusCode, String)> {
+    let attestation_type = if state
+        .nitro_attestor
+        .lock()
+        .map(|a| a.is_nitro())
+        .unwrap_or(false)
+    {
+        "nitro"
+    } else {
+        "mock"
+    };
+    let _attestation_span = span_attestation(attestation_type, state.attestor.chain_id()).entered();
+
     let model_hash = {
         let ms = state
             .model_state
@@ -399,6 +413,9 @@ async fn infer(
         .model_state
         .read()
         .map_err(|_| lock_error("model_state"))?;
+
+    // Create a structured tracing span for this inference request.
+    let _inference_span = span_inference(&ms.model_name, req.features.len()).entered();
 
     // Validate feature count
     if req.features.len() != ms.model.num_features {
@@ -513,6 +530,9 @@ async fn reload_model(
     headers: axum::http::HeaderMap,
     Json(req): Json<ReloadModelRequest>,
 ) -> Result<Json<ReloadModelResponse>, (StatusCode, String)> {
+    // Create a structured tracing span for this model reload operation.
+    let _model_load_span = span_model_load(&req.model_path, &req.model_format).entered();
+
     // Check admin API key
     let expected_key = match &state.admin_api_key {
         Some(key) => key,
@@ -955,6 +975,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await
         .map_err(|e| format!("Server error: {}", e))?;
     tracing::info!("Server shut down gracefully");
+
+    // Flush any pending OpenTelemetry spans before exit.
+    tracing_setup::shutdown_tracer_provider();
+
     Ok(())
 }
 

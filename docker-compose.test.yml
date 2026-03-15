@@ -16,7 +16,7 @@ services:
     ports:
       - "8545:8545"
     healthcheck:
-      test: ["CMD-SHELL", "cast block-number --rpc-url http://localhost:8545 || exit 1"]
+      test: ["CMD", "cast", "block-number", "--rpc-url", "http://localhost:8545"]
       interval: 2s
       timeout: 2s
       retries: 10

@@ -5,7 +5,6 @@ import "forge-std/Test.sol";
 import "../src/tee/TEEMLVerifier.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @dev Mock RemainderVerifier that returns a configurable result for verifyDAGProof
 contract MockRemainderVerifier {

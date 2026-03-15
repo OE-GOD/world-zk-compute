@@ -3809,8 +3809,6 @@ contract GKRDAGGroth16E2ETest is Test {
 // DAG BATCH VERIFIER TESTS (Multi-transaction batch verification)
 // ========================================================================
 
-import {DAGBatchVerifier} from "../src/remainder/DAGBatchVerifier.sol";
-
 contract DAGBatchVerifierTest is Test {
     RemainderVerifier verifier;
 

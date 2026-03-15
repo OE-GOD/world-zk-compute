@@ -4,7 +4,6 @@ pragma solidity ^0.8.20;
 import "forge-std/Script.sol";
 import "../src/remainder/RemainderVerifier.sol";
 import "../src/remainder/GKRDAGVerifier.sol";
-import {DAGGroth16Verifier} from "../src/remainder/DAGRemainderGroth16Verifier.sol";
 
 /// @title RemainderDAGBatchE2E
 /// @notice Deploy and run DAG batch verification (multi-tx) on Anvil.

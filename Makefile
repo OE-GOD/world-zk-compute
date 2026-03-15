@@ -10,15 +10,16 @@
 #   make deploy-local    Deploy to local Anvil
 #   make clean           Clean all build artifacts
 
-.PHONY: test test-contracts test-rust test-python test-ts test-operator test-enclave test-sdk \
+.PHONY: test test-fast test-contracts test-rust test-python test-ts test-operator test-enclave test-sdk \
         test-admin-cli test-indexer test-watcher-crate test-events-crate \
+        test-xgboost test-stylus \
         build build-contracts build-rust \
         fmt fmt-sol fmt-rust lint lint-sol lint-rust \
         deploy-local deploy-sepolia deploy-multichain deploy-sepolia-tee \
         docker-up docker-down docker-gpu docker-sepolia docker-sepolia-down \
         load-test load-test-enclave load-test-prover load-test-batch load-test-indexer \
         sepolia-e2e check-sepolia-balances test-sepolia-sdk \
-        bench clean verify snapshot help \
+        bench clean verify snapshot snapshot-check gas-report help \
         smoke-test audit docs check preflight sepolia-status
 
 # ── Test ─────────────────────────────────────────────────────────────────────
@@ -259,5 +260,5 @@ check: lint ## Run all validation (lint + script checks + compose validation)
 # ── Help ─────────────────────────────────────────────────────────────────────
 
 help: ## Show this help
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
+	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'

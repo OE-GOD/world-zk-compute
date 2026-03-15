@@ -269,6 +269,84 @@ fn test_register_enclave_help() {
     );
 }
 
+// ---- Set-verifier and transfer-ownership ----
+
+#[test]
+fn test_set_verifier_missing_address() {
+    let (code, _stdout, stderr) = run_cli(&[
+        "--rpc-url",
+        "http://127.0.0.1:19999",
+        "--contract",
+        "0x0000000000000000000000000000000000000001",
+        "--private-key",
+        "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+        "set-verifier",
+        // missing address
+    ]);
+    assert_ne!(code, 0, "set-verifier without address should fail");
+    assert!(
+        stderr.contains("ADDRESS") || stderr.contains("address") || stderr.contains("required"),
+        "error should mention missing address, got: {stderr}"
+    );
+}
+
+#[test]
+fn test_transfer_ownership_missing_address() {
+    let (code, _stdout, stderr) = run_cli(&[
+        "--rpc-url",
+        "http://127.0.0.1:19999",
+        "--contract",
+        "0x0000000000000000000000000000000000000001",
+        "--private-key",
+        "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+        "transfer-ownership",
+        // missing address
+    ]);
+    assert_ne!(code, 0, "transfer-ownership without address should fail");
+    assert!(
+        stderr.contains("ADDRESS") || stderr.contains("address") || stderr.contains("required"),
+        "error should mention missing address, got: {stderr}"
+    );
+}
+
+#[test]
+fn test_set_bond_missing_amount() {
+    let (code, _stdout, stderr) = run_cli(&[
+        "--rpc-url",
+        "http://127.0.0.1:19999",
+        "--contract",
+        "0x0000000000000000000000000000000000000001",
+        "--private-key",
+        "0xaa",
+        "set-bond",
+        // missing amount
+    ]);
+    assert_ne!(code, 0, "set-bond without amount should fail");
+    assert!(
+        stderr.contains("AMOUNT") || stderr.contains("amount") || stderr.contains("required"),
+        "error should mention missing amount, got: {stderr}"
+    );
+}
+
+#[test]
+fn test_accept_ownership_without_private_key_fails() {
+    let (code, _stdout, stderr) = run_cli(&[
+        "--rpc-url",
+        "http://127.0.0.1:19999",
+        "--contract",
+        "0x0000000000000000000000000000000000000001",
+        "accept-ownership",
+    ]);
+    assert_ne!(
+        code, 0,
+        "accept-ownership without --private-key should fail"
+    );
+    assert!(
+        stderr.contains("private") || stderr.contains("PRIVATE_KEY"),
+        "error should mention private key, got: {stderr}"
+    );
+}
+
 // ---- Dry run flag ----
 
 #[test]

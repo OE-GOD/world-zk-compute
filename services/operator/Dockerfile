@@ -29,8 +29,11 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-# Copy SDK (operator depends on it via path)
+# Copy workspace root for dependency resolution
+COPY Cargo.toml Cargo.lock ./
+# Copy SDK and shared crates (operator depends on them via path)
 COPY sdk/ sdk/
+COPY crates/ crates/
 COPY services/operator/ services/operator/
 RUN cargo build --release \
     --manifest-path services/operator/Cargo.toml

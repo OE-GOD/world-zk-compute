@@ -73,12 +73,12 @@ pub struct LoadedModel {
     /// Unique caller-chosen identifier (e.g. "xgboost-iris-v2").
     pub model_id: String,
     /// Filesystem path from which this model was loaded.
-    #[allow(dead_code)] // Used once model registry HTTP routes are wired (T210)
+    #[allow(dead_code)] // Written at load time; not yet exposed via HTTP responses
     pub model_path: String,
     /// SHA-256 hex digest of the raw model bytes.
     pub model_hash: String,
     /// Monotonic timestamp when the model was loaded.
-    #[allow(dead_code)] // Used once model registry HTTP routes are wired (T210)
+    #[allow(dead_code)] // Written at load time; not yet exposed via HTTP responses
     pub loaded_at: Instant,
     /// Size of the raw model file in bytes.
     pub size_bytes: usize,
@@ -277,7 +277,7 @@ impl ModelRegistry {
     /// Return the first model that was loaded (the "default").
     ///
     /// Returns `None` if the registry is empty.
-    #[allow(dead_code)] // Used once model registry HTTP routes are wired (T210)
+    #[allow(dead_code)] // Used in tests; public API for library consumers
     pub fn default_model(&self) -> Option<LoadedModel> {
         let inner = self
             .inner
@@ -291,7 +291,7 @@ impl ModelRegistry {
     }
 
     /// Number of models currently loaded.
-    #[allow(dead_code)] // Used once model registry HTTP routes are wired (T210)
+    #[allow(dead_code)] // Used in tests; public API for library consumers
     pub fn len(&self) -> usize {
         let inner = self
             .inner
@@ -301,7 +301,7 @@ impl ModelRegistry {
     }
 
     /// Whether the registry is empty.
-    #[allow(dead_code)] // Used once model registry HTTP routes are wired (T210)
+    #[allow(dead_code)] // Used in tests; public API for library consumers
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

@@ -100,7 +100,6 @@ impl NitroAttestor {
     }
 
     /// Whether this attestor uses real Nitro attestation.
-    #[allow(dead_code)]
     pub fn is_nitro(&self) -> bool {
         self.nitro_enabled
     }

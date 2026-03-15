@@ -2,9 +2,6 @@
 pragma solidity ^0.8.20;
 
 import {PoseidonSponge} from "./PoseidonSponge.sol";
-import {HyraxVerifier} from "./HyraxVerifier.sol";
-import {GKRVerifier} from "./GKRVerifier.sol";
-import {GKRDAGVerifier} from "./GKRDAGVerifier.sol";
 
 /// @title DAGBatchVerifier
 /// @notice Multi-transaction batch verification for DAG circuits that exceed block gas limits.

@@ -67,7 +67,7 @@ jobs:
           node-version: "20"
 
       - name: Install dependencies
-        run: cd sdk/typescript && npm install
+        run: cd sdk/typescript && npm ci
 
       - name: Generate typedoc
         run: cd sdk/typescript && npx typedoc

@@ -288,7 +288,7 @@ impl Storage for SqliteStorage {
         let conn = match self.lock() {
             Ok(c) => c,
             Err(e) => {
-                tracing::warn!("DB lock poisoned in get_last_indexed_block: {}", e);
+                tracing::error!("Lock poisoned in get_last_indexed_block - returning 0: {}", e);
                 return 0;
             }
         };
@@ -316,7 +316,7 @@ impl Storage for SqliteStorage {
         let conn = match self.lock() {
             Ok(c) => c,
             Err(e) => {
-                tracing::warn!("DB lock poisoned in get_total_results: {}", e);
+                tracing::error!("Lock poisoned in get_total_results - returning 0: {}", e);
                 return 0;
             }
         };
