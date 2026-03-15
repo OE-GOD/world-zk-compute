@@ -25,7 +25,7 @@ ecdsa = { version = "0.16", features = ["verifying"] }  # ECDSA signature verifi
 x509-cert = "0.2"           # Parse X.509 certificates from Nitro enclave certificate chain
 der = { version = "0.7", features = ["std", "pem"] }    # ASN.1 DER encoding/decoding for certificate validation
 # -- HTTP + config --
-axum = "0.7"
+axum = "0.8"
 toml = "0.8"                # Parse operator configuration files
 uuid = { version = "1", features = ["v4"] }
 
