@@ -257,6 +257,7 @@ impl ExecutionEngineClient {
     /// # Returns
     ///
     /// The transaction hash of the submitted request.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(image_id = %image_id, input_digest = %input_digest)))]
     pub async fn submit_request(
         &self,
         image_id: B256,
@@ -292,6 +293,7 @@ impl ExecutionEngineClient {
     ///
     /// Only the original requester can cancel. The request must still be in
     /// `Pending` status.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(request_id)))]
     pub async fn cancel_request(&self, request_id: u64) -> anyhow::Result<B256> {
         let provider = self.build_provider();
         let contract = ExecutionEngine::new(self.client.contract_address(), provider);
@@ -314,6 +316,7 @@ impl ExecutionEngineClient {
     ///
     /// After claiming, the prover has `CLAIM_WINDOW` (10 minutes) to submit
     /// a valid proof via `submit_result`.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(request_id)))]
     pub async fn claim_job(&self, request_id: u64) -> anyhow::Result<B256> {
         let provider = self.build_provider();
         let contract = ExecutionEngine::new(self.client.contract_address(), provider);
@@ -339,6 +342,7 @@ impl ExecutionEngineClient {
     /// * `request_id` - The request ID that was previously claimed.
     /// * `seal` - The proof seal (RISC Zero seal or custom verifier proof).
     /// * `journal` - The public outputs (journal / public inputs).
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(request_id)))]
     pub async fn submit_result(
         &self,
         request_id: u64,
@@ -369,6 +373,7 @@ impl ExecutionEngineClient {
     /// Get the full execution request details.
     ///
     /// Returns the on-chain `ExecutionRequest` struct for the given request ID.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(request_id)))]
     pub async fn get_request(
         &self,
         request_id: u64,
@@ -668,13 +673,13 @@ mod tests {
             imageId: B256::from([0xaa; 32]),
             inputDigest: B256::from([0xbb; 32]),
             requester: Address::ZERO,
-            createdAt: 1000,
-            expiresAt: 2000,
+            createdAt: alloy::primitives::Uint::from(1000u64),
+            expiresAt: alloy::primitives::Uint::from(2000u64),
             callbackContract: Address::ZERO,
             status: 0, // Pending
             claimedBy: Address::ZERO,
-            claimedAt: 0,
-            claimDeadline: 0,
+            claimedAt: alloy::primitives::Uint::from(0u64),
+            claimDeadline: alloy::primitives::Uint::from(0u64),
             tip: U256::from(100_000_000_000_000u64), // 0.0001 ETH
             maxTip: U256::from(100_000_000_000_000u64),
         };
@@ -682,8 +687,8 @@ mod tests {
         assert_eq!(req.id, U256::from(1));
         assert_eq!(req.imageId, B256::from([0xaa; 32]));
         assert_eq!(req.status, 0);
-        assert_eq!(req.createdAt, 1000);
-        assert_eq!(req.expiresAt, 2000);
+        assert_eq!(req.createdAt, alloy::primitives::Uint::from(1000u64));
+        assert_eq!(req.expiresAt, alloy::primitives::Uint::from(2000u64));
     }
 
     #[test]

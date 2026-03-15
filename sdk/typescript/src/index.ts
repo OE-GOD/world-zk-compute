@@ -71,6 +71,7 @@ export {
   ProofError,
   NetworkError,
   TimeoutError,
+  ServiceHealthError,
 } from './errors';
 
 export {
@@ -142,6 +143,12 @@ export type {
   SubmitRequestOptions,
   OnChainProverStats,
 } from './execution-engine';
+
+export { checkHealth } from './health';
+export type {
+  IndexerHealthResponse,
+  CheckHealthOptions,
+} from './health';
 
 export { SEPOLIA_NETWORK, ANVIL_NETWORK, NETWORKS } from './networks';
 export type { NetworkConfig } from './networks';

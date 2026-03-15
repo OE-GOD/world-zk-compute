@@ -490,6 +490,17 @@ async fn infer(
     let elapsed = start.elapsed();
     state.metrics.record_inference(elapsed);
 
+    tracing::info!(
+        target: "security_audit",
+        action = "attestation_signed",
+        model_hash = %format!("0x{}", hex::encode(model_hash)),
+        input_hash = %format!("0x{}", hex::encode(input_hash)),
+        result_hash = %format!("0x{}", hex::encode(attestation.result_hash)),
+        chain_id = attestation.chain_id,
+        inference_ms = elapsed.as_millis() as u64,
+        "Inference attestation signed"
+    );
+
     Ok(Json(InferResponse {
         result: format!("0x{}", hex::encode(&result_bytes)),
         model_hash: format!("0x{}", hex::encode(model_hash)),

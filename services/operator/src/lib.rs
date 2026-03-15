@@ -1,5 +1,6 @@
 /// Re-export modules needed by integration tests.
 pub mod alerting;
+pub mod audit;
 pub mod circuit_breaker;
 pub mod deadline_monitor;
 pub mod middleware;

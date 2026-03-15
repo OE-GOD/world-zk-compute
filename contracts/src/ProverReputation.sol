@@ -72,6 +72,12 @@ contract ProverReputation {
     uint256 public constant DECAY_PERIOD = 30 days;
     uint256 public constant DECAY_RATE = 100; // -1% per period of inactivity
 
+    // Cooldown constraints
+    uint256 public constant MIN_COOLDOWN = 1 minutes;
+    uint256 public constant MAX_COOLDOWN = 30 days;
+    /// @notice Maximum valid timestamp for uint64 fields (year ~2554)
+    uint256 public constant MAX_UINT64_TIMESTAMP = type(uint64).max;
+
     // ========================================================================
     // STATE
     // ========================================================================
@@ -94,6 +100,9 @@ contract ProverReputation {
     /// @notice Provers by tier
     mapping(uint8 => uint256) public proversByTier;
 
+    /// @notice Configurable cooldown period between slashes (default 1 hour)
+    uint256 public slashCooldown = 1 hours;
+
     // ========================================================================
     // EVENTS
     // ========================================================================
@@ -108,6 +117,7 @@ contract ProverReputation {
     event TierChanged(address indexed prover, uint8 oldTier, uint8 newTier);
     event ReporterAuthorized(address indexed reporter);
     event ReporterRevoked(address indexed reporter);
+    event SlashCooldownUpdated(uint256 oldCooldown, uint256 newCooldown);
 
     // ========================================================================
     // ERRORS
@@ -119,6 +129,9 @@ contract ProverReputation {
     error ProverIsBanned();
     error AlreadyRegistered();
     error InvalidScore();
+    error InvalidCooldown();
+    error TimestampOverflow();
+    error SlashCooldownActive();
 
     // ========================================================================
     // MODIFIERS
@@ -154,6 +167,7 @@ contract ProverReputation {
     /// @notice Register as a prover
     function register() external {
         if (reputations[msg.sender].isRegistered) revert AlreadyRegistered();
+        _checkTimestamp();
 
         reputations[msg.sender] = Reputation({
             totalJobs: 0,
@@ -192,6 +206,7 @@ contract ProverReputation {
     {
         Reputation storage rep = reputations[prover];
         if (!rep.isRegistered) revert ProverNotRegistered();
+        _checkTimestamp();
 
         // Update stats
         rep.totalJobs++;
@@ -232,6 +247,7 @@ contract ProverReputation {
     function recordFailure(address prover, string calldata reason) external onlyAuthorized notBanned(prover) {
         Reputation storage rep = reputations[prover];
         if (!rep.isRegistered) revert ProverNotRegistered();
+        _checkTimestamp();
 
         rep.totalJobs++;
         rep.failedJobs++;
@@ -254,6 +270,7 @@ contract ProverReputation {
     function recordAbandon(address prover, uint256 requestId) external onlyAuthorized notBanned(prover) {
         Reputation storage rep = reputations[prover];
         if (!rep.isRegistered) revert ProverNotRegistered();
+        _checkTimestamp();
 
         rep.totalJobs++;
         rep.abandonedJobs++;
@@ -276,6 +293,14 @@ contract ProverReputation {
     function slash(address prover, string calldata reason, uint256 penaltyBps) external onlyOwner {
         Reputation storage rep = reputations[prover];
         if (!rep.isRegistered) revert ProverNotRegistered();
+        _checkTimestamp();
+
+        // Enforce cooldown between slashes
+        SlashEvent[] storage history = slashHistory[prover];
+        if (history.length > 0) {
+            uint256 lastSlashTime = history[history.length - 1].timestamp;
+            if (block.timestamp < lastSlashTime + slashCooldown) revert SlashCooldownActive();
+        }
 
         // Record slash
         slashHistory[prover].push(
@@ -388,6 +413,15 @@ contract ProverReputation {
         owner = newOwner;
     }
 
+    /// @notice Set the cooldown period between slashes
+    /// @param newCooldown New cooldown in seconds (must be >= MIN_COOLDOWN and <= MAX_COOLDOWN)
+    function setSlashCooldown(uint256 newCooldown) external onlyOwner {
+        if (newCooldown < MIN_COOLDOWN || newCooldown > MAX_COOLDOWN) revert InvalidCooldown();
+        uint256 oldCooldown = slashCooldown;
+        slashCooldown = newCooldown;
+        emit SlashCooldownUpdated(oldCooldown, newCooldown);
+    }
+
     // ========================================================================
     // INTERNAL FUNCTIONS
     // ========================================================================
@@ -399,6 +433,11 @@ contract ProverReputation {
         Reputation storage rep = reputations[prover];
 
         if (rep.lastJobAt == 0) {
+            return uint256(rep.score);
+        }
+
+        // Safety: if lastJobAt is somehow in the future, return raw score (no decay)
+        if (block.timestamp < uint256(rep.lastJobAt)) {
             return uint256(rep.score);
         }
 
@@ -425,6 +464,11 @@ contract ProverReputation {
         }
 
         return decayedScore;
+    }
+
+    /// @notice Check that block.timestamp fits in uint64 to prevent overflow in packed fields
+    function _checkTimestamp() internal view {
+        if (block.timestamp > MAX_UINT64_TIMESTAMP) revert TimestampOverflow();
     }
 
     /// @notice Bound score to valid range

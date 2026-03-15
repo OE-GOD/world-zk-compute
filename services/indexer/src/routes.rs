@@ -47,6 +47,12 @@ const MAX_QUERY_STRING_LENGTH: usize = 4096;
 /// Valid values for the `status` filter parameter.
 const VALID_STATUSES: &[&str] = &["submitted", "challenged", "finalized", "resolved"];
 
+/// Valid values for the `sort_by` query parameter.
+const VALID_SORT_BY: &[&str] = &["block_number", "status", "submitter"];
+
+/// Valid values for the `sort_order` query parameter.
+const VALID_SORT_ORDER: &[&str] = &["asc", "desc"];
+
 /// Check whether `s` is a valid hex string: starts with `0x` followed by
 /// one or more hex digits.
 fn is_valid_hex(s: &str) -> bool {
@@ -132,6 +138,28 @@ fn validate_query_params(
             violations.push(format!(
                 "model_hash too long ({} chars); maximum is {MAX_STRING_LENGTH}",
                 model_hash.len()
+            ));
+        }
+    }
+
+    // --- sort_by ---
+    if let Some(ref sort_by) = filter.sort_by {
+        if !VALID_SORT_BY.contains(&sort_by.as_str()) {
+            violations.push(format!(
+                "invalid sort_by '{}'; must be one of: {}",
+                sort_by,
+                VALID_SORT_BY.join(", ")
+            ));
+        }
+    }
+
+    // --- sort_order ---
+    if let Some(ref sort_order) = filter.sort_order {
+        if !VALID_SORT_ORDER.contains(&sort_order.as_str()) {
+            violations.push(format!(
+                "invalid sort_order '{}'; must be one of: {}",
+                sort_order,
+                VALID_SORT_ORDER.join(", ")
             ));
         }
     }
@@ -1176,5 +1204,196 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // -----------------------------------------------------------------------
+    // Rate limit response header tests (X-RateLimit-* on 200 responses)
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_rate_limit_headers_present_on_success() {
+        let s = test_storage();
+        s.insert_result("0x01", "0xm", "0xi", "0xa", 1).unwrap();
+
+        // Use a small limit so we can verify the remaining count decreases.
+        let rl_config = RateLimitConfig {
+            max_requests: 10,
+            window: std::time::Duration::from_secs(60),
+        };
+        let app = build_app(s, test_broadcaster(), rl_config);
+
+        let req = axum::http::Request::builder()
+            .uri("/health")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // X-RateLimit-Limit must be present and equal to max_requests
+        let limit_hdr = resp
+            .headers()
+            .get("x-ratelimit-limit")
+            .expect("X-RateLimit-Limit header must be present on 200 responses");
+        assert_eq!(limit_hdr.to_str().unwrap(), "10");
+
+        // X-RateLimit-Remaining must be present (10 - 1 = 9)
+        let remaining_hdr = resp
+            .headers()
+            .get("x-ratelimit-remaining")
+            .expect("X-RateLimit-Remaining header must be present on 200 responses");
+        assert_eq!(remaining_hdr.to_str().unwrap(), "9");
+
+        // X-RateLimit-Reset must be present and > 0
+        let reset_hdr = resp
+            .headers()
+            .get("x-ratelimit-reset")
+            .expect("X-RateLimit-Reset header must be present on 200 responses");
+        let reset_secs: u64 = reset_hdr.to_str().unwrap().parse().unwrap();
+        assert!(
+            reset_secs > 0 && reset_secs <= 61,
+            "reset should be between 1 and 61 seconds, got {}",
+            reset_secs
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rate_limit_remaining_decreases() {
+        let s = test_storage();
+
+        let rl_config = RateLimitConfig {
+            max_requests: 5,
+            window: std::time::Duration::from_secs(60),
+        };
+        let app = build_app(s, test_broadcaster(), rl_config);
+
+        // Make 3 requests and verify remaining decreases each time.
+        for i in 0u32..3 {
+            let req = axum::http::Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+
+            let remaining: u32 = resp
+                .headers()
+                .get("x-ratelimit-remaining")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert_eq!(
+                remaining,
+                5 - i - 1,
+                "after request {}, remaining should be {}",
+                i + 1,
+                5 - i - 1
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_rate_limit_headers_on_429() {
+        let s = test_storage();
+
+        // Allow only 1 request per minute so the 2nd is rate limited.
+        let rl_config = RateLimitConfig {
+            max_requests: 1,
+            window: std::time::Duration::from_secs(60),
+        };
+        let app = build_app(s, test_broadcaster(), rl_config);
+
+        // First request succeeds.
+        let req = axum::http::Request::builder()
+            .uri("/health")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Second request is rate limited.
+        let req = axum::http::Request::builder()
+            .uri("/health")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        // 429 responses must also carry the rate-limit headers.
+        let limit_hdr = resp
+            .headers()
+            .get("x-ratelimit-limit")
+            .expect("X-RateLimit-Limit must be present on 429 responses");
+        assert_eq!(limit_hdr.to_str().unwrap(), "1");
+
+        let remaining_hdr = resp
+            .headers()
+            .get("x-ratelimit-remaining")
+            .expect("X-RateLimit-Remaining must be present on 429 responses");
+        assert_eq!(remaining_hdr.to_str().unwrap(), "0");
+
+        let reset_hdr = resp
+            .headers()
+            .get("x-ratelimit-reset")
+            .expect("X-RateLimit-Reset must be present on 429 responses");
+        let reset_secs: u64 = reset_hdr.to_str().unwrap().parse().unwrap();
+        assert!(
+            reset_secs > 0 && reset_secs <= 61,
+            "reset should be between 1 and 61 seconds, got {}",
+            reset_secs
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rate_limit_headers_on_api_endpoint() {
+        let s = test_storage();
+        s.insert_result("0x01", "0xm", "0xi", "0xa", 1).unwrap();
+
+        let rl_config = RateLimitConfig {
+            max_requests: 50,
+            window: std::time::Duration::from_secs(60),
+        };
+        let app = build_app(s, test_broadcaster(), rl_config);
+
+        // Test on a versioned API endpoint (not just /health)
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/results")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        assert!(
+            resp.headers().get("x-ratelimit-limit").is_some(),
+            "X-RateLimit-Limit must be present on /api/v1/results"
+        );
+        assert!(
+            resp.headers().get("x-ratelimit-remaining").is_some(),
+            "X-RateLimit-Remaining must be present on /api/v1/results"
+        );
+        assert!(
+            resp.headers().get("x-ratelimit-reset").is_some(),
+            "X-RateLimit-Reset must be present on /api/v1/results"
+        );
+
+        assert_eq!(
+            resp.headers()
+                .get("x-ratelimit-limit")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "50"
+        );
+        assert_eq!(
+            resp.headers()
+                .get("x-ratelimit-remaining")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "49"
+        );
     }
 }

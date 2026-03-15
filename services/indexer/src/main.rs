@@ -132,6 +132,9 @@ pub trait Storage: Send + Sync {
 
     fn list_results(&self, filter: &ResultFilter) -> anyhow::Result<Vec<ResultRow>>;
 
+    /// Count results matching the given filter (ignoring limit/offset).
+    fn count_results(&self, filter: &ResultFilter) -> anyhow::Result<u64>;
+
     fn get_stats(&self) -> anyhow::Result<StatsResponse>;
 
     fn get_last_indexed_block(&self) -> u64;
@@ -310,17 +313,62 @@ impl Storage for SqliteStorage {
             sql.push_str(&format!(" AND model_hash = ?{}", param_values.len()));
         }
 
-        sql.push_str(" ORDER BY block_number DESC");
+        // Sorting: whitelist allowed columns to prevent SQL injection
+        let order_col = match filter.sort_by.as_deref() {
+            Some("block_number") => "block_number",
+            Some("submitted_at") => "timestamp",
+            Some("status") => "status",
+            _ => "block_number",
+        };
+        let order_dir = match filter.sort_order.as_deref() {
+            Some("asc") => "ASC",
+            Some("desc") => "DESC",
+            _ => "DESC",
+        };
+        sql.push_str(&format!(" ORDER BY {order_col} {order_dir}, id ASC"));
 
         let limit = filter.limit.unwrap_or(50).min(1000);
         param_values.push(Box::new(limit as i64));
         sql.push_str(&format!(" LIMIT ?{}", param_values.len()));
+
+        // Offset-based pagination
+        if let Some(offset) = filter.offset {
+            if offset > 0 {
+                param_values.push(Box::new(offset as i64));
+                sql.push_str(&format!(" OFFSET ?{}", param_values.len()));
+            }
+        }
 
         let mut stmt = conn.prepare(&sql)?;
         let params_ref: Vec<&dyn rusqlite::types::ToSql> =
             param_values.iter().map(|p| p.as_ref()).collect();
         let rows = stmt.query_map(params_ref.as_slice(), row_to_result)?;
         Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    fn count_results(&self, filter: &ResultFilter) -> anyhow::Result<u64> {
+        let conn = self.lock()?;
+        let mut sql = String::from("SELECT COUNT(*) FROM results WHERE 1=1");
+        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+        if let Some(ref status) = filter.status {
+            param_values.push(Box::new(status.clone()));
+            sql.push_str(&format!(" AND status = ?{}", param_values.len()));
+        }
+        if let Some(ref submitter) = filter.submitter {
+            param_values.push(Box::new(submitter.clone()));
+            sql.push_str(&format!(" AND submitter = ?{}", param_values.len()));
+        }
+        if let Some(ref model_hash) = filter.model_hash {
+            param_values.push(Box::new(model_hash.clone()));
+            sql.push_str(&format!(" AND model_hash = ?{}", param_values.len()));
+        }
+
+        let mut stmt = conn.prepare(&sql)?;
+        let params_ref: Vec<&dyn rusqlite::types::ToSql> =
+            param_values.iter().map(|p| p.as_ref()).collect();
+        let count: i64 = stmt.query_row(params_ref.as_slice(), |r| r.get(0))?;
+        Ok(count as u64)
     }
 
     fn get_stats(&self) -> anyhow::Result<StatsResponse> {
@@ -572,12 +620,27 @@ pub struct ResultRow {
     pub challenger: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct ResultFilter {
     pub status: Option<String>,
     pub submitter: Option<String>,
     pub model_hash: Option<String>,
     pub limit: Option<u32>,
+    /// Numeric offset for pagination.
+    pub offset: Option<u32>,
+    /// Column to sort by. Allowed: `block_number`, `status`, `submitter`.
+    pub sort_by: Option<String>,
+    /// Sort direction. Allowed: `asc`, `desc` (default `desc`).
+    pub sort_order: Option<String>,
+}
+
+/// Paginated response wrapper returned by the list results endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaginatedResponse<T> {
+    pub data: Vec<T>,
+    pub total: u64,
+    pub limit: u32,
+    pub offset: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -850,10 +913,7 @@ mod tests {
 
         let all = s
             .list_results(&ResultFilter {
-                status: None,
-                submitter: None,
-                model_hash: None,
-                limit: None,
+                ..Default::default()
             })
             .unwrap();
         assert_eq!(all.len(), 3);
@@ -861,9 +921,7 @@ mod tests {
         let finalized = s
             .list_results(&ResultFilter {
                 status: Some("finalized".to_string()),
-                submitter: None,
-                model_hash: None,
-                limit: None,
+                ..Default::default()
             })
             .unwrap();
         assert_eq!(finalized.len(), 1);
@@ -871,30 +929,24 @@ mod tests {
 
         let alice = s
             .list_results(&ResultFilter {
-                status: None,
                 submitter: Some("0xalice".to_string()),
-                model_hash: None,
-                limit: None,
+                ..Default::default()
             })
             .unwrap();
         assert_eq!(alice.len(), 2);
 
         let m1 = s
             .list_results(&ResultFilter {
-                status: None,
-                submitter: None,
                 model_hash: Some("0xm1".to_string()),
-                limit: None,
+                ..Default::default()
             })
             .unwrap();
         assert_eq!(m1.len(), 2);
 
         let limited = s
             .list_results(&ResultFilter {
-                status: None,
-                submitter: None,
-                model_hash: None,
                 limit: Some(2),
+                ..Default::default()
             })
             .unwrap();
         assert_eq!(limited.len(), 2);

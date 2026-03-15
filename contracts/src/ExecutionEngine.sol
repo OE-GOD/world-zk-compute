@@ -126,7 +126,7 @@ contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
     /// @notice Emitted when a prover's claim deadline passes without proof submission
     event ClaimExpired(uint256 indexed requestId, address indexed prover);
     /// @notice Emitted when an onExecutionComplete callback reverts (proof still valid)
-    event CallbackFailed(uint256 indexed requestId, address indexed callbackContract);
+    event CallbackFailed(uint256 indexed requestId, address indexed callbackContract, bytes reason);
     /// @notice Emitted when the reputation contract address is updated
     event ReputationContractSet(address indexed reputation);
     /// @notice Emitted when the protocol fee basis points are changed
@@ -387,9 +387,9 @@ contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
         // Execute callback if specified
         if (req.callbackContract != address(0)) {
             try IExecutionCallback(req.callbackContract).onExecutionComplete(requestId, req.imageId, journal) {}
-            catch {
+            catch (bytes memory reason) {
                 // Callback failed but proof is still valid — emit event for observability
-                emit CallbackFailed(requestId, req.callbackContract);
+                emit CallbackFailed(requestId, req.callbackContract, reason);
             }
         }
     }
@@ -428,8 +428,11 @@ contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
         return req.maxTip - decay;
     }
 
-    /// @notice Get pending requests (for prover to find work)
-    /// @param offset Number of matching requests to skip before returning
+    /// @notice Get a paginated list of pending (unclaimed, non-expired) requests
+    /// @dev Iterates over all requests sequentially. Gas cost scales linearly with
+    ///      nextRequestId, so this is intended for off-chain use only (eth_call).
+    ///      For on-chain prover selection, use ExecutionRequested events instead.
+    /// @param offset Number of matching requests to skip before returning (for pagination)
     /// @param limit Maximum number of request IDs to return
     /// @return Array of request IDs that are currently Pending and not expired
     function getPendingRequests(uint256 offset, uint256 limit) external view returns (uint256[] memory) {
@@ -457,18 +460,22 @@ contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
         return result;
     }
 
-    /// @notice Get request details
+    /// @notice Get the full details of an execution request
+    /// @dev Reverts with RequestNotFound if the request ID has never been created.
+    ///      Returns a memory copy of the request struct (not a storage reference).
     /// @param requestId The request to query
-    /// @return The full ExecutionRequest struct
+    /// @return The full ExecutionRequest struct including status, tip, claim info, and timestamps
     function getRequest(uint256 requestId) external view returns (ExecutionRequest memory) {
         if (requests[requestId].id == 0) revert RequestNotFound();
         return requests[requestId];
     }
 
-    /// @notice Get prover statistics
+    /// @notice Get cumulative statistics for a prover address
+    /// @dev These counters are incremented in submitProof. Earnings reflect the prover's
+    ///      share after protocol fee deduction (not the full tip amount).
     /// @param prover The prover address to query
-    /// @return completed Number of proofs successfully submitted
-    /// @return earnings Total ETH earned from payouts
+    /// @return completed Number of proofs successfully submitted by this prover
+    /// @return earnings Total ETH earned from payouts (after protocol fee deduction)
     function getProverStats(address prover) external view returns (uint256 completed, uint256 earnings) {
         return (proverCompletedCount[prover], proverEarnings[prover]);
     }
@@ -477,9 +484,14 @@ contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
     // PROOF VERIFICATION ROUTING
     // ========================================================================
 
-    /// @notice Route proof verification to the appropriate verifier
-    /// @dev Checks if the program has a custom verifier registered.
-    ///      Falls back to the default risc0 verifier for backward compatibility.
+    /// @notice Route proof verification to the appropriate verifier based on program registration
+    /// @dev If the program has a custom verifier registered in ProgramRegistry (e.g., Remainder GKR,
+    ///      eZKL), the proof is forwarded to that verifier via IProofVerifier.verify(). Otherwise,
+    ///      the default RISC Zero verifier is used with sha256(journal) as the journal digest.
+    ///      Both paths revert on invalid proofs, so callers can assume success if this returns.
+    /// @param imageId The program image ID used to look up the verifier
+    /// @param seal The proof bytes (format depends on the verifier)
+    /// @param journal The public outputs from execution
     function _verifyProof(bytes32 imageId, bytes calldata seal, bytes calldata journal) internal view {
         // Check if program has a custom verifier
         ProgramRegistry.Program memory program = registry.getProgram(imageId);
@@ -499,18 +511,22 @@ contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
     // ADMIN
     // ========================================================================
 
-    /// @notice Pause the contract (blocks createRequest, claimRequest, submitProof)
-    /// @dev cancelExecution remains available so users can always recover funds
+    /// @notice Pause the contract, blocking new requests, claims, and proof submissions
+    /// @dev Only the owner can pause. cancelExecution deliberately remains available
+    ///      when paused so users can always recover their funds. Uses OpenZeppelin Pausable.
     function pause() external onlyOwner {
         _pause();
     }
 
-    /// @notice Unpause the contract
+    /// @notice Unpause the contract, re-enabling requests, claims, and proof submissions
+    /// @dev Only the owner can unpause. Emits an Unpaused event (from OpenZeppelin Pausable).
     function unpause() external onlyOwner {
         _unpause();
     }
 
-    /// @notice Update the protocol fee in basis points (max 10%)
+    /// @notice Update the protocol fee charged on each payout
+    /// @dev The fee is deducted from the prover's payout and sent to feeRecipient.
+    ///      Capped at 1000 bps (10%) to prevent excessive extraction.
     /// @param _feeBps New fee in basis points (100 = 1%, max 1000 = 10%)
     function setProtocolFee(uint256 _feeBps) external onlyOwner {
         require(_feeBps <= 1000, "Fee too high"); // Max 10%
@@ -519,7 +535,9 @@ contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
         emit ProtocolFeeUpdated(oldFeeBps, _feeBps);
     }
 
-    /// @notice Update the fee recipient address
+    /// @notice Update the address that receives protocol fees from payouts
+    /// @dev Reverts with ZeroAddress if _recipient is address(0). Takes effect immediately
+    ///      for all subsequent proof submissions. Emits FeeRecipientUpdated.
     /// @param _recipient New address to receive protocol fees (must be non-zero)
     function setFeeRecipient(address _recipient) external onlyOwner {
         if (_recipient == address(0)) revert ZeroAddress();
@@ -528,8 +546,12 @@ contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
         emit FeeRecipientUpdated(oldRecipient, _recipient);
     }
 
-    /// @notice Set or update the reputation contract
-    /// @param _reputation ProverReputation contract address (0x0 to disable)
+    /// @notice Set or update the reputation tracking contract
+    /// @dev Pass address(0) to disable reputation tracking. When enabled, recordSuccess
+    ///      and recordAbandon are called during proof submission and claim expiration
+    ///      respectively. Failures in reputation calls are silently caught (try/catch)
+    ///      so they never block core execution logic.
+    /// @param _reputation ProverReputation contract address (address(0) to disable)
     function setReputation(address _reputation) external onlyOwner {
         reputation = ProverReputation(_reputation);
         emit ReputationContractSet(_reputation);

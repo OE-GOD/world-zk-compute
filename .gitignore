@@ -10,6 +10,7 @@ target/
 contracts/out/
 contracts/cache/
 contracts/lib/
+contracts/.gas-snapshot-new
 
 # Node
 node_modules/

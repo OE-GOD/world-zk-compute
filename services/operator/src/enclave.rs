@@ -1,4 +1,11 @@
 use serde::Deserialize;
+use std::time::Duration;
+
+/// Default connection timeout for enclave HTTP requests (seconds).
+const DEFAULT_ENCLAVE_CONNECT_TIMEOUT_SECS: u64 = 10;
+
+/// Default request timeout for enclave HTTP requests (seconds).
+const DEFAULT_ENCLAVE_REQUEST_TIMEOUT_SECS: u64 = 30;
 
 /// HTTP client for the TEE enclave API.
 pub struct EnclaveClient {
@@ -43,8 +50,36 @@ struct HealthResponse {
 
 impl EnclaveClient {
     pub fn new(base_url: &str) -> Self {
+        let timeout_secs = std::env::var("ENCLAVE_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok());
+
+        let connect_timeout = DEFAULT_ENCLAVE_CONNECT_TIMEOUT_SECS;
+        let request_timeout = timeout_secs.unwrap_or(DEFAULT_ENCLAVE_REQUEST_TIMEOUT_SECS);
+
+        Self::with_timeouts(base_url, connect_timeout, request_timeout)
+    }
+
+    /// Create a new client with explicit timeout values (in seconds).
+    pub fn with_timeouts(
+        base_url: &str,
+        connect_timeout_secs: u64,
+        request_timeout_secs: u64,
+    ) -> Self {
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(connect_timeout_secs))
+            .timeout(Duration::from_secs(request_timeout_secs))
+            .build()
+            .expect("failed to build reqwest client");
+
+        tracing::debug!(
+            connect_timeout_secs = connect_timeout_secs,
+            request_timeout_secs = request_timeout_secs,
+            "EnclaveClient configured with timeouts"
+        );
+
         Self {
-            client: reqwest::Client::new(),
+            client,
             base_url: base_url.trim_end_matches('/').to_string(),
         }
     }
@@ -134,5 +169,23 @@ mod tests {
     fn test_enclave_client_new() {
         let client = EnclaveClient::new("http://localhost:8080/");
         assert_eq!(client.base_url, "http://localhost:8080");
+    }
+
+    #[test]
+    fn test_enclave_client_with_timeouts() {
+        let client = EnclaveClient::with_timeouts("http://example.com", 5, 15);
+        assert_eq!(client.base_url, "http://example.com");
+    }
+
+    #[test]
+    fn test_enclave_client_with_timeouts_strips_trailing_slash() {
+        let client = EnclaveClient::with_timeouts("http://example.com/", 10, 30);
+        assert_eq!(client.base_url, "http://example.com");
+    }
+
+    #[test]
+    fn test_default_timeout_constants() {
+        assert_eq!(DEFAULT_ENCLAVE_CONNECT_TIMEOUT_SECS, 10);
+        assert_eq!(DEFAULT_ENCLAVE_REQUEST_TIMEOUT_SECS, 30);
     }
 }

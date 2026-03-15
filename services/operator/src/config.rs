@@ -47,6 +47,12 @@ pub struct ConfigFile {
     /// When set, the operator sends JSON payloads to this URL on
     /// challenge, proof submission, and dispute resolution events.
     pub webhook_url: Option<String>,
+    /// Generic retry: maximum number of attempts (overrides max_proof_retries if set).
+    pub retry_max_attempts: Option<u32>,
+    /// Generic retry: base delay in milliseconds between retries.
+    pub retry_base_delay_ms: Option<u64>,
+    /// Generic retry: maximum delay in milliseconds (caps exponential backoff).
+    pub retry_max_delay_ms: Option<u64>,
     /// Multi-model registry. Each entry is a `[[models]]` table in TOML.
     #[serde(default)]
     pub models: Vec<ModelConfig>,
@@ -117,6 +123,16 @@ pub struct Config {
     /// challenge, proof submission, and dispute resolution events.
     /// Compatible with Slack incoming webhooks.
     pub webhook_url: Option<String>,
+    /// Generic retry: maximum number of attempts (default: 3).
+    /// Env var: `RETRY_MAX_ATTEMPTS`. Falls back to `max_proof_retries`.
+    pub retry_max_attempts: u32,
+    /// Generic retry: base delay in milliseconds between retries (default: 1000).
+    /// Env var: `RETRY_BASE_DELAY_MS`.
+    pub retry_base_delay_ms: u64,
+    /// Generic retry: maximum delay in milliseconds (default: 30000).
+    /// Caps exponential backoff so retries do not wait indefinitely.
+    /// Env var: `RETRY_MAX_DELAY_MS`.
+    pub retry_max_delay_ms: u64,
     /// Multi-model registry. Always contains at least one entry (the default model).
     pub models: Vec<ModelConfig>,
     /// Dry-run mode: simulate the full flow without sending on-chain transactions.
@@ -250,6 +266,26 @@ impl Config {
 
         let webhook_url = std::env::var("WEBHOOK_URL").ok().or(file_cfg.webhook_url);
 
+        // Generic retry parameters.
+        // RETRY_MAX_ATTEMPTS overrides max_proof_retries when set.
+        let retry_max_attempts = std::env::var("RETRY_MAX_ATTEMPTS")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .or(file_cfg.retry_max_attempts)
+            .unwrap_or(max_proof_retries);
+
+        let retry_base_delay_ms = std::env::var("RETRY_BASE_DELAY_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .or(file_cfg.retry_base_delay_ms)
+            .unwrap_or(1000);
+
+        let retry_max_delay_ms = std::env::var("RETRY_MAX_DELAY_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .or(file_cfg.retry_max_delay_ms)
+            .unwrap_or(30000);
+
         let dry_run = std::env::var("DRY_RUN")
             .ok()
             .and_then(|v| v.parse::<bool>().ok())
@@ -315,6 +351,9 @@ impl Config {
             max_proof_retries,
             proof_retry_delay_secs,
             webhook_url,
+            retry_max_attempts,
+            retry_base_delay_ms,
+            retry_max_delay_ms,
             models,
             dry_run,
             state_file,
@@ -397,23 +436,173 @@ impl Config {
         Ok(())
     }
 
-    /// Pre-flight validation for command handlers (Submit, Watch, Run).
+    /// Validate all configuration values for correctness.
     ///
-    /// Checks that critical config fields have meaningful values and warns
-    /// when defaults are being used. Collects all problems before returning
-    /// so the operator sees every issue at once.
-    pub fn validate_for_command(&self, command: &str) -> Result<(), Vec<String>> {
+    /// Checks:
+    /// - RPC URL starts with `http://`, `https://`, `ws://`, or `wss://`
+    /// - Private key is valid hex (64 hex chars or `0x`-prefixed 66 chars)
+    /// - Contract addresses are valid Ethereum addresses (`0x` + 40 hex chars)
+    /// - Numeric config values are in reasonable ranges
+    /// - URL fields have valid schemes
+    ///
+    /// Returns `Ok(())` if valid, or `Err(Vec<String>)` with all validation errors.
+    pub fn validate(&self) -> Result<(), Vec<String>> {
         let mut errors: Vec<String> = Vec::new();
 
-        // rpc_url: warn if using the default localhost value
-        if self.rpc_url == "http://127.0.0.1:8545" {
-            if std::env::var("OPERATOR_RPC_URL").is_err() {
-                tracing::warn!(
-                    "OPERATOR_RPC_URL is not set -- using default '{}'. \
-                     This is unsuitable for production.",
-                    self.rpc_url
+        // 1. RPC URL must have a valid scheme
+        if !self.rpc_url.starts_with("http://")
+            && !self.rpc_url.starts_with("https://")
+            && !self.rpc_url.starts_with("ws://")
+            && !self.rpc_url.starts_with("wss://")
+        {
+            errors.push(format!(
+                "rpc_url '{}' is invalid: must start with http://, https://, ws://, or wss://",
+                self.rpc_url
+            ));
+        }
+
+        // 2. Private key must be valid hex (64 chars or 0x-prefixed 66 chars)
+        if !self.private_key.is_empty() {
+            let stripped = self
+                .private_key
+                .strip_prefix("0x")
+                .unwrap_or(&self.private_key);
+            if stripped.len() != 64 || !stripped.chars().all(|c| c.is_ascii_hexdigit()) {
+                errors.push(
+                    "private_key is invalid: must be 64 hex characters \
+                     (or 0x-prefixed 66 characters)"
+                        .to_string(),
                 );
             }
+        }
+
+        // 3. Validate contract addresses (all must be 0x + 40 hex chars)
+        Self::validate_eth_address(&self.tee_verifier_address, "tee_verifier_address", &mut errors);
+        for (i, addr) in self.contract_addresses.iter().enumerate() {
+            Self::validate_eth_address(addr, &format!("contract_addresses[{}]", i), &mut errors);
+        }
+
+        // 4. Numeric range checks
+        if self.attestation_cache_ttl > 86400 {
+            errors.push(format!(
+                "attestation_cache_ttl {} exceeds maximum of 86400 (24 hours)",
+                self.attestation_cache_ttl
+            ));
+        }
+
+        if self.attestation_freshness_secs == 0 || self.attestation_freshness_secs > 3600 {
+            errors.push(format!(
+                "attestation_freshness_secs {} is out of range (1-3600)",
+                self.attestation_freshness_secs
+            ));
+        }
+
+        if self.max_proof_retries > 100 {
+            errors.push(format!(
+                "max_proof_retries {} exceeds maximum of 100",
+                self.max_proof_retries
+            ));
+        }
+
+        if self.proof_retry_delay_secs > 3600 {
+            errors.push(format!(
+                "proof_retry_delay_secs {} exceeds maximum of 3600 (1 hour)",
+                self.proof_retry_delay_secs
+            ));
+        }
+
+        // Retry parameter range checks
+        if self.retry_max_attempts > 100 {
+            errors.push(format!(
+                "retry_max_attempts {} exceeds maximum of 100",
+                self.retry_max_attempts
+            ));
+        }
+
+        if self.retry_base_delay_ms == 0 || self.retry_base_delay_ms > 60_000 {
+            errors.push(format!(
+                "retry_base_delay_ms {} is out of range (1-60000)",
+                self.retry_base_delay_ms
+            ));
+        }
+
+        if self.retry_max_delay_ms < self.retry_base_delay_ms {
+            errors.push(format!(
+                "retry_max_delay_ms ({}) must be >= retry_base_delay_ms ({})",
+                self.retry_max_delay_ms, self.retry_base_delay_ms
+            ));
+        }
+
+        if self.retry_max_delay_ms > 600_000 {
+            errors.push(format!(
+                "retry_max_delay_ms {} exceeds maximum of 600000 (10 minutes)",
+                self.retry_max_delay_ms
+            ));
+        }
+
+        // Enclave URL scheme
+        if !self.enclave_url.starts_with("http://") && !self.enclave_url.starts_with("https://") {
+            errors.push(format!(
+                "enclave_url '{}' is invalid: must start with http:// or https://",
+                self.enclave_url
+            ));
+        }
+
+        // Webhook URL scheme (if set)
+        if let Some(ref url) = self.webhook_url {
+            if !url.starts_with("http://") && !url.starts_with("https://") {
+                errors.push(format!(
+                    "webhook_url '{}' is invalid: must start with http:// or https://",
+                    url
+                ));
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+
+    /// Validate a single Ethereum address (0x + 40 hex chars).
+    fn validate_eth_address(addr: &str, field_name: &str, errors: &mut Vec<String>) {
+        if !addr.starts_with("0x") {
+            errors.push(format!(
+                "{} '{}' is invalid: must start with '0x'",
+                field_name, addr
+            ));
+            return;
+        }
+        let hex_part = &addr[2..];
+        if hex_part.len() != 40 || !hex_part.chars().all(|c| c.is_ascii_hexdigit()) {
+            errors.push(format!(
+                "{} '{}' is invalid: must be '0x' followed by exactly 40 hex characters",
+                field_name, addr
+            ));
+        }
+    }
+
+    /// Pre-flight validation for command handlers (Submit, Watch, Run).
+    ///
+    /// Runs full `validate()` plus command-specific checks. Collects all
+    /// problems before returning so the operator sees every issue at once.
+    pub fn validate_for_command(&self, command: &str) -> Result<(), Vec<String>> {
+        // Start with full structural validation
+        let mut errors = match self.validate() {
+            Ok(()) => Vec::new(),
+            Err(errs) => errs,
+        };
+
+        // rpc_url: warn if using the default localhost value
+        if self.rpc_url == "http://127.0.0.1:8545"
+            && std::env::var("OPERATOR_RPC_URL").is_err()
+        {
+            tracing::warn!(
+                "OPERATOR_RPC_URL is not set -- using default '{}'. \
+                 This is unsuitable for production.",
+                self.rpc_url
+            );
         }
 
         // private_key: should not be empty (from_env already requires it,
@@ -439,14 +628,14 @@ impl Config {
         match command {
             "submit" | "run" => {
                 // enclave_url should be reachable for submit/run
-                if self.enclave_url == "http://127.0.0.1:8080" {
-                    if std::env::var("ENCLAVE_URL").is_err() {
-                        tracing::warn!(
-                            "ENCLAVE_URL is not set -- using default '{}'. \
-                             This is unsuitable for production.",
-                            self.enclave_url
-                        );
-                    }
+                if self.enclave_url == "http://127.0.0.1:8080"
+                    && std::env::var("ENCLAVE_URL").is_err()
+                {
+                    tracing::warn!(
+                        "ENCLAVE_URL is not set -- using default '{}'. \
+                         This is unsuitable for production.",
+                        self.enclave_url
+                    );
                 }
             }
             _ => {}

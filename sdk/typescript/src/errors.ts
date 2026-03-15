@@ -257,3 +257,32 @@ export class TimeoutError extends WorldZKError {
     Object.setPrototypeOf(this, TimeoutError.prototype);
   }
 }
+
+/**
+ * Thrown when a service health check indicates the service is unhealthy.
+ *
+ * The properties contain the raw health data so callers can
+ * inspect `lastIndexedBlock`, `totalResults`, etc.
+ */
+export class ServiceHealthError extends WorldZKError {
+  readonly status: string;
+  readonly lastIndexedBlock: number;
+  readonly totalResults: number;
+
+  constructor(
+    status: string,
+    lastIndexedBlock: number,
+    totalResults: number,
+    message?: string
+  ) {
+    super(
+      message ??
+        `Indexer is unhealthy: status="${status}", lastIndexedBlock=${lastIndexedBlock}, totalResults=${totalResults}`
+    );
+    this.name = 'ServiceHealthError';
+    this.status = status;
+    this.lastIndexedBlock = lastIndexedBlock;
+    this.totalResults = totalResults;
+    Object.setPrototypeOf(this, ServiceHealthError.prototype);
+  }
+}

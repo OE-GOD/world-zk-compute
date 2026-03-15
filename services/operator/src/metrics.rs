@@ -8,7 +8,7 @@ use axum::middleware;
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Middleware that adds `X-API-Version: v1` header to all responses.
 async fn version_header_middleware(
@@ -167,6 +167,12 @@ struct HealthResponse {
     last_block_polled: u64,
 }
 
+#[derive(Serialize, Deserialize)]
+struct ReadinessResponse {
+    ready: bool,
+    last_block_polled: u64,
+}
+
 #[derive(Serialize)]
 struct MetricsJsonResponse {
     uptime_secs: u64,
@@ -187,6 +193,27 @@ async fn health_handler(State(state): State<Arc<MetricsState>>) -> Json<HealthRe
         uptime_secs: state.start_time.elapsed().as_secs(),
         last_block_polled: state.last_block_polled.load(Ordering::Relaxed),
     })
+}
+
+/// Readiness probe for Kubernetes.
+///
+/// Returns 200 if and only if the operator has polled at least one block
+/// (`last_block_polled > 0`), indicating it has connected to the chain and
+/// started processing. Otherwise returns 503.
+async fn ready_handler(
+    State(state): State<Arc<MetricsState>>,
+) -> (axum::http::StatusCode, Json<ReadinessResponse>) {
+    let last_block = state.last_block_polled.load(Ordering::Relaxed);
+    let ready = last_block > 0;
+    let body = ReadinessResponse {
+        ready,
+        last_block_polled: last_block,
+    };
+    if ready {
+        (axum::http::StatusCode::OK, Json(body))
+    } else {
+        (axum::http::StatusCode::SERVICE_UNAVAILABLE, Json(body))
+    }
 }
 
 /// Prometheus text format metrics endpoint.
@@ -221,6 +248,7 @@ async fn json_metrics_handler(State(state): State<Arc<MetricsState>>) -> Json<Me
 ///
 /// This runs forever serving the following endpoints:
 /// - `/health` — JSON health check
+/// - `/ready` — Kubernetes readiness probe
 /// - `/metrics` — Prometheus text exposition format
 /// - `/metrics/json` — JSON metrics (backward compatibility)
 ///
@@ -229,6 +257,7 @@ pub async fn serve_metrics(state: Arc<MetricsState>, port: u16) {
     // Versioned API routes under /api/v1/ with X-API-Version header
     let versioned = Router::new()
         .route("/health", get(health_handler))
+        .route("/ready", get(ready_handler))
         .route("/metrics", get(prometheus_metrics_handler))
         .route("/metrics/json", get(json_metrics_handler))
         .layer(middleware::from_fn(version_header_middleware));
@@ -236,6 +265,7 @@ pub async fn serve_metrics(state: Arc<MetricsState>, port: u16) {
     let app = Router::new()
         // Backward-compatible unversioned routes
         .route("/health", get(health_handler))
+        .route("/ready", get(ready_handler))
         .route("/metrics", get(prometheus_metrics_handler))
         .route("/metrics/json", get(json_metrics_handler))
         // Versioned routes
@@ -657,6 +687,89 @@ mod tests {
         assert!(
             !output.contains("\n\n"),
             "Output should not contain empty lines"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Readiness probe tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_ready_returns_503_when_no_blocks_polled() {
+        let state = Arc::new(MetricsState::new());
+        // last_block_polled defaults to 0
+
+        let app = Router::new()
+            .route("/ready", get(ready_handler))
+            .with_state(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let resp = reqwest::get(format!("http://{}/ready", addr))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 503);
+
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["ready"], false);
+        assert_eq!(body["last_block_polled"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_ready_returns_200_when_blocks_polled() {
+        let state = Arc::new(MetricsState::new());
+        state.last_block_polled.store(42, Ordering::Relaxed);
+
+        let app = Router::new()
+            .route("/ready", get(ready_handler))
+            .with_state(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let resp = reqwest::get(format!("http://{}/ready", addr))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["ready"], true);
+        assert_eq!(body["last_block_polled"], 42);
+    }
+
+    #[tokio::test]
+    async fn test_ready_response_has_required_fields() {
+        let state = Arc::new(MetricsState::new());
+        state.last_block_polled.store(100, Ordering::Relaxed);
+
+        let app = Router::new()
+            .route("/ready", get(ready_handler))
+            .with_state(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let resp = reqwest::get(format!("http://{}/ready", addr))
+            .await
+            .unwrap();
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert!(body.get("ready").is_some(), "missing 'ready' field");
+        assert!(
+            body.get("last_block_polled").is_some(),
+            "missing 'last_block_polled' field"
         );
     }
 }

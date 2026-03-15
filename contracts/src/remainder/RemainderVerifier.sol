@@ -948,7 +948,9 @@ contract RemainderVerifier is Ownable2Step, Pausable {
         string calldata name,
         bytes32 gensHash
     ) private {
+        require(circuitHash != bytes32(0), "Circuit hash cannot be zero");
         require(circuits[circuitHash].circuitHash == bytes32(0), "Circuit already registered");
+        require(numLayers > 0, "numLayers must be > 0");
         require(layerSizes.length == numLayers, "Layer sizes length mismatch");
         require(layerTypes.length == numLayers, "Layer types length mismatch");
         require(isCommitted.length == numLayers, "IsCommitted length mismatch");
@@ -1016,9 +1018,11 @@ contract RemainderVerifier is Ownable2Step, Pausable {
         onlyOwner
         whenNotPaused
     {
+        require(circuitHash != bytes32(0), "Circuit hash cannot be zero");
         require(dagCircuits[circuitHash].circuitHash == bytes32(0), "DAG circuit already registered");
 
         GKRDAGVerifier.DAGCircuitDescription memory desc = abi.decode(descData, (GKRDAGVerifier.DAGCircuitDescription));
+        require(desc.numComputeLayers > 0, "numComputeLayers must be > 0");
         require(desc.layerTypes.length == desc.numComputeLayers, "layerTypes length mismatch");
         require(desc.atomOffsets.length == desc.numComputeLayers + 1, "atomOffsets length mismatch");
 

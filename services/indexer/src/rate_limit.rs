@@ -4,9 +4,14 @@
 //! request timestamps. Requests older than the window are pruned on each check.
 //! When the limit is exceeded, a 429 Too Many Requests response is returned
 //! with a `Retry-After` header.
+//!
+//! Every response includes standard rate-limit headers:
+//! - `X-RateLimit-Limit` — maximum requests per window
+//! - `X-RateLimit-Remaining` — requests left in the current window
+//! - `X-RateLimit-Reset` — seconds until the window resets
 
 use axum::body::Body;
-use axum::http::{Request, Response, StatusCode};
+use axum::http::{HeaderValue, Request, Response, StatusCode};
 use std::collections::HashMap;
 use std::future::Future;
 use std::net::IpAddr;
@@ -15,6 +20,17 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 use tower::{Layer, Service};
+
+/// Rate limit status returned by [`RateLimitState::check`].
+#[derive(Debug, Clone, Copy)]
+pub struct RateLimitInfo {
+    /// Maximum requests allowed per window.
+    pub limit: u32,
+    /// Requests remaining in the current window.
+    pub remaining: u32,
+    /// Seconds until the window resets.
+    pub reset_secs: u64,
+}
 
 /// Configuration for the rate limiter.
 #[derive(Debug, Clone)]
@@ -51,8 +67,8 @@ impl RateLimitState {
     }
 
     /// Check whether the given IP is allowed to make a request.
-    /// Returns `Ok(())` if allowed, or `Err(retry_after_secs)` if rate limited.
-    pub fn check(&self, ip: IpAddr) -> Result<(), u64> {
+    /// Returns `Ok(RateLimitInfo)` if allowed, or `Err(RateLimitInfo)` if rate limited.
+    pub fn check(&self, ip: IpAddr) -> Result<RateLimitInfo, RateLimitInfo> {
         let now = Instant::now();
         let cutoff = now - self.config.window;
 
@@ -63,17 +79,38 @@ impl RateLimitState {
         // Prune expired entries
         timestamps.retain(|t| *t > cutoff);
 
-        if timestamps.len() >= self.config.max_requests as usize {
+        let limit = self.config.max_requests;
+
+        if timestamps.len() >= limit as usize {
             // Calculate retry-after: time until the oldest entry in the window expires
             let oldest = timestamps[0];
-            let retry_after = (oldest + self.config.window)
+            let reset_secs = (oldest + self.config.window)
                 .duration_since(now)
                 .as_secs()
                 + 1;
-            Err(retry_after)
+            Err(RateLimitInfo {
+                limit,
+                remaining: 0,
+                reset_secs,
+            })
         } else {
+            let reset_secs = if timestamps.is_empty() {
+                self.config.window.as_secs()
+            } else {
+                let oldest = timestamps[0];
+                (oldest + self.config.window)
+                    .duration_since(now)
+                    .as_secs()
+                    + 1
+            };
             timestamps.push(now);
-            Ok(())
+            // remaining is calculated AFTER pushing (this request counts)
+            let remaining = limit.saturating_sub(timestamps.len() as u32);
+            Ok(RateLimitInfo {
+                limit,
+                remaining,
+                reset_secs,
+            })
         }
     }
 
@@ -186,18 +223,37 @@ fn extract_client_ip<B>(req: &Request<B>) -> IpAddr {
     IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
 }
 
-fn rate_limit_response(retry_after: u64) -> Response<Body> {
+/// Append standard rate-limit headers to a response.
+fn set_rate_limit_headers(resp: &mut Response<Body>, info: &RateLimitInfo) {
+    let headers = resp.headers_mut();
+    headers.insert(
+        "x-ratelimit-limit",
+        HeaderValue::from(info.limit as u64),
+    );
+    headers.insert(
+        "x-ratelimit-remaining",
+        HeaderValue::from(info.remaining as u64),
+    );
+    headers.insert(
+        "x-ratelimit-reset",
+        HeaderValue::from(info.reset_secs),
+    );
+}
+
+fn rate_limit_response(info: &RateLimitInfo) -> Response<Body> {
     let body = serde_json::json!({
         "error": "Too many requests. Please retry later.",
-        "retry_after_seconds": retry_after,
+        "retry_after_seconds": info.reset_secs,
     });
 
-    Response::builder()
+    let mut resp = Response::builder()
         .status(StatusCode::TOO_MANY_REQUESTS)
         .header("content-type", "application/json")
-        .header("retry-after", retry_after.to_string())
+        .header("retry-after", info.reset_secs.to_string())
         .body(Body::from(serde_json::to_string(&body).unwrap()))
-        .unwrap()
+        .unwrap();
+    set_rate_limit_headers(&mut resp, info);
+    resp
 }
 
 impl<S> Service<Request<Body>> for RateLimitService<S>
@@ -217,12 +273,16 @@ where
         let ip = extract_client_ip(&req);
 
         match self.state.check(ip) {
-            Ok(()) => {
+            Ok(info) => {
                 let future = self.inner.call(req);
-                Box::pin(future)
+                Box::pin(async move {
+                    let mut resp = future.await?;
+                    set_rate_limit_headers(&mut resp, &info);
+                    Ok(resp)
+                })
             }
-            Err(retry_after) => {
-                let response = rate_limit_response(retry_after);
+            Err(info) => {
+                let response = rate_limit_response(&info);
                 Box::pin(async move { Ok(response) })
             }
         }
@@ -246,8 +306,10 @@ mod tests {
         });
 
         let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
-        for _ in 0..5 {
-            assert!(state.check(ip).is_ok());
+        for i in 0..5u32 {
+            let info = state.check(ip).unwrap();
+            assert_eq!(info.limit, 5);
+            assert_eq!(info.remaining, 5 - i - 1);
         }
     }
 
@@ -265,9 +327,11 @@ mod tests {
         // 4th request should be blocked
         let result = state.check(ip);
         assert!(result.is_err());
-        let retry_after = result.unwrap_err();
-        assert!(retry_after > 0);
-        assert!(retry_after <= 61);
+        let info = result.unwrap_err();
+        assert_eq!(info.limit, 3);
+        assert_eq!(info.remaining, 0);
+        assert!(info.reset_secs > 0);
+        assert!(info.reset_secs <= 61);
     }
 
     #[test]
@@ -339,7 +403,12 @@ mod tests {
 
     #[test]
     fn test_rate_limit_response_format() {
-        let resp = rate_limit_response(42);
+        let info = RateLimitInfo {
+            limit: 100,
+            remaining: 0,
+            reset_secs: 42,
+        };
+        let resp = rate_limit_response(&info);
         assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(
             resp.headers().get("retry-after").unwrap().to_str().unwrap(),
@@ -353,6 +422,30 @@ mod tests {
                 .unwrap(),
             "application/json"
         );
+        assert_eq!(
+            resp.headers()
+                .get("x-ratelimit-limit")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "100"
+        );
+        assert_eq!(
+            resp.headers()
+                .get("x-ratelimit-remaining")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "0"
+        );
+        assert_eq!(
+            resp.headers()
+                .get("x-ratelimit-reset")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "42"
+        );
     }
 
     #[test]
@@ -360,5 +453,35 @@ mod tests {
         let config = RateLimitConfig::default();
         assert_eq!(config.max_requests, 100);
         assert_eq!(config.window, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn test_rate_limit_info_on_success() {
+        let state = RateLimitState::new(RateLimitConfig {
+            max_requests: 10,
+            window: Duration::from_secs(60),
+        });
+
+        let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+
+        // First request
+        let info = state.check(ip).unwrap();
+        assert_eq!(info.limit, 10);
+        assert_eq!(info.remaining, 9);
+        assert!(info.reset_secs > 0);
+
+        // Use up 8 more
+        for _ in 0..8 {
+            state.check(ip).unwrap();
+        }
+
+        // 10th request: last allowed
+        let info = state.check(ip).unwrap();
+        assert_eq!(info.remaining, 0);
+
+        // 11th: blocked
+        let info = state.check(ip).unwrap_err();
+        assert_eq!(info.remaining, 0);
+        assert_eq!(info.limit, 10);
     }
 }

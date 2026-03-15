@@ -17,6 +17,7 @@ impl TEEVerifier {
     // -- Admin --
 
     /// Register a TEE enclave key.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(key = %key)))]
     pub async fn register_enclave(&self, key: Address, image_hash: B256) -> anyhow::Result<B256> {
         let provider = self.build_provider();
         let contract = TEEMLVerifier::new(self.client.contract_address(), provider);
@@ -32,6 +33,7 @@ impl TEEVerifier {
     }
 
     /// Revoke a TEE enclave key.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(key = %key)))]
     pub async fn revoke_enclave(&self, key: Address) -> anyhow::Result<B256> {
         let provider = self.build_provider();
         let contract = TEEMLVerifier::new(self.client.contract_address(), provider);
@@ -49,6 +51,7 @@ impl TEEVerifier {
     // -- Submit --
 
     /// Submit a TEE-attested ML result with a prover stake.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(model_hash = %model_hash, input_hash = %input_hash)))]
     pub async fn submit_result(
         &self,
         model_hash: B256,
@@ -79,6 +82,7 @@ impl TEEVerifier {
     // -- Challenge --
 
     /// Challenge a submitted result by posting a bond.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(result_id = %result_id)))]
     pub async fn challenge(&self, result_id: B256, bond: U256) -> anyhow::Result<B256> {
         let provider = self.build_provider();
         let contract = TEEMLVerifier::new(self.client.contract_address(), provider);
@@ -97,6 +101,7 @@ impl TEEVerifier {
     // -- Finalize --
 
     /// Finalize an unchallenged result after the challenge window.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(result_id = %result_id)))]
     pub async fn finalize(&self, result_id: B256) -> anyhow::Result<B256> {
         let provider = self.build_provider();
         let contract = TEEMLVerifier::new(self.client.contract_address(), provider);
@@ -114,6 +119,7 @@ impl TEEVerifier {
     // -- Dispute --
 
     /// Resolve a dispute by submitting a ZK proof.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(result_id = %result_id)))]
     pub async fn resolve_dispute(
         &self,
         result_id: B256,
@@ -142,6 +148,7 @@ impl TEEVerifier {
     }
 
     /// Resolve a dispute by timeout (challenger wins if prover didn't submit proof).
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(result_id = %result_id)))]
     pub async fn resolve_dispute_by_timeout(&self, result_id: B256) -> anyhow::Result<B256> {
         let provider = self.build_provider();
         let contract = TEEMLVerifier::new(self.client.contract_address(), provider);
@@ -159,6 +166,7 @@ impl TEEVerifier {
     // -- Query --
 
     /// Get the full result struct for a given result ID.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(result_id = %result_id)))]
     pub async fn get_result(&self, result_id: B256) -> anyhow::Result<TEEMLVerifier::MLResult> {
         let provider = self.build_provider();
         let contract = TEEMLVerifier::new(self.client.contract_address(), provider);
@@ -168,6 +176,7 @@ impl TEEVerifier {
     }
 
     /// Check if a result is valid (finalized and unchallenged, or dispute resolved in prover's favor).
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(result_id = %result_id)))]
     pub async fn is_result_valid(&self, result_id: B256) -> anyhow::Result<bool> {
         let provider = self.build_provider();
         let contract = TEEMLVerifier::new(self.client.contract_address(), provider);
@@ -179,6 +188,7 @@ impl TEEVerifier {
     // -- Owner / Pausable --
 
     /// Get the owner address (Ownable2Step).
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     pub async fn owner(&self) -> anyhow::Result<Address> {
         let provider = self.build_provider();
         let contract = TEEMLVerifier::new(self.client.contract_address(), provider);
@@ -187,6 +197,7 @@ impl TEEVerifier {
     }
 
     /// Get the pending owner address (Ownable2Step).
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     pub async fn pending_owner(&self) -> anyhow::Result<Address> {
         let provider = self.build_provider();
         let contract = TEEMLVerifier::new(self.client.contract_address(), provider);
@@ -195,6 +206,7 @@ impl TEEVerifier {
     }
 
     /// Initiate ownership transfer (Ownable2Step). New owner must call `accept_ownership()`.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(new_owner = %new_owner)))]
     pub async fn transfer_ownership(&self, new_owner: Address) -> anyhow::Result<B256> {
         let provider = self.build_provider();
         let contract = TEEMLVerifier::new(self.client.contract_address(), provider);
@@ -208,6 +220,7 @@ impl TEEVerifier {
     }
 
     /// Accept pending ownership transfer (Ownable2Step).
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     pub async fn accept_ownership(&self) -> anyhow::Result<B256> {
         let provider = self.build_provider();
         let contract = TEEMLVerifier::new(self.client.contract_address(), provider);
@@ -221,6 +234,7 @@ impl TEEVerifier {
     }
 
     /// Pause the contract (onlyOwner).
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     pub async fn pause(&self) -> anyhow::Result<B256> {
         let provider = self.build_provider();
         let contract = TEEMLVerifier::new(self.client.contract_address(), provider);
@@ -229,6 +243,7 @@ impl TEEVerifier {
     }
 
     /// Unpause the contract (onlyOwner).
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     pub async fn unpause(&self) -> anyhow::Result<B256> {
         let provider = self.build_provider();
         let contract = TEEMLVerifier::new(self.client.contract_address(), provider);
@@ -237,6 +252,7 @@ impl TEEVerifier {
     }
 
     /// Check if the contract is paused.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     pub async fn paused(&self) -> anyhow::Result<bool> {
         let provider = self.build_provider();
         let contract = TEEMLVerifier::new(self.client.contract_address(), provider);
@@ -245,6 +261,7 @@ impl TEEVerifier {
     }
 
     /// Get the RemainderVerifier address.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     pub async fn remainder_verifier(&self) -> anyhow::Result<Address> {
         let provider = self.build_provider();
         let contract = TEEMLVerifier::new(self.client.contract_address(), provider);

@@ -1,5 +1,13 @@
 use std::path::PathBuf;
+use std::time::Duration;
 use tokio::process::Command;
+
+/// Default connection timeout for prover HTTP requests (seconds).
+const DEFAULT_PROVER_CONNECT_TIMEOUT_SECS: u64 = 10;
+
+/// Default request timeout for prover HTTP requests (seconds).
+/// Proving can take several minutes, so default is generous.
+const DEFAULT_PROVER_REQUEST_TIMEOUT_SECS: u64 = 300;
 
 /// How the operator communicates with the prover.
 #[derive(Debug, Clone)]
@@ -29,6 +37,7 @@ pub struct ProofManager {
     mode: ProverMode,
     max_retries: u32,
     retry_delay_secs: u64,
+    http_client: reqwest::Client,
 }
 
 impl ProofManager {
@@ -40,11 +49,24 @@ impl ProofManager {
         retry_delay_secs: u64,
     ) -> Self {
         let mode = ProverMode::from_env();
+
+        let request_timeout = std::env::var("PROVER_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_PROVER_REQUEST_TIMEOUT_SECS);
+
+        let http_client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(DEFAULT_PROVER_CONNECT_TIMEOUT_SECS))
+            .timeout(Duration::from_secs(request_timeout))
+            .build()
+            .expect("failed to build prover HTTP client");
+
         tracing::info!(
-            "ProofManager initialized with mode: {:?}, max_retries: {}, retry_delay_secs: {}",
+            "ProofManager initialized with mode: {:?}, max_retries: {}, retry_delay_secs: {}, prover_timeout_secs: {}",
             mode,
             max_retries,
             retry_delay_secs,
+            request_timeout,
         );
         Self {
             precompute_bin: precompute_bin.to_string(),
@@ -53,6 +75,7 @@ impl ProofManager {
             mode,
             max_retries,
             retry_delay_secs,
+            http_client,
         }
     }
 
@@ -151,8 +174,8 @@ impl ProofManager {
         let feats: Vec<f64> = serde_json::from_str(features)
             .map_err(|e| anyhow::anyhow!("Invalid features JSON: {}", e))?;
 
-        let client = reqwest::Client::new();
-        let resp = client
+        let resp = self
+            .http_client
             .post(&endpoint)
             .json(&serde_json::json!({ "features": feats }))
             .send()
@@ -164,8 +187,42 @@ impl ProofManager {
             anyhow::bail!("Prover HTTP request failed ({}): {}", status, text);
         }
 
-        // Save the response JSON directly as the proof file.
+        // Validate the response body is valid JSON before saving.
         let body = resp.text().await?;
+        if body.is_empty() {
+            tracing::warn!(
+                result_id = result_id,
+                endpoint = %endpoint,
+                "Prover returned empty response body"
+            );
+            anyhow::bail!("Prover returned empty response body");
+        }
+
+        // Validate the response is valid JSON.
+        let json_value: serde_json::Value = serde_json::from_str(&body).map_err(|e| {
+            tracing::warn!(
+                result_id = result_id,
+                endpoint = %endpoint,
+                body_preview = %if body.len() > 200 { &body[..200] } else { &body },
+                error = %e,
+                "Prover response is not valid JSON"
+            );
+            anyhow::anyhow!("Prover response is not valid JSON: {}", e)
+        })?;
+
+        // Validate proof bytes are non-empty (check for proof_hex field).
+        if let Some(proof_hex) = json_value.get("proof_hex").and_then(|v| v.as_str()) {
+            let stripped = proof_hex.strip_prefix("0x").unwrap_or(proof_hex);
+            if stripped.is_empty() {
+                tracing::warn!(
+                    result_id = result_id,
+                    endpoint = %endpoint,
+                    "Prover response contains empty proof_hex"
+                );
+                anyhow::bail!("Prover response contains empty proof_hex");
+            }
+        }
+
         std::fs::write(&output_path, &body)?;
 
         tracing::info!("Proof received and saved (HTTP): {}", output_path.display());
@@ -224,6 +281,7 @@ mod tests {
         let _lock = ENV_MUTEX.lock().unwrap();
         // Ensure subprocess mode when PROVER_URL is not set.
         std::env::remove_var("PROVER_URL");
+        std::env::remove_var("PROVER_TIMEOUT_SECS");
         let pm = ProofManager::new("precompute_proof", "./model.json", "/tmp/proofs", 3, 10);
         assert_eq!(pm.precompute_bin, "precompute_proof");
         assert_eq!(pm.model_path, "./model.json");
@@ -236,6 +294,7 @@ mod tests {
     fn test_has_proof_missing() {
         let _lock = ENV_MUTEX.lock().unwrap();
         std::env::remove_var("PROVER_URL");
+        std::env::remove_var("PROVER_TIMEOUT_SECS");
         let pm = ProofManager::new("x", "y", "/tmp/nonexistent-proof-dir-12345", 3, 10);
         assert!(!pm.has_proof("does-not-exist"));
     }
@@ -244,6 +303,7 @@ mod tests {
     fn test_read_proof_missing() {
         let _lock = ENV_MUTEX.lock().unwrap();
         std::env::remove_var("PROVER_URL");
+        std::env::remove_var("PROVER_TIMEOUT_SECS");
         let pm = ProofManager::new("x", "y", "/tmp/nonexistent-proof-dir-12345", 3, 10);
         let result = pm.read_proof("does-not-exist").unwrap();
         assert!(result.is_none());
@@ -282,6 +342,7 @@ mod tests {
     fn test_proof_manager_http_mode() {
         let _lock = ENV_MUTEX.lock().unwrap();
         std::env::set_var("PROVER_URL", "http://warm-prover:8080");
+        std::env::remove_var("PROVER_TIMEOUT_SECS");
         let pm = ProofManager::new("unused", "unused", "/tmp/proofs", 3, 10);
         assert!(matches!(pm.mode, ProverMode::Http { .. }));
         if let ProverMode::Http { url } = &pm.mode {
@@ -294,6 +355,7 @@ mod tests {
     fn test_proof_manager_new_with_retries() {
         let _lock = ENV_MUTEX.lock().unwrap();
         std::env::remove_var("PROVER_URL");
+        std::env::remove_var("PROVER_TIMEOUT_SECS");
         let pm = ProofManager::new("x", "y", "/tmp/test", 5, 15);
         assert_eq!(pm.max_retries, 5);
         assert_eq!(pm.retry_delay_secs, 15);
@@ -303,8 +365,196 @@ mod tests {
     fn test_proof_manager_zero_retries() {
         let _lock = ENV_MUTEX.lock().unwrap();
         std::env::remove_var("PROVER_URL");
+        std::env::remove_var("PROVER_TIMEOUT_SECS");
         let pm = ProofManager::new("x", "y", "/tmp/test", 0, 10);
         assert_eq!(pm.max_retries, 0);
         assert_eq!(pm.retry_delay_secs, 10);
+    }
+
+    #[test]
+    fn test_default_prover_timeout_constants() {
+        assert_eq!(DEFAULT_PROVER_CONNECT_TIMEOUT_SECS, 10);
+        assert_eq!(DEFAULT_PROVER_REQUEST_TIMEOUT_SECS, 300);
+    }
+
+    #[test]
+    fn test_proof_manager_custom_timeout_env() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("PROVER_URL");
+        std::env::set_var("PROVER_TIMEOUT_SECS", "600");
+        // Should not panic -- the custom timeout is picked up.
+        let _pm = ProofManager::new("x", "y", "/tmp/test", 0, 10);
+        std::env::remove_var("PROVER_TIMEOUT_SECS");
+    }
+
+    #[tokio::test]
+    async fn test_generate_proof_http_validates_empty_body() {
+        // Start a mock HTTP server that returns 200 with empty body.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mock_url = format!("http://127.0.0.1:{}", addr.port());
+
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let io = tokio::io::BufStream::new(stream);
+            use tokio::io::AsyncReadExt;
+            use tokio::io::AsyncWriteExt;
+            let mut io = io;
+            let _ = io.read(&mut buf).await;
+            let response = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+            let _ = io.write_all(response.as_bytes()).await;
+            let _ = io.flush().await;
+        });
+
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::set_var("PROVER_URL", &mock_url);
+        std::env::remove_var("PROVER_TIMEOUT_SECS");
+        let dir = tempfile::tempdir().unwrap();
+        let pm = ProofManager::new("x", "y", dir.path().to_str().unwrap(), 0, 1);
+        std::env::remove_var("PROVER_URL");
+
+        let result = pm
+            .generate_proof_http(&mock_url, "test-result-1", "[1.0, 2.0]")
+            .await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("empty"),
+            "Expected empty body error, got: {}",
+            err_msg
+        );
+    }
+
+    #[tokio::test]
+    async fn test_generate_proof_http_validates_invalid_json() {
+        // Start a mock HTTP server that returns 200 with non-JSON body.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mock_url = format!("http://127.0.0.1:{}", addr.port());
+
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let io = tokio::io::BufStream::new(stream);
+            use tokio::io::AsyncReadExt;
+            use tokio::io::AsyncWriteExt;
+            let mut io = io;
+            let _ = io.read(&mut buf).await;
+            let body = "this is not json!!!";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = io.write_all(response.as_bytes()).await;
+            let _ = io.flush().await;
+        });
+
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::set_var("PROVER_URL", &mock_url);
+        std::env::remove_var("PROVER_TIMEOUT_SECS");
+        let dir = tempfile::tempdir().unwrap();
+        let pm = ProofManager::new("x", "y", dir.path().to_str().unwrap(), 0, 1);
+        std::env::remove_var("PROVER_URL");
+
+        let result = pm
+            .generate_proof_http(&mock_url, "test-result-2", "[1.0, 2.0]")
+            .await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("not valid JSON"),
+            "Expected JSON validation error, got: {}",
+            err_msg
+        );
+    }
+
+    #[tokio::test]
+    async fn test_generate_proof_http_validates_empty_proof_hex() {
+        // Start a mock HTTP server that returns valid JSON with empty proof_hex.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mock_url = format!("http://127.0.0.1:{}", addr.port());
+
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let io = tokio::io::BufStream::new(stream);
+            use tokio::io::AsyncReadExt;
+            use tokio::io::AsyncWriteExt;
+            let mut io = io;
+            let _ = io.read(&mut buf).await;
+            let body = r#"{"proof_hex":"","circuit_hash":"0x1234","public_inputs_hex":"0xab","gens_hex":"0xcd"}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = io.write_all(response.as_bytes()).await;
+            let _ = io.flush().await;
+        });
+
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::set_var("PROVER_URL", &mock_url);
+        std::env::remove_var("PROVER_TIMEOUT_SECS");
+        let dir = tempfile::tempdir().unwrap();
+        let pm = ProofManager::new("x", "y", dir.path().to_str().unwrap(), 0, 1);
+        std::env::remove_var("PROVER_URL");
+
+        let result = pm
+            .generate_proof_http(&mock_url, "test-result-3", "[1.0, 2.0]")
+            .await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("empty proof_hex"),
+            "Expected empty proof_hex error, got: {}",
+            err_msg
+        );
+    }
+
+    #[tokio::test]
+    async fn test_generate_proof_http_rejects_non_200() {
+        // Start a mock HTTP server that returns 500.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mock_url = format!("http://127.0.0.1:{}", addr.port());
+
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let io = tokio::io::BufStream::new(stream);
+            use tokio::io::AsyncReadExt;
+            use tokio::io::AsyncWriteExt;
+            let mut io = io;
+            let _ = io.read(&mut buf).await;
+            let body = "Internal Server Error";
+            let response = format!(
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = io.write_all(response.as_bytes()).await;
+            let _ = io.flush().await;
+        });
+
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::set_var("PROVER_URL", &mock_url);
+        std::env::remove_var("PROVER_TIMEOUT_SECS");
+        let dir = tempfile::tempdir().unwrap();
+        let pm = ProofManager::new("x", "y", dir.path().to_str().unwrap(), 0, 1);
+        std::env::remove_var("PROVER_URL");
+
+        let result = pm
+            .generate_proof_http(&mock_url, "test-result-4", "[1.0, 2.0]")
+            .await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("500"),
+            "Expected HTTP 500 error, got: {}",
+            err_msg
+        );
     }
 }

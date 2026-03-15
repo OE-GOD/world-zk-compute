@@ -24,6 +24,7 @@ use config::{Config, ModelConfig};
 use prover::ProofManager;
 use store::StateStore;
 use tee_operator::alerting::{AlertConfig, AlertManager, AlertSeverity};
+use tee_operator::audit;
 use tee_operator::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 use watcher::{EventWatcher, TEEEvent};
 
@@ -309,6 +310,13 @@ async fn cmd_submit(
         .await?;
     tracing::info!("Submitted on-chain: tx={}", tx_hash);
 
+    // Audit log: result submission
+    audit::log_result_submitted(
+        &format!("0x{}", hex::encode(tx_hash)),
+        &model.name,
+        feats.len(),
+    );
+
     // 4. Trigger proof pre-computation (best-effort, uses warm prover if PROVER_URL is set)
     let proof_mgr = ProofManager::new(
         &config.precompute_bin,
@@ -395,17 +403,23 @@ async fn shutdown_signal() {
         else {
             tracing::warn!("failed to install SIGTERM handler, using ctrl-c only");
             ctrl_c.await.ok();
+            tracing::info!("Shutting down...");
             return;
         };
         tokio::select! {
-            _ = ctrl_c => {},
-            _ = sigterm.recv() => {},
+            _ = ctrl_c => {
+                tracing::info!("Received SIGINT, shutting down...");
+            },
+            _ = sigterm.recv() => {
+                tracing::info!("Received SIGTERM, shutting down...");
+            },
         }
     }
 
     #[cfg(not(unix))]
     {
         ctrl_c.await.ok();
+        tracing::info!("Shutting down...");
     }
 }
 
@@ -570,6 +584,13 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
                         result_id = %result_id,
                         challenger = %challenger,
                         "Challenge detected"
+                    );
+
+                    // Audit log: challenge detected
+                    audit::log_challenge_detected(
+                        &rid_hex,
+                        &format!("{}", challenger),
+                        from_block,
                     );
 
                     // Track the dispute deadline in persisted state
@@ -861,6 +882,16 @@ async fn cmd_register(
         .register_enclave(enclave_addr, image_hash)
         .await?;
     tracing::info!("Enclave registered on-chain: tx={}", tx_hash);
+    tracing::info!(
+        target: "security_audit",
+        action = "enclave_registered",
+        enclave_address = %enclave_addr,
+        pcr0 = %verified.pcr0,
+        image_hash = %format!("0x{}", hex::encode(image_hash)),
+        tx_hash = %tx_hash,
+        skip_verify = skip_verify,
+        "Enclave registered on-chain"
+    );
 
     println!("Enclave registered:");
     println!("  address:    {}", enclave_addr);
@@ -919,6 +950,14 @@ async fn handle_challenge(
         Ok(tx) => {
             chain_cb.record_success();
             tracing::info!("Dispute resolved for {}! tx={}", rid_hex, tx);
+            tracing::info!(
+                target: "security_audit",
+                action = "dispute_resolved",
+                result_id = %rid_hex,
+                tx_hash = %tx,
+                success = true,
+                "Dispute proof submitted and resolved on-chain"
+            );
             metrics.record_dispute_resolved();
             let mut meta = HashMap::new();
             meta.insert("result_id".to_string(), rid_hex);
@@ -934,6 +973,14 @@ async fn handle_challenge(
         Err(e) => {
             chain_cb.record_failure();
             tracing::error!("Failed to resolve dispute for {}: {}", rid_hex, e);
+            tracing::warn!(
+                target: "security_audit",
+                action = "dispute_failed",
+                result_id = %rid_hex,
+                error = %e,
+                success = false,
+                "Dispute resolution failed -- proof submission unsuccessful"
+            );
             metrics.record_dispute_failed();
             let mut meta = HashMap::new();
             meta.insert("result_id".to_string(), rid_hex);
@@ -958,6 +1005,15 @@ async fn resolve_with_proof(
     let circuit_hash = hex_to_b256(&proof.circuit_hash)?;
     let public_inputs = hex_to_bytes(&proof.public_inputs_hex)?;
     let gens_data = hex_to_bytes(&proof.gens_hex)?;
+
+    tracing::info!(
+        target: "security_audit",
+        action = "proof_verification_submitted",
+        result_id = %result_id,
+        circuit_hash = %circuit_hash,
+        proof_size = proof_bytes.len(),
+        "Submitting proof for on-chain verification"
+    );
 
     chain
         .resolve_dispute(
@@ -1105,5 +1161,58 @@ mod tests {
 
         state.track_task_start();
         assert_eq!(state2.in_flight_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_cancels_pending_tasks() {
+        let state = Arc::new(ShutdownState::new());
+        let state_clone = state.clone();
+
+        // Simulate a long-running task
+        state.track_task_start();
+        let handle = tokio::spawn(async move {
+            // Simulate work that checks for shutdown
+            while !state_clone.is_shutting_down() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            state_clone.track_task_done();
+        });
+
+        // Signal shutdown after a brief delay
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(state.in_flight_count(), 1);
+        state.signal_shutdown();
+
+        // Task should complete after shutdown signal
+        handle.await.unwrap();
+        assert_eq!(state.in_flight_count(), 0);
+        assert!(state.is_shutting_down());
+    }
+
+    #[test]
+    fn test_shutdown_state_multiple_tasks() {
+        let state = ShutdownState::new();
+
+        // Track multiple tasks
+        for _ in 0..5 {
+            state.track_task_start();
+        }
+        assert_eq!(state.in_flight_count(), 5);
+
+        // Complete some
+        state.track_task_done();
+        state.track_task_done();
+        assert_eq!(state.in_flight_count(), 3);
+
+        // Signal shutdown while tasks are in-flight
+        state.signal_shutdown();
+        assert!(state.is_shutting_down());
+        assert_eq!(state.in_flight_count(), 3);
+
+        // Complete remaining
+        state.track_task_done();
+        state.track_task_done();
+        state.track_task_done();
+        assert_eq!(state.in_flight_count(), 0);
     }
 }
