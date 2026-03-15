@@ -73,7 +73,7 @@ contract StylusAdapterTest is Test {
         desc.inputIsCommitted[0] = true;
         desc.atomCommitIdxs = new uint256[](2);
         desc.oracleProductOffsets = new uint256[](3);
-        desc.oracleResultIdxs = new uint256[](2);
+        desc.oracleResultIdxs = new uint256[](0);
         desc.oracleExprCoeffs = new uint256[](0);
 
         bytes memory descData = abi.encode(desc);
@@ -191,13 +191,13 @@ contract StylusAdapterTest is Test {
         desc.numSumcheckRounds[0] = 3;
         desc.numSumcheckRounds[1] = 3;
         desc.atomOffsets = new uint256[](3);
-        desc.atomTargetLayers = new uint256[](2);
-        desc.ptOffsets = new uint256[](3);
+        desc.atomTargetLayers = new uint256[](0);
+        desc.ptOffsets = new uint256[](1);
         desc.ptData = new uint256[](0);
         desc.inputIsCommitted = new bool[](1);
-        desc.atomCommitIdxs = new uint256[](2);
+        desc.atomCommitIdxs = new uint256[](0);
         desc.oracleProductOffsets = new uint256[](3);
-        desc.oracleResultIdxs = new uint256[](2);
+        desc.oracleResultIdxs = new uint256[](0);
         desc.oracleExprCoeffs = new uint256[](0);
 
         bytes memory validGens = abi.encodePacked(uint256(99), uint256(100));
