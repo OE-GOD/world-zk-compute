@@ -1,14 +1,8 @@
 # World ZK Compute — Developer Makefile
 #
-# Quick reference:
-#   make test            Run all tests
-#   make test-contracts  Run Solidity tests only
-#   make test-rust       Run all Rust tests
-#   make fmt             Format all code
-#   make lint            Check formatting + linting
-#   make build           Build all Rust crates
-#   make deploy-local    Deploy to local Anvil
-#   make clean           Clean all build artifacts
+# Run `make` or `make help` to see all available targets.
+
+.DEFAULT_GOAL := help
 
 .PHONY: test test-fast test-contracts test-rust test-python test-ts test-operator test-enclave test-sdk \
         test-admin-cli test-indexer test-watcher-crate test-events-crate \
@@ -193,8 +187,7 @@ preflight: ## Run CI preflight checks locally
 # ── Benchmarks ───────────────────────────────────────────────────────────────
 
 bench: ## Run Rust benchmarks
-	cargo bench --manifest-path examples/xgboost-remainder/Cargo.toml 2>/dev/null || \
-	echo "No benchmarks configured yet. See T117."
+	cargo bench --manifest-path sdk/Cargo.toml
 
 # ── Gas ──────────────────────────────────────────────────────────────────────
 
@@ -259,6 +252,10 @@ check: lint ## Run all validation (lint + script checks + compose validation)
 
 # ── Help ─────────────────────────────────────────────────────────────────────
 
-help: ## Show this help
+help: ## Show available targets
+	@echo ""
+	@echo "Usage: make <target>"
+	@echo ""
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
-		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
+		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-30s\033[0m %s\n", $$1, $$2}'
+	@echo ""

@@ -313,15 +313,12 @@ mod rest_results {
     }
 
     #[tokio::test]
-    async fn list_results_limit_capped_at_1000() {
+    async fn list_results_limit_exceeds_max_returns_400() {
         let s = seed_storage(5);
         let app = build_app(s, make_broadcaster());
-        // Requesting limit=9999 should be internally capped; still returns only 5
-        let (status, body) = get_request(app, "/results?limit=9999").await;
-
-        assert_eq!(status, StatusCode::OK);
-        let rows: Vec<ResultRow> = serde_json::from_slice(&body).unwrap();
-        assert_eq!(rows.len(), 5);
+        // Requesting limit > 1000 now returns 400 (input validation)
+        let (status, _body) = get_request(app, "/results?limit=9999").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

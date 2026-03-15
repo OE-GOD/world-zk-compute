@@ -25,6 +25,8 @@ pub struct IndexerMetrics {
     pub total_results: AtomicU64,
     /// Total API requests served.
     pub api_requests: AtomicU64,
+    /// Total lock poisoning events detected.
+    pub lock_poisoning_events: AtomicU64,
     /// Instant when the indexer started.
     pub start_time: Instant,
 }
@@ -40,6 +42,7 @@ impl IndexerMetrics {
             poll_errors: AtomicU64::new(0),
             total_results: AtomicU64::new(0),
             api_requests: AtomicU64::new(0),
+            lock_poisoning_events: AtomicU64::new(0),
             start_time: Instant::now(),
         }
     }
@@ -79,6 +82,11 @@ impl IndexerMetrics {
         self.api_requests.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Record a lock poisoning event.
+    pub fn record_lock_poisoning(&self) {
+        self.lock_poisoning_events.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Seconds since the indexer started.
     pub fn uptime_secs(&self) -> u64 {
         self.start_time.elapsed().as_secs()
@@ -93,6 +101,7 @@ impl IndexerMetrics {
         let errors = self.poll_errors.load(Ordering::Relaxed);
         let results = self.total_results.load(Ordering::Relaxed);
         let requests = self.api_requests.load(Ordering::Relaxed);
+        let lock_poisoning = self.lock_poisoning_events.load(Ordering::Relaxed);
         let uptime = self.uptime_secs();
 
         format!(
@@ -118,6 +127,9 @@ indexer_total_results {results}\n\
 # HELP indexer_api_requests_total Total API requests served\n\
 # TYPE indexer_api_requests_total counter\n\
 indexer_api_requests_total {requests}\n\
+# HELP indexer_lock_poisoning_events_total Total lock poisoning events detected\n\
+# TYPE indexer_lock_poisoning_events_total counter\n\
+indexer_lock_poisoning_events_total {lock_poisoning}\n\
 # HELP indexer_uptime_seconds Indexer uptime in seconds\n\
 # TYPE indexer_uptime_seconds gauge\n\
 indexer_uptime_seconds {uptime}\n"
@@ -159,6 +171,7 @@ mod tests {
         assert_eq!(m.poll_errors.load(Ordering::Relaxed), 0);
         assert_eq!(m.total_results.load(Ordering::Relaxed), 0);
         assert_eq!(m.api_requests.load(Ordering::Relaxed), 0);
+        assert_eq!(m.lock_poisoning_events.load(Ordering::Relaxed), 0);
     }
 
     #[test]
@@ -259,6 +272,7 @@ mod tests {
         assert!(output.contains("indexer_latest_block 0"));
         assert!(output.contains("indexer_poll_errors_total 0"));
         assert!(output.contains("indexer_total_results 0"));
+        assert!(output.contains("indexer_lock_poisoning_events_total 0"));
     }
 
     #[test]

@@ -114,15 +114,35 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::Submit { features, model } => {
+            if let Err(msgs) = config.validate_for_command("submit") {
+                for msg in &msgs {
+                    tracing::error!("Config validation: {}", msg);
+                }
+                std::process::exit(1);
+            }
             let selected = config.get_model(model.as_deref())?;
             cmd_submit(&config, &features, selected).await
         }
-        Commands::Watch { metrics_port } => cmd_watch(&config, metrics_port).await,
+        Commands::Watch { metrics_port } => {
+            if let Err(msgs) = config.validate_for_command("watch") {
+                for msg in &msgs {
+                    tracing::error!("Config validation: {}", msg);
+                }
+                std::process::exit(1);
+            }
+            cmd_watch(&config, metrics_port).await
+        }
         Commands::Run {
             features,
             metrics_port,
             model,
         } => {
+            if let Err(msgs) = config.validate_for_command("run") {
+                for msg in &msgs {
+                    tracing::error!("Config validation: {}", msg);
+                }
+                std::process::exit(1);
+            }
             let selected = config.get_model(model.as_deref())?;
             cmd_run(&config, &features, metrics_port, selected).await
         }
@@ -414,14 +434,30 @@ async fn cmd_watch(config: &Config, metrics_port: u16) -> anyhow::Result<()> {
 
     // Initialize AlertManager for multi-channel alerting (log-only by default)
     let alert_config = match std::env::var("ALERT_CONFIG_JSON") {
-        Ok(json) => serde_json::from_str::<AlertConfig>(&json).unwrap_or_else(|e| {
-            tracing::warn!("Invalid ALERT_CONFIG_JSON, using defaults: {}", e);
+        Ok(json) => {
+            tracing::debug!("Parsing ALERT_CONFIG_JSON ({} bytes)", json.len());
+            serde_json::from_str::<AlertConfig>(&json).unwrap_or_else(|e| {
+                tracing::warn!(
+                    error = %e,
+                    json_preview = %if json.len() > 120 { &json[..120] } else { &json },
+                    "Failed to parse ALERT_CONFIG_JSON, falling back to defaults"
+                );
+                AlertConfig::default()
+            })
+        }
+        Err(_) => {
+            tracing::debug!("ALERT_CONFIG_JSON not set, using default AlertConfig (log-only)");
             AlertConfig::default()
-        }),
-        Err(_) => AlertConfig::default(),
+        }
     };
+    tracing::info!(
+        channels = alert_config.channels.len(),
+        dedup_window_secs = alert_config.dedup_window_secs,
+        escalation_timeout_secs = alert_config.escalation_timeout_secs,
+        "AlertManager initialized with {} alert channel(s)",
+        alert_config.channels.len()
+    );
     let alert_manager = Arc::new(AlertManager::new(alert_config));
-    tracing::info!("AlertManager initialized");
 
     // Circuit breakers for RPC and chain calls
     let rpc_cb = Arc::new(CircuitBreaker::new(CircuitBreakerConfig::default()));

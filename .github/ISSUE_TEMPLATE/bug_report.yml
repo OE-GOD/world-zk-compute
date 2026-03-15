@@ -49,50 +49,36 @@ body:
       required: true
 
   - type: dropdown
-    id: os
-    attributes:
-      label: Operating System
-      description: Which OS are you running on?
-      options:
-        - Linux (x86_64)
-        - Linux (arm64)
-        - macOS (Apple Silicon)
-        - macOS (Intel)
-        - Windows
-        - Docker / Container
-        - Other
-    validations:
-      required: false
-
-  - type: dropdown
-    id: sdk-language
-    attributes:
-      label: SDK Language
-      description: If this involves an SDK, which language?
-      options:
-        - Rust
-        - Python
-        - TypeScript
-        - N/A
-    validations:
-      required: false
-
-  - type: dropdown
     id: component
     attributes:
       label: Component
       description: Which component is affected?
       options:
-        - contracts
         - operator
         - enclave
-        - SDK-Rust
-        - SDK-Python
-        - SDK-TypeScript
+        - indexer
+        - sdk-rust
+        - sdk-python
+        - sdk-typescript
+        - contracts
+        - admin-cli
         - prover
         - other
     validations:
       required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Provide details about your environment.
+      placeholder: |
+        - OS: e.g., Ubuntu 22.04 (x86_64), macOS 14 (Apple Silicon)
+        - Rust version: e.g., 1.78.0
+        - Docker version: e.g., 24.0.7
+        - Node version (if applicable): e.g., 20.11.0
+    validations:
+      required: false
 
   - type: input
     id: version

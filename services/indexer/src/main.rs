@@ -1,6 +1,8 @@
 pub mod metrics;
+pub mod migrations;
 #[cfg(feature = "postgres")]
 pub mod pg_storage;
+pub mod rate_limit;
 pub mod routes;
 pub mod websocket;
 
@@ -30,9 +32,44 @@ pub struct Config {
     pub database_url: Option<String>,
     pub port: u16,
     pub poll_interval_secs: u64,
+    /// Maximum requests per IP per minute (default: 100).
+    pub rate_limit_per_ip: u32,
 }
 
 impl Config {
+    /// Validate the loaded configuration. Warns if critical env vars are using
+    /// defaults (which are unsuitable for production). Returns an error if any
+    /// required variable is missing or invalid.
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let errors: Vec<String> = Vec::new();
+
+        // RPC_URL has no sensible default for production
+        if std::env::var("RPC_URL").is_err() {
+            tracing::warn!(
+                "RPC_URL is not set -- using default '{}'. \
+                 This is unsuitable for production.",
+                self.rpc_url
+            );
+        }
+
+        // CONTRACT_ADDRESS zero-address default is almost certainly wrong in production
+        if std::env::var("CONTRACT_ADDRESS").is_err() {
+            tracing::warn!(
+                "CONTRACT_ADDRESS is not set -- using zero address. \
+                 This is unsuitable for production."
+            );
+        }
+
+        if !errors.is_empty() {
+            for msg in &errors {
+                tracing::error!("{}", msg);
+            }
+            return Err(errors);
+        }
+
+        Ok(())
+    }
+
     pub fn from_env() -> anyhow::Result<Self> {
         let rpc_url =
             std::env::var("RPC_URL").unwrap_or_else(|_| "http://localhost:8545".to_string());
@@ -51,6 +88,10 @@ impl Config {
             .unwrap_or_else(|_| "12".to_string())
             .parse()
             .map_err(|_| anyhow::anyhow!("invalid POLL_INTERVAL_SECS"))?;
+        let rate_limit_per_ip: u32 = std::env::var("RATE_LIMIT_PER_IP")
+            .unwrap_or_else(|_| "100".to_string())
+            .parse()
+            .map_err(|_| anyhow::anyhow!("invalid RATE_LIMIT_PER_IP"))?;
         Ok(Self {
             rpc_url,
             contract_address,
@@ -59,6 +100,7 @@ impl Config {
             database_url,
             port,
             poll_interval_secs,
+            rate_limit_per_ip,
         })
     }
 }
@@ -106,6 +148,12 @@ pub trait Storage: Send + Sync {
     fn is_healthy(&self) -> bool {
         true
     }
+
+    /// Attempt to reset the lock-poisoned state so the service can recover.
+    /// Returns `true` if the reset was performed, `false` if not supported.
+    fn reset_lock_state(&self) -> bool {
+        false
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -146,6 +194,12 @@ impl SqliteStorage {
             self.lock_poisoned.store(true, Ordering::SeqCst);
             anyhow::anyhow!("storage lock poisoned")
         })
+    }
+
+    /// Run pending database migrations.
+    pub fn run_migrations(&self) -> anyhow::Result<()> {
+        let conn = self.lock()?;
+        migrations::run_migrations_sqlite(&conn)
     }
 
     fn init_tables(&self) -> anyhow::Result<()> {
@@ -390,6 +444,12 @@ impl Storage for SqliteStorage {
     fn is_healthy(&self) -> bool {
         !self.lock_poisoned.load(Ordering::SeqCst)
     }
+
+    fn reset_lock_state(&self) -> bool {
+        self.lock_poisoned.store(false, Ordering::SeqCst);
+        tracing::info!("Lock-poisoned flag has been reset via admin endpoint");
+        true
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -551,7 +611,15 @@ pub(crate) struct AppState {
 // ---------------------------------------------------------------------------
 
 pub fn build_app(storage: Arc<dyn Storage>, broadcaster: Arc<EventBroadcaster>) -> Router {
-    routes::build_app(storage, broadcaster)
+    routes::build_app(storage, broadcaster, rate_limit::RateLimitConfig::default())
+}
+
+pub fn build_app_with_rate_limit(
+    storage: Arc<dyn Storage>,
+    broadcaster: Arc<EventBroadcaster>,
+    rate_limit_config: rate_limit::RateLimitConfig,
+) -> Router {
+    routes::build_app(storage, broadcaster, rate_limit_config)
 }
 
 // ---------------------------------------------------------------------------
@@ -597,6 +665,14 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Config::from_env()?;
 
+    // Pre-flight validation: warn about defaults unsuitable for production.
+    if let Err(missing) = config.validate() {
+        for msg in &missing {
+            error!("Config validation: {}", msg);
+        }
+        std::process::exit(1);
+    }
+
     info!("tee-indexer starting");
     info!("  rpc_url:          {}", config.rpc_url);
     info!("  contract_address: {:#x}", config.contract_address);
@@ -614,7 +690,9 @@ async fn main() -> anyhow::Result<()> {
             info!("  database_url:     {}...", redacted);
             #[cfg(feature = "postgres")]
             {
-                Arc::new(pg_storage::PgStorage::new(url).await?) as Arc<dyn Storage>
+                let pg = pg_storage::PgStorage::new(url).await?;
+                migrations::run_migrations_pg(pg.pool()).await?;
+                Arc::new(pg) as Arc<dyn Storage>
             }
             #[cfg(not(feature = "postgres"))]
             {
@@ -627,14 +705,21 @@ async fn main() -> anyhow::Result<()> {
         }
         _ => {
             info!("  storage backend:  sqlite ({})", config.db_path);
-            Arc::new(SqliteStorage::open(&config.db_path)?)
+            let sqlite = SqliteStorage::open(&config.db_path)?;
+            sqlite.run_migrations()?;
+            Arc::new(sqlite)
         }
     };
     let broadcaster = Arc::new(EventBroadcaster::new(256));
 
     info!("  max_ws_connections: {}", broadcaster.max_connections());
+    info!("  rate_limit_per_ip: {} req/min", config.rate_limit_per_ip);
 
-    let app = build_app(storage.clone(), broadcaster.clone());
+    let rl_config = rate_limit::RateLimitConfig {
+        max_requests: config.rate_limit_per_ip,
+        window: std::time::Duration::from_secs(60),
+    };
+    let app = build_app_with_rate_limit(storage.clone(), broadcaster.clone(), rl_config);
 
     // Spawn the event polling loop
     let poll_storage = storage.clone();

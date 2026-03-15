@@ -1605,6 +1605,8 @@ contract RemainderVerifier is Ownable2Step, Pausable {
     event DAGBatchSessionStarted(bytes32 indexed sessionId, bytes32 indexed circuitHash, uint256 totalBatches);
     event DAGBatchCompleted(bytes32 indexed sessionId, uint256 batchIdx);
     event DAGBatchFinalized(bytes32 indexed sessionId, bytes32 indexed circuitHash);
+    event DAGBatchStepCompleted(bytes32 indexed sessionId, uint256 batchIdx, uint256 layersProcessed, uint256 gasUsed);
+    event DAGBatchFinalizeProgress(bytes32 indexed sessionId, uint256 groupsDone, uint256 totalGroups);
 
     /// @notice Start a new batch DAG verification session (setup only, no compute layers).
     /// @dev Decodes proof for transcript setup, squeezes output challenges, and stores initial state.
@@ -1696,6 +1698,7 @@ contract RemainderVerifier is Ownable2Step, Pausable {
         bytes calldata publicInputs,
         bytes calldata gensData
     ) external whenNotPaused {
+        uint256 gasStart = gasleft();
         DAGBatchVerifier.DAGBatchSession memory session = DAGBatchVerifier.loadSession(sessionId);
         require(session.circuitHash != bytes32(0), "Batch: session not found");
         require(session.verifier == msg.sender, "Batch: unauthorized");
@@ -1707,11 +1710,16 @@ contract RemainderVerifier is Ownable2Step, Pausable {
 
         uint256 endLayer = _executeContinueBatch(sessionId, session, proof, publicInputs, gensData);
 
+        // Compute layers processed in this batch
+        (uint256 startLayer,) = DAGBatchVerifier.batchLayerRange(session.nextBatchIdx, session.numComputeLayers);
+        uint256 layersProcessed = endLayer - startLayer;
+
         // Update session
         session.nextBatchIdx += 1;
         DAGBatchVerifier.storeSession(sessionId, session);
 
         emit DAGBatchCompleted(sessionId, session.nextBatchIdx - 1);
+        emit DAGBatchStepCompleted(sessionId, session.nextBatchIdx - 1, layersProcessed, gasStart - gasleft());
     }
 
     /// @dev Inner continue logic (split out to avoid stack-too-deep)
@@ -1845,13 +1853,16 @@ contract RemainderVerifier is Ownable2Step, Pausable {
         if (proof.length < 4) revert InvalidProofLength();
         if (bytes4(proof[:4]) != bytes4("REM1")) revert InvalidProofSelector();
 
-        finalized = _executeFinalizeStep(sessionId, session, proof, publicInputs, gensData);
+        uint256 groupsDone;
+        uint256 totalGroups;
+        (finalized, groupsDone, totalGroups) = _executeFinalizeStep(sessionId, session, proof, publicInputs, gensData);
 
         if (finalized) {
             session.finalized = true;
         }
         DAGBatchVerifier.storeSession(sessionId, session);
 
+        emit DAGBatchFinalizeProgress(sessionId, groupsDone, totalGroups);
         if (finalized) {
             emit DAGBatchFinalized(sessionId, session.circuitHash);
         }
@@ -1864,17 +1875,20 @@ contract RemainderVerifier is Ownable2Step, Pausable {
         uint256 dagInputIdx;
         uint256 pubClaimIdx;
         bool done;
+        uint256 totalGroups; // Total groups in current committed input (for progress reporting)
     }
 
     /// @dev Execute one finalize step: process committed input groups in batches, public inputs inline.
     /// @return done True if all input layers have been verified.
+    /// @return groupsDone Number of eval groups verified so far in current committed input.
+    /// @return totalGroups Total number of eval groups in current committed input.
     function _executeFinalizeStep(
         bytes32 sessionId,
         DAGBatchVerifier.DAGBatchSession memory session,
         bytes calldata proof,
         bytes calldata publicInputs,
         bytes calldata gensData
-    ) private returns (bool done) {
+    ) private returns (bool done, uint256 groupsDone, uint256 totalGroups) {
         GKRDAGVerifier.VerifyContext memory ctx;
         PoseidonSponge.Sponge memory sponge;
         (ctx, sponge) = _buildFinalizeContext(sessionId, session, proof, publicInputs, gensData);
@@ -1890,7 +1904,7 @@ contract RemainderVerifier is Ownable2Step, Pausable {
         session.finalizeInputIdx = fCtx.inputIdx;
         session.finalizeGroupsDone = fCtx.groupsDone;
         DAGBatchVerifier.spongeToSession(sponge, session);
-        return fCtx.done;
+        return (fCtx.done, fCtx.groupsDone, fCtx.totalGroups);
     }
 
     /// @dev Build VerifyContext and sponge for finalize (extracted to avoid stack-too-deep).
@@ -1965,6 +1979,7 @@ contract RemainderVerifier is Ownable2Step, Pausable {
     ) private view returns (bool needsMore) {
         uint256[][] memory claimPoints = GKRDAGVerifier.collectClaimPoints(targetLayer, ctx.desc, ctx.allBindings);
         uint256 totalGroups = claimPoints.length;
+        fCtx.totalGroups = totalGroups;
 
         uint256 endGroup = fCtx.groupsDone + DAGBatchVerifier.GROUPS_PER_FINALIZE_BATCH;
         if (endGroup > totalGroups) endGroup = totalGroups;

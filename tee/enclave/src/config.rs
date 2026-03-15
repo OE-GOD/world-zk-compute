@@ -113,6 +113,32 @@ impl Config {
             expected_model_hash,
         }
     }
+
+    /// Pre-flight validation: checks that required resources exist.
+    ///
+    /// Collects all problems and returns them together so the operator
+    /// sees every issue at once rather than fixing them one by one.
+    pub fn validate(&self) -> Result<(), Vec<String>> {
+        let mut errors: Vec<String> = Vec::new();
+
+        // MODEL_PATH must point to an existing file
+        if !std::path::Path::new(&self.model_path).exists() {
+            errors.push(format!(
+                "MODEL_PATH '{}' does not exist. \
+                 Set MODEL_PATH to a valid model file path.",
+                self.model_path
+            ));
+        }
+
+        if !errors.is_empty() {
+            for msg in &errors {
+                tracing::error!("{}", msg);
+            }
+            return Err(errors);
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]

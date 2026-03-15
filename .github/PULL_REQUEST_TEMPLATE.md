@@ -1,19 +1,21 @@
 ## Summary
 
-<!-- What does this PR do and why? -->
+<!-- What does this PR do and why? Keep it to 1-3 sentences. -->
 
 ## Changes
 
-- [ ] Change 1
-- [ ] Change 2
+- <!-- List key changes -->
 
-## Testing
+## Test Plan
 
-<!-- How was this tested? Include commands, test names, or screenshots. -->
+- [ ] <!-- How was this tested? Include commands or test names. -->
+- [ ] <!-- e.g., cargo test -p operator -->
+- [ ] <!-- e.g., forge test --match-contract MyTest -->
 
 ## Checklist
 
 - [ ] Tests pass (`cargo test`, `forge test`, or relevant SDK tests)
-- [ ] Code is linted and formatted
+- [ ] Code is formatted (`cargo fmt`, `forge fmt`)
 - [ ] No secrets or credentials committed
-- [ ] Breaking changes are documented (if any)
+- [ ] Breaking changes documented (if any)
+- [ ] Relevant docs updated (if any)

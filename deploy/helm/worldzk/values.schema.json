@@ -1,0 +1,847 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "World ZK Compute Helm Values",
+  "description": "JSON Schema for the worldzk Helm chart values.yaml",
+  "type": "object",
+  "required": ["global"],
+  "properties": {
+    "global": {
+      "type": "object",
+      "description": "Global configuration shared across all components",
+      "required": ["rpcUrl", "contractAddress", "chainId"],
+      "properties": {
+        "rpcUrl": {
+          "type": "string",
+          "description": "Ethereum JSON-RPC endpoint (e.g., https://eth-sepolia.g.alchemy.com/v2/YOUR_KEY)",
+          "minLength": 1
+        },
+        "contractAddress": {
+          "type": "string",
+          "description": "TEEMLVerifier contract address (0x-prefixed hex)",
+          "pattern": "^0x[0-9a-fA-F]{40}$"
+        },
+        "chainId": {
+          "type": "string",
+          "description": "Target chain ID (11155111=Sepolia, 1=Mainnet, 31337=Anvil)",
+          "minLength": 1
+        },
+        "logLevel": {
+          "type": "string",
+          "description": "Rust log filter level",
+          "enum": ["trace", "debug", "info", "warn", "error"],
+          "default": "info"
+        },
+        "enclaveUrl": {
+          "type": "string",
+          "description": "TEE enclave service URL",
+          "default": "http://worldzk-enclave:8080"
+        },
+        "pollIntervalSecs": {
+          "type": "string",
+          "description": "Event polling interval in seconds",
+          "pattern": "^[0-9]+$",
+          "default": "12"
+        }
+      }
+    },
+    "operator": {
+      "type": "object",
+      "description": "Operator component configuration",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable the operator deployment",
+          "default": true
+        },
+        "replicaCount": {
+          "type": "integer",
+          "description": "Number of operator replicas",
+          "minimum": 1,
+          "default": 2
+        },
+        "image": {
+          "$ref": "#/$defs/image",
+          "description": "Operator container image configuration"
+        },
+        "port": {
+          "type": "integer",
+          "description": "Operator service port",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 8080
+        },
+        "env": {
+          "type": "object",
+          "description": "Additional environment variables for the operator",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "resources": {
+          "$ref": "#/$defs/resources",
+          "description": "Resource requests and limits for operator pods"
+        },
+        "livenessProbe": {
+          "$ref": "#/$defs/httpProbe",
+          "description": "Liveness probe configuration"
+        },
+        "readinessProbe": {
+          "$ref": "#/$defs/httpProbe",
+          "description": "Readiness probe configuration"
+        },
+        "proofStorageSizeLimit": {
+          "type": "string",
+          "description": "Size limit for the ephemeral proof storage volume (e.g., 1Gi, 500Mi)",
+          "pattern": "^[0-9]+(Mi|Gi|Ti)$",
+          "default": "1Gi"
+        },
+        "terminationGracePeriodSeconds": {
+          "type": "integer",
+          "description": "Termination grace period in seconds",
+          "minimum": 0,
+          "default": 30
+        },
+        "canary": {
+          "type": "object",
+          "description": "Canary deployment configuration alongside the main operator",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Enable canary deployment",
+              "default": false
+            },
+            "replicas": {
+              "type": "integer",
+              "description": "Number of canary replicas",
+              "minimum": 1,
+              "default": 1
+            },
+            "weight": {
+              "type": "integer",
+              "description": "Percentage of traffic routed to canary pods",
+              "minimum": 0,
+              "maximum": 100,
+              "default": 10
+            },
+            "image": {
+              "$ref": "#/$defs/image",
+              "description": "Canary image configuration"
+            },
+            "annotations": {
+              "type": "object",
+              "description": "Annotations for canary pods (traffic splitting, monitoring)",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "resources": {
+              "$ref": "#/$defs/resources",
+              "description": "Resource requests and limits for canary pods"
+            },
+            "env": {
+              "type": "object",
+              "description": "Additional environment variables specific to the canary",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "terminationGracePeriodSeconds": {
+              "type": "integer",
+              "description": "Termination grace period for canary pods",
+              "minimum": 0,
+              "default": 30
+            },
+            "proofStorageSizeLimit": {
+              "type": "string",
+              "description": "Size limit for ephemeral proof storage on canary pods",
+              "pattern": "^[0-9]+(Mi|Gi|Ti)$",
+              "default": "1Gi"
+            },
+            "flagger": {
+              "type": "object",
+              "description": "Flagger Canary CRD configuration for progressive delivery",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "description": "Enable Flagger Canary analysis resource",
+                  "default": false
+                },
+                "interval": {
+                  "type": "string",
+                  "description": "Analysis interval (e.g., 1m, 30s)",
+                  "default": "1m"
+                },
+                "iterations": {
+                  "type": "integer",
+                  "description": "Number of analysis iterations before promotion",
+                  "minimum": 1,
+                  "default": 10
+                },
+                "stepWeight": {
+                  "type": "integer",
+                  "description": "Traffic weight increment per step",
+                  "minimum": 1,
+                  "maximum": 100,
+                  "default": 10
+                },
+                "maxWeight": {
+                  "type": "integer",
+                  "description": "Maximum traffic weight before full promotion",
+                  "minimum": 1,
+                  "maximum": 100,
+                  "default": 50
+                },
+                "successRateThreshold": {
+                  "type": "integer",
+                  "description": "Minimum request success rate percentage for promotion",
+                  "minimum": 0,
+                  "maximum": 100,
+                  "default": 99
+                },
+                "latencyThreshold": {
+                  "type": "integer",
+                  "description": "Maximum request duration in milliseconds for promotion",
+                  "minimum": 1,
+                  "default": 500
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "indexer": {
+      "type": "object",
+      "description": "Indexer component configuration",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable the indexer deployment",
+          "default": true
+        },
+        "replicaCount": {
+          "type": "integer",
+          "description": "Number of indexer replicas (must be 1 for SQLite backend)",
+          "minimum": 1,
+          "default": 1
+        },
+        "image": {
+          "$ref": "#/$defs/image",
+          "description": "Indexer container image configuration"
+        },
+        "port": {
+          "type": "integer",
+          "description": "Indexer service port",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 8081
+        },
+        "postgres": {
+          "type": "object",
+          "description": "Postgres configuration (when using DB_TYPE=postgres)",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Enable Postgres backend (requires DATABASE_URL in secrets)",
+              "default": false
+            }
+          }
+        },
+        "env": {
+          "type": "object",
+          "description": "Additional environment variables for the indexer",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "resources": {
+          "$ref": "#/$defs/resources",
+          "description": "Resource requests and limits for indexer pods"
+        },
+        "livenessProbe": {
+          "$ref": "#/$defs/httpProbe",
+          "description": "Liveness probe configuration"
+        },
+        "readinessProbe": {
+          "$ref": "#/$defs/httpProbe",
+          "description": "Readiness probe configuration"
+        },
+        "persistence": {
+          "type": "object",
+          "description": "Persistent volume claim configuration for SQLite storage",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Enable persistent storage",
+              "default": true
+            },
+            "storageClassName": {
+              "type": "string",
+              "description": "Storage class name (empty string uses cluster default)",
+              "default": ""
+            },
+            "accessModes": {
+              "type": "array",
+              "description": "Access modes for the PVC",
+              "items": {
+                "type": "string",
+                "enum": ["ReadWriteOnce", "ReadWriteMany", "ReadOnlyMany"]
+              },
+              "default": ["ReadWriteOnce"]
+            },
+            "size": {
+              "type": "string",
+              "description": "Storage size for the PVC (e.g., 1Gi, 10Gi)",
+              "pattern": "^[0-9]+(Mi|Gi|Ti)$",
+              "default": "1Gi"
+            },
+            "annotations": {
+              "type": "object",
+              "description": "Annotations for the PVC",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "terminationGracePeriodSeconds": {
+          "type": "integer",
+          "description": "Termination grace period in seconds",
+          "minimum": 0,
+          "default": 15
+        }
+      }
+    },
+    "enclave": {
+      "type": "object",
+      "description": "Enclave (TEE) component configuration",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable the enclave deployment",
+          "default": true
+        },
+        "replicaCount": {
+          "type": "integer",
+          "description": "Number of enclave replicas",
+          "minimum": 1,
+          "default": 1
+        },
+        "image": {
+          "$ref": "#/$defs/image",
+          "description": "Enclave container image configuration"
+        },
+        "port": {
+          "type": "integer",
+          "description": "Enclave HTTP port",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 8090
+        },
+        "env": {
+          "type": "object",
+          "description": "Additional environment variables for the enclave",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "resources": {
+          "$ref": "#/$defs/resources",
+          "description": "Resource requests and limits for enclave pods"
+        },
+        "livenessProbe": {
+          "$ref": "#/$defs/httpProbe",
+          "description": "Liveness probe configuration"
+        },
+        "readinessProbe": {
+          "$ref": "#/$defs/httpProbe",
+          "description": "Readiness probe configuration"
+        },
+        "modelStorageSizeLimit": {
+          "type": "string",
+          "description": "Size limit for model storage volume (e.g., 512Mi, 1Gi)",
+          "pattern": "^[0-9]+(Mi|Gi|Ti)$",
+          "default": "512Mi"
+        },
+        "terminationGracePeriodSeconds": {
+          "type": "integer",
+          "description": "Termination grace period in seconds",
+          "minimum": 0,
+          "default": 15
+        }
+      }
+    },
+    "prover": {
+      "type": "object",
+      "description": "Warm prover component configuration (CPU/memory intensive ZK proving)",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable the prover deployment",
+          "default": false
+        },
+        "replicaCount": {
+          "type": "integer",
+          "description": "Number of prover replicas",
+          "minimum": 1,
+          "default": 1
+        },
+        "image": {
+          "$ref": "#/$defs/image",
+          "description": "Prover container image configuration"
+        },
+        "port": {
+          "type": "integer",
+          "description": "Prover HTTP port",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 8081
+        },
+        "env": {
+          "type": "object",
+          "description": "Additional environment variables for the prover",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "resources": {
+          "$ref": "#/$defs/resources",
+          "description": "Resource requests and limits for prover pods (proving is CPU/memory intensive)"
+        },
+        "livenessProbe": {
+          "$ref": "#/$defs/httpProbe",
+          "description": "Liveness probe configuration"
+        },
+        "readinessProbe": {
+          "$ref": "#/$defs/httpProbe",
+          "description": "Readiness probe configuration"
+        },
+        "proofStorageSizeLimit": {
+          "type": "string",
+          "description": "Size limit for proof output storage",
+          "pattern": "^[0-9]+(Mi|Gi|Ti)$",
+          "default": "2Gi"
+        },
+        "programStorageSizeLimit": {
+          "type": "string",
+          "description": "Size limit for program binary storage",
+          "pattern": "^[0-9]+(Mi|Gi|Ti)$",
+          "default": "512Mi"
+        },
+        "terminationGracePeriodSeconds": {
+          "type": "integer",
+          "description": "Termination grace period in seconds",
+          "minimum": 0,
+          "default": 60
+        }
+      }
+    },
+    "privateInput": {
+      "type": "object",
+      "description": "Private input server configuration",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable the private input server",
+          "default": false
+        },
+        "replicaCount": {
+          "type": "integer",
+          "description": "Number of replicas",
+          "minimum": 1,
+          "default": 1
+        },
+        "image": {
+          "$ref": "#/$defs/image",
+          "description": "Private input server image configuration"
+        },
+        "port": {
+          "type": "integer",
+          "description": "Service port",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 3001
+        },
+        "env": {
+          "type": "object",
+          "description": "Additional environment variables",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "resources": {
+          "$ref": "#/$defs/resources",
+          "description": "Resource requests and limits"
+        },
+        "terminationGracePeriodSeconds": {
+          "type": "integer",
+          "description": "Termination grace period in seconds",
+          "minimum": 0,
+          "default": 10
+        }
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "description": "Secrets configuration for private keys and sensitive data",
+      "properties": {
+        "create": {
+          "type": "boolean",
+          "description": "Create the secret resource (set to true and provide keys, or false to manage externally)",
+          "default": false
+        },
+        "nameOverride": {
+          "type": "string",
+          "description": "Name override for the secret (defaults to release fullname + '-secrets')",
+          "default": ""
+        },
+        "operatorPrivateKey": {
+          "type": "string",
+          "description": "Operator private key (hex with 0x prefix). WARNING: prefer external secret management in production"
+        },
+        "enclavePrivateKey": {
+          "type": "string",
+          "description": "Enclave private key (hex with 0x prefix). WARNING: prefer external secret management in production"
+        },
+        "teeVerifierAddress": {
+          "type": "string",
+          "description": "TEE verifier contract address (can also be set via global.contractAddress)"
+        }
+      }
+    },
+    "serviceAccount": {
+      "type": "object",
+      "description": "Service account configuration",
+      "properties": {
+        "create": {
+          "type": "boolean",
+          "description": "Create service accounts",
+          "default": true
+        },
+        "annotations": {
+          "type": "object",
+          "description": "Annotations to add to the service accounts (e.g., IAM role ARN for AWS)",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "autoscaling": {
+      "type": "object",
+      "description": "HorizontalPodAutoscaler configuration for the operator",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable HPA for operator",
+          "default": true
+        },
+        "minReplicas": {
+          "type": "integer",
+          "description": "Minimum number of replicas",
+          "minimum": 1,
+          "default": 2
+        },
+        "maxReplicas": {
+          "type": "integer",
+          "description": "Maximum number of replicas",
+          "minimum": 1,
+          "default": 5
+        },
+        "targetCPUUtilizationPercentage": {
+          "type": "integer",
+          "description": "Target CPU utilization percentage for scaling",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 70
+        },
+        "scaleDownStabilizationSeconds": {
+          "type": "integer",
+          "description": "Scale-down stabilization window in seconds",
+          "minimum": 0,
+          "default": 300
+        },
+        "scaleUpStabilizationSeconds": {
+          "type": "integer",
+          "description": "Scale-up stabilization window in seconds",
+          "minimum": 0,
+          "default": 60
+        }
+      }
+    },
+    "podDisruptionBudget": {
+      "type": "object",
+      "description": "PodDisruptionBudget configuration",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable PDB for operator",
+          "default": true
+        },
+        "minAvailable": {
+          "type": "integer",
+          "description": "Minimum number of available pods during voluntary disruptions",
+          "minimum": 0,
+          "default": 1
+        }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "description": "NetworkPolicy configuration to restrict pod-to-pod traffic",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable network policy",
+          "default": true
+        }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "description": "Ingress configuration for external access",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable ingress",
+          "default": false
+        },
+        "className": {
+          "type": "string",
+          "description": "Ingress class name (e.g., nginx, alb)",
+          "default": ""
+        },
+        "annotations": {
+          "type": "object",
+          "description": "Annotations for the ingress resource",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "hosts": {
+          "type": "array",
+          "description": "Ingress host configuration",
+          "items": {
+            "type": "object",
+            "properties": {
+              "host": {
+                "type": "string",
+                "description": "Hostname for the ingress rule"
+              }
+            }
+          }
+        },
+        "tls": {
+          "type": "array",
+          "description": "TLS configuration for ingress",
+          "items": {
+            "type": "object",
+            "properties": {
+              "secretName": {
+                "type": "string",
+                "description": "Name of the TLS secret"
+              },
+              "hosts": {
+                "type": "array",
+                "description": "Hostnames covered by this TLS certificate",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "balanceCheck": {
+      "type": "object",
+      "description": "Periodic wallet balance check CronJob configuration",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable balance check CronJob",
+          "default": false
+        },
+        "schedule": {
+          "type": "string",
+          "description": "Cron schedule expression (e.g., '0 */6 * * *' for every 6 hours)",
+          "default": "0 */6 * * *"
+        },
+        "image": {
+          "type": "string",
+          "description": "Container image for the balance check job (uses Foundry for cast)",
+          "default": "ghcr.io/foundry-rs/foundry:v1.0.0"
+        },
+        "minBalanceWei": {
+          "type": "string",
+          "description": "Minimum balance in wei before alerting (default: 0.01 ETH = 10000000000000000)",
+          "pattern": "^[0-9]+$",
+          "default": "10000000000000000"
+        }
+      }
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "description": "Image pull secrets for private container registries",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Name of the image pull secret"
+          }
+        }
+      }
+    },
+    "nameOverride": {
+      "type": "string",
+      "description": "Override the release name",
+      "default": ""
+    },
+    "fullnameOverride": {
+      "type": "string",
+      "description": "Override the full release name",
+      "default": ""
+    },
+    "podAnnotations": {
+      "type": "object",
+      "description": "Pod annotations applied to all pods",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "nodeSelector": {
+      "type": "object",
+      "description": "Node selector applied to all pods",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "tolerations": {
+      "type": "array",
+      "description": "Tolerations applied to all pods",
+      "items": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "operator": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          },
+          "effect": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "affinity": {
+      "type": "object",
+      "description": "Affinity rules applied to all pods"
+    }
+  },
+  "$defs": {
+    "image": {
+      "type": "object",
+      "description": "Container image configuration",
+      "properties": {
+        "repository": {
+          "type": "string",
+          "description": "Container image repository"
+        },
+        "tag": {
+          "type": "string",
+          "description": "Container image tag",
+          "default": "latest"
+        },
+        "pullPolicy": {
+          "type": "string",
+          "description": "Image pull policy",
+          "enum": ["Always", "IfNotPresent", "Never"],
+          "default": "IfNotPresent"
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "description": "Kubernetes resource requests and limits",
+      "properties": {
+        "requests": {
+          "type": "object",
+          "description": "Resource requests (guaranteed allocation)",
+          "properties": {
+            "memory": {
+              "type": "string",
+              "description": "Memory request (e.g., 128Mi, 1Gi)",
+              "pattern": "^[0-9]+(Mi|Gi|Ti|Ki)$"
+            },
+            "cpu": {
+              "type": "string",
+              "description": "CPU request in millicores (e.g., 250m, 1000m)",
+              "pattern": "^[0-9]+m?$"
+            }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "description": "Resource limits (maximum allocation)",
+          "properties": {
+            "memory": {
+              "type": "string",
+              "description": "Memory limit (e.g., 512Mi, 8Gi)",
+              "pattern": "^[0-9]+(Mi|Gi|Ti|Ki)$"
+            },
+            "cpu": {
+              "type": "string",
+              "description": "CPU limit in millicores (e.g., 1000m, 4000m)",
+              "pattern": "^[0-9]+m?$"
+            }
+          }
+        }
+      }
+    },
+    "httpProbe": {
+      "type": "object",
+      "description": "HTTP health check probe configuration",
+      "properties": {
+        "httpGet": {
+          "type": "object",
+          "description": "HTTP GET probe parameters",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "HTTP path for the health check (e.g., /health)"
+            },
+            "port": {
+              "type": ["string", "integer"],
+              "description": "Port name or number for the health check"
+            }
+          }
+        },
+        "initialDelaySeconds": {
+          "type": "integer",
+          "description": "Seconds to wait before starting probes",
+          "minimum": 0
+        },
+        "periodSeconds": {
+          "type": "integer",
+          "description": "Seconds between probe checks",
+          "minimum": 1
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "description": "Seconds before a probe times out",
+          "minimum": 1
+        },
+        "failureThreshold": {
+          "type": "integer",
+          "description": "Number of consecutive failures before marking unhealthy",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}

@@ -342,6 +342,191 @@ contract RemainderVerifierTest is Test {
         assertEq(hashes.length, 1);
         assertEq(hashes[0], circuitHash);
     }
+
+    // ========================================================================
+    // NEGATIVE PATH SECURITY TESTS (T406)
+    // ========================================================================
+
+    /// @notice Register a circuit with a specific generators hash, then attempt
+    ///         to verify a proof using generators data that does not match the
+    ///         registered hash. Should revert with InvalidGenerators.
+    function test_registerCircuit_invalidGeneratorsHash_reverts() public {
+        bytes32 newCircuitHash = keccak256("gens-test-circuit");
+        bytes memory fakeGens = abi.encodePacked(uint256(111), uint256(222));
+        bytes32 expectedGensHash = keccak256(fakeGens);
+
+        // Register with a specific generators hash
+        vm.startPrank(admin);
+        uint256[] memory sizes = new uint256[](2);
+        sizes[0] = 4;
+        sizes[1] = 2;
+        uint8[] memory types = new uint8[](2);
+        types[0] = 3;
+        types[1] = 0;
+        bool[] memory committed = new bool[](2);
+        committed[0] = true;
+        committed[1] = false;
+
+        verifier.registerCircuitWithGens(
+            newCircuitHash, 2, sizes, types, committed, "gens-test", expectedGensHash
+        );
+        vm.stopPrank();
+
+        // Build a valid-looking proof (correct selector) but with WRONG generators data
+        bytes memory proof = abi.encodePacked(bytes4("REM1"), bytes32(0));
+        bytes memory pubInputs = abi.encodePacked(uint256(1));
+        bytes memory wrongGens = abi.encodePacked(uint256(999), uint256(888));
+
+        // The keccak256(wrongGens) != expectedGensHash, so this should revert
+        vm.expectRevert(RemainderVerifier.InvalidGenerators.selector);
+        verifier.verifyProof(proof, newCircuitHash, pubInputs, wrongGens);
+    }
+
+    /// @notice Attempt to verify a proof for a circuit hash that was never registered.
+    ///         Should revert with CircuitNotRegistered.
+    function test_verifyProof_unregisteredCircuit_reverts() public {
+        bytes32 unregisteredHash = keccak256("never-registered");
+        bytes memory proof = abi.encodePacked(bytes4("REM1"), bytes32(0));
+        bytes memory pubInputs = abi.encodePacked(uint256(1));
+
+        vm.expectRevert(RemainderVerifier.CircuitNotRegistered.selector);
+        verifier.verifyProof(proof, unregisteredHash, pubInputs, "");
+    }
+
+    /// @notice Register a circuit, deactivate it, then attempt to verify a proof.
+    ///         Should revert with CircuitNotActive.
+    function test_verifyProof_deactivatedCircuit_reverts() public {
+        // Deactivate the circuit that was registered in setUp()
+        vm.prank(admin);
+        verifier.deactivateCircuit(circuitHash);
+
+        // Now attempt verification
+        bytes memory proof = abi.encodePacked(bytes4("REM1"), bytes32(0));
+        bytes memory pubInputs = abi.encodePacked(uint256(1));
+
+        vm.expectRevert(RemainderVerifier.CircuitNotActive.selector);
+        verifier.verifyProof(proof, circuitHash, pubInputs, "");
+    }
+
+    /// @notice Non-owner calling pause() should revert with OwnableUnauthorizedAccount.
+    function test_nonOwner_cannotPause_reverts() public {
+        address nonOwner = address(0xdead);
+        vm.prank(nonOwner);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, nonOwner));
+        verifier.pause();
+    }
+
+    /// @notice Non-owner calling registerCircuit() should revert with OwnableUnauthorizedAccount.
+    function test_nonOwner_cannotRegisterCircuit_reverts() public {
+        address nonOwner = address(0xdead);
+        vm.prank(nonOwner);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, nonOwner));
+
+        uint256[] memory sizes = new uint256[](1);
+        uint8[] memory types = new uint8[](1);
+        bool[] memory committed = new bool[](1);
+        verifier.registerCircuit(keccak256("blocked"), 1, sizes, types, committed, "blocked");
+    }
+}
+
+/// @title RemainderVerifierTestDAGSecurity
+/// @notice DAG batch negative path tests for access control (T406).
+///         Uses the phase1a_dag_fixture for realistic proof data.
+contract RemainderVerifierTestDAGSecurity is Test {
+    RemainderVerifier verifier;
+
+    bytes proofHex;
+    bytes gensHex;
+    bytes32 circuitHash;
+    bytes publicInputsHex;
+
+    function setUp() public {
+        verifier = new RemainderVerifier(address(this));
+        _loadAndRegisterDAG();
+    }
+
+    function _loadAndRegisterDAG() internal {
+        string memory json = vm.readFile("test/fixtures/phase1a_dag_fixture.json");
+        proofHex = vm.parseJsonBytes(json, ".proof_hex");
+        gensHex = vm.parseJsonBytes(json, ".gens_hex");
+        circuitHash = vm.parseJsonBytes32(json, ".circuit_hash_raw");
+        publicInputsHex = vm.parseJsonBytes(json, ".public_inputs_hex");
+
+        GKRDAGVerifier.DAGCircuitDescription memory desc;
+        desc.numComputeLayers = vm.parseJsonUint(json, ".dag_circuit_description.numComputeLayers");
+        desc.numInputLayers = vm.parseJsonUint(json, ".dag_circuit_description.numInputLayers");
+        desc.layerTypes = _parseJsonUint8Array(json, ".dag_circuit_description.layerTypes");
+        desc.numSumcheckRounds = vm.parseJsonUintArray(json, ".dag_circuit_description.numSumcheckRounds");
+        desc.atomOffsets = vm.parseJsonUintArray(json, ".dag_circuit_description.atomOffsets");
+        desc.atomTargetLayers = vm.parseJsonUintArray(json, ".dag_circuit_description.atomTargetLayers");
+        desc.atomCommitIdxs = vm.parseJsonUintArray(json, ".dag_circuit_description.atomCommitIdxs");
+        desc.ptOffsets = vm.parseJsonUintArray(json, ".dag_circuit_description.ptOffsets");
+        desc.ptData = vm.parseJsonUintArray(json, ".dag_circuit_description.ptData");
+        desc.inputIsCommitted = _parseJsonBoolArray(json, ".dag_circuit_description.inputIsCommitted");
+        desc.oracleProductOffsets = vm.parseJsonUintArray(json, ".dag_circuit_description.oracleProductOffsets");
+        desc.oracleResultIdxs = vm.parseJsonUintArray(json, ".dag_circuit_description.oracleResultIdxs");
+        desc.oracleExprCoeffs = _parseJsonUint256Array(json, ".dag_circuit_description.oracleExprCoeffs");
+
+        verifier.registerDAGCircuit(circuitHash, abi.encode(desc), "xgboost-sec", keccak256(gensHex));
+    }
+
+    function _parseJsonUint8Array(string memory json, string memory key) internal pure returns (uint8[] memory result) {
+        uint256[] memory raw = vm.parseJsonUintArray(json, key);
+        result = new uint8[](raw.length);
+        for (uint256 i = 0; i < raw.length; i++) {
+            result[i] = uint8(raw[i]);
+        }
+    }
+
+    function _parseJsonBoolArray(string memory json, string memory key) internal pure returns (bool[] memory result) {
+        bytes memory raw = vm.parseJson(json, key);
+        result = abi.decode(raw, (bool[]));
+    }
+
+    function _parseJsonUint256Array(string memory json, string memory key)
+        internal
+        pure
+        returns (uint256[] memory result)
+    {
+        bytes memory raw = vm.parseJson(json, key);
+        bytes32[] memory parsed = abi.decode(raw, (bytes32[]));
+        result = new uint256[](parsed.length);
+        for (uint256 i = 0; i < parsed.length; i++) {
+            result[i] = uint256(parsed[i]);
+        }
+    }
+
+    /// @notice Start a DAG batch session, then attempt to continue from a
+    ///         different address. Should revert with "Batch: unauthorized".
+    function test_DAGBatch_wrongSender_continue_reverts() public {
+        // Start session as address(this)
+        bytes32 sessionId = verifier.startDAGBatchVerify(proofHex, circuitHash, publicInputsHex, gensHex);
+        assertTrue(sessionId != bytes32(0), "sessionId should be non-zero");
+
+        // Attempt to continue from a different address
+        vm.prank(address(0xdead));
+        vm.expectRevert("Batch: unauthorized");
+        verifier.continueDAGBatchVerify(sessionId, proofHex, publicInputsHex, gensHex);
+    }
+
+    /// @notice Start a DAG batch session, complete all compute batches, then
+    ///         attempt to finalize from a different address. Should revert
+    ///         with "Batch: unauthorized".
+    function test_DAGBatch_wrongSender_finalize_reverts() public {
+        // Start session as address(this)
+        bytes32 sessionId = verifier.startDAGBatchVerify(proofHex, circuitHash, publicInputsHex, gensHex);
+
+        // Complete all compute batches from the original sender
+        (,, uint256 totalBatches,,,) = verifier.getDAGBatchSession(sessionId);
+        for (uint256 i = 0; i < totalBatches; i++) {
+            verifier.continueDAGBatchVerify(sessionId, proofHex, publicInputsHex, gensHex);
+        }
+
+        // Attempt to finalize from a different address
+        vm.prank(address(0xdead));
+        vm.expectRevert("Batch: unauthorized");
+        verifier.finalizeDAGBatchVerify(sessionId, proofHex, publicInputsHex, gensHex);
+    }
 }
 
 /// @title RemainderVerifierNegativeTest

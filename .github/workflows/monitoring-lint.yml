@@ -24,13 +24,24 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PyYAML
+        run: pip install pyyaml
+
       - name: Validate YAML syntax
         run: |
-          pip install pyyaml
           python3 -c "
           import yaml, sys, glob
           errors = 0
-          for path in glob.glob('monitoring/*.yml'):
+          files = glob.glob('monitoring/*.yml') + glob.glob('monitoring/*.yaml')
+          if not files:
+              print('No YAML files found in monitoring/')
+              sys.exit(0)
+          for path in sorted(files):
               try:
                   with open(path) as f:
                       yaml.safe_load(f)
@@ -39,6 +50,7 @@ jobs:
                   print(f'  FAIL: {path}: {e}')
                   errors += 1
           if errors:
+              print(f'\n{errors} YAML file(s) failed validation.')
               sys.exit(1)
           print('All YAML files valid.')
           "
@@ -48,31 +60,45 @@ jobs:
           python3 -c "
           import json, sys, glob
           errors = 0
-          for path in glob.glob('monitoring/grafana-*.json'):
+          files = glob.glob('monitoring/*.json') + glob.glob('monitoring/**/*.json', recursive=True)
+          # Deduplicate
+          files = sorted(set(files))
+          if not files:
+              print('No JSON files found in monitoring/')
+              sys.exit(0)
+          for path in files:
               try:
                   with open(path) as f:
                       data = json.load(f)
-                  # Basic dashboard structure check
-                  if 'panels' not in data and 'rows' not in data:
-                      print(f'  WARN: {path}: no panels or rows found')
+                  # Basic dashboard structure check for Grafana files
+                  if 'grafana' in path.lower():
+                      if 'panels' not in data and 'rows' not in data:
+                          print(f'  WARN: {path}: no panels or rows found (may not be a dashboard)')
+                      else:
+                          print(f'  OK: {path}')
                   else:
                       print(f'  OK: {path}')
               except json.JSONDecodeError as e:
                   print(f'  FAIL: {path}: {e}')
                   errors += 1
           if errors:
+              print(f'\n{errors} JSON file(s) failed validation.')
               sys.exit(1)
-          print('All dashboard JSON files valid.')
+          print('All JSON files valid.')
           "
 
       - name: Check for unfilled placeholders (warning only)
         run: |
           echo "Checking for <REPLACE_*> placeholders in monitoring configs..."
-          if grep -r '<REPLACE_' monitoring/ 2>/dev/null; then
+          if grep -rn '<REPLACE_' monitoring/ 2>/dev/null; then
             echo ""
-            echo "WARNING: Unfilled placeholders found above."
-            echo "These must be replaced before production use."
-            echo "Run: ./monitoring/validate-config.sh"
+            echo "::warning::Unfilled <REPLACE_*> placeholders found in monitoring configs. These must be replaced before production use."
           else
             echo "No unfilled placeholders found."
           fi
+
+      - name: Run validate-config.sh (warning only)
+        if: hashFiles('monitoring/validate-config.sh') != ''
+        run: |
+          chmod +x monitoring/validate-config.sh
+          ./monitoring/validate-config.sh || echo "::warning::validate-config.sh reported unfilled placeholders. See output above."

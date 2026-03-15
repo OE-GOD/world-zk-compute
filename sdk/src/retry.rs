@@ -14,6 +14,13 @@ pub struct RetryPolicy {
     pub max_delay: Duration,
     /// Jitter fraction (0.0–1.0). Adds up to this fraction of the delay as random noise.
     pub jitter: f64,
+    /// Per-attempt timeout. If set, each individual attempt is wrapped with
+    /// `tokio::time::timeout()`. A timed-out attempt counts as a retryable error.
+    pub timeout: Option<Duration>,
+    /// Total operation timeout across all retries. If the cumulative elapsed time
+    /// exceeds this value, the operation aborts immediately regardless of remaining
+    /// retry budget.
+    pub total_timeout: Option<Duration>,
 }
 
 impl Default for RetryPolicy {
@@ -23,6 +30,8 @@ impl Default for RetryPolicy {
             base_delay: Duration::from_secs(1),
             max_delay: Duration::from_secs(30),
             jitter: 0.2,
+            timeout: None,
+            total_timeout: None,
         }
     }
 }
@@ -43,6 +52,22 @@ impl RetryPolicy {
         } else {
             Duration::from_millis(capped_ms)
         }
+    }
+
+    /// Set the per-attempt timeout. Each individual call to the closure will be
+    /// cancelled if it exceeds this duration. A timed-out attempt is treated as
+    /// a retryable error.
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
+
+    /// Set the total operation timeout across all retries. If the cumulative
+    /// elapsed time (including delays) exceeds this value, the operation aborts
+    /// immediately with a timeout error.
+    pub fn with_total_timeout(mut self, total_timeout: Duration) -> Self {
+        self.total_timeout = Some(total_timeout);
+        self
     }
 }
 
@@ -76,15 +101,43 @@ pub fn is_retryable(err: &anyhow::Error) -> bool {
 ///
 /// Only retries if `should_retry` returns true for the error. Non-retryable errors
 /// are returned immediately.
+///
+/// If `policy.timeout` is set, each individual attempt is wrapped with
+/// `tokio::time::timeout()`. A timed-out attempt is treated as a retryable error.
+///
+/// If `policy.total_timeout` is set, the entire operation (including inter-attempt
+/// delays) will abort once the cumulative elapsed time exceeds the limit.
 pub async fn retry_with_backoff<F, Fut, T>(policy: &RetryPolicy, mut f: F) -> anyhow::Result<T>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = anyhow::Result<T>>,
 {
     let mut last_err = None;
+    let start = tokio::time::Instant::now();
 
     for attempt in 0..=policy.max_retries {
-        match f().await {
+        // Check total timeout before starting a new attempt.
+        if let Some(total) = policy.total_timeout {
+            if start.elapsed() >= total {
+                return Err(last_err.unwrap_or_else(|| {
+                    anyhow::anyhow!("total timeout ({total:?}) exceeded after {attempt} attempt(s)")
+                }));
+            }
+        }
+
+        // Execute the attempt, optionally wrapped in a per-attempt timeout.
+        let attempt_result = if let Some(per_attempt) = policy.timeout {
+            match tokio::time::timeout(per_attempt, f()).await {
+                Ok(inner) => inner,
+                Err(_elapsed) => {
+                    Err(anyhow::anyhow!("attempt timed out after {per_attempt:?}"))
+                }
+            }
+        } else {
+            f().await
+        };
+
+        match attempt_result {
             Ok(val) => return Ok(val),
             Err(e) => {
                 if attempt == policy.max_retries || !is_retryable(&e) {
@@ -92,7 +145,21 @@ where
                 }
                 last_err = Some(e);
                 let delay = policy.delay_for(attempt);
-                tokio::time::sleep(delay).await;
+
+                // If a total timeout is set, clamp the sleep so we don't overshoot.
+                if let Some(total) = policy.total_timeout {
+                    let remaining = total.saturating_sub(start.elapsed());
+                    if remaining.is_zero() {
+                        return Err(last_err.unwrap_or_else(|| {
+                            anyhow::anyhow!(
+                                "total timeout ({total:?}) exceeded after {attempt} attempt(s)"
+                            )
+                        }));
+                    }
+                    tokio::time::sleep(delay.min(remaining)).await;
+                } else {
+                    tokio::time::sleep(delay).await;
+                }
             }
         }
     }
@@ -113,6 +180,7 @@ mod tests {
             base_delay: Duration::from_millis(1),
             max_delay: Duration::from_millis(10),
             jitter: 0.0,
+            ..Default::default()
         };
         let result = retry_with_backoff(&policy, || async { Ok::<_, anyhow::Error>(42) }).await;
         assert_eq!(result.unwrap(), 42);
@@ -125,6 +193,7 @@ mod tests {
             base_delay: Duration::from_millis(1),
             max_delay: Duration::from_millis(10),
             jitter: 0.0,
+            ..Default::default()
         };
         let counter = Arc::new(AtomicU32::new(0));
         let c = counter.clone();
@@ -153,6 +222,7 @@ mod tests {
             base_delay: Duration::from_millis(1),
             max_delay: Duration::from_millis(10),
             jitter: 0.0,
+            ..Default::default()
         };
         let counter = Arc::new(AtomicU32::new(0));
         let c = counter.clone();
@@ -177,6 +247,7 @@ mod tests {
             base_delay: Duration::from_millis(1),
             max_delay: Duration::from_millis(10),
             jitter: 0.0,
+            ..Default::default()
         };
         let counter = Arc::new(AtomicU32::new(0));
         let c = counter.clone();
@@ -201,6 +272,7 @@ mod tests {
             base_delay: Duration::from_millis(50),
             max_delay: Duration::from_secs(5),
             jitter: 0.0,
+            ..Default::default()
         };
 
         let d0 = policy.delay_for(0);
@@ -219,6 +291,7 @@ mod tests {
             base_delay: Duration::from_secs(1),
             max_delay: Duration::from_secs(5),
             jitter: 0.0,
+            ..Default::default()
         };
 
         // After enough doublings, should be capped at max_delay
@@ -244,5 +317,167 @@ mod tests {
         assert_eq!(p.base_delay, Duration::from_secs(1));
         assert_eq!(p.max_delay, Duration::from_secs(30));
         assert!((p.jitter - 0.2).abs() < f64::EPSILON);
+        assert!(p.timeout.is_none());
+        assert!(p.total_timeout.is_none());
+    }
+
+    #[test]
+    fn test_builder_methods() {
+        let p = RetryPolicy::default()
+            .with_timeout(Duration::from_secs(5))
+            .with_total_timeout(Duration::from_secs(60));
+        assert_eq!(p.timeout, Some(Duration::from_secs(5)));
+        assert_eq!(p.total_timeout, Some(Duration::from_secs(60)));
+    }
+
+    #[tokio::test]
+    async fn test_per_attempt_timeout_triggers() {
+        // Each attempt gets 50ms, but the closure sleeps for 200ms -- should time out.
+        let policy = RetryPolicy {
+            max_retries: 1,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(10),
+            jitter: 0.0,
+            timeout: Some(Duration::from_millis(50)),
+            total_timeout: None,
+        };
+        let counter = Arc::new(AtomicU32::new(0));
+        let c = counter.clone();
+
+        let result: anyhow::Result<i32> = retry_with_backoff(&policy, || {
+            let c = c.clone();
+            async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                Ok(42)
+            }
+        })
+        .await;
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("timed out"), "unexpected error: {err_msg}");
+        // Should have attempted twice: initial + 1 retry (both timed out).
+        assert_eq!(counter.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_per_attempt_timeout_does_not_trigger_on_fast_op() {
+        // Timeout is 500ms, but the closure returns immediately -- should succeed.
+        let policy = RetryPolicy {
+            max_retries: 2,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(10),
+            jitter: 0.0,
+            timeout: Some(Duration::from_millis(500)),
+            total_timeout: None,
+        };
+
+        let result = retry_with_backoff(&policy, || async { Ok::<_, anyhow::Error>(7) }).await;
+        assert_eq!(result.unwrap(), 7);
+    }
+
+    #[tokio::test]
+    async fn test_total_timeout_aborts_across_retries() {
+        // Total timeout is 80ms, each attempt takes ~1ms but delay is 50ms.
+        // After attempt 0 fails, sleep 50ms, attempt 1 fails, sleep 50ms -> exceeds 80ms.
+        let policy = RetryPolicy {
+            max_retries: 10,
+            base_delay: Duration::from_millis(50),
+            max_delay: Duration::from_millis(50),
+            jitter: 0.0,
+            timeout: None,
+            total_timeout: Some(Duration::from_millis(80)),
+        };
+        let counter = Arc::new(AtomicU32::new(0));
+        let c = counter.clone();
+
+        let result: anyhow::Result<i32> = retry_with_backoff(&policy, || {
+            let c = c.clone();
+            async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                Err(anyhow::anyhow!("connection refused"))
+            }
+        })
+        .await;
+
+        assert!(result.is_err());
+        // Should have stopped well before 10 retries due to total timeout.
+        let attempts = counter.load(Ordering::SeqCst);
+        assert!(
+            attempts <= 4,
+            "expected at most 4 attempts with 80ms total timeout, got {attempts}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_total_timeout_succeeds_if_fast_enough() {
+        // Total timeout is 500ms. Second attempt succeeds immediately.
+        let policy = RetryPolicy {
+            max_retries: 5,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(10),
+            jitter: 0.0,
+            timeout: None,
+            total_timeout: Some(Duration::from_millis(500)),
+        };
+        let counter = Arc::new(AtomicU32::new(0));
+        let c = counter.clone();
+
+        let result = retry_with_backoff(&policy, || {
+            let c = c.clone();
+            async move {
+                let n = c.fetch_add(1, Ordering::SeqCst);
+                if n < 1 {
+                    Err(anyhow::anyhow!("connection refused"))
+                } else {
+                    Ok(123)
+                }
+            }
+        })
+        .await;
+
+        assert_eq!(result.unwrap(), 123);
+    }
+
+    #[tokio::test]
+    async fn test_both_timeouts_combined() {
+        // Per-attempt timeout: 30ms, total timeout: 150ms.
+        // Closure sleeps 100ms (exceeds per-attempt), so each attempt times out.
+        // Total timeout should cut off retries.
+        let policy = RetryPolicy {
+            max_retries: 20,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(5),
+            jitter: 0.0,
+            timeout: Some(Duration::from_millis(30)),
+            total_timeout: Some(Duration::from_millis(150)),
+        };
+        let counter = Arc::new(AtomicU32::new(0));
+        let c = counter.clone();
+
+        let start = std::time::Instant::now();
+        let result: anyhow::Result<i32> = retry_with_backoff(&policy, || {
+            let c = c.clone();
+            async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                Ok(42)
+            }
+        })
+        .await;
+        let elapsed = start.elapsed();
+
+        assert!(result.is_err());
+        // Should complete within roughly the total timeout window.
+        assert!(
+            elapsed < Duration::from_millis(300),
+            "took too long: {elapsed:?}"
+        );
+        let attempts = counter.load(Ordering::SeqCst);
+        assert!(
+            attempts >= 2 && attempts <= 6,
+            "unexpected attempt count: {attempts}"
+        );
     }
 }

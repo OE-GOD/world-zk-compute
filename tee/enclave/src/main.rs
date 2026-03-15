@@ -787,6 +787,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = Config::from_env();
 
+    // Pre-flight validation: check that required resources exist.
+    if let Err(msgs) = config.validate() {
+        for msg in &msgs {
+            tracing::error!("Config validation: {}", msg);
+        }
+        std::process::exit(1);
+    }
+
     // Load model (auto-detects XGBoost vs LightGBM unless MODEL_FORMAT is set)
     let model_bytes = match std::fs::read(&config.model_path) {
         Ok(bytes) => bytes,

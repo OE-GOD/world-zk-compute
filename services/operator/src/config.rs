@@ -396,6 +396,71 @@ impl Config {
         }
         Ok(())
     }
+
+    /// Pre-flight validation for command handlers (Submit, Watch, Run).
+    ///
+    /// Checks that critical config fields have meaningful values and warns
+    /// when defaults are being used. Collects all problems before returning
+    /// so the operator sees every issue at once.
+    pub fn validate_for_command(&self, command: &str) -> Result<(), Vec<String>> {
+        let mut errors: Vec<String> = Vec::new();
+
+        // rpc_url: warn if using the default localhost value
+        if self.rpc_url == "http://127.0.0.1:8545" {
+            if std::env::var("OPERATOR_RPC_URL").is_err() {
+                tracing::warn!(
+                    "OPERATOR_RPC_URL is not set -- using default '{}'. \
+                     This is unsuitable for production.",
+                    self.rpc_url
+                );
+            }
+        }
+
+        // private_key: should not be empty (from_env already requires it,
+        // but guard against future changes)
+        if self.private_key.is_empty() {
+            errors.push(
+                "OPERATOR_PRIVATE_KEY is required but empty. \
+                 Set the env var or private_key in the config file."
+                    .to_string(),
+            );
+        }
+
+        // tee_verifier_address: should not be empty
+        if self.tee_verifier_address.is_empty() {
+            errors.push(
+                "TEE_VERIFIER_ADDRESS is required but empty. \
+                 Set the env var or tee_verifier_address in the config file."
+                    .to_string(),
+            );
+        }
+
+        // Command-specific checks
+        match command {
+            "submit" | "run" => {
+                // enclave_url should be reachable for submit/run
+                if self.enclave_url == "http://127.0.0.1:8080" {
+                    if std::env::var("ENCLAVE_URL").is_err() {
+                        tracing::warn!(
+                            "ENCLAVE_URL is not set -- using default '{}'. \
+                             This is unsuitable for production.",
+                            self.enclave_url
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        if !errors.is_empty() {
+            for msg in &errors {
+                tracing::error!("{}", msg);
+            }
+            return Err(errors);
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]

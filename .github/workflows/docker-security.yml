@@ -1,22 +1,18 @@
 name: Docker Security Scan
 
-permissions: read-all
+permissions:
+  contents: read
+  security-events: write
 
 on:
   push:
     branches: [main]
     paths:
-      - 'services/admin-cli/Dockerfile'
-      - 'services/indexer/Dockerfile'
-      - 'services/operator/Dockerfile'
-      - 'tee/Dockerfile'
+      - '**/Dockerfile'
       - '.github/workflows/docker-security.yml'
   pull_request:
     paths:
-      - 'services/admin-cli/Dockerfile'
-      - 'services/indexer/Dockerfile'
-      - 'services/operator/Dockerfile'
-      - 'tee/Dockerfile'
+      - '**/Dockerfile'
       - '.github/workflows/docker-security.yml'
   workflow_dispatch:
 
@@ -24,7 +20,7 @@ jobs:
   scan-dockerfiles:
     name: Trivy Dockerfile Scan
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     strategy:
       fail-fast: false
@@ -34,10 +30,17 @@ jobs:
           - services/indexer/Dockerfile
           - services/operator/Dockerfile
           - tee/Dockerfile
+          - prover/Dockerfile
+          - examples/xgboost-remainder/Dockerfile
+          - private-input-server/Dockerfile
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Compute artifact name
+        id: name
+        run: echo "slug=$(echo '${{ matrix.dockerfile }}' | tr '/' '-' | sed 's/\./-/g')" >> "$GITHUB_OUTPUT"
 
       - name: Run Trivy misconfiguration scan
         uses: aquasecurity/trivy-action@0.28.0
@@ -47,3 +50,57 @@ jobs:
           scanners: 'misconfig'
           severity: 'HIGH,CRITICAL'
           exit-code: '1'
+          format: 'sarif'
+          output: 'trivy-${{ steps.name.outputs.slug }}.sarif'
+
+      - name: Upload Trivy SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        continue-on-error: true
+        with:
+          sarif_file: 'trivy-${{ steps.name.outputs.slug }}.sarif'
+          category: 'docker-${{ steps.name.outputs.slug }}'
+
+      - name: Upload SARIF as artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-sarif-${{ steps.name.outputs.slug }}
+          path: 'trivy-${{ steps.name.outputs.slug }}.sarif'
+          retention-days: 14
+
+  check-all-dockerfiles:
+    name: Verify All Dockerfiles Scanned
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Find all Dockerfiles and compare to matrix
+        run: |
+          echo "Discovering all Dockerfiles in the repository..."
+          found=$(find . -name Dockerfile -not -path './.git/*' | sort)
+          echo "$found"
+          echo ""
+          echo "Known Dockerfiles in CI matrix:"
+          echo "  services/admin-cli/Dockerfile"
+          echo "  services/indexer/Dockerfile"
+          echo "  services/operator/Dockerfile"
+          echo "  tee/Dockerfile"
+          echo "  prover/Dockerfile"
+          echo "  examples/xgboost-remainder/Dockerfile"
+          echo "  private-input-server/Dockerfile"
+          echo ""
+          # Warn about any Dockerfiles not in the matrix
+          for df in $found; do
+            normalized="${df#./}"
+            case "$normalized" in
+              services/admin-cli/Dockerfile|services/indexer/Dockerfile|services/operator/Dockerfile|tee/Dockerfile|prover/Dockerfile|examples/xgboost-remainder/Dockerfile|private-input-server/Dockerfile)
+                ;;
+              *)
+                echo "::warning::Dockerfile not in scan matrix: $normalized"
+                ;;
+            esac
+          done

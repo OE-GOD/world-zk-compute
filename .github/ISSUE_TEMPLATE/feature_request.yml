@@ -10,7 +10,7 @@ body:
   - type: textarea
     id: description
     attributes:
-      label: Description
+      label: Feature Description
       description: A clear and concise description of the feature.
       placeholder: Describe the feature...
     validations:
@@ -34,27 +34,20 @@ body:
     validations:
       required: false
 
-  - type: textarea
-    id: alternatives
-    attributes:
-      label: Alternatives Considered
-      description: Have you considered any alternative approaches?
-      placeholder: Describe any alternatives you considered...
-    validations:
-      required: false
-
   - type: dropdown
     id: component
     attributes:
       label: Component
       description: Which component does this feature relate to?
       options:
-        - contracts
         - operator
         - enclave
-        - SDK-Rust
-        - SDK-Python
-        - SDK-TypeScript
+        - indexer
+        - sdk-rust
+        - sdk-python
+        - sdk-typescript
+        - contracts
+        - admin-cli
         - prover
         - documentation
         - CI / infrastructure

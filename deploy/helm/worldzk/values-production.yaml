@@ -1,0 +1,354 @@
+# =============================================================================
+# World ZK Compute - Production Values
+# =============================================================================
+# Usage:
+#   helm install worldzk deploy/helm/worldzk \
+#     -f deploy/helm/worldzk/values-production.yaml \
+#     --set global.rpcUrl="YOUR_RPC_URL" \
+#     --set global.contractAddress="0xYOUR_CONTRACT" \
+#     --set secrets.operatorPrivateKey="0xYOUR_KEY"
+#
+# IMPORTANT: Never commit real private keys or RPC URLs to version control.
+# Use --set flags, environment variables, or an external secret manager.
+# =============================================================================
+
+global:
+  # -- REQUIRED: Ethereum JSON-RPC endpoint
+  # Use a dedicated provider (Alchemy, Infura, QuickNode) with rate limit headroom.
+  # Recommended: WebSocket endpoint for lower-latency event polling.
+  rpcUrl: "REPLACE_WITH_RPC_URL"
+
+  # -- REQUIRED: Deployed TEEMLVerifier contract address
+  contractAddress: "REPLACE_WITH_CONTRACT_ADDRESS"
+
+  # -- REQUIRED: Target chain ID (1 = Ethereum Mainnet)
+  chainId: "1"
+
+  # -- Log level for all components (use "warn" or "info" in production)
+  logLevel: "warn"
+
+  # -- Internal enclave service URL (keep default unless using external enclave)
+  enclaveUrl: "http://worldzk-enclave:8080"
+
+  # -- Block polling interval in seconds (12s matches Ethereum block time)
+  pollIntervalSecs: "12"
+
+# =============================================================================
+# Operator
+# =============================================================================
+operator:
+  enabled: true
+  # -- At least 2 replicas for high availability
+  replicaCount: 3
+  image:
+    repository: world-zk-compute/operator
+    # -- Pin to a specific release tag in production (never use "latest")
+    tag: "v1.0.0"
+    pullPolicy: IfNotPresent
+  port: 8080
+  env:
+    RUST_LOG_FORMAT: "json"
+    # -- Enable automatic dispute submission
+    OPERATOR_AUTO_DISPUTE: "true"
+    # -- Maximum proof retry attempts before alerting
+    MAX_PROOF_RETRIES: "5"
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "500m"
+    limits:
+      memory: "1Gi"
+      cpu: "2000m"
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+  proofStorageSizeLimit: 2Gi
+  terminationGracePeriodSeconds: 60
+
+# =============================================================================
+# Indexer
+# =============================================================================
+indexer:
+  enabled: true
+  # -- Use Postgres backend in production for multi-replica support
+  replicaCount: 2
+  image:
+    repository: world-zk-compute/indexer
+    tag: "v1.0.0"
+    pullPolicy: IfNotPresent
+  port: 8081
+  postgres:
+    # -- Enable Postgres backend; set DATABASE_URL in secrets
+    enabled: true
+  env:
+    DB_PATH: "/data/indexer.db"
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "250m"
+    limits:
+      memory: "512Mi"
+      cpu: "1000m"
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 10
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+  persistence:
+    enabled: true
+    # -- Use a production storage class (e.g., gp3 on AWS, pd-ssd on GCP)
+    storageClassName: "gp3"
+    accessModes:
+      - ReadWriteOnce
+    size: 10Gi
+    annotations: {}
+  terminationGracePeriodSeconds: 30
+
+# =============================================================================
+# Enclave (TEE)
+# =============================================================================
+enclave:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: world-zk-compute/enclave
+    tag: "v1.0.0"
+    pullPolicy: IfNotPresent
+  port: 8090
+  env:
+    MODEL_FORMAT: "xgboost"
+    # -- Enable AWS Nitro attestation in production
+    NITRO_ENABLED: "true"
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "1000m"
+    limits:
+      memory: "1Gi"
+      cpu: "4000m"
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 15
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+  modelStorageSizeLimit: 1Gi
+  terminationGracePeriodSeconds: 30
+
+# =============================================================================
+# Prover (ZK dispute resolution)
+# =============================================================================
+prover:
+  # -- Enable prover for ZK dispute resolution fallback
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: world-zk-compute/prover
+    tag: "v1.0.0"
+    pullPolicy: IfNotPresent
+  port: 8081
+  env: {}
+  # -- Proving is highly CPU/memory intensive
+  resources:
+    requests:
+      memory: "8Gi"
+      cpu: "4000m"
+    limits:
+      memory: "16Gi"
+      cpu: "8000m"
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 60
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 5
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 15
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  proofStorageSizeLimit: 4Gi
+  programStorageSizeLimit: 1Gi
+  terminationGracePeriodSeconds: 120
+
+# =============================================================================
+# Private Input Server
+# =============================================================================
+privateInput:
+  enabled: false
+  replicaCount: 1
+  image:
+    repository: world-zk-compute/private-input-server
+    tag: "v1.0.0"
+    pullPolicy: IfNotPresent
+  port: 3001
+  env: {}
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "256Mi"
+      cpu: "500m"
+  terminationGracePeriodSeconds: 15
+
+# =============================================================================
+# Secrets
+# =============================================================================
+secrets:
+  # -- In production, prefer external secret management (AWS Secrets Manager,
+  # HashiCorp Vault, Sealed Secrets) rather than Helm-managed secrets.
+  # Set create: false and manage the secret externally with the expected name.
+  create: false
+  nameOverride: ""
+  # -- DO NOT set private keys here in production.
+  # Use: --set secrets.operatorPrivateKey="0x..."
+  # Or mount from an external secret manager.
+  operatorPrivateKey: ""
+  enclavePrivateKey: ""
+  teeVerifierAddress: ""
+
+# =============================================================================
+# Service Account
+# =============================================================================
+serviceAccount:
+  create: true
+  annotations:
+    # -- For AWS EKS: set IAM role for service account (IRSA)
+    # eks.amazonaws.com/role-arn: "arn:aws:iam::ACCOUNT_ID:role/worldzk-role"
+    {}
+
+# =============================================================================
+# Autoscaling
+# =============================================================================
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  scaleDownStabilizationSeconds: 300
+  scaleUpStabilizationSeconds: 60
+
+# =============================================================================
+# Pod Disruption Budget
+# =============================================================================
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+# =============================================================================
+# Network Policy
+# =============================================================================
+networkPolicy:
+  enabled: true
+
+# =============================================================================
+# Ingress
+# =============================================================================
+ingress:
+  enabled: true
+  # -- Set to your ingress controller class (nginx, alb, traefik)
+  className: "nginx"
+  annotations:
+    # -- Rate limiting
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+    # -- SSL redirect
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # -- HSTS
+    nginx.ingress.kubernetes.io/hsts: "true"
+    nginx.ingress.kubernetes.io/hsts-max-age: "31536000"
+  hosts:
+    - host: worldzk.example.com
+  tls:
+    - secretName: worldzk-tls
+      hosts:
+        - worldzk.example.com
+
+# =============================================================================
+# Balance Check CronJob
+# =============================================================================
+balanceCheck:
+  # -- Enable wallet balance monitoring in production
+  enabled: true
+  # -- Check every 2 hours
+  schedule: "0 */2 * * *"
+  image: "ghcr.io/foundry-rs/foundry:v1.0.0"
+  # -- Alert if balance drops below 0.05 ETH
+  minBalanceWei: "50000000000000000"
+
+# =============================================================================
+# Image Pull Secrets (for private registries)
+# =============================================================================
+imagePullSecrets: []
+  # - name: regcred
+
+# =============================================================================
+# Global Pod Settings
+# =============================================================================
+nameOverride: ""
+fullnameOverride: ""
+
+podAnnotations:
+  # -- Enable Prometheus scraping
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9090"
+
+# -- Use dedicated node pools for production workloads
+nodeSelector: {}
+  # node-role: worldzk
+
+tolerations: []
+
+affinity: {}
+  # -- Example: spread operator pods across availability zones
+  # podAntiAffinity:
+  #   preferredDuringSchedulingIgnoredDuringExecution:
+  #     - weight: 100
+  #       podAffinityTerm:
+  #         labelSelector:
+  #           matchExpressions:
+  #             - key: app.kubernetes.io/component
+  #               operator: In
+  #               values:
+  #                 - operator
+  #         topologyKey: topology.kubernetes.io/zone
