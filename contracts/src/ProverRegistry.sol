@@ -11,6 +11,23 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 /// @dev Provers stake tokens to participate, earn rewards, and can be slashed for misbehavior
 contract ProverRegistry is ReentrancyGuard, Ownable {
     using SafeERC20 for IERC20;
+
+    // ============================================================
+    // CONSTANTS
+    // ============================================================
+
+    /// @notice Reputation increment per successful proof (0.5% expressed in basis points)
+    uint256 private constant REPUTATION_INCREMENT = 50;
+
+    /// @notice Maximum reputation score (100.00% in basis points)
+    uint256 private constant MAX_REPUTATION = 10000;
+
+    /// @notice Reputation retention factor after a slash (95% = 5% reduction)
+    uint256 private constant SLASH_REPUTATION_PERCENT = 95;
+
+    /// @notice Maximum slash basis points allowed (50%)
+    uint256 private constant MAX_SLASH_BASIS_POINTS = 5000;
+
     // ============================================================
     // TYPES
     // ============================================================
@@ -221,7 +238,7 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
 
         // Update reputation (decrease by 5% per slash)
         uint256 oldRep = p.reputation;
-        p.reputation = (p.reputation * 95) / 100;
+        p.reputation = (p.reputation * SLASH_REPUTATION_PERCENT) / 100;
         emit ReputationUpdated(prover, oldRep, p.reputation);
 
         // Deactivate if stake falls below minimum
@@ -257,8 +274,8 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
 
         // Increase reputation (by 0.5% per success, max 100%)
         uint256 oldRep = p.reputation;
-        p.reputation = p.reputation + 50;
-        if (p.reputation > 10000) p.reputation = 10000;
+        p.reputation = p.reputation + REPUTATION_INCREMENT;
+        if (p.reputation > MAX_REPUTATION) p.reputation = MAX_REPUTATION;
 
         emit ReputationUpdated(prover, oldRep, p.reputation);
         emit RewardDistributed(prover, reward);
@@ -378,7 +395,7 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
 
     /// @notice Update slash percentage
     function setSlashBasisPoints(uint256 _slashBasisPoints) external onlyOwner {
-        require(_slashBasisPoints <= 5000, "Max 50%");
+        require(_slashBasisPoints <= MAX_SLASH_BASIS_POINTS, "Max 50%");
         slashBasisPoints = _slashBasisPoints;
     }
 

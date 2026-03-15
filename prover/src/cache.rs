@@ -83,9 +83,9 @@ impl ProgramCache {
     fn try_add_to_memory(&self, image_id: &B256, elf: &[u8]) {
         let elf_size = elf.len();
 
-        let mut current = self.current_memory_bytes.write().unwrap();
+        let mut current = self.current_memory_bytes.write().unwrap_or_else(|e| e.into_inner());
         if *current + elf_size <= self.max_memory_bytes {
-            let mut cache = self.memory_cache.write().unwrap();
+            let mut cache = self.memory_cache.write().unwrap_or_else(|e| e.into_inner());
             if !cache.contains_key(image_id) {
                 cache.insert(*image_id, elf.to_vec());
                 *current += elf_size;
@@ -105,9 +105,9 @@ impl ProgramCache {
     pub fn clear(&self) -> std::io::Result<()> {
         // Clear memory
         {
-            let mut cache = self.memory_cache.write().unwrap();
+            let mut cache = self.memory_cache.write().unwrap_or_else(|e| e.into_inner());
             cache.clear();
-            *self.current_memory_bytes.write().unwrap() = 0;
+            *self.current_memory_bytes.write().unwrap_or_else(|e| e.into_inner()) = 0;
         }
 
         // Clear disk

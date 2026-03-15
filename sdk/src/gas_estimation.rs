@@ -162,7 +162,7 @@ pub fn compute_num_continue_batches(num_compute_layers: u64) -> u64 {
     if num_compute_layers == 0 {
         return 0;
     }
-    (num_compute_layers + LAYERS_PER_BATCH - 1) / LAYERS_PER_BATCH
+    num_compute_layers.div_ceil(LAYERS_PER_BATCH)
 }
 
 /// Compute the number of `finalizeDAGBatchVerify` transactions needed for a
@@ -176,7 +176,7 @@ pub fn compute_num_finalize_batches(num_eval_groups: u64) -> u64 {
     if num_eval_groups == 0 {
         return 1;
     }
-    (num_eval_groups + GROUPS_PER_FINALIZE_BATCH - 1) / GROUPS_PER_FINALIZE_BATCH
+    num_eval_groups.div_ceil(GROUPS_PER_FINALIZE_BATCH)
 }
 
 /// Estimate gas for a complete DAG batch verification session.
@@ -423,7 +423,7 @@ pub fn estimate_total_batches(num_layers: u32, layers_per_batch: u32) -> (u32, u
     let num_continue = if layers_per_batch == 0 {
         0
     } else {
-        (num_layers + layers_per_batch - 1) / layers_per_batch
+        num_layers.div_ceil(layers_per_batch)
     };
 
     // Estimate eval groups from layer count. The XGBoost 88-layer circuit has
@@ -444,7 +444,7 @@ pub fn estimate_input_groups(num_layers: u32) -> u32 {
     if num_layers == 0 {
         return 0;
     }
-    (num_layers * 2 + 4) / 5
+    (num_layers * 2).div_ceil(5)
 }
 
 // ---------------------------------------------------------------------------

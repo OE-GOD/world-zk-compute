@@ -83,6 +83,10 @@ contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
     uint256 public constant CLAIM_WINDOW = 10 minutes;
     /// @notice Duration over which the tip linearly decays to 50% of maxTip
     uint256 public constant TIP_DECAY_PERIOD = 30 minutes;
+    /// @notice Default protocol fee in basis points (2.5%)
+    uint256 private constant DEFAULT_PROTOCOL_FEE_BPS = 250;
+    /// @notice Maximum protocol fee in basis points (10%)
+    uint256 private constant MAX_FEE_BPS = 1000;
 
     // ========================================================================
     // STATE
@@ -104,7 +108,7 @@ contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
     uint256 public nextRequestId = 1;
 
     /// @notice Protocol fee (basis points)
-    uint256 public protocolFeeBps = 250; // 2.5%
+    uint256 public protocolFeeBps = DEFAULT_PROTOCOL_FEE_BPS;
 
     /// @notice Fee recipient
     address public feeRecipient;
@@ -592,7 +596,7 @@ contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
     ///      Capped at 1000 bps (10%) to prevent excessive extraction.
     /// @param _feeBps New fee in basis points (100 = 1%, max 1000 = 10%)
     function setProtocolFee(uint256 _feeBps) external onlyOwner {
-        require(_feeBps <= 1000, "Fee too high"); // Max 10%
+        require(_feeBps <= MAX_FEE_BPS, "Fee too high"); // Max 10%
         uint256 oldFeeBps = protocolFeeBps;
         protocolFeeBps = _feeBps;
         emit ProtocolFeeUpdated(oldFeeBps, _feeBps);

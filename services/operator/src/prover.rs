@@ -119,6 +119,7 @@ impl ProofManager {
     }
 
     /// Internal builder shared by all constructors.
+    #[allow(clippy::too_many_arguments)]
     fn build_internal(
         precompute_bin: &str,
         model_path: &str,

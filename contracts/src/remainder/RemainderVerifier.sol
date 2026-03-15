@@ -178,7 +178,7 @@ contract RemainderVerifier is Ownable2Step, Pausable {
         bytes32 circuitHash,
         bytes calldata publicInputs,
         bytes calldata gensData
-    ) external view whenNotPaused {
+    ) external virtual view whenNotPaused {
         // Check circuit is registered and active
         CircuitConfig storage config = circuits[circuitHash];
         if (config.circuitHash == bytes32(0)) revert CircuitNotRegistered();
@@ -1210,6 +1210,7 @@ contract RemainderVerifier is Ownable2Step, Pausable {
         for (uint256 g = 0; g < numGroups; g++) {
             uint256 numClaims = challenges.inputGroups[g].rlcCoeffs.length;
             uint256 lHalfLen = challenges.inputGroups[g].lBindings.length;
+            // forge-lint: disable-next-line(incorrect-shift)
             uint256 tensorSize = numClaims * (1 << lHalfLen);
             offsets[g] = offset;
             offset += tensorSize;

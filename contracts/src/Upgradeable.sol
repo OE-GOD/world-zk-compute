@@ -222,11 +222,21 @@ abstract contract UUPSUpgradeable {
 /// @dev Demonstrates how to make ExecutionEngine upgradeable
 contract UpgradeableExecutionEngine is UUPSUpgradeable {
     // ========================================================================
-    // STORAGE (must maintain layout across upgrades!)
+    // CONSTANTS
     // ========================================================================
 
     /// @notice Version of this implementation
     uint256 public constant VERSION = 1;
+
+    /// @notice Default protocol fee in basis points (2.5%)
+    uint256 private constant DEFAULT_PROTOCOL_FEE_BPS = 250;
+
+    /// @notice Maximum protocol fee in basis points (10%)
+    uint256 private constant MAX_FEE_BPS = 1000;
+
+    // ========================================================================
+    // STORAGE (must maintain layout across upgrades!)
+    // ========================================================================
 
     /// @notice The program registry
     address public registry;
@@ -262,8 +272,15 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
     mapping(address => uint256) public proverCompletedCount;
     mapping(address => uint256) public proverEarnings;
 
+    /// @notice Whether the contract is paused
+    bool public paused;
+
+    /// @dev Reentrancy guard status (1 = not entered, 2 = entered)
+    uint256 private _reentrancyStatus;
+
     // Gap for future storage variables (upgrade safety)
-    uint256[50] private __gap;
+    // Reduced from 50 to 48 to account for 2 new storage slots above
+    uint256[48] private __gap;
 
     // ========================================================================
     // EVENTS
@@ -280,6 +297,37 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
     event ExecutionClaimed(uint256 indexed requestId, address indexed prover);
     event ExecutionCompleted(uint256 indexed requestId, address indexed prover, uint256 payout);
     event Initialized(uint256 version);
+    event ProtocolFeeUpdated(uint256 oldFeeBps, uint256 newFeeBps);
+    event FeeRecipientUpdated(address indexed oldRecipient, address indexed newRecipient);
+    event Paused(address account);
+    event Unpaused(address account);
+
+    // ========================================================================
+    // ERRORS
+    // ========================================================================
+
+    error EnforcedPause();
+    error ExpectedPause();
+    error ReentrancyGuardReentrantCall();
+    error TransferFailed();
+
+    // ========================================================================
+    // MODIFIERS
+    // ========================================================================
+
+    /// @notice Restrict function calls when the contract is paused
+    modifier whenNotPaused() {
+        if (paused) revert EnforcedPause();
+        _;
+    }
+
+    /// @notice Prevent reentrant calls
+    modifier nonReentrant() {
+        if (_reentrancyStatus == 2) revert ReentrancyGuardReentrantCall();
+        _reentrancyStatus = 2;
+        _;
+        _reentrancyStatus = 1;
+    }
 
     // ========================================================================
     // INITIALIZATION
@@ -302,8 +350,9 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
         registry = _registry;
         verifier = _verifier;
         feeRecipient = _feeRecipient;
-        protocolFeeBps = 250; // 2.5%
+        protocolFeeBps = DEFAULT_PROTOCOL_FEE_BPS;
         nextRequestId = 1;
+        _reentrancyStatus = 1; // Initialize reentrancy guard
 
         _setAdmin(_admin);
 
@@ -395,7 +444,7 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
     }
 
     /// @notice Claim execution
-    function claimExecution(uint256 requestId) external {
+    function claimExecution(uint256 requestId) external whenNotPaused {
         ExecutionRequest storage req = requests[requestId];
         require(req.id != 0, "Not found");
         require(req.status == 0, "Not pending");
@@ -410,7 +459,11 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
     }
 
     /// @notice Submit proof
-    function submitProof(uint256 requestId, bytes calldata seal, bytes calldata journal) external {
+    function submitProof(uint256 requestId, bytes calldata seal, bytes calldata journal)
+        external
+        nonReentrant
+        whenNotPaused
+    {
         ExecutionRequest storage req = requests[requestId];
         require(req.id != 0, "Not found");
         require(req.status == 1, "Not claimed");
@@ -433,12 +486,14 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
         proverCompletedCount[msg.sender]++;
         proverEarnings[msg.sender] += payout;
 
-        // Pay prover
-        payable(msg.sender).transfer(payout);
+        // Pay prover (using call instead of transfer for contract wallet compatibility)
+        (bool proverPaid,) = payable(msg.sender).call{value: payout}("");
+        if (!proverPaid) revert TransferFailed();
 
         // Pay protocol fee
         if (fee > 0) {
-            payable(feeRecipient).transfer(fee);
+            (bool feePaid,) = payable(feeRecipient).call{value: fee}("");
+            if (!feePaid) revert TransferFailed();
         }
 
         emit ExecutionCompleted(requestId, msg.sender, payout);
@@ -464,13 +519,31 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
 
     /// @notice Set protocol fee
     function setProtocolFee(uint256 _feeBps) external onlyAdmin {
-        require(_feeBps <= 1000, "Fee too high");
+        require(_feeBps <= MAX_FEE_BPS, "Fee too high");
+        uint256 oldFeeBps = protocolFeeBps;
         protocolFeeBps = _feeBps;
+        emit ProtocolFeeUpdated(oldFeeBps, _feeBps);
     }
 
     /// @notice Set fee recipient
     function setFeeRecipient(address _recipient) external onlyAdmin {
         require(_recipient != address(0), "Invalid recipient");
+        address oldRecipient = feeRecipient;
         feeRecipient = _recipient;
+        emit FeeRecipientUpdated(oldRecipient, _recipient);
+    }
+
+    /// @notice Pause the contract, blocking claims and proof submissions
+    function pause() external onlyAdmin {
+        if (paused) revert EnforcedPause();
+        paused = true;
+        emit Paused(msg.sender);
+    }
+
+    /// @notice Unpause the contract
+    function unpause() external onlyAdmin {
+        if (!paused) revert ExpectedPause();
+        paused = false;
+        emit Unpaused(msg.sender);
     }
 }

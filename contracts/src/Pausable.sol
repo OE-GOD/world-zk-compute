@@ -14,6 +14,7 @@ abstract contract Pausable {
     event GuardianAdded(address indexed guardian);
     event GuardianRemoved(address indexed guardian);
     event PauseThresholdChanged(uint256 oldThreshold, uint256 newThreshold);
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
     // ========================================================================
     // ERRORS
@@ -222,7 +223,9 @@ abstract contract Pausable {
     /// @notice Transfer ownership
     function transferOwnership(address newOwner) external onlyOwner {
         if (newOwner == address(0)) revert ZeroAddress();
+        address oldOwner = owner;
         owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
     }
 
     // ========================================================================

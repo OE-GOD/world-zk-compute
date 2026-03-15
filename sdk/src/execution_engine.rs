@@ -257,6 +257,7 @@ impl ExecutionEngineClient {
     /// # Returns
     ///
     /// The transaction hash of the submitted request.
+    #[allow(clippy::too_many_arguments)]
     #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(image_id = %image_id, input_digest = %input_digest)))]
     pub async fn submit_request(
         &self,

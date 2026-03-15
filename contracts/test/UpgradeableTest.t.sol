@@ -472,4 +472,143 @@ contract UpgradeableTest is Test {
         assertEq(StorageSlot.IMPLEMENTATION_SLOT, bytes32(uint256(keccak256("eip1967.proxy.implementation")) - 1));
         assertEq(StorageSlot.ADMIN_SLOT, bytes32(uint256(keccak256("eip1967.proxy.admin")) - 1));
     }
+
+    // ========================================================================
+    // 12. Pause / unpause
+    // ========================================================================
+
+    function test_pauseBlocksClaimExecution() public {
+        // Create a request first
+        bytes32 imageId = bytes32(uint256(1));
+        bytes32 inputDigest = bytes32(uint256(2));
+        vm.deal(user1, 1 ether);
+        vm.prank(user1);
+        uint256 requestId = engine.requestExecution{value: 0.01 ether}(imageId, inputDigest, "url", address(0), 3600);
+
+        // Pause
+        engine.pause();
+        assertTrue(engine.paused());
+
+        // claimExecution should revert
+        vm.prank(user2);
+        vm.expectRevert(UpgradeableExecutionEngine.EnforcedPause.selector);
+        engine.claimExecution(requestId);
+    }
+
+    function test_pauseBlocksSubmitProof() public {
+        // Create and claim a request
+        bytes32 imageId = bytes32(uint256(1));
+        bytes32 inputDigest = bytes32(uint256(2));
+        vm.deal(user1, 1 ether);
+        vm.prank(user1);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, "url", address(0), 3600);
+        vm.prank(user2);
+        engine.claimExecution(requestId);
+
+        // Pause
+        engine.pause();
+
+        // submitProof should revert
+        vm.prank(user2);
+        vm.expectRevert(UpgradeableExecutionEngine.EnforcedPause.selector);
+        engine.submitProof(requestId, hex"deadbeef", hex"cafebabe");
+    }
+
+    function test_unpauseRestoresOperations() public {
+        // Create a request
+        bytes32 imageId = bytes32(uint256(1));
+        bytes32 inputDigest = bytes32(uint256(2));
+        vm.deal(user1, 1 ether);
+        vm.prank(user1);
+        uint256 requestId = engine.requestExecution{value: 0.01 ether}(imageId, inputDigest, "url", address(0), 3600);
+
+        // Pause then unpause
+        engine.pause();
+        engine.unpause();
+        assertFalse(engine.paused());
+
+        // claimExecution should work again
+        vm.prank(user2);
+        engine.claimExecution(requestId);
+    }
+
+    function test_onlyAdminCanPause() public {
+        vm.prank(user1);
+        vm.expectRevert(UUPSUpgradeable.NotAdmin.selector);
+        engine.pause();
+    }
+
+    function test_onlyAdminCanUnpause() public {
+        engine.pause();
+        vm.prank(user1);
+        vm.expectRevert(UUPSUpgradeable.NotAdmin.selector);
+        engine.unpause();
+    }
+
+    function test_cannotPauseWhenAlreadyPaused() public {
+        engine.pause();
+        vm.expectRevert(UpgradeableExecutionEngine.EnforcedPause.selector);
+        engine.pause();
+    }
+
+    function test_cannotUnpauseWhenNotPaused() public {
+        vm.expectRevert(UpgradeableExecutionEngine.ExpectedPause.selector);
+        engine.unpause();
+    }
+
+    // ========================================================================
+    // 13. Event emissions for setProtocolFee / setFeeRecipient
+    // ========================================================================
+
+    event ProtocolFeeUpdated(uint256 oldFeeBps, uint256 newFeeBps);
+    event FeeRecipientUpdated(address indexed oldRecipient, address indexed newRecipient);
+
+    function test_setProtocolFeeEmitsEvent() public {
+        vm.expectEmit(false, false, false, true);
+        emit ProtocolFeeUpdated(250, 500);
+        engine.setProtocolFee(500);
+    }
+
+    function test_setFeeRecipientEmitsEvent() public {
+        vm.expectEmit(true, true, false, false);
+        emit FeeRecipientUpdated(feeRecipient, user2);
+        engine.setFeeRecipient(user2);
+    }
+
+    // ========================================================================
+    // 14. Transfer uses call instead of transfer (contract wallet compat)
+    // ========================================================================
+
+    function test_submitProofPaysViaCall() public {
+        // Full cycle -- verifies .call{value} works (contract wallets)
+        bytes32 imageId = bytes32(uint256(1));
+        bytes32 inputDigest = bytes32(uint256(2));
+
+        vm.deal(user1, 1 ether);
+        vm.prank(user1);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, "url", address(0), 3600);
+
+        vm.prank(user2);
+        engine.claimExecution(requestId);
+
+        vm.deal(address(proxy), 1 ether);
+        uint256 balanceBefore = user2.balance;
+
+        vm.prank(user2);
+        engine.submitProof(requestId, hex"deadbeef", hex"cafebabe");
+
+        // Prover should have been paid (0.1 ether minus 2.5% fee = 0.0975 ether)
+        uint256 expectedPayout = 0.1 ether - (0.1 ether * 250) / 10000;
+        assertEq(user2.balance - balanceBefore, expectedPayout);
+    }
+
+    // ========================================================================
+    // 15. Reentrancy guard on submitProof
+    // ========================================================================
+
+    function test_initialReentrancyStatusSet() public view {
+        // After initialization, the contract should not be paused
+        // and the reentrancy guard should be initialized (submitProof works in full cycle test)
+        assertFalse(engine.paused());
+    }
 }

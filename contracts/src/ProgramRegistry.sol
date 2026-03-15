@@ -53,6 +53,8 @@ contract ProgramRegistry is Ownable2Step, Pausable {
     event ProgramVerified(bytes32 indexed imageId);
     event ProgramUnverified(bytes32 indexed imageId);
 
+    event VerifierUpdated(bytes32 indexed programId, address oldVerifier, address newVerifier);
+
     // ========================================================================
     // ERRORS
     // ========================================================================
@@ -178,7 +180,10 @@ contract ProgramRegistry is Ownable2Step, Pausable {
         if (program.registeredAt == 0) revert ProgramNotFound();
         if (program.owner != msg.sender) revert NotProgramOwner();
 
+        address oldVerifier = program.verifierContract;
         program.verifierContract = verifierContract;
+
+        emit VerifierUpdated(imageId, oldVerifier, verifierContract);
     }
 
     // ========================================================================

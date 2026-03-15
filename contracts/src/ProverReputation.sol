@@ -126,6 +126,7 @@ contract ProverReputation {
     event ReporterAuthorized(address indexed reporter);
     event ReporterRevoked(address indexed reporter);
     event SlashCooldownUpdated(uint256 oldCooldown, uint256 newCooldown);
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
     // ========================================================================
     // ERRORS
@@ -421,7 +422,9 @@ contract ProverReputation {
     /// @notice Transfer ownership
     function transferOwnership(address newOwner) external onlyOwner {
         require(newOwner != address(0), "Invalid owner");
+        address oldOwner = owner;
         owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
     }
 
     /// @notice Set the cooldown period between slashes
