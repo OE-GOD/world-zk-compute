@@ -28,7 +28,7 @@ alloy-sol-types = "1.0"
 anyhow = "1.0"
 
 # CLI
-clap = { version = "4.0", features = ["derive"] }
+clap = { version = "4.6", features = ["derive"] }
 
 # Crypto
 sha2 = "0.10"
