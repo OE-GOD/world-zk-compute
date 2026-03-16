@@ -40,7 +40,7 @@ impl ChainClient {
     }
 
     /// Returns whether this client is in dry-run mode.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn is_dry_run(&self) -> bool {
         self.dry_run
     }
@@ -123,7 +123,7 @@ impl ChainClient {
     /// Check if a result is valid.
     ///
     /// This is a read-only call and is always executed regardless of dry-run mode.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub async fn is_result_valid(&self, result_id: B256) -> anyhow::Result<bool> {
         self.tee_verifier.is_result_valid(result_id).await
     }

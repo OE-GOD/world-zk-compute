@@ -367,18 +367,9 @@ pub fn parse_model_with_format(
 /// Load an XGBoost model from a JSON file (saved with `xgb.save_model("model.json")`).
 ///
 /// This is a convenience wrapper that uses `ModelFormat::Auto`.
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn load_model(path: &str) -> Result<XgboostModel, String> {
     load_model_with_format(path, ModelFormat::Auto)
-}
-
-/// Parse an XGBoost model from a JSON string.
-///
-/// This is a convenience wrapper that only tries XGBoost format.
-/// Kept for backward compatibility; prefer `parse_model_with_format` for new code.
-#[allow(dead_code)]
-pub fn parse_model(json_str: &str) -> Result<XgboostModel, String> {
-    parse_xgboost(json_str)
 }
 
 /// Parse an XGBoost model from a JSON string.

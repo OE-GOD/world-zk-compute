@@ -112,19 +112,6 @@ impl Metrics {
         self.gpu_device_count.store(count, Ordering::Relaxed);
     }
 
-    /// Record a GPU job starting
-    #[allow(dead_code)]
-    pub fn start_gpu_job(&self) {
-        self.gpu_jobs_in_progress.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Record a GPU job completing
-    #[allow(dead_code)]
-    pub fn end_gpu_job(&self) {
-        self.gpu_jobs_in_progress.fetch_sub(1, Ordering::Relaxed);
-        self.gpu_jobs_completed.fetch_add(1, Ordering::Relaxed);
-    }
-
     /// Get current snapshot
     pub fn snapshot(&self) -> MetricsSnapshot {
         let proof_times = self

@@ -65,32 +65,6 @@ impl ProverConfig {
         tip >= self.min_tip_wei
     }
 
-    /// Check if Bonsai is enabled and configured
-    #[allow(dead_code)]
-    pub fn is_bonsai_enabled(&self) -> bool {
-        self.proving_mode.uses_bonsai()
-            && self
-                .bonsai_config
-                .as_ref()
-                .is_some_and(|c| c.is_configured())
-    }
-
-    /// Check if Boundless is enabled and configured
-    #[cfg(feature = "boundless")]
-    #[allow(dead_code)]
-    pub fn is_boundless_enabled(&self) -> bool {
-        self.proving_mode.uses_boundless()
-            && self
-                .boundless_config
-                .as_ref()
-                .is_some_and(|c| c.is_configured())
-    }
-
-    /// Check if GPU proving is enabled
-    #[allow(dead_code)]
-    pub fn is_gpu_enabled(&self) -> bool {
-        self.proving_mode.uses_gpu()
-    }
 }
 
 impl Default for ProverConfig {

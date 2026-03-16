@@ -208,11 +208,6 @@ impl BoundlessProver {
         Ok((seal, journal))
     }
 
-    /// Get a reference to the config
-    #[allow(dead_code)]
-    pub fn config(&self) -> &BoundlessConfig {
-        &self.config
-    }
 }
 
 #[cfg(test)]

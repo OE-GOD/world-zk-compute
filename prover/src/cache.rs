@@ -100,27 +100,6 @@ impl ProgramCache {
             .join(format!("{}.elf", hex::encode(image_id)))
     }
 
-    /// Clear the cache
-    #[allow(dead_code)]
-    pub fn clear(&self) -> std::io::Result<()> {
-        // Clear memory
-        {
-            let mut cache = self.memory_cache.write().unwrap_or_else(|e| e.into_inner());
-            cache.clear();
-            *self.current_memory_bytes.write().unwrap_or_else(|e| e.into_inner()) = 0;
-        }
-
-        // Clear disk
-        for entry in std::fs::read_dir(&self.cache_dir)? {
-            let entry = entry?;
-            if entry.path().extension().is_some_and(|e| e == "elf") {
-                std::fs::remove_file(entry.path())?;
-            }
-        }
-
-        info!("Cache cleared");
-        Ok(())
-    }
 }
 
 #[cfg(test)]

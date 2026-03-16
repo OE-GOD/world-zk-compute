@@ -152,18 +152,6 @@ impl LocalGpuProver {
         }
     }
 
-    /// Create with specific backend and GPU device ID.
-    ///
-    /// When `gpu_device_id` is set, `prove_sync` will set
-    /// `CUDA_VISIBLE_DEVICES` to route to the assigned GPU.
-    #[allow(dead_code)]
-    pub fn with_backend_and_device(backend: GpuBackend, device_id: usize) -> Self {
-        Self {
-            backend,
-            gpu_device_id: Some(device_id),
-        }
-    }
-
     /// Execute and prove using GPU (or CPU fallback)
     ///
     /// This method runs in a blocking context - use `prove_async` for async code.

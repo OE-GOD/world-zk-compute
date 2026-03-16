@@ -8,7 +8,6 @@ const DEFAULT_PROVER_CONNECT_TIMEOUT_SECS: u64 = 5;
 
 /// Default request timeout for prover HTTP requests (seconds).
 /// Proving can take several minutes, so default is generous.
-#[allow(dead_code)]
 const DEFAULT_PROVER_REQUEST_TIMEOUT_SECS: u64 = 300;
 
 /// How the operator communicates with the prover.
@@ -64,31 +63,6 @@ impl ProofManager {
             retry_delay_secs,
             retry_delay_secs * 1000,      // convert legacy seconds to ms
             retry_delay_secs * 16 * 1000, // legacy cap was 16x base
-        )
-    }
-
-    /// Create a ProofManager with an explicit prover timeout (seconds).
-    ///
-    /// This avoids redundant env-var reads when the caller already loaded
-    /// the timeout value via `Config::from_env()`.
-    #[allow(dead_code)]
-    pub fn with_config_timeout(
-        precompute_bin: &str,
-        model_path: &str,
-        proofs_dir: &str,
-        max_retries: u32,
-        retry_delay_secs: u64,
-        prover_timeout_secs: u64,
-    ) -> anyhow::Result<Self> {
-        Self::build_internal(
-            precompute_bin,
-            model_path,
-            proofs_dir,
-            max_retries,
-            retry_delay_secs,
-            retry_delay_secs * 1000,
-            retry_delay_secs * 16 * 1000,
-            prover_timeout_secs,
         )
     }
 
@@ -543,11 +517,6 @@ impl ProofManager {
         self.proofs_dir.join(format!("{}.json", result_id)).exists()
     }
 
-    /// Return the current prover mode.
-    #[allow(dead_code)]
-    pub fn mode(&self) -> &ProverMode {
-        &self.mode
-    }
 }
 
 #[cfg(test)]

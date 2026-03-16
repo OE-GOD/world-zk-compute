@@ -32,7 +32,6 @@ pub struct MetricsState {
     pub total_errors: AtomicU64,
     pub active_disputes: AtomicU64,
     pub last_block_polled: AtomicU64,
-    #[allow(dead_code)] // accessed via .load()/.store(); clippy false positive on atomic fields
     pub webhook_failures: AtomicU64,
     pub start_time: Instant,
     /// Set to `true` during graceful shutdown so health endpoints report unhealthy.
@@ -113,7 +112,6 @@ impl MetricsState {
     }
 
     /// Update the webhook failure count (synced from WebhookNotifier).
-    #[allow(dead_code)] // called from main.rs cmd_watch; clippy false positive
     pub fn set_webhook_failures(&self, count: u64) {
         self.webhook_failures.store(count, Ordering::Relaxed);
     }
@@ -266,51 +264,6 @@ async fn json_metrics_handler(State(state): State<Arc<MetricsState>>) -> Json<Me
         active_disputes: state.active_disputes.load(Ordering::Relaxed),
         webhook_failures: state.webhook_failures.load(Ordering::Relaxed),
     })
-}
-
-/// Spawn the metrics HTTP server on the given port.
-///
-/// This runs forever serving the following endpoints:
-/// - `/health` — JSON health check
-/// - `/ready` — Kubernetes readiness probe
-/// - `/metrics` — Prometheus text exposition format
-/// - `/metrics/json` — JSON metrics (backward compatibility)
-///
-/// It should be spawned as a background task via `tokio::spawn`.
-#[allow(dead_code)]
-pub async fn serve_metrics(state: Arc<MetricsState>, port: u16, bind_addr: &str) {
-    // Versioned API routes under /api/v1/ with X-API-Version header
-    let versioned = Router::new()
-        .route("/health", get(health_handler))
-        .route("/ready", get(ready_handler))
-        .route("/metrics", get(prometheus_metrics_handler))
-        .route("/metrics/json", get(json_metrics_handler))
-        .layer(middleware::from_fn(version_header_middleware));
-
-    let app = Router::new()
-        // Backward-compatible unversioned routes
-        .route("/health", get(health_handler))
-        .route("/ready", get(ready_handler))
-        .route("/metrics", get(prometheus_metrics_handler))
-        .route("/metrics/json", get(json_metrics_handler))
-        // Versioned routes
-        .nest("/api/v1", versioned)
-        .with_state(state);
-
-    let addr = format!("{}:{}", bind_addr, port);
-    tracing::info!("Metrics server listening on {}", addr);
-
-    let listener = match tokio::net::TcpListener::bind(&addr).await {
-        Ok(l) => l,
-        Err(e) => {
-            tracing::error!("Failed to bind metrics server on {}: {}", addr, e);
-            return;
-        }
-    };
-
-    if let Err(e) = axum::serve(listener, app).await {
-        tracing::error!("Metrics server error: {}", e);
-    }
 }
 
 /// Serve the metrics HTTP server with graceful shutdown support.
