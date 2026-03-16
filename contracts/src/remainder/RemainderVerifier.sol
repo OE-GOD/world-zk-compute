@@ -979,29 +979,33 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
 
     /// @notice Deactivate a circuit
     function deactivateCircuit(bytes32 circuitHash) external onlyOwner whenNotPaused {
-        if (circuits[circuitHash].circuitHash == bytes32(0)) revert CircuitNotRegistered();
-        circuits[circuitHash].active = false;
+        CircuitConfig storage config = circuits[circuitHash];
+        if (config.circuitHash == bytes32(0)) revert CircuitNotRegistered();
+        config.active = false;
         emit CircuitDeactivated(circuitHash);
     }
 
     /// @notice Reactivate a circuit
     function reactivateCircuit(bytes32 circuitHash) external onlyOwner whenNotPaused {
-        if (circuits[circuitHash].circuitHash == bytes32(0)) revert CircuitNotRegistered();
-        circuits[circuitHash].active = true;
+        CircuitConfig storage config = circuits[circuitHash];
+        if (config.circuitHash == bytes32(0)) revert CircuitNotRegistered();
+        config.active = true;
         emit CircuitReactivated(circuitHash);
     }
 
     /// @notice Deactivate a DAG circuit
     function deactivateDAGCircuit(bytes32 circuitHash) external onlyOwner whenNotPaused {
-        if (dagCircuits[circuitHash].circuitHash == bytes32(0)) revert CircuitNotRegistered();
-        dagCircuits[circuitHash].active = false;
+        DAGCircuitConfig storage config = dagCircuits[circuitHash];
+        if (config.circuitHash == bytes32(0)) revert CircuitNotRegistered();
+        config.active = false;
         emit DAGCircuitDeactivated(circuitHash);
     }
 
     /// @notice Reactivate a DAG circuit
     function reactivateDAGCircuit(bytes32 circuitHash) external onlyOwner whenNotPaused {
-        if (dagCircuits[circuitHash].circuitHash == bytes32(0)) revert CircuitNotRegistered();
-        dagCircuits[circuitHash].active = true;
+        DAGCircuitConfig storage config = dagCircuits[circuitHash];
+        if (config.circuitHash == bytes32(0)) revert CircuitNotRegistered();
+        config.active = true;
         emit DAGCircuitReactivated(circuitHash);
     }
 
