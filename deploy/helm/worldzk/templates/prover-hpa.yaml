@@ -1,0 +1,35 @@
+{{- if and .Values.prover.enabled ((.Values.prover.autoscaling).enabled) }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "worldzk.prover.fullname" . }}
+  labels:
+    {{- include "worldzk.prover.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "worldzk.prover.fullname" . }}
+  minReplicas: {{ .Values.prover.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.prover.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.prover.autoscaling.targetCPUUtilizationPercentage }}
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: {{ .Values.prover.autoscaling.scaleDownStabilizationSeconds }}
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: {{ .Values.prover.autoscaling.scaleUpStabilizationSeconds }}
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+{{- end }}

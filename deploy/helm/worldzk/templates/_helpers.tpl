@@ -124,6 +124,32 @@ Indexer service account name
 {{- end }}
 
 {{/*
+Prover fully qualified name
+*/}}
+{{- define "worldzk.prover.fullname" -}}
+{{- printf "%s-prover" (include "worldzk.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{/*
+Prover labels
+*/}}
+{{- define "worldzk.prover.labels" -}}
+{{ include "worldzk.labels" . }}
+app.kubernetes.io/name: prover
+app.kubernetes.io/component: prover
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{/*
+Prover selector labels
+*/}}
+{{- define "worldzk.prover.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "worldzk.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: prover
+{{- end }}
+
+{{/*
 Check if operator canary is enabled.
 Returns "true" if operator.canary.enabled is set, empty string otherwise.
 */}}

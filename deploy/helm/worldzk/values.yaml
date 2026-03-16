@@ -125,6 +125,26 @@ indexer:
     annotations: {}
   # -- Termination grace period in seconds
   terminationGracePeriodSeconds: 15
+  # -- HorizontalPodAutoscaler configuration for the indexer
+  autoscaling:
+    # -- Enable HPA for indexer (requires postgres backend for multiple replicas)
+    enabled: false
+    # -- Minimum number of replicas
+    minReplicas: 1
+    # -- Maximum number of replicas
+    maxReplicas: 5
+    # -- Target CPU utilization percentage
+    targetCPUUtilizationPercentage: 70
+    # -- Scale-down stabilization window in seconds
+    scaleDownStabilizationSeconds: 300
+    # -- Scale-up stabilization window in seconds
+    scaleUpStabilizationSeconds: 60
+  # -- PodDisruptionBudget configuration for the indexer
+  podDisruptionBudget:
+    # -- Enable PDB for indexer (recommended when replicaCount > 1)
+    enabled: false
+    # -- Minimum number of available pods
+    minAvailable: 1
 
 # -- Enclave (TEE) component configuration
 enclave:
@@ -225,6 +245,26 @@ prover:
   programStorageSizeLimit: 512Mi
   # -- Termination grace period in seconds
   terminationGracePeriodSeconds: 60
+  # -- HorizontalPodAutoscaler configuration for the prover
+  autoscaling:
+    # -- Enable HPA for prover
+    enabled: false
+    # -- Minimum number of replicas
+    minReplicas: 1
+    # -- Maximum number of replicas
+    maxReplicas: 5
+    # -- Target CPU utilization percentage
+    targetCPUUtilizationPercentage: 70
+    # -- Scale-down stabilization window in seconds
+    scaleDownStabilizationSeconds: 300
+    # -- Scale-up stabilization window in seconds
+    scaleUpStabilizationSeconds: 60
+  # -- PodDisruptionBudget configuration for the prover
+  podDisruptionBudget:
+    # -- Enable PDB for prover (recommended when replicaCount > 1)
+    enabled: false
+    # -- Minimum number of available pods
+    minAvailable: 1
 
 # -- Private input server configuration
 privateInput:

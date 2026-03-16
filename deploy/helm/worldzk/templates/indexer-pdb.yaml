@@ -1,0 +1,13 @@
+{{- if and .Values.indexer.enabled ((.Values.indexer.podDisruptionBudget).enabled) }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "worldzk.indexer.fullname" . }}-pdb
+  labels:
+    {{- include "worldzk.indexer.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.indexer.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "worldzk.indexer.selectorLabels" . | nindent 6 }}
+{{- end }}

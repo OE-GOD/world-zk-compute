@@ -1,0 +1,13 @@
+{{- if and .Values.prover.enabled ((.Values.prover.podDisruptionBudget).enabled) }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "worldzk.prover.fullname" . }}-pdb
+  labels:
+    {{- include "worldzk.prover.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.prover.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "worldzk.prover.selectorLabels" . | nindent 6 }}
+{{- end }}
