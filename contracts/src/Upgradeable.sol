@@ -30,6 +30,8 @@ library StorageSlot {
 /// @notice Minimal proxy that delegates all calls to an implementation
 /// @dev Uses EIP-1967 storage slots for upgrade safety
 contract UUPSProxy {
+    error InitializationFailed();
+
     /// @notice Deploy proxy pointing to implementation
     /// @param implementation Address of the implementation contract
     /// @param data Initialization calldata
@@ -44,7 +46,7 @@ contract UUPSProxy {
                         revert(add(32, returndata), mload(returndata))
                     }
                 } else {
-                    revert("Initialization failed");
+                    revert InitializationFailed();
                 }
             }
         }
@@ -89,6 +91,8 @@ abstract contract UUPSUpgradeable {
     error InvalidImplementation();
     error AlreadyInitialized();
     error NotInitializing();
+    error UpgradeCallFailed();
+    error InvalidAddress();
 
     // ========================================================================
     // STATE
@@ -193,7 +197,7 @@ abstract contract UUPSUpgradeable {
                         revert(add(32, returndata), mload(returndata))
                     }
                 } else {
-                    revert("Upgrade call failed");
+                    revert UpgradeCallFailed();
                 }
             }
         }
@@ -210,7 +214,7 @@ abstract contract UUPSUpgradeable {
 
     /// @notice Change admin
     function changeAdmin(address newAdmin) external onlyAdmin {
-        require(newAdmin != address(0), "Invalid admin");
+        if (newAdmin == address(0)) revert InvalidAddress();
         emit AdminChanged(_getAdmin(), newAdmin);
         StorageSlot.getAddressSlot(StorageSlot.ADMIN_SLOT).value = newAdmin;
     }
@@ -358,6 +362,15 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
     error ExpirationTooLong();
     error ExpirationTooShort();
     error ExpirationOverflow();
+    error InsufficientTip();
+    error RequestNotFound();
+    error NotPending();
+    error RequestExpired();
+    error NotClaimed();
+    error NotClaimant();
+    error DeadlinePassed();
+    error EmptySeal();
+    error EmptyJournal();
 
     // ========================================================================
     // MODIFIERS
@@ -390,10 +403,10 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
         external
         initializer
     {
-        require(_registry != address(0), "Invalid registry");
-        require(_verifier != address(0), "Invalid verifier");
-        require(_feeRecipient != address(0), "Invalid fee recipient");
-        require(_admin != address(0), "Invalid admin");
+        if (_registry == address(0)) revert InvalidAddress();
+        if (_verifier == address(0)) revert InvalidAddress();
+        if (_feeRecipient == address(0)) revert InvalidAddress();
+        if (_admin == address(0)) revert InvalidAddress();
 
         registry = _registry;
         verifier = _verifier;
@@ -440,7 +453,7 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
         uint8 inputType
     ) external payable returns (uint256 requestId) {
         if (imageId == bytes32(0)) revert ZeroImageId();
-        require(msg.value >= 0.0001 ether, "Insufficient tip");
+        if (msg.value < 0.0001 ether) revert InsufficientTip();
         if (!IProgramRegistry(registry).isProgramActive(imageId)) revert ProgramNotActive();
 
         uint256 expiration = expirationSeconds > 0 ? expirationSeconds : DEFAULT_EXPIRATION;
@@ -477,7 +490,7 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
         uint256 expirationSeconds
     ) external payable returns (uint256 requestId) {
         if (imageId == bytes32(0)) revert ZeroImageId();
-        require(msg.value >= 0.0001 ether, "Insufficient tip");
+        if (msg.value < 0.0001 ether) revert InsufficientTip();
         if (!IProgramRegistry(registry).isProgramActive(imageId)) revert ProgramNotActive();
 
         uint256 expiration = expirationSeconds > 0 ? expirationSeconds : DEFAULT_EXPIRATION;
@@ -508,9 +521,9 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
     /// @notice Claim execution
     function claimExecution(uint256 requestId) external whenNotPaused {
         ExecutionRequest storage req = requests[requestId];
-        require(req.id != 0, "Not found");
-        require(req.status == 0, "Not pending");
-        require(block.timestamp <= req.expiresAt, "Expired");
+        if (req.id == 0) revert RequestNotFound();
+        if (req.status != 0) revert NotPending();
+        if (block.timestamp > req.expiresAt) revert RequestExpired();
 
         req.status = 1; // Claimed
         req.claimedBy = msg.sender;
@@ -527,12 +540,12 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
         whenNotPaused
     {
         ExecutionRequest storage req = requests[requestId];
-        require(req.id != 0, "Not found");
-        require(req.status == 1, "Not claimed");
-        require(req.claimedBy == msg.sender, "Not claimant");
-        require(block.timestamp <= req.claimDeadline, "Deadline passed");
-        require(seal.length > 0, "Empty seal");
-        require(journal.length > 0, "Empty journal");
+        if (req.id == 0) revert RequestNotFound();
+        if (req.status != 1) revert NotClaimed();
+        if (req.claimedBy != msg.sender) revert NotClaimant();
+        if (block.timestamp > req.claimDeadline) revert DeadlinePassed();
+        if (seal.length == 0) revert EmptySeal();
+        if (journal.length == 0) revert EmptyJournal();
 
         // Verify the proof - reverts if invalid
         bytes32 journalDigest = sha256(journal);
@@ -591,7 +604,7 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
     /// @notice Set fee recipient
     /// @dev Uses onlyTimelocked: if a timelock is set, only the timelock can call this.
     function setFeeRecipient(address _recipient) external onlyTimelocked {
-        require(_recipient != address(0), "Invalid recipient");
+        if (_recipient == address(0)) revert InvalidAddress();
         address oldRecipient = feeRecipient;
         feeRecipient = _recipient;
         emit FeeRecipientUpdated(oldRecipient, _recipient);

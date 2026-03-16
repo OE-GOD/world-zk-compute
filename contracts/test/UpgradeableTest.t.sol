@@ -315,7 +315,7 @@ contract UpgradeableTest is Test {
     }
 
     function test_cannotChangeAdminToZero() public {
-        vm.expectRevert("Invalid admin");
+        vm.expectRevert(UUPSUpgradeable.InvalidAddress.selector);
         engine.changeAdmin(address(0));
     }
 
@@ -333,7 +333,7 @@ contract UpgradeableTest is Test {
         bytes memory initData = abi.encodeCall(
             UpgradeableExecutionEngine.initialize, (address(0), address(mockVerifier), feeRecipient, admin)
         );
-        vm.expectRevert("Invalid registry");
+        vm.expectRevert(UUPSUpgradeable.InvalidAddress.selector);
         new UUPSProxy(address(freshImpl), initData);
     }
 
@@ -341,7 +341,7 @@ contract UpgradeableTest is Test {
         UpgradeableExecutionEngine freshImpl = new UpgradeableExecutionEngine();
         bytes memory initData =
             abi.encodeCall(UpgradeableExecutionEngine.initialize, (registry, address(0), feeRecipient, admin));
-        vm.expectRevert("Invalid verifier");
+        vm.expectRevert(UUPSUpgradeable.InvalidAddress.selector);
         new UUPSProxy(address(freshImpl), initData);
     }
 
@@ -349,7 +349,7 @@ contract UpgradeableTest is Test {
         UpgradeableExecutionEngine freshImpl = new UpgradeableExecutionEngine();
         bytes memory initData =
             abi.encodeCall(UpgradeableExecutionEngine.initialize, (registry, address(mockVerifier), address(0), admin));
-        vm.expectRevert("Invalid fee recipient");
+        vm.expectRevert(UUPSUpgradeable.InvalidAddress.selector);
         new UUPSProxy(address(freshImpl), initData);
     }
 
@@ -358,7 +358,7 @@ contract UpgradeableTest is Test {
         bytes memory initData = abi.encodeCall(
             UpgradeableExecutionEngine.initialize, (registry, address(mockVerifier), feeRecipient, address(0))
         );
-        vm.expectRevert("Invalid admin");
+        vm.expectRevert(UUPSUpgradeable.InvalidAddress.selector);
         new UUPSProxy(address(freshImpl), initData);
     }
 

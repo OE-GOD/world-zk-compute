@@ -91,6 +91,8 @@ contract RemainderVerifier is Ownable2Step, Pausable {
     event CircuitGroth16VerifierUpdated(bytes32 indexed circuitHash, address indexed verifier, uint256 inputCount);
     event DAGCircuitGroth16VerifierUpdated(bytes32 indexed circuitHash, address indexed verifier, uint256 inputCount);
     event DAGStylusVerifierUpdated(bytes32 indexed circuitHash, address indexed stylusVerifier);
+    event DAGCircuitDeactivated(bytes32 indexed circuitHash);
+    event DAGCircuitReactivated(bytes32 indexed circuitHash);
 
     // ========================================================================
     // ERRORS
@@ -983,6 +985,20 @@ contract RemainderVerifier is Ownable2Step, Pausable {
         if (circuits[circuitHash].circuitHash == bytes32(0)) revert CircuitNotRegistered();
         circuits[circuitHash].active = true;
         emit CircuitReactivated(circuitHash);
+    }
+
+    /// @notice Deactivate a DAG circuit
+    function deactivateDAGCircuit(bytes32 circuitHash) external onlyOwner whenNotPaused {
+        if (dagCircuits[circuitHash].circuitHash == bytes32(0)) revert CircuitNotRegistered();
+        dagCircuits[circuitHash].active = false;
+        emit DAGCircuitDeactivated(circuitHash);
+    }
+
+    /// @notice Reactivate a DAG circuit
+    function reactivateDAGCircuit(bytes32 circuitHash) external onlyOwner whenNotPaused {
+        if (dagCircuits[circuitHash].circuitHash == bytes32(0)) revert CircuitNotRegistered();
+        dagCircuits[circuitHash].active = true;
+        emit DAGCircuitReactivated(circuitHash);
     }
 
     /// @notice Set the Groth16 verifier contract address (for hybrid verification)
