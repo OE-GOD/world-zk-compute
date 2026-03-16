@@ -1,6 +1,6 @@
 # Threat Model: World ZK Compute
 
-**Last updated:** 2026-03-11
+**Last updated:** 2026-03-16
 **Scope:** TEEMLVerifier, ExecutionEngine, TEE enclave, operator service
 **Target audience:** Security auditors, protocol reviewers
 
@@ -184,7 +184,21 @@ These are known, accepted risks not fully mitigated by the current design:
 
 ---
 
-## 6. Emergency Procedures
+## 6. Recent Security Hardening (Phases 74-77)
+
+The following hardening measures were applied across the contract and service codebase in Phases 74-77 (March 2026):
+
+- **Ownable2Step migration.** `ProverRegistry` and `ProverReputation` were upgraded from `Ownable` to `Ownable2Step`, requiring explicit `acceptOwnership()` to complete ownership transfers. All core contracts now use `Ownable2Step`.
+- **nonReentrant additions.** `ProverRegistry` functions (`register`, `addStake`, `withdrawStake`, `slash`) and additional `TEEMLVerifier` functions (`challenge`, `extendDisputeWindow`) now carry the `nonReentrant` modifier.
+- **Pausable guards.** `ProverRegistry`, `ProgramRegistry`, and `ProverReputation` now inherit `Pausable`. State-changing functions are gated with `whenNotPaused`.
+- **Custom errors.** `TEEMLVerifier` was converted from 16 string-based `require()` calls to gas-efficient custom errors (defined in `ITEEMLVerifier.sol`). GKR verifier libraries also received custom error conversions.
+- **SecretString for keys.** Operator and enclave services now wrap private keys in a `SecretString` type that prevents accidental logging and implements zeroization on drop.
+- **Cached storage refs.** `RemainderVerifier` circuit management functions (`deactivateCircuit`, `reactivateCircuit`, etc.) now cache mapping lookups to reduce redundant SLOADs.
+- **NatSpec documentation.** All `RemainderVerifier` DAG functions received `@param`/`@return` NatSpec annotations.
+
+---
+
+## 7. Emergency Procedures
 
 ### Scenario A: Compromised Enclave Key
 

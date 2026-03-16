@@ -439,6 +439,18 @@ docker compose down -v
 
 ## Security Checklist
 
+### Code-Level Security (Implemented in Phases 71-77)
+
+- [x] All core contracts use `Ownable2Step` (prevents accidental ownership transfer)
+- [x] Custom errors replace string-based `require()` in TEEMLVerifier (gas-efficient, no info leak)
+- [x] `nonReentrant` modifier on all ETH-transferring functions (TEEMLVerifier, ProverRegistry, ExecutionEngine)
+- [x] `Pausable` inherited by all core contracts (TEEMLVerifier, ExecutionEngine, RemainderVerifier, ProgramRegistry, ProverRegistry, ProverReputation)
+- [x] `SecretString` type wraps private keys in operator/enclave services (prevents logging, zeroizes on drop)
+- [x] NatSpec documentation on RemainderVerifier public/external functions
+- [x] Cached storage refs in RemainderVerifier to reduce redundant SLOADs
+
+### Deployment-Time Security (Verify Per Environment)
+
 - [ ] Admin key is NOT the deployer key in production
 - [ ] `OPERATOR_PRIVATE_KEY` is not committed to version control
 - [ ] `ENCLAVE_PRIVATE_KEY` is omitted in Nitro mode (key generated inside enclave)
@@ -447,7 +459,6 @@ docker compose down -v
 - [ ] Rate limiting configured (`MAX_REQUESTS_PER_MINUTE`)
 - [ ] Enclave not accessible from public internet (only via operator)
 - [ ] Webhook URL uses HTTPS
-- [ ] Contract uses Ownable2Step (prevents accidental ownership transfer)
 - [ ] No replay attack vector: `CHAIN_ID` set correctly on enclave
 
 ---

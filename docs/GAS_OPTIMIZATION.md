@@ -83,19 +83,26 @@ struct EnclaveInfo {
 Pack `registered`, `active`, and `registeredAt` (as uint48) into one slot with `enclaveImageHash`
 in a second slot. Saves 1 cold SSTORE (~20K gas).
 
-### 2.3 Custom Errors in TEEMLVerifier (save ~200 gas per revert + ~500 bytes deploy)
+### 2.3 Custom Errors in TEEMLVerifier -- COMPLETED (Phase 74)
 
-`TEEMLVerifier.sol` uses string-based `require()` in 16 places (lines 66-67, 78-79, 88, 96-97,
-105-106, 135, 142-143, 146, 174-178, 201-203, 225-226, 236-239, 253-256, 307-308, 310-311).
-ExecutionEngine already uses custom errors. TEEMLVerifier should follow suit:
+All 16 string-based `require()` calls in `TEEMLVerifier.sol` have been converted to custom errors
+defined in `ITEEMLVerifier.sol`. Custom errors use only 4 bytes of selector data instead of
+ABI-encoded string payloads, saving approximately:
+
+- **~200 gas per revert** (no ABI string encoding overhead)
+- **~500 bytes of deployment bytecode** (no string literals compiled in)
+
+The GKR verifier libraries (`GKRVerifier.sol`, `GKRDAGVerifier.sol`) also received custom error
+conversions in Phase 78.
+
+Example of the completed conversion:
 ```solidity
-// Before (TEEMLVerifier.sol line 135):
-require(msg.value >= proverStake, "TEEMLVerifier: insufficient stake");
-// After:
+// ITEEMLVerifier.sol -- custom error definition
 error InsufficientStake();
+
+// TEEMLVerifier.sol -- usage
 if (msg.value < proverStake) revert InsufficientStake();
 ```
-Estimated savings: ~200 gas per failed tx, ~500 bytes bytecode.
 
 ### 2.4 Duplicate Event Emissions (save ~1,500 gas per call)
 
@@ -126,6 +133,25 @@ Neither contract offers batch variants. Adding these saves 21,000 gas (base tx c
 ~375 gas per emit but enables `eth_getLogs` filtering. `ResultSubmitted` (line 66) already uses
 the maximum 3 indexed params.
 
+### 2.8 Cached Storage References in RemainderVerifier -- COMPLETED (Phase 77)
+
+`RemainderVerifier.sol` circuit management functions (`deactivateCircuit`, `reactivateCircuit`,
+`deactivateDAGCircuit`, `reactivateDAGCircuit`) now cache the mapping lookup into a local storage
+reference instead of performing redundant SLOADs on the same storage slot:
+
+```solidity
+// Before -- two separate mapping reads (2 x 2,100 gas cold or 2 x 100 gas warm):
+require(circuits[circuitHash].active, "...");
+circuits[circuitHash].active = false;
+
+// After -- one mapping read, reused via storage pointer:
+CircuitConfig storage cfg = circuits[circuitHash];
+require(cfg.active, "...");
+cfg.active = false;
+```
+
+Savings: ~100-2,100 gas per function call depending on warm/cold state.
+
 ---
 
 ## 3. Comparison: TEE Path vs ZK Path
@@ -151,7 +177,7 @@ rate (<1%), the TEE path dominates total cost.
 | Priority | Change | File:Line | Est. Savings | Effort |
 |----------|--------|-----------|-------------|--------|
 | **P0** | Pack MLResult timestamps as uint48 + bools with address | `ITEEMLVerifier.sol:35-50` | ~40K gas/submit | Medium |
-| **P1** | Convert 16 string requires to custom errors | `TEEMLVerifier.sol:66-311` | ~200 gas/revert, 500B deploy | Low |
+| **P1** | ~~Convert 16 string requires to custom errors~~ | `TEEMLVerifier.sol` | ~200 gas/revert, 500B deploy | **DONE** (Phase 74) |
 | **P2** | Pack EnclaveInfo (bool+bool+uint48 in one slot) | `ITEEMLVerifier.sol:13-18` | ~20K gas/register | Low |
 | **P3** | Remove duplicate events (ConfigUpdated or specific) | `TEEMLVerifier.sol:100-101,110-111` | ~750 gas/admin call | Trivial |
 | **P4** | Remove redundant ResultExpired event | `TEEMLVerifier.sol:266` | ~750 gas/finalize | Trivial |

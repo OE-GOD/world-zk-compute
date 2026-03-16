@@ -23,50 +23,52 @@ Error catalog and resolution guide for the world-zk-compute project.
 
 ## Contract Errors: TEEMLVerifier
 
-These are `require()` string reverts from `contracts/src/tee/TEEMLVerifier.sol`.
+These are custom errors defined in `contracts/src/tee/ITEEMLVerifier.sol` and used via `revert` in `contracts/src/tee/TEEMLVerifier.sol`.
 
 ### Admin Functions
 
-| Error Message | Function | Cause | Fix |
+| Error | Function | Cause | Fix |
 |---|---|---|---|
-| `TEEMLVerifier: zero enclave key` | `registerEnclave` | Passed `address(0)` as enclave key | Provide a valid non-zero enclave signing address |
-| `TEEMLVerifier: already registered` | `registerEnclave` | Enclave key already registered | Use a different key, or revoke+re-register |
-| `TEEMLVerifier: not registered` | `revokeEnclave` | Enclave key was never registered | Check the enclave address; register first |
-| `TEEMLVerifier: already revoked` | `revokeEnclave` | Enclave already revoked | No action needed |
-| `TEEMLVerifier: zero address` | `setRemainderVerifier` | Passed `address(0)` as verifier | Provide a valid RemainderVerifier address |
-| `TEEMLVerifier: zero amount` | `setChallengeBondAmount`, `setProverStake` | Amount is 0 | Set a positive amount |
-| `TEEMLVerifier: amount too high` | `setChallengeBondAmount`, `setProverStake` | Amount exceeds 100 ETH | Use a value <= 100 ether |
+| `ZeroEnclaveKey()` | `registerEnclave` | Passed `address(0)` as enclave key | Provide a valid non-zero enclave signing address |
+| `AlreadyRegistered()` | `registerEnclave` | Enclave key already registered | Use a different key, or revoke+re-register |
+| `NotRegistered()` | `revokeEnclave` | Enclave key was never registered | Check the enclave address; register first |
+| `AlreadyRevoked()` | `revokeEnclave` | Enclave already revoked | No action needed |
+| `ZeroAddress()` | `setRemainderVerifier` | Passed `address(0)` as verifier | Provide a valid RemainderVerifier address |
+| `ZeroAmount()` | `setChallengeBondAmount`, `setProverStake` | Amount is 0 | Set a positive amount |
+| `AmountTooHigh()` | `setChallengeBondAmount`, `setProverStake` | Amount exceeds 100 ETH | Use a value <= 100 ether |
+| `WindowTooShort()` | `setChallengeWindow`, `setDisputeWindow` | Duration below minimum | Use a longer duration (challenge >= 10 min, dispute >= 1 hour) |
+| `WindowTooLong()` | `setChallengeWindow`, `setDisputeWindow` | Duration above maximum | Use a shorter duration (challenge <= 7 days, dispute <= 30 days) |
 | `OwnableUnauthorizedAccount` | Any admin function | Caller is not the contract owner | Call from the owner address |
 | `EnforcedPause` | `submitResult`, `challenge` | Contract is paused | Owner must call `unpause()` first |
 
 ### Submit / Challenge / Finalize
 
-| Error Message | Function | Cause | Fix |
+| Error | Function | Cause | Fix |
 |---|---|---|---|
-| `TEEMLVerifier: insufficient stake` | `submitResult` | `msg.value` < `proverStake` (default 0.1 ETH) | Send at least 0.1 ETH with the transaction. Check: `cast call $CONTRACT "proverStake()(uint256)"` |
-| `TEEMLVerifier: unregistered enclave` | `submitResult` | ECDSA-recovered signer is not a registered enclave | Register the enclave key first, or check that the attestation signature is correct |
-| `TEEMLVerifier: enclave revoked` | `submitResult` | The recovered signer is registered but revoked | Re-register the enclave or use a different active enclave |
-| `TEEMLVerifier: result exists` | `submitResult` | Same sender+model+input+block already submitted | Wait for the next block or change inputs |
-| `TEEMLVerifier: result not found` | `challenge`, `finalize` | Invalid `resultId` (never submitted) | Verify the result ID; compute it as `keccak256(sender, modelHash, inputHash, blockNumber)` |
-| `TEEMLVerifier: already finalized` | `challenge`, `finalize` | Result was already finalized | No further action possible on this result |
-| `TEEMLVerifier: already challenged` | `challenge` | Another challenger already challenged this result | Only one challenge per result is allowed |
-| `TEEMLVerifier: insufficient bond` | `challenge` | `msg.value` < `challengeBondAmount` (default 0.1 ETH) | Send at least the required bond. Check: `cast call $CONTRACT "challengeBondAmount()(uint256)"` |
-| `TEEMLVerifier: window closed` | `challenge` | Challenge deadline has passed (1 hour after submission) | Challenge window is 1 hour; must challenge sooner |
-| `TEEMLVerifier: window not passed` | `finalize` | Challenge window has not yet elapsed | Wait until `challengeDeadline` timestamp passes |
-| `TEEMLVerifier: result is challenged` | `finalize` | Result was challenged; must resolve dispute instead | Call `resolveDispute()` or wait for `resolveDisputeByTimeout()` |
+| `InsufficientStake()` | `submitResult` | `msg.value` < `proverStake` (default 0.1 ETH) | Send at least 0.1 ETH with the transaction. Check: `cast call $CONTRACT "proverStake()(uint256)"` |
+| `UnregisteredEnclave()` | `submitResult` | ECDSA-recovered signer is not a registered enclave | Register the enclave key first, or check that the attestation signature is correct |
+| `EnclaveNotActive()` | `submitResult` | The recovered signer is registered but revoked | Re-register the enclave or use a different active enclave |
+| `ResultExists()` | `submitResult` | Same sender+model+input+block already submitted | Wait for the next block or change inputs |
+| `ResultNotFound()` | `challenge`, `finalize` | Invalid `resultId` (never submitted) | Verify the result ID; compute it as `keccak256(sender, modelHash, inputHash, blockNumber)` |
+| `AlreadyFinalized()` | `challenge`, `finalize` | Result was already finalized | No further action possible on this result |
+| `AlreadyChallenged()` | `challenge` | Another challenger already challenged this result | Only one challenge per result is allowed |
+| `InsufficientBond()` | `challenge` | `msg.value` < `challengeBondAmount` (default 0.1 ETH) | Send at least the required bond. Check: `cast call $CONTRACT "challengeBondAmount()(uint256)"` |
+| `ChallengeWindowClosed()` | `challenge` | Challenge deadline has passed (1 hour after submission) | Challenge window is 1 hour; must challenge sooner |
+| `ChallengeWindowNotPassed()` | `finalize` | Challenge window has not yet elapsed | Wait until `challengeDeadline` timestamp passes |
+| `ResultIsChallenged()` | `finalize` | Result was challenged; must resolve dispute instead | Call `resolveDispute()` or wait for `resolveDisputeByTimeout()` |
 
 ### Dispute Resolution
 
-| Error Message | Function | Cause | Fix |
+| Error | Function | Cause | Fix |
 |---|---|---|---|
-| `TEEMLVerifier: not challenged` | `resolveDispute`, `resolveDisputeByTimeout`, `extendDisputeWindow` | Result has no active challenge | Cannot resolve a dispute that does not exist |
-| `TEEMLVerifier: already resolved` | `resolveDispute`, `resolveDisputeByTimeout`, `extendDisputeWindow` | Dispute was already settled | Check `disputeResolved(resultId)` |
-| `TEEMLVerifier: no verifier set` | `resolveDispute` | `remainderVerifier` is `address(0)` | Owner must call `setRemainderVerifier(address)` |
-| `TEEMLVerifier: deadline not reached` | `resolveDisputeByTimeout` | Dispute window (24h) has not expired | Wait until `disputeDeadline` passes |
-| `TEEMLVerifier: not submitter` | `extendDisputeWindow` | Caller is not the original submitter | Only the submitter can extend |
-| `TEEMLVerifier: max extensions reached` | `extendDisputeWindow` | Already used the 1 allowed extension | No more extensions available |
-| `TEEMLVerifier: stake return failed` | `finalize` | ETH transfer to submitter failed | Submitter address may be a contract that rejects ETH |
-| `TEEMLVerifier: payout failed` | `_settleDispute` | ETH payout transfer failed | Winner address may be a contract that rejects ETH |
+| `NotChallenged()` | `resolveDispute`, `resolveDisputeByTimeout`, `extendDisputeWindow` | Result has no active challenge | Cannot resolve a dispute that does not exist |
+| `AlreadyResolved()` | `resolveDispute`, `resolveDisputeByTimeout`, `extendDisputeWindow` | Dispute was already settled | Check `disputeResolved(resultId)` |
+| `NoVerifierSet()` | `resolveDispute` | `remainderVerifier` is `address(0)` | Owner must call `setRemainderVerifier(address)` |
+| `DeadlineNotReached()` | `resolveDisputeByTimeout` | Dispute window (24h) has not expired | Wait until `disputeDeadline` passes |
+| `NotSubmitter()` | `extendDisputeWindow` | Caller is not the original submitter | Only the submitter can extend |
+| `MaxExtensionsReached()` | `extendDisputeWindow` | Already used the 1 allowed extension | No more extensions available |
+| `StakeReturnFailed()` | `finalize` | ETH transfer to submitter failed | Submitter address may be a contract that rejects ETH |
+| `PayoutFailed()` | `_settleDispute` | ETH payout transfer failed | Winner address may be a contract that rejects ETH |
 
 ---
 

@@ -33,7 +33,8 @@ Key base-contract functions:
 | `TEEMLVerifier` | `Ownable2Step` + `Pausable` + `ReentrancyGuard` | `remainderVerifier` (mutable via `setRemainderVerifier()`) | `contracts/src/tee/TEEMLVerifier.sol` |
 | `RemainderVerifier` | `Ownable2Step` + `Pausable` | circuit configs, Groth16/Stylus verifier addresses (all mutable) | `contracts/src/remainder/RemainderVerifier.sol` |
 | `ProgramRegistry` | `Ownable2Step` + `Pausable` | none | `contracts/src/ProgramRegistry.sol` |
-| `ProverRegistry` | `Ownable` + `ReentrancyGuard` | none | `contracts/src/ProverRegistry.sol` |
+| `ProverRegistry` | `Ownable2Step` + `ReentrancyGuard` + `Pausable` | none | `contracts/src/ProverRegistry.sol` |
+| `ProverReputation` | `Ownable2Step` + `Pausable` | none | `contracts/src/ProverReputation.sol` |
 
 These use constructor-based initialization and cannot be upgraded in place. To "upgrade" them, deploy a new instance and update references in dependent contracts (e.g., `TEEMLVerifier.setRemainderVerifier(newAddress)`).
 
