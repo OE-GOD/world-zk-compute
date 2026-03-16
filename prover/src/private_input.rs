@@ -8,6 +8,7 @@ use alloy::primitives::Address;
 use alloy::signers::local::PrivateKeySigner;
 use alloy::signers::Signer;
 use serde::{Deserialize, Serialize};
+use std::net::IpAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info};
 
@@ -53,6 +54,37 @@ pub fn build_auth_message(request_id: u64, prover_address: &Address, timestamp: 
     )
 }
 
+/// Validate a URL to prevent SSRF attacks.
+///
+/// Rejects non-HTTP(S) schemes and URLs pointing to private/loopback IPs.
+pub fn validate_url(url: &str) -> anyhow::Result<()> {
+    let parsed: reqwest::Url =
+        url.parse().map_err(|e| anyhow::anyhow!("invalid URL: {e}"))?;
+
+    match parsed.scheme() {
+        "https" | "http" => {}
+        scheme => anyhow::bail!("unsupported URL scheme: {scheme}"),
+    }
+
+    if let Some(host) = parsed.host_str() {
+        if host == "localhost" || host == "metadata.google.internal" {
+            anyhow::bail!("URL host is not allowed: {host}");
+        }
+        if let Ok(ip) = host.parse::<IpAddr>() {
+            if ip.is_loopback()
+                || matches!(ip, IpAddr::V4(v4) if v4.is_private())
+                || matches!(ip, IpAddr::V4(v4) if v4.is_link_local())
+            {
+                anyhow::bail!("URL points to private/loopback address: {ip}");
+            }
+        }
+    } else {
+        anyhow::bail!("URL has no host");
+    }
+
+    Ok(())
+}
+
 /// Fetch private input from an auth server
 ///
 /// Signs an EIP-191 message and POSTs to the auth server endpoint.
@@ -63,10 +95,12 @@ pub async fn fetch_private_input(
     request_id: u64,
     signer: &PrivateKeySigner,
 ) -> anyhow::Result<Vec<u8>> {
+    validate_url(auth_url)?;
+
     let prover_address = signer.address();
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .map_err(|e| anyhow::anyhow!("system clock error: {e}"))?
         .as_secs();
 
     // Build and sign the auth message
@@ -143,6 +177,39 @@ mod tests {
         assert!(msg.starts_with("world-zk-compute:fetch-input:42:"));
         assert!(msg.contains("0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"));
         assert!(msg.ends_with(":1700000000"));
+    }
+
+    #[test]
+    fn test_validate_url_accepts_https() {
+        assert!(validate_url("https://api.example.com/inputs").is_ok());
+    }
+
+    #[test]
+    fn test_validate_url_accepts_http() {
+        assert!(validate_url("http://api.example.com/inputs").is_ok());
+    }
+
+    #[test]
+    fn test_validate_url_rejects_private_ip() {
+        assert!(validate_url("https://192.168.1.1/inputs").is_err());
+        assert!(validate_url("https://10.0.0.1/inputs").is_err());
+        assert!(validate_url("https://127.0.0.1/inputs").is_err());
+    }
+
+    #[test]
+    fn test_validate_url_rejects_localhost() {
+        assert!(validate_url("https://localhost/inputs").is_err());
+    }
+
+    #[test]
+    fn test_validate_url_rejects_bad_scheme() {
+        assert!(validate_url("ftp://example.com/inputs").is_err());
+        assert!(validate_url("file:///etc/passwd").is_err());
+    }
+
+    #[test]
+    fn test_validate_url_rejects_cloud_metadata() {
+        assert!(validate_url("http://metadata.google.internal/computeMetadata").is_err());
     }
 
     #[tokio::test]

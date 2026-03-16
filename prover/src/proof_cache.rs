@@ -82,7 +82,7 @@ impl CachedProof {
     pub fn new(proof: Vec<u8>, journal: Vec<u8>, cycles: u64, proof_time: Duration) -> Self {
         let generated_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
         Self {
@@ -164,9 +164,9 @@ impl ProofCache {
                 let age = Duration::from_secs(
                     SystemTime::now()
                         .duration_since(UNIX_EPOCH)
-                        .unwrap()
+                        .unwrap_or_default()
                         .as_secs()
-                        - entry.proof.generated_at,
+                        .saturating_sub(entry.proof.generated_at),
                 );
 
                 if age > self.ttl {
@@ -197,9 +197,9 @@ impl ProofCache {
                 let age = Duration::from_secs(
                     SystemTime::now()
                         .duration_since(UNIX_EPOCH)
-                        .unwrap()
+                        .unwrap_or_default()
                         .as_secs()
-                        - proof.generated_at,
+                        .saturating_sub(proof.generated_at),
                 );
 
                 if age <= self.ttl {
@@ -352,7 +352,7 @@ impl ProofCache {
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
         let ttl_secs = self.ttl.as_secs();
         let mut removed = 0;
@@ -394,13 +394,13 @@ impl ProofCache {
         let mut memory = self.memory.write().await;
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
         let before = memory.len();
 
         memory.retain(|_, entry| {
-            let age = now - entry.proof.generated_at;
+            let age = now.saturating_sub(entry.proof.generated_at);
             age < self.ttl.as_secs()
         });
 
