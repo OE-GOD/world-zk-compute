@@ -700,19 +700,17 @@ contract ProgramRegistryTest is Test {
         assertFalse(program.active);
     }
 
-    function testProgramOwnerCanUpdateUrlWhenPaused() public {
+    function testUpdateUrlBlockedWhenPaused() public {
         vm.prank(owner);
         registry.registerProgram(imageId, name, programUrl, bytes32(0));
 
         vm.prank(admin);
         registry.pause();
 
-        // updateProgramUrl is not gated by whenNotPaused, so should work
+        // updateProgramUrl is gated by whenNotPaused
+        vm.expectRevert(abi.encodeWithSelector(Pausable.EnforcedPause.selector));
         vm.prank(owner);
         registry.updateProgramUrl(imageId, "https://newurl.com");
-
-        ProgramRegistry.Program memory program = registry.getProgram(imageId);
-        assertEq(program.programUrl, "https://newurl.com");
     }
 
     // ========================================================================
