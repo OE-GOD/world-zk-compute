@@ -17,7 +17,7 @@ mod watchdog;
 use std::sync::Arc;
 
 use alloy_primitives::keccak256;
-use axum::extract::{Path, State};
+use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::StatusCode;
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
@@ -1054,6 +1054,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/models", get(list_models))
         .route("/models/load", post(load_model_handler))
         .route("/models/{model_id}", delete(unload_model_handler))
+        .layer(DefaultBodyLimit::max(10 * 1024 * 1024)) // 10 MB limit
         .with_state(state);
 
     let addr = format!("0.0.0.0:{}", config.port);
@@ -1170,6 +1171,7 @@ mod tests {
             .route("/models", get(list_models))
             .route("/models/load", post(load_model_handler))
             .route("/models/{model_id}", delete(unload_model_handler))
+            .layer(DefaultBodyLimit::max(10 * 1024 * 1024)) // 10 MB limit
             .with_state(state)
     }
 

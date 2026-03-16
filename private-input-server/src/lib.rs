@@ -10,7 +10,7 @@ pub mod store;
 use alloy::primitives::Address;
 use auth::AuthRequest;
 use axum::{
-    extract::{Path, State},
+    extract::{DefaultBodyLimit, Path, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
@@ -61,6 +61,7 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         .route("/inputs/:request_id", post(fetch_input))
         .route("/inputs/:request_id/upload", post(upload_input))
         .route("/health", get(health_check))
+        .layer(DefaultBodyLimit::max(10 * 1024 * 1024)) // 10 MB limit
         .with_state(state)
 }
 

@@ -217,8 +217,11 @@ use world_zk_sdk::{retry_with_backoff, RetryPolicy, is_retryable};
 |---|---|
 | `abi` | Solidity ABI bindings (`RemainderVerifier`, `TEEMLVerifier`) |
 | `client` | `Client` type (provider + wallet + address) |
+| `error` | Typed `SDKError` for structured error handling |
 | `event_watcher` | `TEEEventWatcher` and `TEEEvent` types |
+| `execution_engine` | `ExecutionEngineClient` for the ExecutionEngine contract lifecycle |
 | `fixture` | `DAGFixture` and `ProofData` for loading test data |
+| `gas_estimation` | Gas estimation for DAG batch verification sessions |
 | `hash` | Keccak256 hash utilities matching enclave behavior |
 | `networks` | Network configuration constants |
 | `precompiles` | EVM precompile helpers |

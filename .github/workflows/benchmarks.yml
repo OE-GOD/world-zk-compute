@@ -25,7 +25,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           curl -L https://risczero.com/install | bash
-          rzup install r0vm 3.0.5
+          ~/.risc0/bin/rzup install r0vm 3.0.5
+          echo "$HOME/.risc0/bin" >> $GITHUB_PATH
 
       - name: Cache cargo registry and build
         uses: actions/cache@v4

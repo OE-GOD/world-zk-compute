@@ -1,3 +1,5 @@
+//! EVM precompile helpers for SHA-256 and risc0 zkVM acceleration.
+
 /// SHA-256 precompile (~100x faster)
 pub const SHA2_GIT: &str = "https://github.com/risc0/RustCrypto-hashes";
 pub const SHA2_TAG: &str = "sha2-v0.10.8-risczero.0";

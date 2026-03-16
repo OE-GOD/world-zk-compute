@@ -462,7 +462,7 @@ contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
     /// @notice Get current tip for a request (decreases over time via linear decay)
     /// @param requestId The request to query
     /// @return The current tip amount in wei (0 if request is completed/cancelled)
-    function getCurrentTip(uint256 requestId) public view returns (uint256) {
+    function getCurrentTip(uint256 requestId) external view returns (uint256) {
         ExecutionRequest storage req = requests[requestId];
         if (req.id == 0) return 0;
         if (req.status != RequestStatus.Pending && req.status != RequestStatus.Claimed) {

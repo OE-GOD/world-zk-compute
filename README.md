@@ -336,6 +336,7 @@ All components tested in GitHub Actions on every push/PR:
 
 ## Documentation
 
+- [Development Setup](docs/DEVELOPMENT.md)
 - [Architecture](docs/ARCHITECTURE.md) — system design and component interaction
 - [API Reference](docs/API.md) — REST API for all services
 - [Contract Addresses](docs/CONTRACT_ADDRESSES.md) — deployed contract registry

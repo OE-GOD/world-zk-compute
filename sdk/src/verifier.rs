@@ -1,3 +1,5 @@
+//! DAGVerifier client for on-chain DAG circuit verification.
+
 use alloy::primitives::{Address, Bytes, B256, U256};
 use alloy::providers::ProviderBuilder;
 use alloy::sol_types::SolType;

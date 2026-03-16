@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::process::Command;
+use tokio::fs;
 
 /// Default connection timeout for prover HTTP requests (seconds).
 const DEFAULT_PROVER_CONNECT_TIMEOUT_SECS: u64 = 5;
@@ -224,7 +225,7 @@ impl ProofManager {
         result_id: &str,
         features: &str,
     ) -> anyhow::Result<()> {
-        std::fs::create_dir_all(&self.proofs_dir)?;
+        fs::create_dir_all(&self.proofs_dir).await?;
         let output_path = self.proofs_dir.join(format!("{}.json", result_id));
 
         tracing::info!(
@@ -274,7 +275,7 @@ impl ProofManager {
         result_id: &str,
         features: &str,
     ) -> anyhow::Result<()> {
-        std::fs::create_dir_all(&self.proofs_dir)?;
+        fs::create_dir_all(&self.proofs_dir).await?;
         let output_path = self.proofs_dir.join(format!("{}.json", result_id));
 
         let endpoint = format!("{}/prove", prover_url.trim_end_matches('/'));
@@ -464,7 +465,7 @@ impl ProofManager {
             }
         }
 
-        std::fs::write(&output_path, &body)?;
+        fs::write(&output_path, &body).await?;
         tracing::info!("Proof received and saved (HTTP): {}", output_path.display());
         Ok(())
     }

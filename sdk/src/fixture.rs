@@ -1,3 +1,5 @@
+//! DAG proof fixture loading and ABI encoding utilities.
+
 use alloy::primitives::{B256, U256};
 use alloy::sol_types::SolType;
 use serde::Deserialize;

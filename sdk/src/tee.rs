@@ -1,3 +1,5 @@
+//! TEEVerifier client for the TEEMLVerifier contract.
+
 use alloy::primitives::{Address, Bytes, B256, U256};
 use alloy::providers::ProviderBuilder;
 

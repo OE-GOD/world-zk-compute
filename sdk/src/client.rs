@@ -1,3 +1,5 @@
+//! Ethereum client wrapper combining an RPC provider, wallet, and contract address.
+
 use alloy::network::EthereumWallet;
 use alloy::primitives::Address;
 use alloy::signers::local::PrivateKeySigner;

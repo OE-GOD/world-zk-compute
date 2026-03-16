@@ -1,3 +1,5 @@
+//! Solidity ABI bindings generated via alloy's sol! macro.
+
 use alloy::sol;
 
 sol! {

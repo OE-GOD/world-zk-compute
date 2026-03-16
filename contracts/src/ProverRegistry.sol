@@ -354,31 +354,41 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
     // ============================================================
 
     /// @notice Get prover info
+    /// @param prover The address of the prover to query
+    /// @return The full Prover struct for the given address
     function getProver(address prover) external view returns (Prover memory) {
         return provers[prover];
     }
 
     /// @notice Get number of active provers
+    /// @return The count of currently active provers
     function activeProverCount() external view returns (uint256) {
         return activeProvers.length;
     }
 
     /// @notice Get all active prover addresses
+    /// @return Array of all currently active prover addresses
     function getActiveProvers() external view returns (address[] memory) {
         return activeProvers;
     }
 
     /// @notice Check if address is registered prover
+    /// @param addr The address to check
+    /// @return True if the address has registered as a prover
     function isProver(address addr) external view returns (bool) {
         return provers[addr].registeredAt != 0;
     }
 
     /// @notice Check if prover is active
+    /// @param addr The address to check
+    /// @return True if the prover is currently active
     function isActive(address addr) external view returns (bool) {
         return provers[addr].active;
     }
 
     /// @notice Get prover's effective weight (stake * reputation)
+    /// @param prover The address of the prover to query
+    /// @return The prover's weight calculated as (stake * reputation) / 10000
     function getWeight(address prover) external view returns (uint256) {
         Prover storage p = provers[prover];
         return (p.stake * p.reputation) / 10000;
@@ -389,17 +399,21 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
     // ============================================================
 
     /// @notice Update minimum stake requirement
+    /// @param _minStake The new minimum stake amount in token units
     function setMinStake(uint256 _minStake) external onlyOwner {
         minStake = _minStake;
     }
 
     /// @notice Update slash percentage
+    /// @param _slashBasisPoints The new slash percentage in basis points (e.g., 500 = 5%, max 5000 = 50%)
     function setSlashBasisPoints(uint256 _slashBasisPoints) external onlyOwner {
         require(_slashBasisPoints <= MAX_SLASH_BASIS_POINTS, "Max 50%");
         slashBasisPoints = _slashBasisPoints;
     }
 
     /// @notice Authorize/deauthorize a slasher
+    /// @param slasher The address to authorize or deauthorize as a slasher
+    /// @param authorized True to grant slashing permission, false to revoke it
     function setSlasher(address slasher, bool authorized) external onlyOwner {
         slashers[slasher] = authorized;
         emit SlasherUpdated(slasher, authorized);

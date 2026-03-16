@@ -237,7 +237,7 @@ jobs:
       - name: Run tests
         run: |
           cd sdk/python
-          pytest tests/ -v --ignore=tests/test_anvil_integration.py
+          pytest tests/ -v --ignore=tests/test_anvil_integration.py --ignore=tests/test_sepolia_integration.py
 
       - name: Build distribution
         run: |

@@ -140,6 +140,8 @@ contract ProgramRegistry is Ownable2Step, Pausable {
     }
 
     /// @notice Update program URL (only program owner)
+    /// @param imageId The image ID of the program to update
+    /// @param newUrl The new URL where the program binary can be downloaded
     function updateProgramUrl(bytes32 imageId, string calldata newUrl) external {
         Program storage program = programs[imageId];
         if (program.registeredAt == 0) revert ProgramNotFound();
@@ -151,6 +153,7 @@ contract ProgramRegistry is Ownable2Step, Pausable {
     }
 
     /// @notice Deactivate a program (only contract owner/admin)
+    /// @param imageId The image ID of the program to deactivate
     function deactivateProgram(bytes32 imageId) external onlyOwner {
         Program storage program = programs[imageId];
         if (program.registeredAt == 0) revert ProgramNotFound();
@@ -162,6 +165,7 @@ contract ProgramRegistry is Ownable2Step, Pausable {
     }
 
     /// @notice Reactivate a program (only contract owner/admin)
+    /// @param imageId The image ID of the program to reactivate
     function reactivateProgram(bytes32 imageId) external onlyOwner {
         Program storage program = programs[imageId];
         if (program.registeredAt == 0) revert ProgramNotFound();
@@ -233,34 +237,44 @@ contract ProgramRegistry is Ownable2Step, Pausable {
     // ========================================================================
 
     /// @notice Check if a program is registered and active
+    /// @param imageId The image ID of the program to check
+    /// @return True if the program is registered and currently active
     function isProgramActive(bytes32 imageId) external view returns (bool) {
         Program storage program = programs[imageId];
         return program.registeredAt != 0 && program.active;
     }
 
     /// @notice Check if a program is verified by admin
+    /// @param imageId The image ID of the program to check
+    /// @return True if the program is registered and verified by admin
     function isProgramVerified(bytes32 imageId) external view returns (bool) {
         Program storage program = programs[imageId];
         return program.registeredAt != 0 && program.verified;
     }
 
     /// @notice Get program details
+    /// @param imageId The image ID of the program to retrieve
+    /// @return The full Program struct for the given image ID
     function getProgram(bytes32 imageId) external view returns (Program memory) {
         if (programs[imageId].registeredAt == 0) revert ProgramNotFound();
         return programs[imageId];
     }
 
     /// @notice Get total number of registered programs
+    /// @return The count of all registered programs (active and inactive)
     function getProgramCount() external view returns (uint256) {
         return programIds.length;
     }
 
     /// @notice Get programs owned by an address
+    /// @param owner The address whose programs to retrieve
+    /// @return Array of image IDs registered by the given owner
     function getOwnerPrograms(address owner) external view returns (bytes32[] memory) {
         return ownerPrograms[owner];
     }
 
     /// @notice Get all program IDs (paginated)
+    /// @return Array of image IDs in the requested page range
     function getAllPrograms(uint256 offset, uint256 limit) external view returns (bytes32[] memory) {
         uint256 total = programIds.length;
         if (offset >= total) {

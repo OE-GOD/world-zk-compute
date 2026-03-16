@@ -42,6 +42,9 @@ pub mod retry;
 pub mod tee;
 pub mod verifier;
 
+#[cfg(feature = "metrics")]
+pub mod metrics;
+
 pub use client::Client;
 pub use event_watcher::{TEEEvent, TEEEventWatcher};
 pub use execution_engine::{ExecutionEngineClient, RequestStatus};
