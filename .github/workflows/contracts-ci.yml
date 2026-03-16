@@ -19,6 +19,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
+          fetch-depth: 0
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
@@ -49,6 +50,41 @@ jobs:
 
       - name: Validate test fixtures
         run: bash scripts/validate-fixtures.sh
+
+      - name: Check fixture freshness
+        run: |
+          cd contracts
+          FIXTURE_DIR="test/fixtures"
+          if [ ! -d "$FIXTURE_DIR" ]; then
+            echo "No fixtures directory found, skipping"
+            exit 0
+          fi
+
+          # Compare last-commit timestamps via git log.
+          # (File mtimes in a fresh clone are all set to checkout time,
+          #  so filesystem stat is not reliable in CI.)
+          STALE=0
+          for fixture in "$FIXTURE_DIR"/*.json; do
+            [ -f "$fixture" ] || continue
+            FIXTURE_EPOCH=$(git log -1 --format="%ct" -- "$fixture" 2>/dev/null || echo 0)
+            if [ "$FIXTURE_EPOCH" = "0" ] || [ -z "$FIXTURE_EPOCH" ]; then
+              echo "::warning::Fixture $(basename "$fixture") has no git history (untracked?)"
+              continue
+            fi
+            while IFS= read -r src; do
+              SRC_EPOCH=$(git log -1 --format="%ct" -- "$src" 2>/dev/null || echo 0)
+              if [ "$SRC_EPOCH" -gt "$FIXTURE_EPOCH" ]; then
+                echo "::warning::Fixture $(basename "$fixture") may be stale ($(basename "$src") was modified more recently)"
+                STALE=1
+                break
+              fi
+            done < <(find src/remainder -name '*.sol' -type f 2>/dev/null)
+          done
+          if [ "$STALE" -eq 1 ]; then
+            echo "::warning::Some test fixtures may be stale. Consider regenerating them."
+          else
+            echo "All fixtures are up-to-date with source files."
+          fi
 
       - name: Gas regression check (>10% increase = failure, >30M single-tx = failure)
         run: bash scripts/check-gas-regression.sh 10 30000000
