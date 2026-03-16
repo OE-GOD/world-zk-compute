@@ -585,11 +585,16 @@ contract ProgramRegistryTest is Test {
     // UPDATE VERIFIER TESTS
     // ========================================================================
 
+    event VerifierUpdated(bytes32 indexed programId, address oldVerifier, address newVerifier);
+
     function testUpdateVerifier() public {
         vm.prank(owner);
         registry.registerProgram(imageId, name, programUrl, bytes32(0));
 
-        address newVerifier = address(0x42);
+        // Deploy a dummy contract to use as verifier
+        DummyVerifier dummyVerifier = new DummyVerifier();
+        address newVerifier = address(dummyVerifier);
+
         vm.prank(owner);
         registry.updateVerifier(imageId, newVerifier);
 
@@ -597,19 +602,70 @@ contract ProgramRegistryTest is Test {
         assertEq(program.verifierContract, newVerifier);
     }
 
+    function testUpdateVerifierEmitsEvent() public {
+        vm.prank(owner);
+        registry.registerProgram(imageId, name, programUrl, bytes32(0));
+
+        DummyVerifier dummyVerifier = new DummyVerifier();
+        address newVerifier = address(dummyVerifier);
+
+        vm.prank(owner);
+        vm.expectEmit(true, false, false, true);
+        emit VerifierUpdated(imageId, address(0), newVerifier);
+        registry.updateVerifier(imageId, newVerifier);
+    }
+
     function testUpdateVerifierNotOwner() public {
         vm.prank(owner);
         registry.registerProgram(imageId, name, programUrl, bytes32(0));
 
+        DummyVerifier dummyVerifier = new DummyVerifier();
+
         vm.prank(other);
         vm.expectRevert(ProgramRegistry.NotProgramOwner.selector);
-        registry.updateVerifier(imageId, address(0x42));
+        registry.updateVerifier(imageId, address(dummyVerifier));
     }
 
     function testUpdateVerifierNotFound() public {
+        DummyVerifier dummyVerifier = new DummyVerifier();
+
         vm.prank(owner);
         vm.expectRevert(ProgramRegistry.ProgramNotFound.selector);
+        registry.updateVerifier(imageId, address(dummyVerifier));
+    }
+
+    function testUpdateVerifierRejectsZeroAddress() public {
+        vm.prank(owner);
+        registry.registerProgram(imageId, name, programUrl, bytes32(0));
+
+        vm.prank(owner);
+        vm.expectRevert(ProgramRegistry.InvalidVerifierContract.selector);
+        registry.updateVerifier(imageId, address(0));
+    }
+
+    function testUpdateVerifierRejectsEOA() public {
+        vm.prank(owner);
+        registry.registerProgram(imageId, name, programUrl, bytes32(0));
+
+        // address(0x42) is an EOA -- has no code
+        vm.prank(owner);
+        vm.expectRevert(ProgramRegistry.InvalidVerifierContract.selector);
         registry.updateVerifier(imageId, address(0x42));
+    }
+
+    function testUpdateVerifierAcceptsDeployedContract() public {
+        vm.prank(owner);
+        registry.registerProgram(imageId, name, programUrl, bytes32(0));
+
+        // Deploy a real contract and verify it is accepted
+        DummyVerifier dummyVerifier = new DummyVerifier();
+        assertTrue(address(dummyVerifier).code.length > 0, "DummyVerifier should have code");
+
+        vm.prank(owner);
+        registry.updateVerifier(imageId, address(dummyVerifier));
+
+        ProgramRegistry.Program memory program = registry.getProgram(imageId);
+        assertEq(program.verifierContract, address(dummyVerifier));
     }
 
     // ========================================================================
@@ -657,5 +713,14 @@ contract ProgramRegistryTest is Test {
 
         ProgramRegistry.Program memory program = registry.getProgram(imageId);
         assertEq(program.programUrl, "https://newurl.com");
+    }
+}
+
+/// @dev Minimal contract used as a valid verifier address in tests
+contract DummyVerifier {
+    function verify(bytes calldata, bytes32, bytes calldata) external pure {}
+
+    function proofSystem() external pure returns (string memory) {
+        return "dummy";
     }
 }

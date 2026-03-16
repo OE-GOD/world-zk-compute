@@ -67,6 +67,7 @@ contract ProgramRegistry is Ownable2Step, Pausable {
     error ProgramNotVerified();
     error ProgramAlreadyActive();
     error ProgramAlreadyInactive();
+    error InvalidVerifierContract();
 
     // ========================================================================
     // CONSTRUCTOR
@@ -178,11 +179,13 @@ contract ProgramRegistry is Ownable2Step, Pausable {
 
     /// @notice Update the verifier contract for a program (only program owner)
     /// @param imageId The program ID
-    /// @param verifierContract New IProofVerifier address (0x0 = use default)
+    /// @param verifierContract New IProofVerifier address (must be a deployed contract, not EOA or address(0))
     function updateVerifier(bytes32 imageId, address verifierContract) external {
         Program storage program = programs[imageId];
         if (program.registeredAt == 0) revert ProgramNotFound();
         if (program.owner != msg.sender) revert NotProgramOwner();
+        if (verifierContract == address(0)) revert InvalidVerifierContract();
+        if (verifierContract.code.length == 0) revert InvalidVerifierContract();
 
         address oldVerifier = program.verifierContract;
         program.verifierContract = verifierContract;
