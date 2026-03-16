@@ -77,12 +77,14 @@ abstract contract UUPSUpgradeable {
 
     event Upgraded(address indexed implementation);
     event AdminChanged(address previousAdmin, address newAdmin);
+    event TimelockChanged(address previousTimelock, address newTimelock);
 
     // ========================================================================
     // ERRORS
     // ========================================================================
 
     error NotAdmin();
+    error NotTimelocked();
     error InvalidImplementation();
     error AlreadyInitialized();
     error NotInitializing();
@@ -94,6 +96,11 @@ abstract contract UUPSUpgradeable {
     /// @dev Initialization state
     uint8 private _initialized;
     bool private _initializing;
+
+    /// @notice Optional timelock controller address for critical operations
+    /// @dev When set, functions guarded by onlyTimelocked require msg.sender == timelock.
+    ///      When not set (address(0)), those functions fall back to requiring msg.sender == admin.
+    address public timelock;
 
     // ========================================================================
     // MODIFIERS
@@ -127,14 +134,28 @@ abstract contract UUPSUpgradeable {
         _;
     }
 
+    /// @notice Restrict to timelock if one is set, otherwise to admin
+    /// @dev When timelock == address(0), falls back to admin-only (backwards compatible).
+    ///      When timelock is set, requires msg.sender == timelock (i.e., the timelock
+    ///      controller must be the caller after its delay has passed).
+    modifier onlyTimelocked() {
+        if (timelock != address(0)) {
+            if (msg.sender != timelock) revert NotTimelocked();
+        } else {
+            if (msg.sender != _getAdmin()) revert NotAdmin();
+        }
+        _;
+    }
+
     // ========================================================================
     // UPGRADE FUNCTIONS
     // ========================================================================
 
     /// @notice Upgrade to a new implementation
     /// @param newImplementation Address of new implementation
-    /// @dev Override _authorizeUpgrade to add access control
-    function upgradeTo(address newImplementation) external onlyAdmin {
+    /// @dev Override _authorizeUpgrade to add access control.
+    ///      Uses onlyTimelocked: if a timelock is set, only the timelock can call this.
+    function upgradeTo(address newImplementation) external onlyTimelocked {
         _authorizeUpgrade(newImplementation);
         _upgradeToAndCall(newImplementation, new bytes(0));
     }
@@ -142,7 +163,8 @@ abstract contract UUPSUpgradeable {
     /// @notice Upgrade to new implementation and call function
     /// @param newImplementation Address of new implementation
     /// @param data Calldata for post-upgrade call
-    function upgradeToAndCall(address newImplementation, bytes memory data) external payable onlyAdmin {
+    /// @dev Uses onlyTimelocked: if a timelock is set, only the timelock can call this.
+    function upgradeToAndCall(address newImplementation, bytes memory data) external payable onlyTimelocked {
         _authorizeUpgrade(newImplementation);
         _upgradeToAndCall(newImplementation, data);
     }
@@ -190,6 +212,16 @@ abstract contract UUPSUpgradeable {
         require(newAdmin != address(0), "Invalid admin");
         emit AdminChanged(_getAdmin(), newAdmin);
         StorageSlot.getAddressSlot(StorageSlot.ADMIN_SLOT).value = newAdmin;
+    }
+
+    /// @notice Set or clear the timelock controller address
+    /// @param _timelock The timelock controller address, or address(0) to disable
+    /// @dev Only the admin can set the timelock. Once set, critical operations
+    ///      guarded by onlyTimelocked will require calls through the timelock.
+    function setTimelock(address _timelock) external onlyAdmin {
+        address oldTimelock = timelock;
+        timelock = _timelock;
+        emit TimelockChanged(oldTimelock, _timelock);
     }
 
     /// @notice Get admin from storage
@@ -370,12 +402,12 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
     // UPGRADE AUTHORIZATION
     // ========================================================================
 
-    /// @notice Authorize upgrade (admin only)
-    function _authorizeUpgrade(address newImplementation) internal override onlyAdmin {
+    /// @notice Authorize upgrade
+    /// @dev Access control is enforced by the onlyTimelocked modifier on upgradeTo/upgradeToAndCall.
+    function _authorizeUpgrade(address newImplementation) internal override {
         // Could add additional checks here:
-        // - Timelock
-        // - Multi-sig requirement
         // - Version validation
+        // - Contract interface checks
     }
 
     // ========================================================================
@@ -518,7 +550,8 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
     // ========================================================================
 
     /// @notice Set protocol fee
-    function setProtocolFee(uint256 _feeBps) external onlyAdmin {
+    /// @dev Uses onlyTimelocked: if a timelock is set, only the timelock can call this.
+    function setProtocolFee(uint256 _feeBps) external onlyTimelocked {
         require(_feeBps <= MAX_FEE_BPS, "Fee too high");
         uint256 oldFeeBps = protocolFeeBps;
         protocolFeeBps = _feeBps;
@@ -526,7 +559,8 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
     }
 
     /// @notice Set fee recipient
-    function setFeeRecipient(address _recipient) external onlyAdmin {
+    /// @dev Uses onlyTimelocked: if a timelock is set, only the timelock can call this.
+    function setFeeRecipient(address _recipient) external onlyTimelocked {
         require(_recipient != address(0), "Invalid recipient");
         address oldRecipient = feeRecipient;
         feeRecipient = _recipient;

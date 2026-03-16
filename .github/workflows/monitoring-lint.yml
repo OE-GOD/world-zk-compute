@@ -87,18 +87,22 @@ jobs:
           print('All JSON files valid.')
           "
 
-      - name: Check for unfilled placeholders (warning only)
+      - name: Check for unfilled placeholders
         run: |
-          echo "Checking for <REPLACE_*> placeholders in monitoring configs..."
-          if grep -rn '<REPLACE_' monitoring/ 2>/dev/null; then
+          echo "Checking for <REPLACE_*> placeholders in monitoring config files..."
+          # Only check YAML config files, not scripts or documentation
+          if grep -rn --include='*.yml' --include='*.yaml' '<REPLACE_' monitoring/ 2>/dev/null; then
             echo ""
-            echo "::warning::Unfilled <REPLACE_*> placeholders found in monitoring configs. These must be replaced before production use."
+            echo "::error::Unfilled <REPLACE_*> placeholders found in monitoring config files."
+            echo "These raw placeholders must not be committed. Use \${ENV_VAR} references instead."
+            echo "See monitoring/README.md for the list of required environment variables."
+            exit 1
           else
-            echo "No unfilled placeholders found."
+            echo "No unfilled placeholders found in config files."
           fi
 
-      - name: Run validate-config.sh (warning only)
+      - name: Run validate-config.sh
         if: hashFiles('monitoring/validate-config.sh') != ''
         run: |
           chmod +x monitoring/validate-config.sh
-          ./monitoring/validate-config.sh || echo "::warning::validate-config.sh reported unfilled placeholders. See output above."
+          ./monitoring/validate-config.sh

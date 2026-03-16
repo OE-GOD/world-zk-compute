@@ -31,5 +31,8 @@ USER appuser
 
 EXPOSE 3000
 
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
+
 ENTRYPOINT ["xgboost-remainder"]
 CMD ["--model", "/app/model.json", "--serve", "--host", "0.0.0.0", "--port", "3000"]

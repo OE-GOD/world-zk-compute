@@ -767,4 +767,194 @@ contract ProverRegistryTest is Test {
         assertTrue(registry.isActive(prover1));
         assertEq(registry.getProver(prover1).stake, MIN_STAKE);
     }
+
+    // ========================================================================
+    // COMMIT-REVEAL PROVER SELECTION TESTS
+    // ========================================================================
+
+    // Re-declare commit-reveal events
+    event SelectionRequested(uint256 indexed requestId, address indexed requester, bytes32 commitment);
+    event SelectionFulfilled(uint256 indexed requestId, address indexed prover, uint256 seed);
+
+    /// @notice Full commit-reveal flow: request -> advance 1 block -> fulfill -> get valid prover
+    function testCommitRevealFullFlow() public {
+        _registerProver(prover1, 200 ether, "ep1");
+        _registerProver(prover2, 300 ether, "ep2");
+        _registerProver(prover3, 500 ether, "ep3");
+
+        bytes32 secret = keccak256("my random secret");
+        bytes32 commitment = keccak256(abi.encodePacked(secret));
+
+        // Step 1: Request selection (commit phase)
+        vm.prank(prover1);
+        vm.expectEmit(true, true, false, true);
+        emit SelectionRequested(0, prover1, commitment);
+        uint256 requestId = registry.requestProverSelection(commitment);
+        assertEq(requestId, 0, "first request should be ID 0");
+
+        // Verify the request was stored
+        (bytes32 storedCommitment, uint256 storedBlock, address storedRequester, bool fulfilled) =
+            registry.selectionRequests(requestId);
+        assertEq(storedCommitment, commitment);
+        assertEq(storedBlock, block.number);
+        assertEq(storedRequester, prover1);
+        assertFalse(fulfilled);
+
+        // Verify nextRequestId incremented
+        assertEq(registry.nextRequestId(), 1);
+
+        // Step 2: Advance 1 block (reveal must be in a later block)
+        vm.roll(block.number + 1);
+
+        // Step 3: Fulfill (reveal phase)
+        address selected = registry.fulfillProverSelection(requestId, secret);
+
+        // Verify a valid active prover was selected
+        assertTrue(registry.isActive(selected), "selected prover must be active");
+        assertTrue(registry.isProver(selected), "selected must be a registered prover");
+
+        // Verify request marked as fulfilled
+        (,,, bool fulfilledAfter) = registry.selectionRequests(requestId);
+        assertTrue(fulfilledAfter, "request should be fulfilled");
+    }
+
+    /// @notice Wrong secret reverts with InvalidSecret
+    function testCommitRevealWrongSecretReverts() public {
+        _registerDefaultProver(prover1);
+
+        bytes32 secret = keccak256("correct secret");
+        bytes32 commitment = keccak256(abi.encodePacked(secret));
+
+        uint256 requestId = registry.requestProverSelection(commitment);
+        vm.roll(block.number + 1);
+
+        bytes32 wrongSecret = keccak256("wrong secret");
+        vm.expectRevert(ProverRegistry.InvalidSecret.selector);
+        registry.fulfillProverSelection(requestId, wrongSecret);
+    }
+
+    /// @notice Same-block reveal reverts with SameBlockReveal
+    function testCommitRevealSameBlockReverts() public {
+        _registerDefaultProver(prover1);
+
+        bytes32 secret = keccak256("my secret");
+        bytes32 commitment = keccak256(abi.encodePacked(secret));
+
+        uint256 requestId = registry.requestProverSelection(commitment);
+
+        // Do NOT advance block -- try to reveal in same block
+        vm.expectRevert(ProverRegistry.SameBlockReveal.selector);
+        registry.fulfillProverSelection(requestId, secret);
+    }
+
+    /// @notice Already fulfilled request reverts with RequestAlreadyFulfilled
+    function testCommitRevealAlreadyFulfilledReverts() public {
+        _registerDefaultProver(prover1);
+
+        bytes32 secret = keccak256("my secret");
+        bytes32 commitment = keccak256(abi.encodePacked(secret));
+
+        uint256 requestId = registry.requestProverSelection(commitment);
+        vm.roll(block.number + 1);
+
+        // Fulfill once (success)
+        registry.fulfillProverSelection(requestId, secret);
+
+        // Try again (should revert)
+        vm.expectRevert(ProverRegistry.RequestAlreadyFulfilled.selector);
+        registry.fulfillProverSelection(requestId, secret);
+    }
+
+    /// @notice Fulfillment with no active provers reverts with NoActiveProvers
+    function testCommitRevealNoActiveProversReverts() public {
+        // No provers registered at all
+        bytes32 secret = keccak256("my secret");
+        bytes32 commitment = keccak256(abi.encodePacked(secret));
+
+        uint256 requestId = registry.requestProverSelection(commitment);
+        vm.roll(block.number + 1);
+
+        vm.expectRevert(ProverRegistry.NoActiveProvers.selector);
+        registry.fulfillProverSelection(requestId, secret);
+    }
+
+    /// @notice Fulfillment with invalid requestId reverts with RequestNotFound
+    function testCommitRevealRequestNotFoundReverts() public {
+        _registerDefaultProver(prover1);
+
+        bytes32 secret = keccak256("my secret");
+        vm.roll(block.number + 1);
+
+        vm.expectRevert(ProverRegistry.RequestNotFound.selector);
+        registry.fulfillProverSelection(999, secret);
+    }
+
+    /// @notice Selection distributes across provers (statistical test with multiple reveals)
+    function testCommitRevealDistribution() public {
+        // Register 3 provers with equal stake (selection weight is stake * reputation)
+        _registerProver(prover1, 200 ether, "ep1");
+        _registerProver(prover2, 200 ether, "ep2");
+        _registerProver(prover3, 200 ether, "ep3");
+
+        // Track selections
+        uint256 count1 = 0;
+        uint256 count2 = 0;
+        uint256 count3 = 0;
+
+        uint256 trials = 100;
+        for (uint256 i = 0; i < trials; i++) {
+            bytes32 secret = keccak256(abi.encodePacked("secret", i));
+            bytes32 commitment = keccak256(abi.encodePacked(secret));
+
+            uint256 requestId = registry.requestProverSelection(commitment);
+            vm.roll(block.number + 1);
+
+            address selected = registry.fulfillProverSelection(requestId, secret);
+
+            if (selected == prover1) count1++;
+            else if (selected == prover2) count2++;
+            else if (selected == prover3) count3++;
+        }
+
+        // With equal weights, each prover should get roughly 33%.
+        // Be generous with bounds: each should get at least 10% (10/100).
+        assertGt(count1, 10, "prover1 should be selected at least 10 times out of 100");
+        assertGt(count2, 10, "prover2 should be selected at least 10 times out of 100");
+        assertGt(count3, 10, "prover3 should be selected at least 10 times out of 100");
+
+        // And total should equal trials
+        assertEq(count1 + count2 + count3, trials, "all selections should map to one of the three provers");
+    }
+
+    /// @notice Multiple sequential requests get incrementing IDs
+    function testCommitRevealSequentialRequestIds() public {
+        _registerDefaultProver(prover1);
+
+        bytes32 commitment1 = keccak256(abi.encodePacked(keccak256("s1")));
+        bytes32 commitment2 = keccak256(abi.encodePacked(keccak256("s2")));
+        bytes32 commitment3 = keccak256(abi.encodePacked(keccak256("s3")));
+
+        uint256 id1 = registry.requestProverSelection(commitment1);
+        uint256 id2 = registry.requestProverSelection(commitment2);
+        uint256 id3 = registry.requestProverSelection(commitment3);
+
+        assertEq(id1, 0);
+        assertEq(id2, 1);
+        assertEq(id3, 2);
+        assertEq(registry.nextRequestId(), 3);
+    }
+
+    /// @notice Single active prover always gets selected in commit-reveal
+    function testCommitRevealSingleProver() public {
+        _registerDefaultProver(prover1);
+
+        bytes32 secret = keccak256("single prover secret");
+        bytes32 commitment = keccak256(abi.encodePacked(secret));
+
+        uint256 requestId = registry.requestProverSelection(commitment);
+        vm.roll(block.number + 1);
+
+        address selected = registry.fulfillProverSelection(requestId, secret);
+        assertEq(selected, prover1, "only active prover should always be selected");
+    }
 }

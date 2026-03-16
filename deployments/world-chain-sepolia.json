@@ -1,0 +1,26 @@
+{
+  "network": "world-chain-sepolia",
+  "chain_id": 4801,
+  "deployed_at": "",
+  "deployer": "",
+  "block_number": 0,
+  "contracts": {
+    "RemainderVerifier": "",
+    "ProgramRegistry": "",
+    "ProverReputation": "",
+    "ProverRegistry": "",
+    "ExecutionEngine": "",
+    "TEEMLVerifier": ""
+  },
+  "dagCircuit": {
+    "registered": false,
+    "circuitHash": ""
+  },
+  "wiring": {
+    "executionEngine.verifier": "",
+    "executionEngine.programRegistry": "",
+    "executionEngine.reputation": "",
+    "teeMLVerifier.remainderVerifier": ""
+  },
+  "verified": false
+}

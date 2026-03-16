@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
 import "../src/Upgradeable.sol";
+import "../src/TimelockController.sol";
 import "../src/MockRiscZeroVerifier.sol";
 
 /// @dev V2 implementation for testing upgrades — adds a new storage variable
@@ -45,7 +46,7 @@ contract UpgradeableExecutionEngineV2 is UUPSUpgradeable {
         emit Initialized(VERSION);
     }
 
-    function _authorizeUpgrade(address) internal override onlyAdmin {}
+    function _authorizeUpgrade(address) internal override {}
 }
 
 /// @dev Minimal implementation for proxy testing
@@ -64,7 +65,7 @@ contract MinimalImpl is UUPSUpgradeable {
         value = _value;
     }
 
-    function _authorizeUpgrade(address) internal override onlyAdmin {}
+    function _authorizeUpgrade(address) internal override {}
 }
 
 /// @dev V2 of minimal implementation
@@ -80,7 +81,7 @@ contract MinimalImplV2 is UUPSUpgradeable {
         value = _value;
     }
 
-    function _authorizeUpgrade(address) internal override onlyAdmin {}
+    function _authorizeUpgrade(address) internal override {}
 }
 
 contract UpgradeableTest is Test {
@@ -610,5 +611,651 @@ contract UpgradeableTest is Test {
         // After initialization, the contract should not be paused
         // and the reentrancy guard should be initialized (submitProof works in full cycle test)
         assertFalse(engine.paused());
+    }
+
+    // ========================================================================
+    // 16. Timelock integration on UUPSUpgradeable
+    // ========================================================================
+
+    event TimelockChanged(address previousTimelock, address newTimelock);
+
+    function test_initialTimelockIsZero() public view {
+        assertEq(engine.timelock(), address(0));
+    }
+
+    function test_setTimelockByAdmin() public {
+        address timelockAddr = address(0xDEAD);
+        vm.expectEmit(false, false, false, true);
+        emit TimelockChanged(address(0), timelockAddr);
+        engine.setTimelock(timelockAddr);
+        assertEq(engine.timelock(), timelockAddr);
+    }
+
+    function test_onlyAdminCanSetTimelock() public {
+        vm.prank(user1);
+        vm.expectRevert(UUPSUpgradeable.NotAdmin.selector);
+        engine.setTimelock(address(0xDEAD));
+    }
+
+    function test_clearTimelock() public {
+        engine.setTimelock(address(0xDEAD));
+        assertEq(engine.timelock(), address(0xDEAD));
+        engine.setTimelock(address(0));
+        assertEq(engine.timelock(), address(0));
+    }
+
+    function test_timelockSetBlocksDirectAdminCalls() public {
+        address timelockAddr = address(0xDEAD);
+        engine.setTimelock(timelockAddr);
+
+        // Admin direct calls to timelocked functions should revert
+        vm.expectRevert(UUPSUpgradeable.NotTimelocked.selector);
+        engine.setProtocolFee(500);
+
+        vm.expectRevert(UUPSUpgradeable.NotTimelocked.selector);
+        engine.setFeeRecipient(user2);
+
+        UpgradeableExecutionEngineV2 implV2 = new UpgradeableExecutionEngineV2();
+        vm.expectRevert(UUPSUpgradeable.NotTimelocked.selector);
+        engine.upgradeTo(address(implV2));
+    }
+
+    function test_timelockAddressCanCallTimelockedFunctions() public {
+        address timelockAddr = address(0xDEAD);
+        engine.setTimelock(timelockAddr);
+
+        // The timelock address itself can call the functions
+        vm.prank(timelockAddr);
+        engine.setProtocolFee(500);
+        assertEq(engine.protocolFeeBps(), 500);
+
+        vm.prank(timelockAddr);
+        engine.setFeeRecipient(user2);
+        assertEq(engine.feeRecipient(), user2);
+    }
+
+    function test_withoutTimelockAdminCanCallDirectly() public {
+        // Default: no timelock set, admin can call directly (backwards compatible)
+        engine.setProtocolFee(500);
+        assertEq(engine.protocolFeeBps(), 500);
+
+        engine.setFeeRecipient(user2);
+        assertEq(engine.feeRecipient(), user2);
+    }
+
+    function test_nonAdminNonTimelockCannotCallTimelockedFunctions() public {
+        // Without timelock: non-admin reverts
+        vm.prank(user1);
+        vm.expectRevert(UUPSUpgradeable.NotAdmin.selector);
+        engine.setProtocolFee(500);
+
+        // With timelock: non-timelock reverts
+        engine.setTimelock(address(0xDEAD));
+        vm.prank(user1);
+        vm.expectRevert(UUPSUpgradeable.NotTimelocked.selector);
+        engine.setProtocolFee(500);
+    }
+
+    function test_adminNonTimelockedFunctionsStillWorkWithTimelockSet() public {
+        // pause/unpause and changeAdmin use onlyAdmin, not onlyTimelocked
+        engine.setTimelock(address(0xDEAD));
+
+        // These should still work from admin
+        engine.pause();
+        assertTrue(engine.paused());
+        engine.unpause();
+        assertFalse(engine.paused());
+    }
+}
+
+// =============================================================================
+// TimelockController Tests
+// =============================================================================
+
+contract TimelockControllerTest is Test {
+    TimelockController public timelockCtl;
+    UpgradeableExecutionEngine public impl;
+    MockRiscZeroVerifier public mockVerifier;
+    UUPSProxy public proxy;
+    UpgradeableExecutionEngine public engine;
+
+    address owner = address(this);
+    address nonOwner = address(0x1111);
+    address registryAddr = address(0xBEEF);
+    address feeRecipientAddr = address(0xFEE);
+
+    uint256 constant MIN_DELAY = 48 hours;
+
+    // Re-declare events for expectEmit
+    event OperationScheduled(
+        bytes32 indexed id, address indexed target, bytes data, uint256 delay, uint256 readyTimestamp
+    );
+    event OperationExecuted(bytes32 indexed id);
+    event OperationCancelled(bytes32 indexed id);
+    event MinDelayUpdated(uint256 oldDelay, uint256 newDelay);
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event TimelockChanged(address previousTimelock, address newTimelock);
+    event ProtocolFeeUpdated(uint256 oldFeeBps, uint256 newFeeBps);
+    event FeeRecipientUpdated(address indexed oldRecipient, address indexed newRecipient);
+
+    function setUp() public {
+        // Deploy timelock
+        timelockCtl = new TimelockController(MIN_DELAY, owner);
+
+        // Deploy upgradeable engine through proxy
+        mockVerifier = new MockRiscZeroVerifier();
+        impl = new UpgradeableExecutionEngine();
+        bytes memory initData = abi.encodeCall(
+            UpgradeableExecutionEngine.initialize, (registryAddr, address(mockVerifier), feeRecipientAddr, owner)
+        );
+        proxy = new UUPSProxy(address(impl), initData);
+        engine = UpgradeableExecutionEngine(payable(address(proxy)));
+
+        // Wire up: set the timelock on the engine
+        engine.setTimelock(address(timelockCtl));
+    }
+
+    // ========================================================================
+    // 1. TimelockController constructor
+    // ========================================================================
+
+    function test_constructorSetsOwnerAndDelay() public view {
+        assertEq(timelockCtl.owner(), owner);
+        assertEq(timelockCtl.minDelay(), MIN_DELAY);
+    }
+
+    function test_constructorRevertsZeroDelay() public {
+        vm.expectRevert(TimelockController.ZeroDelay.selector);
+        new TimelockController(0, owner);
+    }
+
+    function test_constructorRevertsZeroOwner() public {
+        vm.expectRevert(TimelockController.ZeroAddress.selector);
+        new TimelockController(MIN_DELAY, address(0));
+    }
+
+    // ========================================================================
+    // 2. Schedule
+    // ========================================================================
+
+    function test_scheduleOperation() public {
+        bytes32 id = keccak256("test-op-1");
+        bytes memory data = abi.encodeCall(UpgradeableExecutionEngine.setProtocolFee, (500));
+
+        vm.expectEmit(true, true, false, true);
+        emit OperationScheduled(id, address(engine), data, MIN_DELAY, block.timestamp + MIN_DELAY);
+
+        timelockCtl.schedule(id, address(engine), data, MIN_DELAY);
+
+        (address target, bytes memory opData, uint256 readyTs, bool executed, bool cancelled) =
+            timelockCtl.getOperation(id);
+        assertEq(target, address(engine));
+        assertEq(opData, data);
+        assertEq(readyTs, block.timestamp + MIN_DELAY);
+        assertFalse(executed);
+        assertFalse(cancelled);
+    }
+
+    function test_scheduleWithLongerDelay() public {
+        bytes32 id = keccak256("test-op-long");
+        bytes memory data = abi.encodeCall(UpgradeableExecutionEngine.setProtocolFee, (500));
+        uint256 longerDelay = 7 days;
+
+        timelockCtl.schedule(id, address(engine), data, longerDelay);
+
+        (,, uint256 readyTs,,) = timelockCtl.getOperation(id);
+        assertEq(readyTs, block.timestamp + longerDelay);
+    }
+
+    function test_scheduleRevertsDelayBelowMinimum() public {
+        bytes32 id = keccak256("test-op-short");
+        bytes memory data = abi.encodeCall(UpgradeableExecutionEngine.setProtocolFee, (500));
+
+        vm.expectRevert(TimelockController.DelayBelowMinimum.selector);
+        timelockCtl.schedule(id, address(engine), data, MIN_DELAY - 1);
+    }
+
+    function test_scheduleRevertsDuplicateId() public {
+        bytes32 id = keccak256("test-op-dup");
+        bytes memory data = abi.encodeCall(UpgradeableExecutionEngine.setProtocolFee, (500));
+
+        timelockCtl.schedule(id, address(engine), data, MIN_DELAY);
+
+        vm.expectRevert(TimelockController.OperationAlreadyScheduled.selector);
+        timelockCtl.schedule(id, address(engine), data, MIN_DELAY);
+    }
+
+    function test_scheduleRevertsZeroTarget() public {
+        bytes32 id = keccak256("test-op-zero");
+        bytes memory data = abi.encodeCall(UpgradeableExecutionEngine.setProtocolFee, (500));
+
+        vm.expectRevert(TimelockController.ZeroAddress.selector);
+        timelockCtl.schedule(id, address(0), data, MIN_DELAY);
+    }
+
+    function test_onlyOwnerCanSchedule() public {
+        bytes32 id = keccak256("test-op-nonowner");
+        bytes memory data = abi.encodeCall(UpgradeableExecutionEngine.setProtocolFee, (500));
+
+        vm.prank(nonOwner);
+        vm.expectRevert(TimelockController.NotOwner.selector);
+        timelockCtl.schedule(id, address(engine), data, MIN_DELAY);
+    }
+
+    // ========================================================================
+    // 3. Execute
+    // ========================================================================
+
+    function test_executeAfterDelay() public {
+        bytes32 id = keccak256("test-exec-1");
+        bytes memory data = abi.encodeCall(UpgradeableExecutionEngine.setProtocolFee, (500));
+
+        timelockCtl.schedule(id, address(engine), data, MIN_DELAY);
+
+        // Warp to exactly the ready time
+        vm.warp(block.timestamp + MIN_DELAY);
+
+        vm.expectEmit(true, false, false, false);
+        emit OperationExecuted(id);
+
+        timelockCtl.execute(id);
+
+        // Verify the fee was actually changed
+        assertEq(engine.protocolFeeBps(), 500);
+
+        // Check operation is marked executed
+        (,, uint256 readyTs, bool executed, bool cancelled) = timelockCtl.getOperation(id);
+        assertTrue(executed);
+        assertFalse(cancelled);
+        assertGt(readyTs, 0);
+    }
+
+    function test_executeRevertsBeforeDelay() public {
+        bytes32 id = keccak256("test-exec-early");
+        bytes memory data = abi.encodeCall(UpgradeableExecutionEngine.setProtocolFee, (500));
+
+        timelockCtl.schedule(id, address(engine), data, MIN_DELAY);
+
+        // Warp to 1 second before ready
+        vm.warp(block.timestamp + MIN_DELAY - 1);
+
+        vm.expectRevert(TimelockController.OperationNotReady.selector);
+        timelockCtl.execute(id);
+    }
+
+    function test_executeRevertsNotScheduled() public {
+        bytes32 id = keccak256("nonexistent");
+
+        vm.expectRevert(TimelockController.OperationNotScheduled.selector);
+        timelockCtl.execute(id);
+    }
+
+    function test_executeRevertsAlreadyExecuted() public {
+        bytes32 id = keccak256("test-exec-double");
+        bytes memory data = abi.encodeCall(UpgradeableExecutionEngine.setProtocolFee, (500));
+
+        timelockCtl.schedule(id, address(engine), data, MIN_DELAY);
+        vm.warp(block.timestamp + MIN_DELAY);
+        timelockCtl.execute(id);
+
+        vm.expectRevert(TimelockController.OperationAlreadyExecuted.selector);
+        timelockCtl.execute(id);
+    }
+
+    function test_executeRevertsCancelled() public {
+        bytes32 id = keccak256("test-exec-cancelled");
+        bytes memory data = abi.encodeCall(UpgradeableExecutionEngine.setProtocolFee, (500));
+
+        timelockCtl.schedule(id, address(engine), data, MIN_DELAY);
+        timelockCtl.cancel(id);
+
+        vm.warp(block.timestamp + MIN_DELAY);
+
+        vm.expectRevert(TimelockController.OperationCancelledError.selector);
+        timelockCtl.execute(id);
+    }
+
+    function test_anyoneCanExecuteAfterDelay() public {
+        bytes32 id = keccak256("test-exec-anyone");
+        bytes memory data = abi.encodeCall(UpgradeableExecutionEngine.setProtocolFee, (500));
+
+        timelockCtl.schedule(id, address(engine), data, MIN_DELAY);
+        vm.warp(block.timestamp + MIN_DELAY);
+
+        // Non-owner can execute
+        vm.prank(nonOwner);
+        timelockCtl.execute(id);
+
+        assertEq(engine.protocolFeeBps(), 500);
+    }
+
+    // ========================================================================
+    // 4. Cancel
+    // ========================================================================
+
+    function test_cancelPendingOperation() public {
+        bytes32 id = keccak256("test-cancel-1");
+        bytes memory data = abi.encodeCall(UpgradeableExecutionEngine.setProtocolFee, (500));
+
+        timelockCtl.schedule(id, address(engine), data, MIN_DELAY);
+
+        vm.expectEmit(true, false, false, false);
+        emit OperationCancelled(id);
+
+        timelockCtl.cancel(id);
+
+        (,,,, bool cancelled) = timelockCtl.getOperation(id);
+        assertTrue(cancelled);
+    }
+
+    function test_cancelRevertsNotScheduled() public {
+        bytes32 id = keccak256("nonexistent-cancel");
+
+        vm.expectRevert(TimelockController.OperationNotScheduled.selector);
+        timelockCtl.cancel(id);
+    }
+
+    function test_cancelRevertsAlreadyExecuted() public {
+        bytes32 id = keccak256("test-cancel-executed");
+        bytes memory data = abi.encodeCall(UpgradeableExecutionEngine.setProtocolFee, (500));
+
+        timelockCtl.schedule(id, address(engine), data, MIN_DELAY);
+        vm.warp(block.timestamp + MIN_DELAY);
+        timelockCtl.execute(id);
+
+        vm.expectRevert(TimelockController.OperationAlreadyExecuted.selector);
+        timelockCtl.cancel(id);
+    }
+
+    function test_cancelRevertsAlreadyCancelled() public {
+        bytes32 id = keccak256("test-cancel-twice");
+        bytes memory data = abi.encodeCall(UpgradeableExecutionEngine.setProtocolFee, (500));
+
+        timelockCtl.schedule(id, address(engine), data, MIN_DELAY);
+        timelockCtl.cancel(id);
+
+        vm.expectRevert(TimelockController.OperationCancelledError.selector);
+        timelockCtl.cancel(id);
+    }
+
+    function test_onlyOwnerCanCancel() public {
+        bytes32 id = keccak256("test-cancel-nonowner");
+        bytes memory data = abi.encodeCall(UpgradeableExecutionEngine.setProtocolFee, (500));
+
+        timelockCtl.schedule(id, address(engine), data, MIN_DELAY);
+
+        vm.prank(nonOwner);
+        vm.expectRevert(TimelockController.NotOwner.selector);
+        timelockCtl.cancel(id);
+    }
+
+    // ========================================================================
+    // 5. Full E2E: schedule through timelock, execute on engine
+    // ========================================================================
+
+    function test_e2eSetProtocolFeeViaTimelock() public {
+        // The engine has timelock set in setUp()
+        assertEq(engine.timelock(), address(timelockCtl));
+
+        // Admin cannot directly call setProtocolFee anymore
+        vm.expectRevert(UUPSUpgradeable.NotTimelocked.selector);
+        engine.setProtocolFee(500);
+
+        // Schedule through timelock
+        bytes32 id = keccak256("set-fee-500");
+        bytes memory data = abi.encodeCall(UpgradeableExecutionEngine.setProtocolFee, (500));
+        timelockCtl.schedule(id, address(engine), data, MIN_DELAY);
+
+        // Cannot execute yet
+        vm.expectRevert(TimelockController.OperationNotReady.selector);
+        timelockCtl.execute(id);
+
+        // Wait for delay
+        vm.warp(block.timestamp + MIN_DELAY);
+
+        // Execute
+        timelockCtl.execute(id);
+        assertEq(engine.protocolFeeBps(), 500);
+    }
+
+    function test_e2eSetFeeRecipientViaTimelock() public {
+        address newRecipient = address(0x9999);
+
+        bytes32 id = keccak256("set-recipient");
+        bytes memory data = abi.encodeCall(UpgradeableExecutionEngine.setFeeRecipient, (newRecipient));
+        timelockCtl.schedule(id, address(engine), data, MIN_DELAY);
+
+        vm.warp(block.timestamp + MIN_DELAY);
+        timelockCtl.execute(id);
+
+        assertEq(engine.feeRecipient(), newRecipient);
+    }
+
+    function test_e2eUpgradeViaTimelock() public {
+        UpgradeableExecutionEngineV2 implV2 = new UpgradeableExecutionEngineV2();
+
+        bytes32 id = keccak256("upgrade-to-v2");
+        bytes memory data = abi.encodeCall(UUPSUpgradeable.upgradeTo, (address(implV2)));
+        timelockCtl.schedule(id, address(engine), data, MIN_DELAY);
+
+        vm.warp(block.timestamp + MIN_DELAY);
+        timelockCtl.execute(id);
+
+        assertEq(engine.implementation(), address(implV2));
+    }
+
+    function test_e2eCancelPreventExecution() public {
+        bytes32 id = keccak256("cancel-me");
+        bytes memory data = abi.encodeCall(UpgradeableExecutionEngine.setProtocolFee, (999));
+        timelockCtl.schedule(id, address(engine), data, MIN_DELAY);
+
+        // Cancel before delay passes
+        timelockCtl.cancel(id);
+
+        // Even after delay, execution should fail
+        vm.warp(block.timestamp + MIN_DELAY);
+        vm.expectRevert(TimelockController.OperationCancelledError.selector);
+        timelockCtl.execute(id);
+
+        // Fee should be unchanged
+        assertEq(engine.protocolFeeBps(), 250);
+    }
+
+    // ========================================================================
+    // 6. Backwards compatibility (no timelock set)
+    // ========================================================================
+
+    function test_backwardsCompatibleWithoutTimelock() public {
+        // Deploy a fresh engine without timelock
+        UpgradeableExecutionEngine freshImpl = new UpgradeableExecutionEngine();
+        bytes memory initData = abi.encodeCall(
+            UpgradeableExecutionEngine.initialize, (registryAddr, address(mockVerifier), feeRecipientAddr, owner)
+        );
+        UUPSProxy freshProxy = new UUPSProxy(address(freshImpl), initData);
+        UpgradeableExecutionEngine freshEngine = UpgradeableExecutionEngine(payable(address(freshProxy)));
+
+        // No timelock set -- admin can call directly
+        assertEq(freshEngine.timelock(), address(0));
+
+        freshEngine.setProtocolFee(500);
+        assertEq(freshEngine.protocolFeeBps(), 500);
+
+        freshEngine.setFeeRecipient(address(0x9999));
+        assertEq(freshEngine.feeRecipient(), address(0x9999));
+
+        UpgradeableExecutionEngineV2 implV2 = new UpgradeableExecutionEngineV2();
+        freshEngine.upgradeTo(address(implV2));
+        assertEq(freshEngine.implementation(), address(implV2));
+    }
+
+    // ========================================================================
+    // 7. View functions
+    // ========================================================================
+
+    function test_isOperationPending() public {
+        bytes32 id = keccak256("pending-check");
+        bytes memory data = abi.encodeCall(UpgradeableExecutionEngine.setProtocolFee, (500));
+
+        assertFalse(timelockCtl.isOperationPending(id));
+
+        timelockCtl.schedule(id, address(engine), data, MIN_DELAY);
+        assertTrue(timelockCtl.isOperationPending(id));
+
+        vm.warp(block.timestamp + MIN_DELAY);
+        assertTrue(timelockCtl.isOperationPending(id)); // Still pending until executed
+
+        timelockCtl.execute(id);
+        assertFalse(timelockCtl.isOperationPending(id)); // No longer pending
+    }
+
+    function test_isOperationReady() public {
+        bytes32 id = keccak256("ready-check");
+        bytes memory data = abi.encodeCall(UpgradeableExecutionEngine.setProtocolFee, (500));
+
+        assertFalse(timelockCtl.isOperationReady(id));
+
+        timelockCtl.schedule(id, address(engine), data, MIN_DELAY);
+        assertFalse(timelockCtl.isOperationReady(id)); // Not ready yet
+
+        vm.warp(block.timestamp + MIN_DELAY);
+        assertTrue(timelockCtl.isOperationReady(id)); // Now ready
+
+        timelockCtl.execute(id);
+        assertFalse(timelockCtl.isOperationReady(id)); // No longer ready (executed)
+    }
+
+    function test_isOperationPendingCancelled() public {
+        bytes32 id = keccak256("pending-cancelled");
+        bytes memory data = abi.encodeCall(UpgradeableExecutionEngine.setProtocolFee, (500));
+
+        timelockCtl.schedule(id, address(engine), data, MIN_DELAY);
+        assertTrue(timelockCtl.isOperationPending(id));
+
+        timelockCtl.cancel(id);
+        assertFalse(timelockCtl.isOperationPending(id));
+        assertFalse(timelockCtl.isOperationReady(id));
+    }
+
+    // ========================================================================
+    // 8. Admin functions on TimelockController itself
+    // ========================================================================
+
+    function test_setMinDelay() public {
+        uint256 newDelay = 72 hours;
+        vm.expectEmit(false, false, false, true);
+        emit MinDelayUpdated(MIN_DELAY, newDelay);
+        timelockCtl.setMinDelay(newDelay);
+        assertEq(timelockCtl.minDelay(), newDelay);
+    }
+
+    function test_setMinDelayRevertsZero() public {
+        vm.expectRevert(TimelockController.ZeroDelay.selector);
+        timelockCtl.setMinDelay(0);
+    }
+
+    function test_onlyOwnerCanSetMinDelay() public {
+        vm.prank(nonOwner);
+        vm.expectRevert(TimelockController.NotOwner.selector);
+        timelockCtl.setMinDelay(72 hours);
+    }
+
+    function test_transferOwnership() public {
+        vm.expectEmit(true, true, false, false);
+        emit OwnershipTransferred(owner, nonOwner);
+        timelockCtl.transferOwnership(nonOwner);
+        assertEq(timelockCtl.owner(), nonOwner);
+    }
+
+    function test_transferOwnershipRevertsZero() public {
+        vm.expectRevert(TimelockController.ZeroAddress.selector);
+        timelockCtl.transferOwnership(address(0));
+    }
+
+    function test_onlyOwnerCanTransferOwnership() public {
+        vm.prank(nonOwner);
+        vm.expectRevert(TimelockController.NotOwner.selector);
+        timelockCtl.transferOwnership(nonOwner);
+    }
+
+    function test_newOwnerCanScheduleAfterTransfer() public {
+        timelockCtl.transferOwnership(nonOwner);
+
+        bytes32 id = keccak256("new-owner-op");
+        bytes memory data = abi.encodeCall(UpgradeableExecutionEngine.setProtocolFee, (500));
+
+        vm.prank(nonOwner);
+        timelockCtl.schedule(id, address(engine), data, MIN_DELAY);
+
+        assertTrue(timelockCtl.isOperationPending(id));
+    }
+
+    function test_oldOwnerCannotScheduleAfterTransfer() public {
+        timelockCtl.transferOwnership(nonOwner);
+
+        bytes32 id = keccak256("old-owner-op");
+        bytes memory data = abi.encodeCall(UpgradeableExecutionEngine.setProtocolFee, (500));
+
+        vm.expectRevert(TimelockController.NotOwner.selector);
+        timelockCtl.schedule(id, address(engine), data, MIN_DELAY);
+    }
+
+    // ========================================================================
+    // 9. Execute with failing target call
+    // ========================================================================
+
+    function test_executeRevertsOnTargetRevert() public {
+        // Schedule a call that will revert (fee too high: > 1000 bps)
+        bytes32 id = keccak256("bad-fee");
+        bytes memory data = abi.encodeCall(UpgradeableExecutionEngine.setProtocolFee, (9999));
+
+        timelockCtl.schedule(id, address(engine), data, MIN_DELAY);
+        vm.warp(block.timestamp + MIN_DELAY);
+
+        vm.expectRevert("Fee too high");
+        timelockCtl.execute(id);
+    }
+
+    // ========================================================================
+    // 10. Multiple operations
+    // ========================================================================
+
+    function test_multipleOperationsIndependent() public {
+        bytes32 id1 = keccak256("op-1");
+        bytes32 id2 = keccak256("op-2");
+        bytes memory data1 = abi.encodeCall(UpgradeableExecutionEngine.setProtocolFee, (500));
+        bytes memory data2 = abi.encodeCall(UpgradeableExecutionEngine.setFeeRecipient, (address(0x9999)));
+
+        timelockCtl.schedule(id1, address(engine), data1, MIN_DELAY);
+        timelockCtl.schedule(id2, address(engine), data2, MIN_DELAY);
+
+        vm.warp(block.timestamp + MIN_DELAY);
+
+        // Execute in any order
+        timelockCtl.execute(id2);
+        assertEq(engine.feeRecipient(), address(0x9999));
+        assertEq(engine.protocolFeeBps(), 250); // Unchanged
+
+        timelockCtl.execute(id1);
+        assertEq(engine.protocolFeeBps(), 500);
+    }
+
+    function test_cancelOneExecuteOther() public {
+        bytes32 id1 = keccak256("cancel-this");
+        bytes32 id2 = keccak256("keep-this");
+        bytes memory data1 = abi.encodeCall(UpgradeableExecutionEngine.setProtocolFee, (100));
+        bytes memory data2 = abi.encodeCall(UpgradeableExecutionEngine.setProtocolFee, (500));
+
+        timelockCtl.schedule(id1, address(engine), data1, MIN_DELAY);
+        timelockCtl.schedule(id2, address(engine), data2, MIN_DELAY);
+
+        timelockCtl.cancel(id1);
+
+        vm.warp(block.timestamp + MIN_DELAY);
+
+        vm.expectRevert(TimelockController.OperationCancelledError.selector);
+        timelockCtl.execute(id1);
+
+        timelockCtl.execute(id2);
+        assertEq(engine.protocolFeeBps(), 500);
     }
 }

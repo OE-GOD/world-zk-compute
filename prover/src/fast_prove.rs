@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{RwLock, Semaphore};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::bonsai::ProvingMode;
 use crate::gpu_manager::GpuDeviceManager;
@@ -491,7 +491,7 @@ impl FastProver {
     /// Prove from cached trace
     /// Note: Trace caching is a future optimization. Currently, we re-prove.
     async fn prove_from_trace(&self, trace: &ExecutionTrace) -> Result<FastProofResult> {
-        debug!("Proving from cached trace ({} cycles)", trace.cycles);
+        warn!("prove_from_trace not yet implemented — returning empty proof, caller must fall back to full prove");
 
         // TODO: Implement trace-based proving when RISC Zero supports it
         // For now, we would need to re-execute and prove

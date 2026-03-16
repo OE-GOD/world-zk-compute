@@ -13,8 +13,8 @@ remappings = [
 fs_permissions = [{ access = "read", path = "test/fixtures" }]
 
 [invariant]
-runs = 64
-depth = 16
+runs = 512
+depth = 64
 fail_on_revert = false
 
 [rpc_endpoints]

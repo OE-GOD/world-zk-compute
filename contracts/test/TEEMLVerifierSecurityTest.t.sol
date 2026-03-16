@@ -88,12 +88,32 @@ contract TEEMLVerifierSecurityTest is Test {
         vm.deal(challenger, 100 ether);
     }
 
+    /// @dev Builds the EIP-712 domain separator matching the verifier contract
+    function _domainSeparator() internal view returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+                keccak256("TEEMLVerifier"),
+                keccak256("1"),
+                block.chainid,
+                address(verifier)
+            )
+        );
+    }
+
+    /// @dev Builds the EIP-712 digest for a TEEMLResult
+    function _buildDigest(bytes32 _modelHash, bytes32 _inputHash, bytes32 resultHash) internal view returns (bytes32) {
+        bytes32 structHash = keccak256(
+            abi.encode(verifier.RESULT_TYPEHASH(), _modelHash, _inputHash, resultHash)
+        );
+        return keccak256(abi.encodePacked("\x19\x01", _domainSeparator(), structHash));
+    }
+
     /// @dev Helper to create a valid attestation and submit a result
     function _submitResult(address _submitter, bytes memory result) internal returns (bytes32) {
         bytes32 resultHash = keccak256(result);
-        bytes32 message = keccak256(abi.encodePacked(modelHash, inputHash, resultHash));
-        bytes32 ethSignedHash = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", message));
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(enclavePrivateKey, ethSignedHash);
+        bytes32 digest = _buildDigest(modelHash, inputHash, resultHash);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(enclavePrivateKey, digest);
         bytes memory attestation = abi.encodePacked(r, s, v);
 
         vm.prank(_submitter);
@@ -111,9 +131,8 @@ contract TEEMLVerifierSecurityTest is Test {
         // Submit result from attacker contract (so stake returns to it)
         bytes memory result = "malicious-result";
         bytes32 resultHash = keccak256(result);
-        bytes32 message = keccak256(abi.encodePacked(modelHash, inputHash, resultHash));
-        bytes32 ethSignedHash = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", message));
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(enclavePrivateKey, ethSignedHash);
+        bytes32 digest = _buildDigest(modelHash, inputHash, resultHash);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(enclavePrivateKey, digest);
         bytes memory attestation = abi.encodePacked(r, s, v);
 
         vm.prank(address(attacker));
@@ -250,9 +269,8 @@ contract TEEMLVerifierSecurityTest is Test {
         // Overpay the stake (send 1 ETH when 0.1 required)
         bytes memory result = "result";
         bytes32 resultHash = keccak256(result);
-        bytes32 message = keccak256(abi.encodePacked(modelHash, inputHash, resultHash));
-        bytes32 ethSignedHash = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", message));
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(enclavePrivateKey, ethSignedHash);
+        bytes32 digest = _buildDigest(modelHash, inputHash, resultHash);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(enclavePrivateKey, digest);
         bytes memory attestation = abi.encodePacked(r, s, v);
 
         vm.prank(submitter);
@@ -287,9 +305,8 @@ contract TEEMLVerifierSecurityTest is Test {
         // Submit from ETH-rejecting contract
         bytes memory result = "result";
         bytes32 resultHash = keccak256(result);
-        bytes32 message = keccak256(abi.encodePacked(modelHash, inputHash, resultHash));
-        bytes32 ethSignedHash = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", message));
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(enclavePrivateKey, ethSignedHash);
+        bytes32 digest = _buildDigest(modelHash, inputHash, resultHash);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(enclavePrivateKey, digest);
         bytes memory attestation = abi.encodePacked(r, s, v);
 
         vm.prank(address(rejecter));
@@ -406,9 +423,8 @@ contract TEEMLVerifierSecurityTest is Test {
 
         bytes memory result = "result";
         bytes32 resultHash = keccak256(result);
-        bytes32 message = keccak256(abi.encodePacked(modelHash, inputHash, resultHash));
-        bytes32 ethSignedHash = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", message));
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(enclavePrivateKey, ethSignedHash);
+        bytes32 digest = _buildDigest(modelHash, inputHash, resultHash);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(enclavePrivateKey, digest);
         bytes memory attestation = abi.encodePacked(r, s, v);
 
         vm.prank(submitter);
@@ -420,9 +436,8 @@ contract TEEMLVerifierSecurityTest is Test {
         bytes memory result = "result";
         // Sign with correct data
         bytes32 resultHash = keccak256(result);
-        bytes32 message = keccak256(abi.encodePacked(modelHash, inputHash, resultHash));
-        bytes32 ethSignedHash = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", message));
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(enclavePrivateKey, ethSignedHash);
+        bytes32 digest = _buildDigest(modelHash, inputHash, resultHash);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(enclavePrivateKey, digest);
         bytes memory attestation = abi.encodePacked(r, s, v);
 
         // Submit with tampered result
@@ -515,9 +530,8 @@ contract TEEMLVerifierSecurityTest is Test {
     function test_insufficientStakeRejected() public {
         bytes memory result = "result";
         bytes32 resultHash = keccak256(result);
-        bytes32 message = keccak256(abi.encodePacked(modelHash, inputHash, resultHash));
-        bytes32 ethSignedHash = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", message));
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(enclavePrivateKey, ethSignedHash);
+        bytes32 digest = _buildDigest(modelHash, inputHash, resultHash);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(enclavePrivateKey, digest);
         bytes memory attestation = abi.encodePacked(r, s, v);
 
         vm.prank(submitter);
@@ -578,6 +592,123 @@ contract TEEMLVerifierSecurityTest is Test {
         // Resolve should still work (no whenNotPaused on resolve)
         verifier.resolveDisputeByTimeout(resultId);
         assertTrue(verifier.disputeResolved(resultId));
+    }
+
+    // ========================================================================
+    // 13. EIP-712 cross-chain replay protection
+    // ========================================================================
+
+    function test_eip712_crossChainReplayBlocked() public {
+        // Deploy a second verifier on a different "chain" (different chainId)
+        // by using vm.chainId to simulate a fork
+        uint256 originalChainId = block.chainid;
+
+        // Deploy verifier on chain A (current chain)
+        // verifier is already deployed in setUp at originalChainId
+
+        // Create attestation for chain A
+        bytes memory result = "cross-chain-test";
+        bytes32 resultHash = keccak256(result);
+        bytes32 structHash = keccak256(
+            abi.encode(verifier.RESULT_TYPEHASH(), modelHash, inputHash, resultHash)
+        );
+
+        // Domain separator for chain A
+        bytes32 domainA = keccak256(
+            abi.encode(
+                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+                keccak256("TEEMLVerifier"),
+                keccak256("1"),
+                originalChainId,
+                address(verifier)
+            )
+        );
+        bytes32 digestA = keccak256(abi.encodePacked("\x19\x01", domainA, structHash));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(enclavePrivateKey, digestA);
+        bytes memory attestationA = abi.encodePacked(r, s, v);
+
+        // Attestation works on chain A
+        vm.prank(submitter);
+        verifier.submitResult{value: 0.1 ether}(modelHash, inputHash, result, attestationA);
+
+        // Now switch to chain B (different chainId)
+        vm.chainId(originalChainId + 1);
+
+        // Deploy a second verifier on chain B
+        TEEMLVerifier verifierB = new TEEMLVerifier(admin, address(0));
+        verifierB.registerEnclave(enclaveKey, bytes32(uint256(0xBEEF)));
+
+        // Try to replay chain A's attestation on chain B -- should fail
+        // because the domain separator includes chainId
+        vm.prank(submitter);
+        vm.expectRevert(); // ecrecover recovers wrong address due to different domain
+        verifierB.submitResult{value: 0.1 ether}(modelHash, inputHash, result, attestationA);
+
+        // Restore original chainId
+        vm.chainId(originalChainId);
+    }
+
+    function test_eip712_crossContractReplayBlocked() public {
+        // Deploy two verifiers on the SAME chain but at different addresses
+        TEEMLVerifier verifier2 = new TEEMLVerifier(admin, address(0));
+        verifier2.registerEnclave(enclaveKey, bytes32(uint256(0xBEEF)));
+
+        // Create attestation targeting verifier (first contract)
+        bytes memory result = "cross-contract-test";
+        bytes32 resultHash = keccak256(result);
+        bytes32 structHash = keccak256(
+            abi.encode(verifier.RESULT_TYPEHASH(), modelHash, inputHash, resultHash)
+        );
+        bytes32 domain1 = keccak256(
+            abi.encode(
+                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+                keccak256("TEEMLVerifier"),
+                keccak256("1"),
+                block.chainid,
+                address(verifier)
+            )
+        );
+        bytes32 digest1 = keccak256(abi.encodePacked("\x19\x01", domain1, structHash));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(enclavePrivateKey, digest1);
+        bytes memory attestation1 = abi.encodePacked(r, s, v);
+
+        // Works on verifier
+        vm.prank(submitter);
+        verifier.submitResult{value: 0.1 ether}(modelHash, inputHash, result, attestation1);
+
+        // Fails on verifier2 (different contract address in domain separator)
+        vm.prank(submitter);
+        vm.expectRevert(); // ecrecover recovers wrong address due to different domain
+        verifier2.submitResult{value: 0.1 ether}(modelHash, inputHash, result, attestation1);
+    }
+
+    function test_eip712_domainSeparatorCachingAndForkProtection() public {
+        uint256 originalChainId = block.chainid;
+
+        // Domain separator should be cached
+        bytes32 ds1 = verifier.DOMAIN_SEPARATOR();
+        bytes32 ds2 = verifier.DOMAIN_SEPARATOR();
+        assertEq(ds1, ds2, "domain separator should be deterministic");
+
+        // After chain fork (chainId change), domain separator should change
+        vm.chainId(originalChainId + 100);
+        bytes32 ds3 = verifier.DOMAIN_SEPARATOR();
+        assertTrue(ds3 != ds1, "domain separator must change after chain fork");
+
+        // Verify it matches the expected recomputed value
+        bytes32 expected = keccak256(
+            abi.encode(
+                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+                keccak256("TEEMLVerifier"),
+                keccak256("1"),
+                originalChainId + 100,
+                address(verifier)
+            )
+        );
+        assertEq(ds3, expected, "recomputed domain separator should match expected");
+
+        // Restore
+        vm.chainId(originalChainId);
     }
 
     // ========================================================================

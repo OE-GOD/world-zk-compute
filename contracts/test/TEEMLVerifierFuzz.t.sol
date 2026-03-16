@@ -52,15 +52,30 @@ contract TEEMLVerifierFuzzTest is Test {
 
     // ---- Helpers ----
 
+    /// @dev Builds the EIP-712 domain separator matching the verifier contract
+    function _domainSeparator() internal view returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+                keccak256("TEEMLVerifier"),
+                keccak256("1"),
+                block.chainid,
+                address(verifier)
+            )
+        );
+    }
+
     function _signAttestation(bytes32 _modelHash, bytes32 _inputHash, bytes memory _result)
         internal
         view
         returns (bytes memory attestation)
     {
         bytes32 resultHash = keccak256(_result);
-        bytes32 message = keccak256(abi.encodePacked(_modelHash, _inputHash, resultHash));
-        bytes32 ethSignedHash = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", message));
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(enclavePrivateKey, ethSignedHash);
+        bytes32 structHash = keccak256(
+            abi.encode(verifier.RESULT_TYPEHASH(), _modelHash, _inputHash, resultHash)
+        );
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", _domainSeparator(), structHash));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(enclavePrivateKey, digest);
         attestation = abi.encodePacked(r, s, v);
     }
 

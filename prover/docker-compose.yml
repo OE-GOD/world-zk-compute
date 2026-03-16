@@ -8,8 +8,6 @@
 # For development:
 #   docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
 
-version: "3.8"
-
 services:
   prover:
     build:
@@ -46,7 +44,7 @@ services:
 
   # Optional: Prometheus for metrics collection
   prometheus:
-    image: prom/prometheus:latest
+    image: prom/prometheus:v2.53.0
     container_name: world-zk-prometheus
     restart: unless-stopped
     ports:
@@ -63,7 +61,7 @@ services:
 
   # Optional: Grafana for dashboards
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:11.1.0
     container_name: world-zk-grafana
     restart: unless-stopped
     ports:

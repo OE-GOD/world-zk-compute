@@ -6,7 +6,6 @@
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
 use tracing::info;
-#[cfg(any(feature = "jolt", feature = "remainder"))]
 use tracing::warn;
 
 use crate::bonsai::ProvingMode;
@@ -118,10 +117,32 @@ impl MultiVmProver {
             })
     }
 
+    /// Log a warning if the detected VM type is an experimental backend.
+    fn warn_if_experimental(vm_type: ZkVmType) {
+        match vm_type {
+            ZkVmType::Jolt => {
+                warn!(
+                    "Multi-VM: routing to Jolt backend (EXPERIMENTAL). \
+                     Jolt is a placeholder that cannot produce valid proofs. \
+                     Do not use in production."
+                );
+            }
+            ZkVmType::Remainder => {
+                warn!(
+                    "Multi-VM: routing to Remainder backend (EXPERIMENTAL). \
+                     Remainder is a placeholder that cannot produce valid proofs. \
+                     Do not use in production."
+                );
+            }
+            _ => {}
+        }
+    }
+
     /// Detect VM type and execute without proving.
     pub async fn execute(&self, elf: &[u8], input: &[u8]) -> Result<ExecutionResult> {
         let vm_type = detect_vm_type(elf);
         info!("Multi-VM: detected {} program, executing...", vm_type);
+        Self::warn_if_experimental(vm_type);
         let backend = self.get_backend(vm_type)?;
         backend.execute(elf, input).await
     }
@@ -130,6 +151,7 @@ impl MultiVmProver {
     pub async fn prove(&self, elf: &[u8], input: &[u8]) -> Result<ProofResult> {
         let vm_type = detect_vm_type(elf);
         info!("Multi-VM: detected {} program, proving...", vm_type);
+        Self::warn_if_experimental(vm_type);
         let backend = self.get_backend(vm_type)?;
         backend.prove(elf, input).await
     }
@@ -141,6 +163,7 @@ impl MultiVmProver {
             "Multi-VM: detected {} program, proving with SNARK...",
             vm_type
         );
+        Self::warn_if_experimental(vm_type);
         let backend = self.get_backend(vm_type)?;
         backend.prove_with_snark(elf, input).await
     }

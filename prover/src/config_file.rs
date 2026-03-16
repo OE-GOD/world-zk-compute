@@ -66,7 +66,7 @@ impl Default for ProverSection {
     fn default() -> Self {
         Self {
             private_key: None,
-            rpc_url: "https://worldchain-mainnet.g.alchemy.com/v2/demo".to_string(),
+            rpc_url: "https://YOUR_RPC_PROVIDER_URL".to_string(),
             contract_address: None,
             chain_id: 480,
             min_tip_wei: 0,

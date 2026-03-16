@@ -44,6 +44,65 @@
         "executionEngine.programRegistry": ""
       },
       "notes": "Local development. Re-deployed on each anvil restart."
+    },
+    {
+      "chainId": 4801,
+      "chainName": "world-chain-sepolia",
+      "deployedAt": "",
+      "deployer": "",
+      "contracts": {
+        "RemainderVerifier": {
+          "address": "",
+          "version": "1.0.0",
+          "deployTxHash": "",
+          "blockNumber": 0,
+          "verified": false
+        },
+        "ProgramRegistry": {
+          "address": "",
+          "version": "1.0.0",
+          "deployTxHash": "",
+          "blockNumber": 0,
+          "verified": false
+        },
+        "ProverReputation": {
+          "address": "",
+          "version": "1.0.0",
+          "deployTxHash": "",
+          "blockNumber": 0,
+          "verified": false
+        },
+        "ProverRegistry": {
+          "address": "",
+          "version": "1.0.0",
+          "deployTxHash": "",
+          "blockNumber": 0,
+          "verified": false
+        },
+        "ExecutionEngine": {
+          "address": "",
+          "implementationAddress": "",
+          "version": "1.0.0",
+          "deployTxHash": "",
+          "blockNumber": 0,
+          "verified": false
+        },
+        "TEEMLVerifier": {
+          "address": "",
+          "implementationAddress": "",
+          "version": "1.0.0",
+          "deployTxHash": "",
+          "blockNumber": 0,
+          "verified": false
+        }
+      },
+      "wiring": {
+        "executionEngine.verifier": "",
+        "executionEngine.programRegistry": "",
+        "executionEngine.reputation": "",
+        "teeMLVerifier.remainderVerifier": ""
+      },
+      "notes": "World Chain Sepolia testnet (chainId 4801). Full stack deployment including RemainderVerifier."
     }
   ]
 }

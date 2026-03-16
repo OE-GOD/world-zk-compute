@@ -1,17 +1,28 @@
 # Alertmanager configuration for world-zk-compute.
 #
-# IMPORTANT: Replace all placeholder values marked with <REPLACE_...> before use.
+# DEPLOYMENT: This file contains ${ENV_VAR} references that MUST be substituted
+# before use. Run envsubst or your deployment tool's template engine to fill them.
 #
-# Usage:
-#   alertmanager --config.file=alertmanager.yml
+# Required environment variables:
+#   PAGERDUTY_SERVICE_KEY       - PagerDuty Events API v1 service key (Integration Key)
+#   SLACK_WEBHOOK_URL_WARNINGS  - Slack Incoming Webhook URL for #world-zk-alerts channel
+#   SLACK_WEBHOOK_URL_INFO      - Slack Incoming Webhook URL for #world-zk-info channel
+#
+# Optional environment variables (uncomment SMTP section below to use):
+#   SMTP_PASSWORD               - Password for the SMTP relay
+#
+# Example deploy:
+#   envsubst < monitoring/alertmanager.yml > /etc/alertmanager/alertmanager.yml
+#   alertmanager --config.file=/etc/alertmanager/alertmanager.yml
 
 global:
   resolve_timeout: 5m
   # Uncomment and configure if using a shared SMTP relay for email notifications:
+  # Requires env var: SMTP_PASSWORD
   # smtp_smarthost: 'smtp.example.com:587'
   # smtp_from: 'alertmanager@example.com'
   # smtp_auth_username: 'alertmanager'
-  # smtp_auth_password: '<REPLACE_SMTP_PASSWORD>'
+  # smtp_auth_password: '${SMTP_PASSWORD}'
 
 # ---------------------------------------------------------------------------
 # Route tree
@@ -80,9 +91,10 @@ inhibit_rules:
 # ---------------------------------------------------------------------------
 receivers:
   # PagerDuty for critical alerts (OperatorDown, EnclaveDown, DisputeResolutionFailed).
+  # Requires env var: PAGERDUTY_SERVICE_KEY (Events API v1 Integration Key from PagerDuty service)
   - name: pagerduty-critical
     pagerduty_configs:
-      - service_key: '<REPLACE_PAGERDUTY_SERVICE_KEY>'
+      - service_key: '${PAGERDUTY_SERVICE_KEY}'
         description: '{{ .CommonAnnotations.summary }}'
         details:
           severity: '{{ .CommonLabels.severity }}'
@@ -93,9 +105,10 @@ receivers:
           resolved: '{{ .Alerts.Resolved | len }}'
 
   # Slack channel for warning-level alerts.
+  # Requires env var: SLACK_WEBHOOK_URL_WARNINGS (Slack Incoming Webhook for #world-zk-alerts)
   - name: slack-warnings
     slack_configs:
-      - api_url: '<REPLACE_SLACK_WEBHOOK_URL_WARNINGS>'
+      - api_url: '${SLACK_WEBHOOK_URL_WARNINGS}'
         channel: '#world-zk-alerts'
         send_resolved: true
         title: '[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}'
@@ -112,9 +125,10 @@ receivers:
         color: '{{ if eq .Status "firing" }}warning{{ else }}good{{ end }}'
 
   # Slack channel for info-level alerts (low priority).
+  # Requires env var: SLACK_WEBHOOK_URL_INFO (Slack Incoming Webhook for #world-zk-info)
   - name: slack-info
     slack_configs:
-      - api_url: '<REPLACE_SLACK_WEBHOOK_URL_INFO>'
+      - api_url: '${SLACK_WEBHOOK_URL_INFO}'
         channel: '#world-zk-info'
         send_resolved: true
         title: '[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}'

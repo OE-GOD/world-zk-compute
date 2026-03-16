@@ -570,9 +570,6 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
-    /// Guard for tests that mutate the ADMIN_API_KEY env var.
-    static ADMIN_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     fn test_storage() -> Arc<dyn Storage> {
         Arc::new(SqliteStorage::open_in_memory().unwrap())
     }

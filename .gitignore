@@ -97,3 +97,17 @@ contracts/stylus/gkr-verifier/calldata.hex
 
 # Claude Code
 .claude/
+
+# Secrets and credentials
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Databases
+*.sqlite
+*.db
+
+# Python virtual environments
+.venv/
+venv/

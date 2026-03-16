@@ -1,11 +1,21 @@
-//! Remainder (GKR+Hyrax) Proving Backend
+//! Remainder (GKR+Hyrax) Proving Backend -- **Experimental Placeholder**
+//!
+//! This backend is a structural skeleton for future Remainder integration.
+//! It does NOT contain a real GKR prover. All proving methods return errors
+//! unless the `remainder-experimental` Cargo feature is enabled, and even
+//! then the prover is a placeholder that cannot produce valid proofs.
+//!
+//! **Do not use in production.** This module exists so that the multi-VM
+//! router can compile with `--features remainder` and route Remainder
+//! circuit requests, but actual proof generation requires integrating the
+//! Remainder_CE crate (not yet available as a public dependency).
 //!
 //! Implements the ZkVmBackend trait for the Remainder proof system.
 //! Unlike risc0/SP1 which are general-purpose zkVMs, Remainder operates
 //! on pre-compiled GKR circuits (not ELF binaries). The "elf" parameter
 //! is reinterpreted as a serialized circuit description.
 //!
-//! Proof flow:
+//! Proof flow (when Remainder_CE is integrated):
 //! 1. Deserialize circuit description from "elf" bytes
 //! 2. Deserialize witness/input from "input" bytes
 //! 3. Run GKR prover to generate Hyrax-committed proof
@@ -13,18 +23,38 @@
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use sha2::Digest;
 use std::time::Instant;
+use tracing::warn;
 
 use crate::zkvm_backend::{ExecutionResult, ProofResult, ZkVmBackend};
 
-/// Remainder GKR+Hyrax proving backend.
+/// Guard macro: returns an error if the `remainder-experimental` feature is not enabled.
+/// This prevents accidental use of the placeholder backend in production.
+macro_rules! require_experimental {
+    ($method:expr) => {
+        if cfg!(not(feature = "remainder-experimental")) {
+            return Err(anyhow!(
+                "RemainderBackend::{}() is disabled. This backend is an experimental \
+                 placeholder that cannot produce valid proofs. Enable the \
+                 'remainder-experimental' Cargo feature to use it for testing. \
+                 See prover/Cargo.toml for details.",
+                $method
+            ));
+        }
+    };
+}
+
+/// Remainder GKR+Hyrax proving backend (**experimental placeholder**).
 ///
 /// This backend handles Remainder circuit proofs, which are structurally
 /// different from zkVM proofs:
 /// - No ELF binary execution (circuits are pre-compiled)
 /// - Proof structure is GKR layers + Hyrax PCS (not STARK/Groth16)
 /// - Verification uses custom Solidity verifier (not risc0 verifier)
+///
+/// **WARNING:** This is a placeholder. It does not contain a real GKR prover.
+/// All methods return errors unless `remainder-experimental` feature is enabled,
+/// and even then the proof output is a dummy that will NOT verify on-chain.
 pub struct RemainderBackend {
     // Configuration fields will be added when Remainder_CE is integrated
 }
@@ -44,7 +74,10 @@ impl ZkVmBackend for RemainderBackend {
     ///
     /// The `elf` parameter contains the serialized circuit description.
     /// The `input` parameter contains the serialized witness values.
+    ///
+    /// Returns an error unless the `remainder-experimental` feature is enabled.
     async fn execute(&self, elf: &[u8], input: &[u8]) -> Result<ExecutionResult> {
+        require_experimental!("execute");
         let start = Instant::now();
 
         // Validate circuit description header
@@ -93,20 +126,23 @@ impl ZkVmBackend for RemainderBackend {
 
     /// Generate a GKR+Hyrax proof.
     ///
-    /// This produces a proof that can be verified by RemainderVerifier.sol.
-    /// The proof contains:
+    /// **Currently a placeholder** -- returns an error explaining that the
+    /// Remainder_CE prover is not yet integrated. When integrated, this will
+    /// produce a proof verifiable by RemainderVerifier.sol containing:
     /// - Per-layer sumcheck transcripts
     /// - Hyrax polynomial commitment evaluation proofs
     /// - Fiat-Shamir transcript (Poseidon-based)
+    ///
+    /// Returns an error unless the `remainder-experimental` feature is enabled.
     async fn prove(&self, elf: &[u8], input: &[u8]) -> Result<ProofResult> {
+        warn!("RemainderBackend::prove() producing PLACEHOLDER proof — not a real GKR proof. Do not use in production.");
+        require_experimental!("prove");
         let start = Instant::now();
 
         // First execute to get the outputs
         let exec_result = self.execute(elf, input).await?;
 
-        // Generate the GKR proof
-        //
-        // Integration point for Remainder_CE:
+        // Integration point for Remainder_CE (not yet available as a public dependency):
         //
         // ```rust
         // use remainder::prelude::*;
@@ -117,15 +153,18 @@ impl ZkVmBackend for RemainderBackend {
         // let seal = bincode::serialize(&proof)?;
         // ```
 
-        // Generate structured proof placeholder
-        let seal = generate_remainder_proof_seal(elf, input)?;
-
-        Ok(ProofResult {
-            seal,
-            journal: exec_result.journal,
-            cycles: 0,
-            prove_time: start.elapsed(),
-        })
+        // Return an error: real proof generation is not yet implemented.
+        // The execute() above validates inputs; this error indicates that
+        // the prover itself is missing, not that the inputs are invalid.
+        Err(anyhow!(
+            "RemainderBackend::prove() cannot produce valid proofs yet. \
+             The Remainder_CE prover crate is not integrated. \
+             This placeholder backend validates inputs but cannot generate \
+             real GKR+Hyrax proofs. Execution result had {} journal bytes, \
+             took {:?}.",
+            exec_result.journal.len(),
+            start.elapsed()
+        ))
     }
 
     /// Generate an on-chain verifiable proof.
@@ -135,7 +174,10 @@ impl ZkVmBackend for RemainderBackend {
     /// returns the same proof as `prove()`, but ABI-encoded.
     ///
     /// Future: Could wrap in Groth16 for cheaper verification (~200K gas).
+    ///
+    /// Returns an error unless the `remainder-experimental` feature is enabled.
     async fn prove_with_snark(&self, elf: &[u8], input: &[u8]) -> Result<ProofResult> {
+        require_experimental!("prove_with_snark");
         // For now, Remainder proofs are directly verifiable on-chain
         // without SNARK compression. The GKR verifier contract handles
         // verification natively.
@@ -143,33 +185,10 @@ impl ZkVmBackend for RemainderBackend {
     }
 }
 
-/// Generate a proof seal in Remainder format.
-///
-/// The seal starts with a 4-byte selector ("REM1") that identifies it
-/// as a Remainder proof, similar to how risc0 uses selectors like "73c457ba".
-fn generate_remainder_proof_seal(circuit_desc: &[u8], _input: &[u8]) -> Result<Vec<u8>> {
-    let mut seal = Vec::new();
-
-    // Selector for Remainder proofs (first 4 bytes)
-    // This is used by the verifier router to dispatch to RemainderVerifier
-    seal.extend_from_slice(b"REM1");
-
-    // Circuit hash (32 bytes) — identifies which circuit this proof is for
-    let circuit_hash = sha2::Sha256::digest(circuit_desc);
-    seal.extend_from_slice(&circuit_hash);
-
-    // Placeholder for actual GKR proof data
-    // When Remainder_CE is integrated, this will contain:
-    // - Sumcheck round polynomials
-    // - Layer claims
-    // - Hyrax evaluation proofs
-    // - Poseidon transcript commitments
-    let proof_placeholder = vec![0u8; 1024]; // Minimum proof size
-    seal.extend_from_slice(&(proof_placeholder.len() as u32).to_be_bytes());
-    seal.extend_from_slice(&proof_placeholder);
-
-    Ok(seal)
-}
+// NOTE: The previous `generate_remainder_proof_seal()` function has been removed.
+// It generated a fake 1024-byte zero-filled proof that could never verify on-chain,
+// creating a false sense of functionality. When Remainder_CE is integrated, real
+// proof generation will be added to the `prove()` method directly.
 
 #[cfg(test)]
 mod tests {
@@ -193,7 +212,25 @@ mod tests {
         .unwrap()
     }
 
+    /// Without `remainder-experimental`, execute() returns a clear error.
     #[tokio::test]
+    #[cfg(not(feature = "remainder-experimental"))]
+    async fn test_execute_blocked_without_experimental() {
+        let backend = RemainderBackend::new().unwrap();
+        let result = backend
+            .execute(&sample_circuit_desc(), &sample_input())
+            .await;
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("remainder-experimental"),
+            "error should mention the feature flag: {msg}"
+        );
+    }
+
+    /// With `remainder-experimental`, execute() validates inputs and returns results.
+    #[tokio::test]
+    #[cfg(feature = "remainder-experimental")]
     async fn test_execute() {
         let backend = RemainderBackend::new().unwrap();
         let result = backend
@@ -205,24 +242,36 @@ mod tests {
         assert_eq!(exec.journal.len(), 4);
     }
 
+    /// prove() returns an error explaining the prover is not yet integrated.
+    /// With `remainder-experimental`, it validates inputs first then errors on missing prover.
+    /// Without `remainder-experimental`, it errors immediately on the feature guard.
     #[tokio::test]
-    async fn test_prove() {
+    async fn test_prove_returns_error() {
         let backend = RemainderBackend::new().unwrap();
-        let result = backend.prove(&sample_circuit_desc(), &sample_input()).await;
-        assert!(result.is_ok());
-        let proof = result.unwrap();
-        // Seal should start with "REM1" selector
-        assert_eq!(&proof.seal[..4], b"REM1");
+        let result = backend
+            .prove(&sample_circuit_desc(), &sample_input())
+            .await;
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        // Should mention either the feature gate or the missing prover
+        assert!(
+            msg.contains("remainder-experimental") || msg.contains("cannot produce valid proofs"),
+            "error should be informative: {msg}"
+        );
     }
 
+    /// Invalid circuit description is caught (with experimental enabled).
     #[tokio::test]
+    #[cfg(feature = "remainder-experimental")]
     async fn test_execute_invalid_circuit() {
         let backend = RemainderBackend::new().unwrap();
         let result = backend.execute(b"INVALID", &sample_input()).await;
         assert!(result.is_err());
     }
 
+    /// Feature count mismatch is caught (with experimental enabled).
     #[tokio::test]
+    #[cfg(feature = "remainder-experimental")]
     async fn test_execute_feature_mismatch() {
         let backend = RemainderBackend::new().unwrap();
         let bad_input = serde_json::to_vec(&serde_json::json!({
@@ -232,5 +281,16 @@ mod tests {
         .unwrap();
         let result = backend.execute(&sample_circuit_desc(), &bad_input).await;
         assert!(result.is_err());
+    }
+
+    /// Without `remainder-experimental`, invalid circuit still gets the feature guard error first.
+    #[tokio::test]
+    #[cfg(not(feature = "remainder-experimental"))]
+    async fn test_execute_invalid_circuit_blocked() {
+        let backend = RemainderBackend::new().unwrap();
+        let result = backend.execute(b"INVALID", &sample_input()).await;
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("remainder-experimental"));
     }
 }

@@ -578,6 +578,194 @@ curl http://localhost:3000/status | jq .
 
 ---
 
+## Indexer Service (default port 8081)
+
+The indexer polls on-chain events from the TEEMLVerifier contract, stores them
+in a local database, and serves them via a REST API. All endpoints below are
+also available under the versioned prefix `/api/v1/`.
+
+### GET /health
+
+Health check returning the last indexed block and total result count.
+
+**Response** `200 OK`
+
+```json
+{
+  "status": "ok",
+  "last_indexed_block": 19542100,
+  "total_results": 256
+}
+```
+
+**Example**
+
+```bash
+curl http://localhost:8081/health
+```
+
+---
+
+### GET /ready
+
+Readiness probe. Returns `200` when the service is ready or `503` if still
+starting up.
+
+**Response** `200 OK`
+
+```json
+{
+  "ready": true
+}
+```
+
+**Example**
+
+```bash
+curl http://localhost:8081/ready
+```
+
+---
+
+### GET /api/v1/results
+
+Paginated list of inference results. Supports filtering by `status`,
+`submitter`, `model_hash`, and pagination via `limit`, `offset`, or
+cursor-based `after_id`.
+
+**Query parameters**
+
+| Name       | Type    | Required | Description                                      |
+|------------|---------|----------|--------------------------------------------------|
+| status     | string  | No       | Filter by status (`submitted`, `challenged`, `finalized`, `resolved`) |
+| submitter  | string  | No       | Filter by submitter address (hex, `0x`-prefixed)  |
+| model_hash | string  | No       | Filter by model hash (hex, `0x`-prefixed)         |
+| limit      | integer | No       | Max results per page (default 50, max 1000)       |
+| offset     | integer | No       | Number of results to skip                         |
+| after_id   | string  | No       | Cursor: return results after this ID              |
+| sort_by    | string  | No       | Sort field: `block_number`, `submitted_at`, `status`, `submitter` |
+| sort_order | string  | No       | `asc` or `desc` (default `desc`)                  |
+
+**Response** `200 OK`
+
+Response headers include `X-Total-Count` and `X-Has-More`.
+
+```json
+{
+  "data": [
+    {
+      "id": "0x010101...",
+      "model_hash": "0x8e7c33...",
+      "input_hash": "0x030303...",
+      "output": "",
+      "submitter": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+      "status": "submitted",
+      "block_number": 19542050,
+      "timestamp": 0,
+      "challenger": null
+    }
+  ],
+  "total": 256,
+  "limit": 50,
+  "offset": 0,
+  "has_more": true
+}
+```
+
+**Example**
+
+```bash
+curl "http://localhost:8081/api/v1/results?status=finalized&limit=10" | jq .
+```
+
+---
+
+### GET /api/v1/results/{id}
+
+Retrieve a single inference result by its on-chain result ID.
+
+**Response** `200 OK`
+
+```json
+{
+  "id": "0x010101...",
+  "model_hash": "0x8e7c33...",
+  "input_hash": "0x030303...",
+  "output": "",
+  "submitter": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+  "status": "finalized",
+  "block_number": 19542050,
+  "timestamp": 0,
+  "challenger": null
+}
+```
+
+**Example**
+
+```bash
+curl http://localhost:8081/api/v1/results/0x0101010101010101010101010101010101010101010101010101010101010101
+```
+
+---
+
+### GET /api/v1/stats
+
+Aggregate counts of results grouped by status.
+
+**Response** `200 OK`
+
+```json
+{
+  "total_submitted": 100,
+  "total_challenged": 5,
+  "total_finalized": 90,
+  "total_resolved": 3
+}
+```
+
+**Example**
+
+```bash
+curl http://localhost:8081/api/v1/stats | jq .
+```
+
+---
+
+### POST /admin/reset
+
+Clear all indexed data and re-sync from the starting block. Requires the
+`X-Admin-Key` header.
+
+**Response** `200 OK`
+
+```json
+{
+  "status": "reset"
+}
+```
+
+**Example**
+
+```bash
+curl -X POST http://localhost:8081/admin/reset \
+  -H "X-Admin-Key: my-admin-key"
+```
+
+---
+
+### GET /ws/events
+
+WebSocket endpoint for real-time event streaming. Upgrade the connection to
+receive JSON-encoded events as results are indexed.
+
+**Example**
+
+```bash
+websocat ws://localhost:8081/ws/events
+```
+
+---
+
 ## Common Patterns
 
 ### Authentication

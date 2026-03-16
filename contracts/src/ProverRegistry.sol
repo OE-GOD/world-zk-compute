@@ -52,6 +52,13 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
         uint256 timestamp;
     }
 
+    struct SelectionRequest {
+        bytes32 commitment;
+        uint256 blockNumber;
+        address requester;
+        bool fulfilled;
+    }
+
     // ============================================================
     // STATE
     // ============================================================
@@ -83,6 +90,12 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
     /// @notice Addresses authorized to slash (ExecutionEngine, governance)
     mapping(address => bool) public slashers;
 
+    /// @notice Commit-reveal prover selection requests
+    mapping(uint256 => SelectionRequest) public selectionRequests;
+
+    /// @notice Next request ID for commit-reveal selection
+    uint256 public nextRequestId;
+
     // ============================================================
     // EVENTS
     // ============================================================
@@ -96,6 +109,8 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
     event ReputationUpdated(address indexed prover, uint256 oldRep, uint256 newRep);
     event RewardDistributed(address indexed prover, uint256 amount);
     event SlasherUpdated(address indexed slasher, bool authorized);
+    event SelectionRequested(uint256 indexed requestId, address indexed requester, bytes32 commitment);
+    event SelectionFulfilled(uint256 indexed requestId, address indexed prover, uint256 seed);
 
     // ============================================================
     // ERRORS
@@ -108,6 +123,11 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
     error UnauthorizedSlasher();
     error WithdrawalWouldBreachMinimum();
     error NoStakeToWithdraw();
+    error InvalidSecret();
+    error SameBlockReveal();
+    error RequestAlreadyFulfilled();
+    error RequestNotFound();
+    error NoActiveProvers();
 
     // ============================================================
     // CONSTRUCTOR
@@ -286,6 +306,7 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
     // ============================================================
 
     /// @notice Get a weighted random prover based on stake and reputation
+    /// @dev UNSAFE: seed is caller-controlled. Use requestProverSelection/fulfillProverSelection for production.
     /// @param seed Random seed (e.g., blockhash)
     /// @return Selected prover address
     function selectProver(uint256 seed) external view returns (address) {
@@ -315,6 +336,48 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
         }
 
         return activeProvers[count - 1];
+    }
+
+    /// @notice Request a commit-reveal prover selection
+    /// @param commitment keccak256(secret) where secret is a random bytes32 chosen by the requester
+    /// @return requestId The ID of the selection request
+    function requestProverSelection(bytes32 commitment) external returns (uint256 requestId) {
+        requestId = nextRequestId++;
+        selectionRequests[requestId] = SelectionRequest({
+            commitment: commitment,
+            blockNumber: block.number,
+            requester: msg.sender,
+            fulfilled: false
+        });
+        emit SelectionRequested(requestId, msg.sender, commitment);
+    }
+
+    /// @notice Fulfill a commit-reveal prover selection by revealing the secret
+    /// @param requestId The ID of the selection request from requestProverSelection
+    /// @param secret The preimage of the commitment (keccak256(secret) must equal the stored commitment)
+    /// @return prover The selected prover address
+    function fulfillProverSelection(uint256 requestId, bytes32 secret) external returns (address prover) {
+        SelectionRequest storage req = selectionRequests[requestId];
+        if (req.requester == address(0)) revert RequestNotFound();
+        if (req.fulfilled) revert RequestAlreadyFulfilled();
+        if (keccak256(abi.encodePacked(secret)) != req.commitment) revert InvalidSecret();
+        if (block.number <= req.blockNumber) revert SameBlockReveal();
+
+        uint256 count = activeProvers.length;
+        if (count == 0) revert NoActiveProvers();
+
+        req.fulfilled = true;
+
+        // Use secret + blockhash(commitBlock + 1) as seed for unpredictable selection
+        uint256 seed = uint256(keccak256(abi.encodePacked(secret, blockhash(req.blockNumber + 1))));
+
+        if (count == 1) {
+            prover = activeProvers[0];
+        } else {
+            prover = _weightedSelect(seed);
+        }
+
+        emit SelectionFulfilled(requestId, prover, seed);
     }
 
     /// @notice Get top N provers by reputation
@@ -422,6 +485,35 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
     // ============================================================
     // INTERNAL FUNCTIONS
     // ============================================================
+
+    /// @dev Weighted random selection among active provers based on stake * reputation
+    /// @param seed Random seed
+    /// @return selected The selected prover address
+    function _weightedSelect(uint256 seed) internal view returns (address selected) {
+        uint256 count = activeProvers.length;
+
+        // Calculate total weight (stake * reputation)
+        uint256 totalWeight = 0;
+        for (uint256 i = 0; i < count; i++) {
+            Prover storage p = provers[activeProvers[i]];
+            totalWeight += (p.stake * p.reputation) / 10000;
+        }
+
+        if (totalWeight == 0) return activeProvers[seed % count];
+
+        uint256 random = uint256(keccak256(abi.encodePacked(seed))) % totalWeight;
+        uint256 cumulative = 0;
+
+        for (uint256 i = 0; i < count; i++) {
+            Prover storage p = provers[activeProvers[i]];
+            cumulative += (p.stake * p.reputation) / 10000;
+            if (random < cumulative) {
+                return activeProvers[i];
+            }
+        }
+
+        return activeProvers[count - 1];
+    }
 
     function _activateProver(address prover) internal {
         Prover storage p = provers[prover];

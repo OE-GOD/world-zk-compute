@@ -93,7 +93,13 @@ metal = ["risc0-zkvm/metal"]
 sp1 = ["sp1-sdk"]
 # Jolt proving backend (experimental)
 jolt = []
+# Jolt experimental: enables actual proving (jolt feature must also be enabled).
+# Without this, all Jolt prove/execute calls return a clear error.
+jolt-experimental = ["jolt"]
 # Remainder (GKR+Hyrax) proving backend
 remainder = []
+# Remainder experimental: enables actual proving (remainder feature must also be enabled).
+# Without this, all Remainder prove/execute calls return a clear error.
+remainder-experimental = ["remainder"]
 # Boundless decentralized proving marketplace
 boundless = ["boundless-market"]

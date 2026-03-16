@@ -1,0 +1,33 @@
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 2%
+    patch:
+      default:
+        target: 70%
+
+flags:
+  rust:
+    paths:
+      - sdk/
+      - services/
+      - crates/
+      - tee/enclave/
+    carryforward: true
+  solidity:
+    paths:
+      - contracts/src/
+    carryforward: true
+
+ignore:
+  - "contracts/src/remainder/DAGRemainderGroth16Verifier.sol"
+  - "contracts/src/remainder/RemainderGroth16Verifier.sol"
+  - "contracts/script/**"
+  - "contracts/test/**"
+  - "contracts/lib/**"
+  - "examples/**"
+  - "programs/**"
+  - "target/**"
+  - "node_modules/**"

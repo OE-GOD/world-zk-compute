@@ -1,0 +1,100 @@
+name: World Chain Sepolia Deployment
+
+permissions: read-all
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Simulate deployment without broadcasting transactions'
+        type: boolean
+        default: true
+      skip_circuit_registration:
+        description: 'Skip DAG circuit registration during deployment'
+        type: boolean
+        default: false
+      verify_contracts:
+        description: 'Verify contracts on Worldscan after deployment'
+        type: boolean
+        default: true
+
+jobs:
+  deploy:
+    name: Deploy to World Chain Sepolia
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Build contracts
+        working-directory: contracts
+        run: forge build
+
+      - name: Run deployment
+        working-directory: contracts
+        env:
+          DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
+          WORLD_CHAIN_RPC_URL: ${{ secrets.WORLD_CHAIN_RPC_URL }}
+          WORLDSCAN_API_KEY: ${{ secrets.WORLDSCAN_API_KEY }}
+          SKIP_CIRCUIT_REGISTRATION: ${{ inputs.skip_circuit_registration }}
+        run: |
+          FORGE_ARGS=(
+            script/DeployWorldChain.s.sol:DeployWorldChain
+            --rpc-url "$WORLD_CHAIN_RPC_URL"
+            -vvv
+          )
+
+          if [ "${{ inputs.dry_run }}" = "false" ]; then
+            FORGE_ARGS+=(--broadcast)
+            echo "::notice::Broadcasting transactions to World Chain Sepolia"
+          else
+            echo "::notice::DRY RUN -- transactions will NOT be broadcast"
+          fi
+
+          if [ "${{ inputs.verify_contracts }}" = "true" ] && [ "${{ inputs.dry_run }}" = "false" ]; then
+            FORGE_ARGS+=(--verify --etherscan-api-key "$WORLDSCAN_API_KEY")
+          fi
+
+          forge script "${FORGE_ARGS[@]}" 2>&1 | tee deploy-output.txt
+
+      - name: Extract deployed addresses
+        if: ${{ inputs.dry_run == false }}
+        run: |
+          echo "## World Chain Sepolia Deployment" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Contract | Address |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|----------|---------|" >> "$GITHUB_STEP_SUMMARY"
+
+          cd contracts
+          for contract in RemainderVerifier ProgramRegistry ProverReputation StakeToken ProverRegistry ExecutionEngine TEEMLVerifier; do
+            addr=$(grep -oP "${contract}.*?:\s*0x[0-9a-fA-F]{40}" deploy-output.txt | grep -oP '0x[0-9a-fA-F]{40}' | tail -1 || echo "not found")
+            echo "| ${contract} | \`${addr}\` |" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Chain ID: 4801" >> "$GITHUB_STEP_SUMMARY"
+          echo "Dry run: ${{ inputs.dry_run }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Dry run summary
+        if: ${{ inputs.dry_run == true }}
+        run: |
+          echo "## World Chain Sepolia Deployment (DRY RUN)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Dry run completed successfully. Set \`dry_run\` to \`false\` to broadcast." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload deployment artifacts
+        if: ${{ inputs.dry_run == false }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: world-chain-sepolia-deployment
+          path: |
+            contracts/broadcast/DeployWorldChain.s.sol/4801/
+            contracts/deploy-output.txt
+          if-no-files-found: warn

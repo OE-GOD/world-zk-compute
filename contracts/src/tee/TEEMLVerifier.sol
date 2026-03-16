@@ -13,11 +13,30 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 ///         Dispute path: fall back to existing RemainderVerifier DAG proof verification.
 /// @dev Uses Ownable2Step for safe admin transfers, Pausable for emergency stops,
 ///      and ReentrancyGuard to protect ETH payouts from reentrancy.
+///      Uses EIP-712 structured data signing for cross-chain replay protection.
 ///      Storage is packed for gas efficiency:
 ///      - PackedEnclaveInfo: 2 slots (was 3) — registered+active+registeredAt packed with address key
 ///      - PackedMLResult: saves 4 slots per result via uint40 timestamps and bool packing
 contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuard {
     using ECDSA for bytes32;
+
+    // ─── EIP-712 Constants ──────────────────────────────────────────────────
+    // Domain separator fields per EIP-712
+    bytes32 private constant EIP712_DOMAIN_TYPEHASH =
+        keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+
+    bytes32 private constant NAME_HASH = keccak256("TEEMLVerifier");
+    bytes32 private constant VERSION_HASH = keccak256("1");
+
+    /// @dev EIP-712 type hash for TEE attestation result submissions
+    bytes32 public constant RESULT_TYPEHASH =
+        keccak256("TEEMLResult(bytes32 modelHash,bytes32 inputHash,bytes32 resultHash)");
+
+    /// @dev Cached domain separator (recomputed if chainId changes after a fork)
+    bytes32 private _cachedDomainSeparator;
+
+    /// @dev Chain ID at the time the domain separator was cached
+    uint256 private _cachedChainId;
 
     // ─── Packed Storage Structs ─────────────────────────────────────────────
     // These internal structs optimize storage layout. The public interface
@@ -109,6 +128,8 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
     /// @param _remainderVerifier Address of the RemainderVerifier for ZK dispute resolution
     constructor(address _admin, address _remainderVerifier) Ownable(_admin) {
         remainderVerifier = _remainderVerifier;
+        _cachedChainId = block.chainid;
+        _cachedDomainSeparator = _computeDomainSeparator();
     }
 
     // ─── Admin ───────────────────────────────────────────────────────────────
@@ -204,10 +225,10 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
         require(msg.value >= proverStake, "TEEMLVerifier: insufficient stake");
 
         bytes32 resultHash = keccak256(result);
-        bytes32 message = keccak256(abi.encodePacked(modelHash, inputHash, resultHash));
-        bytes32 ethSignedHash = _toEthSignedMessageHash(message);
+        bytes32 structHash = keccak256(abi.encode(RESULT_TYPEHASH, modelHash, inputHash, resultHash));
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR(), structHash));
 
-        address signer = ethSignedHash.recover(attestation);
+        address signer = digest.recover(attestation);
         require(_enclaves[signer].registered, "TEEMLVerifier: unregistered enclave");
         require(_enclaves[signer].active, "TEEMLVerifier: enclave revoked");
 
@@ -404,11 +425,21 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
         emit DisputeResolved(resultId, proofValid);
     }
 
-    /// @dev Produce an Ethereum signed message hash (EIP-191 prefix)
-    /// @param hash The message hash to prefix
-    /// @return The prefixed hash suitable for ecrecover
-    function _toEthSignedMessageHash(bytes32 hash) internal pure returns (bytes32) {
-        return keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", hash));
+    // ─── EIP-712 Domain Separator ──────────────────────────────────────────
+
+    /// @notice Returns the EIP-712 domain separator for this contract.
+    ///         Recomputes if the chain ID has changed (fork protection).
+    /// @return The domain separator bytes32 value
+    function DOMAIN_SEPARATOR() public view returns (bytes32) {
+        if (block.chainid == _cachedChainId) {
+            return _cachedDomainSeparator;
+        }
+        return _computeDomainSeparator();
+    }
+
+    /// @dev Computes the EIP-712 domain separator using current chain ID and contract address
+    function _computeDomainSeparator() internal view returns (bytes32) {
+        return keccak256(abi.encode(EIP712_DOMAIN_TYPEHASH, NAME_HASH, VERSION_HASH, block.chainid, address(this)));
     }
 
     /// @notice Allow contract to receive ETH (for bond returns)
