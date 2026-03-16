@@ -58,6 +58,32 @@ contract ReentrantChallenger {
     }
 }
 
+/// @dev Malicious contract that attempts reentrancy on extendDisputeWindow
+contract ReentrantExtender {
+    TEEMLVerifier public target;
+    bytes32 public targetResultId;
+    uint256 public attackCount;
+
+    constructor(address payable _target) {
+        target = TEEMLVerifier(_target);
+    }
+
+    function setTarget(bytes32 _resultId) external {
+        targetResultId = _resultId;
+    }
+
+    function attackExtend() external {
+        target.extendDisputeWindow(targetResultId);
+    }
+
+    receive() external payable {
+        attackCount++;
+        if (attackCount < 3) {
+            try target.extendDisputeWindow(targetResultId) {} catch {}
+        }
+    }
+}
+
 /// @dev Contract that rejects ETH transfers
 contract ETHRejecter {
     // No receive or fallback — will cause ETH transfers to revert
@@ -169,6 +195,32 @@ contract TEEMLVerifierSecurityTest is Test {
         // Dispute resolved once, re-entry blocked
         assertTrue(verifier.disputeResolved(resultId));
         assertEq(attacker.attackCount(), 1);
+    }
+
+    function test_reentrancyOnExtendDisputeWindow() public {
+        ReentrantExtender attacker = new ReentrantExtender(payable(address(verifier)));
+        vm.deal(address(attacker), 10 ether);
+
+        // Submit result from attacker so it is the submitter
+        bytes memory result = "extend-test";
+        bytes32 resultHash = keccak256(result);
+        bytes32 digest = _buildDigest(modelHash, inputHash, resultHash);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(enclavePrivateKey, digest);
+        bytes memory attestation = abi.encodePacked(r, s, v);
+
+        vm.prank(address(attacker));
+        bytes32 resultId = verifier.submitResult{value: 0.1 ether}(modelHash, inputHash, result, attestation);
+
+        // Challenge from a regular address
+        vm.prank(challenger);
+        verifier.challenge{value: 0.1 ether}(resultId);
+
+        // Attacker tries extend + re-entrant extend via finalize callback
+        attacker.setTarget(resultId);
+        attacker.attackExtend();
+
+        // Only 1 extension should have happened
+        assertEq(attacker.attackCount(), 0); // receive never called (no ETH sent)
     }
 
     // ========================================================================

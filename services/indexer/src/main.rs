@@ -360,11 +360,13 @@ impl Storage for SqliteStorage {
         };
         sql.push_str(&format!(" ORDER BY {order_col} {order_dir}, id ASC"));
 
-        let limit = filter.limit.unwrap_or(50).min(1000);
+        // Clamp limit to [1, 1000] with default 100 to prevent abuse.
+        let limit = filter.limit.unwrap_or(100).clamp(1, 1000);
         param_values.push(Box::new(limit as i64));
         sql.push_str(&format!(" LIMIT ?{}", param_values.len()));
 
-        // Offset-based pagination (mutually exclusive with after_id)
+        // Offset-based pagination (mutually exclusive with after_id).
+        // Offset is u32 so always >= 0; no overflow risk from user input.
         if filter.after_id.is_none() {
             if let Some(offset) = filter.offset {
                 if offset > 0 {
@@ -847,7 +849,14 @@ async fn main() -> anyhow::Result<()> {
     };
     let app = build_app_with_rate_limit(storage.clone(), broadcaster.clone(), rl_config);
 
-    // Spawn the event polling loop with shutdown support
+    // Spawn the event polling loop with shutdown support and circuit breaker.
+    //
+    // On consecutive RPC failures the loop backs off exponentially:
+    //   sleep = base_interval * min(2^consecutive_failures, MAX_BACKOFF_MULTIPLIER)
+    // This caps the sleep at 60x the base interval (e.g. 12s * 60 = 720s = 12 min).
+    // On success the backoff resets immediately.
+    const MAX_BACKOFF_MULTIPLIER: u64 = 60;
+
     let poll_storage = storage.clone();
     let poll_broadcaster = broadcaster.clone();
     let poll_rpc = config.rpc_url.clone();
@@ -855,11 +864,20 @@ async fn main() -> anyhow::Result<()> {
     let poll_interval = config.poll_interval_secs;
     let (poll_shutdown_tx, mut poll_shutdown_rx) = tokio::sync::watch::channel(false);
     let poll_handle = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(poll_interval));
+        let base = std::time::Duration::from_secs(poll_interval);
+        let mut consecutive_failures: u32 = 0;
         loop {
+            // Compute the sleep duration with exponential backoff on failures.
+            let multiplier = if consecutive_failures == 0 {
+                1u64
+            } else {
+                2u64.saturating_pow(consecutive_failures).min(MAX_BACKOFF_MULTIPLIER)
+            };
+            let sleep_dur = base.saturating_mul(multiplier as u32);
+
             tokio::select! {
-                _ = interval.tick() => {
-                    if let Err(e) = poll_and_index(
+                _ = tokio::time::sleep(sleep_dur) => {
+                    match poll_and_index(
                         &poll_rpc,
                         poll_addr,
                         poll_storage.as_ref(),
@@ -867,7 +885,29 @@ async fn main() -> anyhow::Result<()> {
                     )
                     .await
                     {
-                        warn!("poll error: {}", e);
+                        Ok(()) => {
+                            if consecutive_failures > 0 {
+                                info!(
+                                    "poll recovered after {} consecutive failure(s); \
+                                     restoring base interval ({}s)",
+                                    consecutive_failures, poll_interval
+                                );
+                            }
+                            consecutive_failures = 0;
+                        }
+                        Err(e) => {
+                            consecutive_failures = consecutive_failures.saturating_add(1);
+                            let next_multiplier =
+                                2u64.saturating_pow(consecutive_failures)
+                                    .min(MAX_BACKOFF_MULTIPLIER);
+                            let next_sleep = base.saturating_mul(next_multiplier as u32);
+                            warn!(
+                                consecutive_failures = consecutive_failures,
+                                "poll error (consecutive failures: {}): {}; \
+                                 next retry in {:?}",
+                                consecutive_failures, e, next_sleep
+                            );
+                        }
                     }
                 }
                 _ = poll_shutdown_rx.changed() => {
@@ -1282,5 +1322,85 @@ mod tests {
         let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
         assert_eq!(page.data.len(), 1);
         assert_eq!(page.data[0].id, "0x01");
+    }
+
+    // -- Circuit breaker / exponential backoff tests --
+
+    /// Compute the backoff multiplier for a given number of consecutive
+    /// failures, matching the logic used in the poll loop.
+    fn backoff_multiplier(consecutive_failures: u32) -> u64 {
+        const MAX_BACKOFF_MULTIPLIER: u64 = 60;
+        if consecutive_failures == 0 {
+            1u64
+        } else {
+            2u64.saturating_pow(consecutive_failures).min(MAX_BACKOFF_MULTIPLIER)
+        }
+    }
+
+    #[test]
+    fn test_backoff_multiplier_escalation() {
+        // No failures: normal interval (1x)
+        assert_eq!(backoff_multiplier(0), 1);
+        // 1 failure: 2x
+        assert_eq!(backoff_multiplier(1), 2);
+        // 2 failures: 4x
+        assert_eq!(backoff_multiplier(2), 4);
+        // 3 failures: 8x
+        assert_eq!(backoff_multiplier(3), 8);
+        // 4 failures: 16x
+        assert_eq!(backoff_multiplier(4), 16);
+        // 5 failures: 32x
+        assert_eq!(backoff_multiplier(5), 32);
+        // 6 failures: would be 64, capped at 60
+        assert_eq!(backoff_multiplier(6), 60);
+        // Very high failure count: still capped at 60
+        assert_eq!(backoff_multiplier(100), 60);
+    }
+
+    #[test]
+    fn test_backoff_duration_with_base_interval() {
+        let base = std::time::Duration::from_secs(12);
+        // Normal operation: 12s
+        assert_eq!(
+            base * backoff_multiplier(0) as u32,
+            std::time::Duration::from_secs(12)
+        );
+        // 3 failures: 8 * 12 = 96s
+        assert_eq!(
+            base * backoff_multiplier(3) as u32,
+            std::time::Duration::from_secs(96)
+        );
+        // Capped: 60 * 12 = 720s = 12 min
+        assert_eq!(
+            base * backoff_multiplier(6) as u32,
+            std::time::Duration::from_secs(720)
+        );
+    }
+
+    #[test]
+    fn test_backoff_resets_on_success() {
+        // Simulate: 5 failures then success
+        let mut consecutive_failures: u32 = 0;
+        for _ in 0..5 {
+            consecutive_failures = consecutive_failures.saturating_add(1);
+        }
+        assert_eq!(consecutive_failures, 5);
+        assert_eq!(backoff_multiplier(consecutive_failures), 32);
+
+        // Simulate success: reset
+        consecutive_failures = 0;
+        assert_eq!(backoff_multiplier(consecutive_failures), 1);
+    }
+
+    #[test]
+    fn test_backoff_saturating_add() {
+        // Verify saturating_add does not overflow
+        let mut failures: u32 = u32::MAX - 1;
+        failures = failures.saturating_add(1);
+        assert_eq!(failures, u32::MAX);
+        failures = failures.saturating_add(1);
+        assert_eq!(failures, u32::MAX); // saturates, does not wrap
+        // Even at u32::MAX, multiplier is capped at 60
+        assert_eq!(backoff_multiplier(failures), 60);
     }
 }

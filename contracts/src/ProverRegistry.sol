@@ -31,6 +31,15 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
     /// @notice Maximum number of top provers that can be queried at once
     uint256 public constant MAX_TOP_PROVERS = 50;
 
+    /// @notice Maximum length for prover name/endpoint strings
+    uint256 public constant MAX_NAME_LENGTH = 64;
+
+    /// @notice Maximum length for endpoint URL strings
+    uint256 public constant MAX_URL_LENGTH = 512;
+
+    /// @notice Maximum length for slash reason strings
+    uint256 public constant MAX_REASON_LENGTH = 256;
+
     // ============================================================
     // TYPES
     // ============================================================
@@ -135,6 +144,7 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
     error RequestNotFound();
     error NoActiveProvers();
     error TooManyTopProversRequested();
+    error StringTooLong(string field, uint256 maxLength);
 
     // ============================================================
     // CONSTRUCTOR
@@ -154,6 +164,7 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
     /// @param stake Amount to stake
     /// @param endpoint P2P endpoint for coordination (optional)
     function register(uint256 stake, string calldata endpoint) external nonReentrant {
+        if (bytes(endpoint).length > MAX_URL_LENGTH) revert StringTooLong("endpoint", MAX_URL_LENGTH);
         if (provers[msg.sender].registeredAt != 0) revert ProverAlreadyRegistered();
         if (stake < minStake) revert InsufficientStake();
 
@@ -252,6 +263,7 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
     /// @param reason Reason for slashing
     function slash(address prover, string calldata reason) external nonReentrant {
         if (!slashers[msg.sender] && msg.sender != owner()) revert UnauthorizedSlasher();
+        if (bytes(reason).length > MAX_REASON_LENGTH) revert StringTooLong("reason", MAX_REASON_LENGTH);
 
         Prover storage p = provers[prover];
         if (p.registeredAt == 0) revert ProverNotRegistered();
@@ -442,6 +454,32 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
     /// @return Array of all currently active prover addresses
     function getActiveProvers() external view returns (address[] memory) {
         return activeProvers;
+    }
+
+    /// @notice Get active prover addresses (paginated)
+    /// @param offset The starting index
+    /// @param limit The maximum number of items to return
+    /// @return Array of active prover addresses in the requested page range
+    function getActiveProvers(uint256 offset, uint256 limit) external view returns (address[] memory) {
+        uint256 total = activeProvers.length;
+        if (offset >= total) {
+            return new address[](0);
+        }
+        uint256 end = offset + limit;
+        if (end > total) {
+            end = total;
+        }
+        address[] memory result = new address[](end - offset);
+        for (uint256 i = offset; i < end; i++) {
+            result[i - offset] = activeProvers[i];
+        }
+        return result;
+    }
+
+    /// @notice Get the total number of active provers
+    /// @return The count of all currently active provers
+    function totalActiveProvers() external view returns (uint256) {
+        return activeProvers.length;
     }
 
     /// @notice Check if address is registered prover

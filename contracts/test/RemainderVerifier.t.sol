@@ -4982,7 +4982,7 @@ contract DAGBatchVerifierTest is Test {
     // ========================================================================
 
     /// @notice Single-tx DAG verification still works alongside batch verification
-    function test_dag_single_tx_still_works() public view {
+    function test_dag_single_tx_still_works() public {
         bool valid = verifier.verifyDAGProof(proofHex, circuitHash, publicInputsHex, gensHex);
         assertTrue(valid, "single-tx DAG verification should still pass");
     }
@@ -5005,5 +5005,180 @@ contract DAGBatchVerifierTest is Test {
             bool finalized = verifier.finalizeDAGBatchVerify(sessionId, proofHex, publicInputsHex, gensHex);
             if (finalized) break;
         }
+    }
+}
+
+// ========================================================================
+// DAG PROOF VERIFIED EVENT TESTS (T415)
+// ========================================================================
+
+/// @notice Mock Stylus verifier that always returns true (for event tests)
+contract EventTestMockStylusVerifier {
+    function verifyDagProof(bytes calldata, bytes calldata, bytes calldata, bytes calldata)
+        external
+        pure
+        returns (bool)
+    {
+        return true;
+    }
+}
+
+/// @title DAGProofVerifiedEventTest
+/// @notice Tests that DAGProofVerified events are emitted by verifyDAGProof,
+///         verifyDAGWithGroth16, and verifyDAGProofStylus.
+contract DAGProofVerifiedEventTest is Test {
+    RemainderVerifier verifier;
+    DAGGroth16Verifier dagGroth16Verifier;
+    EventTestMockStylusVerifier mockStylus;
+
+    // Re-declare the event so vm.expectEmit can match it
+    event DAGProofVerified(bytes32 indexed circuitHash, bool valid, string method);
+
+    function setUp() public {
+        verifier = new RemainderVerifier(address(this));
+        dagGroth16Verifier = new DAGGroth16Verifier();
+        mockStylus = new EventTestMockStylusVerifier();
+    }
+
+    // -- Helpers for DAG fixture loading --
+
+    function _parseJsonUint8Array(string memory json, string memory key) internal pure returns (uint8[] memory result) {
+        uint256[] memory raw = vm.parseJsonUintArray(json, key);
+        result = new uint8[](raw.length);
+        for (uint256 i = 0; i < raw.length; i++) {
+            result[i] = uint8(raw[i]);
+        }
+    }
+
+    function _parseJsonBoolArray(string memory json, string memory key) internal pure returns (bool[] memory result) {
+        bytes memory raw = vm.parseJson(json, key);
+        result = abi.decode(raw, (bool[]));
+    }
+
+    function _parseJsonUint256Array(string memory json, string memory key)
+        internal
+        pure
+        returns (uint256[] memory result)
+    {
+        bytes memory raw = vm.parseJson(json, key);
+        bytes32[] memory parsed = abi.decode(raw, (bytes32[]));
+        result = new uint256[](parsed.length);
+        for (uint256 i = 0; i < parsed.length; i++) {
+            result[i] = uint256(parsed[i]);
+        }
+    }
+
+    function _parseDAGDesc(string memory json, string memory prefix)
+        internal
+        pure
+        returns (GKRDAGVerifier.DAGCircuitDescription memory desc)
+    {
+        desc.numComputeLayers = vm.parseJsonUint(json, string.concat(prefix, ".numComputeLayers"));
+        desc.numInputLayers = vm.parseJsonUint(json, string.concat(prefix, ".numInputLayers"));
+        desc.layerTypes = _parseJsonUint8Array(json, string.concat(prefix, ".layerTypes"));
+        desc.numSumcheckRounds = vm.parseJsonUintArray(json, string.concat(prefix, ".numSumcheckRounds"));
+        desc.atomOffsets = vm.parseJsonUintArray(json, string.concat(prefix, ".atomOffsets"));
+        desc.atomTargetLayers = vm.parseJsonUintArray(json, string.concat(prefix, ".atomTargetLayers"));
+        desc.atomCommitIdxs = vm.parseJsonUintArray(json, string.concat(prefix, ".atomCommitIdxs"));
+        desc.ptOffsets = vm.parseJsonUintArray(json, string.concat(prefix, ".ptOffsets"));
+        desc.ptData = vm.parseJsonUintArray(json, string.concat(prefix, ".ptData"));
+        desc.inputIsCommitted = _parseJsonBoolArray(json, string.concat(prefix, ".inputIsCommitted"));
+        desc.oracleProductOffsets = vm.parseJsonUintArray(json, string.concat(prefix, ".oracleProductOffsets"));
+        desc.oracleResultIdxs = vm.parseJsonUintArray(json, string.concat(prefix, ".oracleResultIdxs"));
+        desc.oracleExprCoeffs = _parseJsonUint256Array(json, string.concat(prefix, ".oracleExprCoeffs"));
+    }
+
+    // -- Test: verifyDAGProof emits DAGProofVerified with method "direct" --
+
+    /// @notice verifyDAGProof() must emit DAGProofVerified(circuitHash, true, "direct")
+    function test_verifyDAGProof_emits_event() public {
+        string memory json = vm.readFile("test/fixtures/phase1a_dag_fixture.json");
+        bytes memory proofHex = vm.parseJsonBytes(json, ".proof_hex");
+        bytes memory gensHex = vm.parseJsonBytes(json, ".gens_hex");
+        bytes32 circuitHash = vm.parseJsonBytes32(json, ".circuit_hash_raw");
+        bytes memory publicInputsHex = vm.parseJsonBytes(json, ".public_inputs_hex");
+
+        GKRDAGVerifier.DAGCircuitDescription memory desc = _parseDAGDesc(json, ".dag_circuit_description");
+        bytes32 gensHash = keccak256(gensHex);
+        verifier.registerDAGCircuit(circuitHash, abi.encode(desc), "xgboost-event-test", gensHash);
+
+        // Expect the DAGProofVerified event
+        vm.expectEmit(true, false, false, true);
+        emit DAGProofVerified(circuitHash, true, "direct");
+
+        bool valid = verifier.verifyDAGProof(proofHex, circuitHash, publicInputsHex, gensHex);
+        assertTrue(valid, "DAG proof should verify");
+    }
+
+    // -- Test: verifyDAGWithGroth16 emits DAGProofVerified with method "groth16" --
+
+    /// @notice verifyDAGWithGroth16() must emit DAGProofVerified(circuitHash, true, "groth16")
+    function test_verifyDAGWithGroth16_emits_event() public {
+        string memory json = vm.readFile("test/fixtures/dag_groth16_e2e_fixture.json");
+        bytes memory innerProof = vm.parseJsonBytes(json, ".inner_proof_hex");
+        bytes memory gensHex = vm.parseJsonBytes(json, ".gens_hex");
+        bytes32 circuitHash = vm.parseJsonBytes32(json, ".circuit_hash_raw");
+        bytes memory publicInputsAbi = vm.parseJsonBytes(json, ".public_values_abi");
+
+        uint256[8] memory groth16Proof;
+        for (uint256 i = 0; i < 8; i++) {
+            groth16Proof[i] = vm.parseJsonUint(json, string.concat(".groth16_proof[", vm.toString(i), "]"));
+        }
+        uint256[] memory groth16Outputs = vm.parseJsonUintArray(json, ".groth16_outputs");
+
+        GKRDAGVerifier.DAGCircuitDescription memory desc = _parseDAGDesc(json, ".dag_circuit_description");
+        bytes32 gensHash = keccak256(gensHex);
+        verifier.registerDAGCircuit(circuitHash, abi.encode(desc), "xgboost-groth16-event", gensHash);
+        verifier.setDAGCircuitGroth16Verifier(circuitHash, address(dagGroth16Verifier), 3416);
+
+        // Expect the DAGProofVerified event
+        vm.expectEmit(true, false, false, true);
+        emit DAGProofVerified(circuitHash, true, "groth16");
+
+        verifier.verifyDAGWithGroth16(
+            innerProof, circuitHash, publicInputsAbi, gensHex, groth16Proof, groth16Outputs
+        );
+    }
+
+    // -- Test: verifyDAGProofStylus emits DAGProofVerified with method "stylus" --
+
+    /// @notice verifyDAGProofStylus() must emit DAGProofVerified(circuitHash, true, "stylus")
+    function test_verifyDAGProofStylus_emits_event() public {
+        // Register a minimal DAG circuit
+        bytes32 circuitHash = bytes32(uint256(0xABCD));
+        GKRDAGVerifier.DAGCircuitDescription memory desc;
+        desc.numComputeLayers = 2;
+        desc.numInputLayers = 1;
+        desc.layerTypes = new uint8[](2);
+        desc.numSumcheckRounds = new uint256[](2);
+        desc.numSumcheckRounds[0] = 3;
+        desc.numSumcheckRounds[1] = 3;
+        desc.atomOffsets = new uint256[](3);
+        desc.atomOffsets[1] = 1;
+        desc.atomOffsets[2] = 2;
+        desc.atomTargetLayers = new uint256[](2);
+        desc.atomTargetLayers[0] = 1;
+        desc.atomTargetLayers[1] = 2;
+        desc.ptOffsets = new uint256[](3);
+        desc.ptData = new uint256[](0);
+        desc.inputIsCommitted = new bool[](1);
+        desc.inputIsCommitted[0] = true;
+        desc.atomCommitIdxs = new uint256[](2);
+        desc.oracleProductOffsets = new uint256[](3);
+        desc.oracleResultIdxs = new uint256[](0);
+        desc.oracleExprCoeffs = new uint256[](0);
+
+        verifier.registerDAGCircuit(circuitHash, abi.encode(desc), "stylus-event-test", bytes32(0));
+        verifier.setDAGStylusVerifier(circuitHash, address(mockStylus));
+
+        // forge-lint: disable-next-line(unsafe-typecast)
+        bytes memory proof = abi.encodePacked(bytes4("REM1"), bytes32(0));
+
+        // Expect the DAGProofVerified event
+        vm.expectEmit(true, false, false, true);
+        emit DAGProofVerified(circuitHash, true, "stylus");
+
+        bool valid = verifier.verifyDAGProofStylus(proof, circuitHash, "", "");
+        assertTrue(valid, "Stylus verification should succeed");
     }
 }

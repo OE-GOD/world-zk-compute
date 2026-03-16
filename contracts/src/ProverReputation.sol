@@ -86,6 +86,9 @@ contract ProverReputation {
     /// @notice Maximum valid timestamp for uint64 fields (year ~2554)
     uint256 public constant MAX_UINT64_TIMESTAMP = type(uint64).max;
 
+    /// @notice Maximum length for reason strings
+    uint256 public constant MAX_REASON_LENGTH = 256;
+
     // ========================================================================
     // STATE
     // ========================================================================
@@ -144,6 +147,7 @@ contract ProverReputation {
     error SlashCooldownActive();
     /// @notice Thrown when a zero address is provided where a valid address is required
     error ZeroAddress();
+    error StringTooLong(string field, uint256 maxLength);
 
     // ========================================================================
     // MODIFIERS
@@ -259,6 +263,7 @@ contract ProverReputation {
     /// @param prover Prover address
     /// @param reason Failure reason
     function recordFailure(address prover, string calldata reason) external onlyAuthorized notBanned(prover) {
+        if (bytes(reason).length > MAX_REASON_LENGTH) revert StringTooLong("reason", MAX_REASON_LENGTH);
         Reputation storage rep = reputations[prover];
         if (!rep.isRegistered) revert ProverNotRegistered();
         _checkTimestamp();
@@ -305,6 +310,7 @@ contract ProverReputation {
     /// @param reason Slash reason
     /// @param penaltyBps Penalty in basis points
     function slash(address prover, string calldata reason, uint256 penaltyBps) external onlyOwner {
+        if (bytes(reason).length > MAX_REASON_LENGTH) revert StringTooLong("reason", MAX_REASON_LENGTH);
         Reputation storage rep = reputations[prover];
         if (!rep.isRegistered) revert ProverNotRegistered();
         _checkTimestamp();
@@ -343,6 +349,7 @@ contract ProverReputation {
 
     /// @notice Ban a prover
     function ban(address prover, string calldata reason) external onlyOwner {
+        if (bytes(reason).length > MAX_REASON_LENGTH) revert StringTooLong("reason", MAX_REASON_LENGTH);
         Reputation storage rep = reputations[prover];
         if (!rep.isRegistered) revert ProverNotRegistered();
 
@@ -398,6 +405,39 @@ contract ProverReputation {
     /// @notice Get slash history
     function getSlashHistory(address prover) external view returns (SlashEvent[] memory) {
         return slashHistory[prover];
+    }
+
+    /// @notice Get slash history (paginated)
+    /// @param prover The prover address
+    /// @param offset The starting index
+    /// @param limit The maximum number of items to return
+    /// @return Array of slash events in the requested page range
+    function getSlashHistory(address prover, uint256 offset, uint256 limit)
+        external
+        view
+        returns (SlashEvent[] memory)
+    {
+        SlashEvent[] storage history = slashHistory[prover];
+        uint256 total = history.length;
+        if (offset >= total) {
+            return new SlashEvent[](0);
+        }
+        uint256 end = offset + limit;
+        if (end > total) {
+            end = total;
+        }
+        SlashEvent[] memory result = new SlashEvent[](end - offset);
+        for (uint256 i = offset; i < end; i++) {
+            result[i - offset] = history[i];
+        }
+        return result;
+    }
+
+    /// @notice Get the total number of slash events for a prover
+    /// @param prover The prover address
+    /// @return The count of slash events
+    function totalSlashEvents(address prover) external view returns (uint256) {
+        return slashHistory[prover].length;
     }
 
     /// @notice Get provers count by tier

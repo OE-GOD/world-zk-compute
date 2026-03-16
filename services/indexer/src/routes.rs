@@ -138,6 +138,10 @@ fn validate_query_params(filter: &ResultFilter) -> Result<(), (StatusCode, Json<
                 "model_hash too long ({} chars); maximum is {MAX_STRING_LENGTH}",
                 model_hash.len()
             ));
+        } else if !is_valid_hex(model_hash) {
+            violations.push(format!(
+                "model_hash must be a hex string starting with 0x, got '{model_hash}'"
+            ));
         }
     }
 
@@ -180,12 +184,16 @@ fn validate_query_params(filter: &ResultFilter) -> Result<(), (StatusCode, Json<
         }
     }
 
-    // --- after_id length ---
+    // --- after_id format ---
     if let Some(ref after_id) = filter.after_id {
         if after_id.len() > MAX_ID_LENGTH {
             violations.push(format!(
                 "after_id too long ({} chars); maximum is {MAX_ID_LENGTH}",
                 after_id.len()
+            ));
+        } else if !after_id.starts_with("0x") {
+            violations.push(format!(
+                "after_id must start with 0x, got '{after_id}'"
             ));
         }
     }
@@ -291,7 +299,8 @@ pub(crate) async fn handle_list_results(
         .map_err(map_storage_err)?;
 
     // Determine if there are more results beyond this page.
-    let limit = filter.limit.unwrap_or(50).min(1000);
+    // Clamp limit to [1, 1000] with default 100 (must match storage layer).
+    let limit = filter.limit.unwrap_or(100).clamp(1, 1000);
     let offset = filter.offset.unwrap_or(0);
     let has_more = if filter.after_id.is_some() {
         // For cursor-based pagination, there are more if we got a full page.
@@ -1222,6 +1231,80 @@ mod tests {
             err.error.contains("model_hash too long"),
             "expected 'model_hash too long' in error, got: {}",
             err.error
+        );
+    }
+
+    #[tokio::test]
+    async fn test_model_hash_invalid_hex_returns_400() {
+        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/results?model_hash=not_hex_value")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let err: ErrorResponse = serde_json::from_slice(&body).unwrap();
+        assert!(
+            err.error.contains("model_hash must start with 0x"),
+            "expected prefix validation error, got: {}",
+            err.error
+        );
+    }
+
+    #[tokio::test]
+    async fn test_model_hash_valid_hex_accepted() {
+        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/results?model_hash=0xabcdef1234")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_after_id_invalid_hex_returns_400() {
+        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/results?after_id=not_a_hex_id")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let err: ErrorResponse = serde_json::from_slice(&body).unwrap();
+        assert!(
+            err.error.contains("after_id must start with 0x"),
+            "expected prefix validation error, got: {}",
+            err.error
+        );
+    }
+
+    #[tokio::test]
+    async fn test_after_id_valid_hex_accepted() {
+        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/results?after_id=0xabc123")
+            .body(Body::empty())
+            .unwrap();
+
+        // Should not get a 400 for format -- may get 200 with empty results
+        // since 0xabc123 doesn't exist, but the validation should pass.
+        let resp = app.oneshot(req).await.unwrap();
+        assert_ne!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "valid hex after_id should not be rejected by validation"
         );
     }
 
@@ -2388,5 +2471,85 @@ mod tests {
         assert_eq!(page.limit, 2);
         assert_eq!(page.offset, 1);
         assert!(page.has_more);
+    }
+
+    // -----------------------------------------------------------------------
+    // T416: model_hash hex validation and after_id format tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_model_hash_not_hex_returns_400() {
+        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/results?model_hash=not_a_hex_value")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let err: ErrorResponse = serde_json::from_slice(&body).unwrap();
+        assert!(
+            err.error.contains("model_hash must be a hex string starting with 0x"),
+            "expected model_hash hex error, got: {}",
+            err.error
+        );
+    }
+
+    #[tokio::test]
+    async fn test_model_hash_valid_long_hex_accepted() {
+        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/results?model_hash=0xabcdef1234567890")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_model_hash_bare_0x_returns_400() {
+        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/results?model_hash=0x")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let err: ErrorResponse = serde_json::from_slice(&body).unwrap();
+        assert!(
+            err.error.contains("model_hash must be a hex string starting with 0x"),
+            "expected model_hash hex error, got: {}",
+            err.error
+        );
+    }
+
+    #[tokio::test]
+    async fn test_after_id_bare_0x_returns_400() {
+        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/results?after_id=0x")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let err: ErrorResponse = serde_json::from_slice(&body).unwrap();
+        assert!(
+            err.error.contains("after_id must be a hex string"),
+            "expected after_id validation error, got: {}",
+            err.error
+        );
     }
 }

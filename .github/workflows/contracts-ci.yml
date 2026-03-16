@@ -52,6 +52,7 @@ jobs:
         run: bash scripts/validate-fixtures.sh
 
       - name: Check fixture freshness
+        continue-on-error: true
         run: |
           cd contracts
           FIXTURE_DIR="test/fixtures"

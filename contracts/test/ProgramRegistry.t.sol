@@ -714,6 +714,67 @@ contract ProgramRegistryTest is Test {
         ProgramRegistry.Program memory program = registry.getProgram(imageId);
         assertEq(program.programUrl, "https://newurl.com");
     }
+
+    // ========================================================================
+    // STRING LENGTH BOUNDS (T418)
+    // ========================================================================
+
+    function testRegisterNameAtBoundary() public {
+        // 64 bytes exactly — should succeed
+        string memory longName = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"; // 64 A's
+        assertEq(bytes(longName).length, 64);
+        vm.prank(owner);
+        registry.registerProgram(imageId, longName, programUrl, bytes32(0));
+        ProgramRegistry.Program memory p = registry.getProgram(imageId);
+        assertEq(p.name, longName);
+    }
+
+    function testRegisterNameTooLong() public {
+        // 65 bytes — should revert
+        string memory tooLong = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"; // 65 A's
+        assertEq(bytes(tooLong).length, 65);
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(ProgramRegistry.StringTooLong.selector, "name", 64));
+        registry.registerProgram(imageId, tooLong, programUrl, bytes32(0));
+    }
+
+    function testRegisterUrlTooLong() public {
+        // Build a 513-byte URL
+        bytes memory longBytes = new bytes(513);
+        for (uint256 i = 0; i < 513; i++) {
+            longBytes[i] = "A";
+        }
+        string memory tooLong = string(longBytes);
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(ProgramRegistry.StringTooLong.selector, "url", 512));
+        registry.registerProgram(imageId, name, tooLong, bytes32(0));
+    }
+
+    function testUpdateUrlTooLong() public {
+        vm.prank(owner);
+        registry.registerProgram(imageId, name, programUrl, bytes32(0));
+
+        bytes memory longBytes = new bytes(513);
+        for (uint256 i = 0; i < 513; i++) {
+            longBytes[i] = "A";
+        }
+        string memory tooLong = string(longBytes);
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(ProgramRegistry.StringTooLong.selector, "url", 512));
+        registry.updateProgramUrl(imageId, tooLong);
+    }
+
+    function testUrlAtBoundary() public {
+        bytes memory longBytes = new bytes(512);
+        for (uint256 i = 0; i < 512; i++) {
+            longBytes[i] = "A";
+        }
+        string memory maxUrl = string(longBytes);
+        vm.prank(owner);
+        registry.registerProgram(imageId, name, maxUrl, bytes32(0));
+        ProgramRegistry.Program memory p = registry.getProgram(imageId);
+        assertEq(bytes(p.programUrl).length, 512);
+    }
 }
 
 /// @dev Minimal contract used as a valid verifier address in tests

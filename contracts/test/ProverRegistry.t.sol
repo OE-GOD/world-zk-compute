@@ -976,4 +976,33 @@ contract ProverRegistryTest is Test {
         address selected = registry.fulfillProverSelection(requestId, secret);
         assertEq(selected, prover1, "only active prover should always be selected");
     }
+
+    // ========================================================================
+    // STRING LENGTH BOUNDS (T418)
+    // ========================================================================
+
+    function testRegisterEndpointAtBoundary() public {
+        bytes memory longBytes = new bytes(512);
+        for (uint256 i = 0; i < 512; i++) {
+            longBytes[i] = "A";
+        }
+        string memory maxEndpoint = string(longBytes);
+        _registerProver(prover1, MIN_STAKE, maxEndpoint);
+        ProverRegistry.Prover memory p = registry.getProver(prover1);
+        assertEq(bytes(p.endpoint).length, 512);
+    }
+
+    function testRegisterEndpointTooLong() public {
+        bytes memory longBytes = new bytes(513);
+        for (uint256 i = 0; i < 513; i++) {
+            longBytes[i] = "A";
+        }
+        string memory tooLong = string(longBytes);
+        token.mint(prover1, MIN_STAKE);
+        vm.startPrank(prover1);
+        token.approve(address(registry), MIN_STAKE);
+        vm.expectRevert(abi.encodeWithSelector(ProverRegistry.StringTooLong.selector, "endpoint", 512));
+        registry.register(MIN_STAKE, tooLong);
+        vm.stopPrank();
+    }
 }

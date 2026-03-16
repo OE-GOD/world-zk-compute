@@ -301,7 +301,7 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
     // ─── Dispute Resolution ──────────────────────────────────────────────────
 
     /// @inheritdoc ITEEMLVerifier
-    /// @dev Calls RemainderVerifier.verifyDAGProof() via staticcall. Requires >254M gas
+    /// @dev Calls RemainderVerifier.verifyDAGProof() via call. Requires >254M gas
     ///      (supported on Arbitrum in a single tx). If proof is valid, prover wins.
     function resolveDispute(
         bytes32 resultId,
@@ -317,7 +317,9 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
 
         // Call the existing single-tx DAG proof verification
         // This requires >254M gas (supported on Arbitrum in a single tx)
-        (bool success, bytes memory returnData) = remainderVerifier.staticcall(
+        // Uses call instead of staticcall so RemainderVerifier can emit events.
+        // Reentrancy is prevented by the nonReentrant modifier on this function.
+        (bool success, bytes memory returnData) = remainderVerifier.call(
             abi.encodeWithSignature(
                 "verifyDAGProof(bytes,bytes32,bytes,bytes)", proof, circuitHash, publicInputs, gensData
             )
@@ -344,7 +346,7 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
     // ─── Dispute Extension ───────────────────────────────────────────────────
 
     /// @inheritdoc ITEEMLVerifier
-    function extendDisputeWindow(bytes32 resultId) external {
+    function extendDisputeWindow(bytes32 resultId) external nonReentrant {
         PackedMLResult storage r = _results[resultId];
         if (!r.challenged) revert NotChallenged();
         if (disputeResolved[resultId]) revert AlreadyResolved();

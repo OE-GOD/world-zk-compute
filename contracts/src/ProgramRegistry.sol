@@ -55,6 +55,18 @@ contract ProgramRegistry is Ownable2Step, Pausable {
 
     event VerifierUpdated(bytes32 indexed programId, address oldVerifier, address newVerifier);
 
+    event ProgramUrlForceUpdated(bytes32 indexed imageId, string newUrl);
+
+    // ========================================================================
+    // CONSTANTS
+    // ========================================================================
+
+    /// @notice Maximum length for program name strings
+    uint256 public constant MAX_NAME_LENGTH = 64;
+
+    /// @notice Maximum length for program URL strings
+    uint256 public constant MAX_URL_LENGTH = 512;
+
     // ========================================================================
     // ERRORS
     // ========================================================================
@@ -68,6 +80,7 @@ contract ProgramRegistry is Ownable2Step, Pausable {
     error ProgramAlreadyActive();
     error ProgramAlreadyInactive();
     error InvalidVerifierContract();
+    error StringTooLong(string field, uint256 maxLength);
 
     // ========================================================================
     // CONSTRUCTOR
@@ -119,6 +132,8 @@ contract ProgramRegistry is Ownable2Step, Pausable {
         string memory _proofSystem
     ) internal {
         if (imageId == bytes32(0)) revert InvalidImageId();
+        if (bytes(name).length > MAX_NAME_LENGTH) revert StringTooLong("name", MAX_NAME_LENGTH);
+        if (bytes(programUrl).length > MAX_URL_LENGTH) revert StringTooLong("url", MAX_URL_LENGTH);
         if (programs[imageId].registeredAt != 0) revert ProgramAlreadyRegistered();
 
         programs[imageId] = Program({
@@ -144,6 +159,7 @@ contract ProgramRegistry is Ownable2Step, Pausable {
     /// @param imageId The image ID of the program to update
     /// @param newUrl The new URL where the program binary can be downloaded
     function updateProgramUrl(bytes32 imageId, string calldata newUrl) external {
+        if (bytes(newUrl).length > MAX_URL_LENGTH) revert StringTooLong("url", MAX_URL_LENGTH);
         Program storage program = programs[imageId];
         if (program.registeredAt == 0) revert ProgramNotFound();
         if (program.owner != msg.sender) revert NotProgramOwner();
@@ -221,6 +237,19 @@ contract ProgramRegistry is Ownable2Step, Pausable {
         emit ProgramUnverified(imageId);
     }
 
+    /// @notice Force-update a program URL (admin override for compromised registrant keys)
+    /// @param imageId The image ID of the program to update
+    /// @param newUrl The new URL to set
+    function adminForceUpdateUrl(bytes32 imageId, string calldata newUrl) external onlyOwner {
+        if (bytes(newUrl).length > MAX_URL_LENGTH) revert StringTooLong("url", MAX_URL_LENGTH);
+        Program storage program = programs[imageId];
+        if (program.registeredAt == 0) revert ProgramNotFound();
+
+        program.programUrl = newUrl;
+
+        emit ProgramUrlForceUpdated(imageId, newUrl);
+    }
+
     // ========================================================================
     // ADMIN: PAUSABLE
     // ========================================================================
@@ -274,6 +303,39 @@ contract ProgramRegistry is Ownable2Step, Pausable {
     /// @return Array of image IDs registered by the given owner
     function getOwnerPrograms(address owner) external view returns (bytes32[] memory) {
         return ownerPrograms[owner];
+    }
+
+    /// @notice Get programs owned by an address (paginated)
+    /// @param owner The address whose programs to retrieve
+    /// @param offset The starting index
+    /// @param limit The maximum number of items to return
+    /// @return Array of image IDs in the requested page range
+    function getOwnerPrograms(address owner, uint256 offset, uint256 limit)
+        external
+        view
+        returns (bytes32[] memory)
+    {
+        bytes32[] storage programs = ownerPrograms[owner];
+        uint256 total = programs.length;
+        if (offset >= total) {
+            return new bytes32[](0);
+        }
+        uint256 end = offset + limit;
+        if (end > total) {
+            end = total;
+        }
+        bytes32[] memory result = new bytes32[](end - offset);
+        for (uint256 i = offset; i < end; i++) {
+            result[i - offset] = programs[i];
+        }
+        return result;
+    }
+
+    /// @notice Get the total number of programs owned by an address
+    /// @param owner The address whose program count to retrieve
+    /// @return The count of programs owned by the address
+    function totalOwnerPrograms(address owner) external view returns (uint256) {
+        return ownerPrograms[owner].length;
     }
 
     /// @notice Get all program IDs (paginated)

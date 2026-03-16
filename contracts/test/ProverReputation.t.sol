@@ -1206,6 +1206,54 @@ contract ProverReputationTest is Test {
     }
 
     // ========================================================================
+    // STRING LENGTH BOUNDS (T418)
+    // ========================================================================
+
+    function testRecordFailureReasonAtBoundary() public {
+        _registerProver(prover1);
+        bytes memory longBytes = new bytes(256);
+        for (uint256 i = 0; i < 256; i++) {
+            longBytes[i] = "A";
+        }
+        string memory maxReason = string(longBytes);
+        rep.recordFailure(prover1, maxReason);
+        // Should succeed without revert
+    }
+
+    function testRecordFailureReasonTooLong() public {
+        _registerProver(prover1);
+        bytes memory longBytes = new bytes(257);
+        for (uint256 i = 0; i < 257; i++) {
+            longBytes[i] = "A";
+        }
+        string memory tooLong = string(longBytes);
+        vm.expectRevert(abi.encodeWithSelector(ProverReputation.StringTooLong.selector, "reason", 256));
+        rep.recordFailure(prover1, tooLong);
+    }
+
+    function testSlashReasonTooLong() public {
+        _registerProver(prover1);
+        bytes memory longBytes = new bytes(257);
+        for (uint256 i = 0; i < 257; i++) {
+            longBytes[i] = "A";
+        }
+        string memory tooLong = string(longBytes);
+        vm.expectRevert(abi.encodeWithSelector(ProverReputation.StringTooLong.selector, "reason", 256));
+        rep.slash(prover1, tooLong, 100);
+    }
+
+    function testBanReasonTooLong() public {
+        _registerProver(prover1);
+        bytes memory longBytes = new bytes(257);
+        for (uint256 i = 0; i < 257; i++) {
+            longBytes[i] = "A";
+        }
+        string memory tooLong = string(longBytes);
+        vm.expectRevert(abi.encodeWithSelector(ProverReputation.StringTooLong.selector, "reason", 256));
+        rep.ban(prover1, tooLong);
+    }
+
+    // ========================================================================
     // HELPERS
     // ========================================================================
 

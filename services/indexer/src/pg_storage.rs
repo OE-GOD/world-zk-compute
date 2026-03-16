@@ -34,6 +34,7 @@
 //! - `results`       -- indexed inference results (for the Storage trait)
 //! - `indexer_state`  -- key-value bookkeeping (last indexed block, etc.)
 
+use anyhow::Context as _;
 use crate::{ResultFilter, ResultRow, StatsResponse, Storage};
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::{PgPool, PgPoolOptions};
@@ -439,16 +440,19 @@ impl PgStorage {
             .fetch_optional(&self.pool)
             .await?;
 
-        Ok(row.map(|r| {
+        row.map(|r| {
             let v: i64 = r.get(0);
-            v as u64
-        }))
+            u64::try_from(v).context("negative block number in sync_state")
+        })
+        .transpose()
     }
 
     /// Update the latest synced block in the `sync_state` table.
     pub async fn set_latest_block(&self, block_number: u64) -> anyhow::Result<()> {
+        let block_i64 =
+            i64::try_from(block_number).context("block number overflow in set_latest_block")?;
         sqlx::query("UPDATE sync_state SET last_block = $1, updated_at = NOW() WHERE id = 1")
-            .bind(block_number as i64)
+            .bind(block_i64)
             .execute(&self.pool)
             .await?;
 
@@ -476,7 +480,7 @@ impl PgStorage {
         .bind(model_hash)
         .bind(input_hash)
         .bind(submitter)
-        .bind(block_number as i64)
+        .bind(i64::try_from(block_number).context("block number overflow in insert_result")?)
         .execute(&self.pool)
         .await?;
 
@@ -584,13 +588,15 @@ impl PgStorage {
         };
         sql.push_str(&format!(" ORDER BY {order_col} {order_dir}, id ASC"));
 
-        let limit = filter.limit.unwrap_or(50).min(1000) as i64;
+        // Clamp limit to [1, 1000] with default 100 to prevent abuse.
+        let limit = i64::from(filter.limit.unwrap_or(100).clamp(1, 1000));
         param_count += 1;
         sql.push_str(&format!(" LIMIT ${param_count}"));
 
-        // Offset-based pagination (mutually exclusive with after_id)
+        // Offset-based pagination (mutually exclusive with after_id).
+        // Use saturating conversion to prevent overflow; floor at 0.
         let offset = if filter.after_id.is_none() {
-            filter.offset.unwrap_or(0) as i64
+            i64::from(filter.offset.unwrap_or(0))
         } else {
             0
         };
@@ -653,7 +659,7 @@ impl PgStorage {
 
         let row = query.fetch_one(&self.pool).await?;
         let count: i64 = row.get(0);
-        Ok(count as u64)
+        u64::try_from(count).context("negative count in count_results")
     }
 
     async fn get_stats_async(&self) -> anyhow::Result<StatsResponse> {
@@ -669,10 +675,14 @@ impl PgStorage {
         .await?;
 
         Ok(StatsResponse {
-            total_submitted: row.get::<i64, _>(0) as u64,
-            total_challenged: row.get::<i64, _>(1) as u64,
-            total_finalized: row.get::<i64, _>(2) as u64,
-            total_resolved: row.get::<i64, _>(3) as u64,
+            total_submitted: u64::try_from(row.get::<i64, _>(0))
+                .context("negative submitted count")?,
+            total_challenged: u64::try_from(row.get::<i64, _>(1))
+                .context("negative challenged count")?,
+            total_finalized: u64::try_from(row.get::<i64, _>(2))
+                .context("negative finalized count")?,
+            total_resolved: u64::try_from(row.get::<i64, _>(3))
+                .context("negative resolved count")?,
         })
     }
 
@@ -694,7 +704,9 @@ impl PgStorage {
             .fetch_one(&self.pool)
             .await;
 
-        row.map(|(c,)| c as u64).unwrap_or(0)
+        row.ok()
+            .and_then(|(c,)| u64::try_from(c).ok())
+            .unwrap_or(0)
     }
 }
 

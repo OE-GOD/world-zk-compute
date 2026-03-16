@@ -10,6 +10,7 @@ import {GKRDAGHybridVerifier} from "./GKRDAGHybridVerifier.sol";
 import {DAGBatchVerifier} from "./DAGBatchVerifier.sol";
 import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @title RemainderVerifier
 /// @notice Top-level on-chain verifier for Remainder (GKR+Hyrax) proofs
@@ -25,7 +26,7 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 ///      Each registered circuit has a fixed description hash that
 ///      identifies the model structure. The proof must reference
 ///      a registered circuit.
-contract RemainderVerifier is Ownable2Step, Pausable {
+contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
     // ========================================================================
     // TYPES
     // ========================================================================
@@ -93,6 +94,7 @@ contract RemainderVerifier is Ownable2Step, Pausable {
     event DAGStylusVerifierUpdated(bytes32 indexed circuitHash, address indexed stylusVerifier);
     event DAGCircuitDeactivated(bytes32 indexed circuitHash);
     event DAGCircuitReactivated(bytes32 indexed circuitHash);
+    event DAGProofVerified(bytes32 indexed circuitHash, bool valid, string method);
 
     // ========================================================================
     // ERRORS
@@ -1083,7 +1085,7 @@ contract RemainderVerifier is Ownable2Step, Pausable {
         bytes32 circuitHash,
         bytes calldata publicInputs,
         bytes calldata gensData
-    ) external view whenNotPaused returns (bool valid) {
+    ) external whenNotPaused nonReentrant returns (bool valid) {
         DAGCircuitConfig storage config = dagCircuits[circuitHash];
         if (config.circuitHash == bytes32(0)) revert CircuitNotRegistered();
         if (!config.active) revert CircuitNotActive();
@@ -1121,6 +1123,7 @@ contract RemainderVerifier is Ownable2Step, Pausable {
         GKRDAGVerifier.verifyInputLayers(ctx, sponge);
 
         valid = true;
+        _emitDAGProofVerified(circuitHash, "direct");
     }
 
     // ========================================================================
@@ -1136,7 +1139,7 @@ contract RemainderVerifier is Ownable2Step, Pausable {
         bytes calldata gensData,
         uint256[8] calldata groth16Proof,
         uint256[] calldata groth16Outputs
-    ) external view whenNotPaused {
+    ) external whenNotPaused nonReentrant {
         _validateDAGHybridInputs(circuitHash, innerProof, gensData);
 
         DAGCircuitConfig storage config = dagCircuits[circuitHash];
@@ -1173,18 +1176,26 @@ contract RemainderVerifier is Ownable2Step, Pausable {
         _verifyDAGGroth16(circuitHash, embeddedPubInputs, challenges, groth16Proof, outputs, config.description);
 
         // Verify EC equations
-        HyraxVerifier.PedersenGens memory gens = decodePedersenGens(gensData);
-        bool ecValid = GKRDAGHybridVerifier.verifyDAGECChecks(
-            gkrProof,
-            challenges,
-            outputs,
-            gens,
-            config.description,
-            dagInputProofs,
-            publicValueClaims,
-            embeddedPubInputs
-        );
-        if (!ecValid) revert ProofVerificationFailed();
+        {
+            HyraxVerifier.PedersenGens memory gens = decodePedersenGens(gensData);
+            bool ecValid = GKRDAGHybridVerifier.verifyDAGECChecks(
+                gkrProof,
+                challenges,
+                outputs,
+                gens,
+                config.description,
+                dagInputProofs,
+                publicValueClaims,
+                embeddedPubInputs
+            );
+            if (!ecValid) revert ProofVerificationFailed();
+        }
+        _emitDAGProofVerified(circuitHash, "groth16");
+    }
+
+    /// @dev Emit DAGProofVerified (extracted to reduce stack depth in callers)
+    function _emitDAGProofVerified(bytes32 hash, string memory method) internal {
+        emit DAGProofVerified(hash, true, method);
     }
 
     /// @dev Validate DAG circuit registration, proof format, generators
@@ -1342,7 +1353,7 @@ contract RemainderVerifier is Ownable2Step, Pausable {
         bytes32 circuitHash,
         bytes calldata publicInputs,
         bytes calldata gensData
-    ) external view whenNotPaused returns (bool valid) {
+    ) external whenNotPaused nonReentrant returns (bool valid) {
         DAGCircuitConfig storage config = dagCircuits[circuitHash];
         if (config.circuitHash == bytes32(0)) revert CircuitNotRegistered();
         if (!config.active) revert CircuitNotActive();
@@ -1362,6 +1373,7 @@ contract RemainderVerifier is Ownable2Step, Pausable {
         bytes memory circuitDescData = _encodeFlatCircuitDesc(config.description);
 
         valid = _callStylusVerifier(stylusVerifier, proof, publicInputs, gensData, circuitDescData);
+        _emitDAGProofVerified(circuitHash, "stylus");
     }
 
     /// @dev Call the Stylus verifier via staticcall
@@ -1709,7 +1721,7 @@ contract RemainderVerifier is Ownable2Step, Pausable {
         bytes32 circuitHash,
         bytes calldata publicInputs,
         bytes calldata gensData
-    ) external whenNotPaused returns (bytes32 sessionId) {
+    ) external whenNotPaused nonReentrant returns (bytes32 sessionId) {
         // Validate circuit
         DAGCircuitConfig storage config = dagCircuits[circuitHash];
         if (config.circuitHash == bytes32(0)) revert CircuitNotRegistered();
@@ -1810,7 +1822,7 @@ contract RemainderVerifier is Ownable2Step, Pausable {
         bytes calldata proof,
         bytes calldata publicInputs,
         bytes calldata gensData
-    ) external whenNotPaused {
+    ) external whenNotPaused nonReentrant {
         uint256 gasStart = gasleft();
         DAGBatchVerifier.DAGBatchSession memory session = DAGBatchVerifier.loadSession(sessionId);
         require(session.circuitHash != bytes32(0), "Batch: session not found");
@@ -1976,7 +1988,7 @@ contract RemainderVerifier is Ownable2Step, Pausable {
         bytes calldata proof,
         bytes calldata publicInputs,
         bytes calldata gensData
-    ) external whenNotPaused returns (bool finalized) {
+    ) external whenNotPaused nonReentrant returns (bool finalized) {
         DAGBatchVerifier.DAGBatchSession memory session = DAGBatchVerifier.loadSession(sessionId);
         require(session.circuitHash != bytes32(0), "Batch: session not found");
         require(session.verifier == msg.sender, "Batch: unauthorized");
@@ -1999,6 +2011,7 @@ contract RemainderVerifier is Ownable2Step, Pausable {
         emit DAGBatchFinalizeProgress(sessionId, groupsDone, totalGroups);
         if (finalized) {
             emit DAGBatchFinalized(sessionId, session.circuitHash);
+            _emitDAGProofVerified(session.circuitHash, "batch");
         }
     }
 
@@ -2218,7 +2231,7 @@ contract RemainderVerifier is Ownable2Step, Pausable {
     ///      session will have all-zero fields (circuitHash == 0 is not checked, but finalized == false
     ///      after zeroing triggers the "not finalized" require).
     /// @param sessionId The session to clean up (must be finalized)
-    function cleanupDAGBatchSession(bytes32 sessionId) external {
+    function cleanupDAGBatchSession(bytes32 sessionId) external nonReentrant {
         DAGBatchVerifier.DAGBatchSession memory session = DAGBatchVerifier.loadSession(sessionId);
         require(session.finalized, "Batch: not finalized");
         require(session.verifier == msg.sender, "Batch: unauthorized");
@@ -2313,6 +2326,32 @@ contract RemainderVerifier is Ownable2Step, Pausable {
     /// @notice Get all registered circuit hashes
     function getCircuitHashes() external view returns (bytes32[] memory) {
         return circuitHashes;
+    }
+
+    /// @notice Get registered circuit hashes (paginated)
+    /// @param offset The starting index
+    /// @param limit The maximum number of items to return
+    /// @return Array of circuit hashes in the requested page range
+    function getCircuitHashes(uint256 offset, uint256 limit) external view returns (bytes32[] memory) {
+        uint256 total = circuitHashes.length;
+        if (offset >= total) {
+            return new bytes32[](0);
+        }
+        uint256 end = offset + limit;
+        if (end > total) {
+            end = total;
+        }
+        bytes32[] memory result = new bytes32[](end - offset);
+        for (uint256 i = offset; i < end; i++) {
+            result[i - offset] = circuitHashes[i];
+        }
+        return result;
+    }
+
+    /// @notice Get the total number of registered circuit hashes
+    /// @return The count of all registered circuit hashes
+    function totalCircuitHashes() external view returns (uint256) {
+        return circuitHashes.length;
     }
 
     // ========================================================================

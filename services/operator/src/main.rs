@@ -15,7 +15,7 @@ use alloy::providers::{Provider, ProviderBuilder};
 use clap::{Parser, Subcommand};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 use tracing::Instrument;
 use uuid::Uuid;
@@ -38,7 +38,12 @@ struct CachedAttestation {
 /// Global attestation cache for the submit command.
 /// Avoids re-fetching and re-verifying attestation on every submit
 /// within the TTL window.
-static ATTESTATION_CACHE: OnceLock<Mutex<Option<CachedAttestation>>> = OnceLock::new();
+///
+/// Uses `tokio::sync::Mutex` so the lock can be held across async
+/// operations, eliminating the TOCTOU race that existed when
+/// `std::sync::Mutex` was dropped before the async fetch.
+static ATTESTATION_CACHE: OnceLock<tokio::sync::Mutex<Option<CachedAttestation>>> =
+    OnceLock::new();
 
 #[derive(Parser)]
 #[command(name = "tee-operator", about = "TEE ML Operator Service")]
@@ -195,27 +200,33 @@ fn compute_attestation_nonce(chain_id: u64, block_number: u64, enclave_address: 
 ///
 /// For fresh attestation fetches, a nonce is computed from the current chain
 /// state and included in the request to prevent replay attacks.
+/// The tokio mutex is held across the entire check-then-fetch-then-update
+/// sequence to prevent TOCTOU races where concurrent callers could both
+/// see a stale cache and redundantly re-fetch attestation.
 async fn verify_enclave_attestation(
     config: &Config,
     client: &enclave::EnclaveClient,
 ) -> anyhow::Result<()> {
-    let cache = ATTESTATION_CACHE.get_or_init(|| Mutex::new(None));
+    let cache = ATTESTATION_CACHE.get_or_init(|| tokio::sync::Mutex::new(None));
 
-    // Check cache (drop guard before any async work)
-    {
-        let cached = cache
-            .lock()
-            .map_err(|e| anyhow::anyhow!("attestation cache lock poisoned: {e}"))?;
-        if let Some(ref c) = *cached {
-            if c.fetched_at.elapsed().as_secs() < config.attestation_cache_ttl {
-                tracing::debug!(
-                    "Using cached attestation (age={}s)",
-                    c.fetched_at.elapsed().as_secs()
-                );
-                return Ok(());
-            }
+    // Hold the lock across the entire check-fetch-update sequence to prevent
+    // TOCTOU races. tokio::sync::Mutex allows .await while the guard is held
+    // without blocking the async runtime.
+    let mut cached = cache.lock().await;
+
+    // Check cache -- if still valid, return immediately (lock dropped on return).
+    if let Some(ref c) = *cached {
+        if c.fetched_at.elapsed().as_secs() < config.attestation_cache_ttl {
+            tracing::debug!(
+                "Using cached attestation (age={}s)",
+                c.fetched_at.elapsed().as_secs()
+            );
+            return Ok(());
         }
     }
+
+    // Cache miss or expired -- fetch a fresh attestation while still holding
+    // the lock so no other caller duplicates this work.
 
     // Compute nonce from chain state for replay prevention
     let provider = ProviderBuilder::new().connect_http(config.rpc_url.parse()?);
@@ -249,16 +260,11 @@ async fn verify_enclave_attestation(
         verified.cert_chain_verified
     );
 
-    // Re-acquire lock to update cache
-    {
-        let mut cached = cache
-            .lock()
-            .map_err(|e| anyhow::anyhow!("attestation cache lock poisoned: {e}"))?;
-        *cached = Some(CachedAttestation {
-            verified,
-            fetched_at: Instant::now(),
-        });
-    }
+    // Update cache while still holding the lock -- no TOCTOU possible.
+    *cached = Some(CachedAttestation {
+        verified,
+        fetched_at: Instant::now(),
+    });
 
     Ok(())
 }
