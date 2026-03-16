@@ -136,8 +136,8 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
 
     /// @inheritdoc ITEEMLVerifier
     function registerEnclave(address enclaveKey, bytes32 enclaveImageHash) external onlyOwner {
-        require(enclaveKey != address(0), "TEEMLVerifier: zero enclave key");
-        require(!_enclaves[enclaveKey].registered, "TEEMLVerifier: already registered");
+        if (enclaveKey == address(0)) revert ZeroEnclaveKey();
+        if (_enclaves[enclaveKey].registered) revert AlreadyRegistered();
 
         _enclaves[enclaveKey] = PackedEnclaveInfo({
             registered: true,
@@ -152,8 +152,8 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
 
     /// @inheritdoc ITEEMLVerifier
     function revokeEnclave(address enclaveKey) external onlyOwner {
-        require(_enclaves[enclaveKey].registered, "TEEMLVerifier: not registered");
-        require(_enclaves[enclaveKey].active, "TEEMLVerifier: already revoked");
+        if (!_enclaves[enclaveKey].registered) revert NotRegistered();
+        if (!_enclaves[enclaveKey].active) revert AlreadyRevoked();
 
         _enclaves[enclaveKey].active = false;
 
@@ -175,7 +175,7 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
 
     /// @inheritdoc ITEEMLVerifier
     function setRemainderVerifier(address _verifier) external onlyOwner {
-        require(_verifier != address(0), "TEEMLVerifier: zero address");
+        if (_verifier == address(0)) revert ZeroAddress();
         address oldVerifier = remainderVerifier;
         remainderVerifier = _verifier;
         emit RemainderVerifierUpdated(oldVerifier, _verifier);
@@ -183,8 +183,8 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
 
     /// @inheritdoc ITEEMLVerifier
     function setChallengeBondAmount(uint256 _amount) external onlyOwner {
-        require(_amount > 0, "TEEMLVerifier: zero amount");
-        require(_amount <= 100 ether, "TEEMLVerifier: amount too high");
+        if (_amount == 0) revert ZeroAmount();
+        if (_amount > 100 ether) revert AmountTooHigh();
         uint256 oldAmount = challengeBondAmount;
         challengeBondAmount = _amount;
         emit ChallengeBondUpdated(oldAmount, _amount);
@@ -193,8 +193,8 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
 
     /// @inheritdoc ITEEMLVerifier
     function setProverStake(uint256 _amount) external onlyOwner {
-        require(_amount > 0, "TEEMLVerifier: zero amount");
-        require(_amount <= 100 ether, "TEEMLVerifier: amount too high");
+        if (_amount == 0) revert ZeroAmount();
+        if (_amount > 100 ether) revert AmountTooHigh();
         uint256 oldAmount = proverStake;
         proverStake = _amount;
         emit ProverStakeUpdated(oldAmount, _amount);
@@ -204,8 +204,8 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
     /// @notice Update the challenge window duration
     /// @param _duration New challenge window in seconds (min 10 min, max 7 days)
     function setChallengeWindow(uint256 _duration) external onlyOwner {
-        require(_duration >= 10 minutes, "TEEMLVerifier: window too short");
-        require(_duration <= 7 days, "TEEMLVerifier: window too long");
+        if (_duration < 10 minutes) revert WindowTooShort();
+        if (_duration > 7 days) revert WindowTooLong();
         uint256 oldDuration = challengeWindow;
         challengeWindow = _duration;
         emit ConfigUpdated("challengeWindow", oldDuration, _duration);
@@ -214,8 +214,8 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
     /// @notice Update the dispute window duration
     /// @param _duration New dispute window in seconds (min 1 hour, max 30 days)
     function setDisputeWindow(uint256 _duration) external onlyOwner {
-        require(_duration >= 1 hours, "TEEMLVerifier: window too short");
-        require(_duration <= 30 days, "TEEMLVerifier: window too long");
+        if (_duration < 1 hours) revert WindowTooShort();
+        if (_duration > 30 days) revert WindowTooLong();
         uint256 oldDuration = disputeWindow;
         disputeWindow = _duration;
         emit ConfigUpdated("disputeWindow", oldDuration, _duration);
@@ -242,18 +242,18 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
         whenNotPaused
         returns (bytes32 resultId)
     {
-        require(msg.value >= proverStake, "TEEMLVerifier: insufficient stake");
+        if (msg.value < proverStake) revert InsufficientStake();
 
         bytes32 resultHash = keccak256(result);
         bytes32 structHash = keccak256(abi.encode(RESULT_TYPEHASH, modelHash, inputHash, resultHash));
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR(), structHash));
 
         address signer = digest.recover(attestation);
-        require(_enclaves[signer].registered, "TEEMLVerifier: unregistered enclave");
-        require(_enclaves[signer].active, "TEEMLVerifier: enclave revoked");
+        if (!_enclaves[signer].registered) revert UnregisteredEnclave();
+        if (!_enclaves[signer].active) revert EnclaveNotActive();
 
         resultId = keccak256(abi.encodePacked(msg.sender, modelHash, inputHash, block.number));
-        require(_results[resultId].submittedAt == 0, "TEEMLVerifier: result exists");
+        if (_results[resultId].submittedAt != 0) revert ResultExists();
 
         _results[resultId] = PackedMLResult({
             enclave: signer,
@@ -283,11 +283,11 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
     /// @dev Sets up a disputeWindow deadline for ZK proof submission.
     function challenge(bytes32 resultId) external payable whenNotPaused {
         PackedMLResult storage r = _results[resultId];
-        require(r.submittedAt != 0, "TEEMLVerifier: result not found");
-        require(!r.finalized, "TEEMLVerifier: already finalized");
-        require(!r.challenged, "TEEMLVerifier: already challenged");
-        require(msg.value >= challengeBondAmount, "TEEMLVerifier: insufficient bond");
-        require(block.timestamp < r.challengeDeadline, "TEEMLVerifier: window closed");
+        if (r.submittedAt == 0) revert ResultNotFound();
+        if (r.finalized) revert AlreadyFinalized();
+        if (r.challenged) revert AlreadyChallenged();
+        if (msg.value < challengeBondAmount) revert InsufficientBond();
+        if (block.timestamp >= r.challengeDeadline) revert ChallengeWindowClosed();
 
         r.challenged = true;
         r.challenger = msg.sender;
@@ -311,9 +311,9 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
         bytes calldata gensData
     ) external nonReentrant {
         PackedMLResult storage r = _results[resultId];
-        require(r.challenged, "TEEMLVerifier: not challenged");
-        require(!disputeResolved[resultId], "TEEMLVerifier: already resolved");
-        require(remainderVerifier != address(0), "TEEMLVerifier: no verifier set");
+        if (!r.challenged) revert NotChallenged();
+        if (disputeResolved[resultId]) revert AlreadyResolved();
+        if (remainderVerifier == address(0)) revert NoVerifierSet();
 
         // Call the existing single-tx DAG proof verification
         // This requires >254M gas (supported on Arbitrum in a single tx)
@@ -334,9 +334,9 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
     /// @inheritdoc ITEEMLVerifier
     function resolveDisputeByTimeout(bytes32 resultId) external nonReentrant {
         PackedMLResult storage r = _results[resultId];
-        require(r.challenged, "TEEMLVerifier: not challenged");
-        require(!disputeResolved[resultId], "TEEMLVerifier: already resolved");
-        require(block.timestamp >= r.disputeDeadline, "TEEMLVerifier: deadline not reached");
+        if (!r.challenged) revert NotChallenged();
+        if (disputeResolved[resultId]) revert AlreadyResolved();
+        if (block.timestamp < r.disputeDeadline) revert DeadlineNotReached();
 
         _settleDispute(resultId, r, false);
     }
@@ -346,10 +346,10 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
     /// @inheritdoc ITEEMLVerifier
     function extendDisputeWindow(bytes32 resultId) external {
         PackedMLResult storage r = _results[resultId];
-        require(r.challenged, "TEEMLVerifier: not challenged");
-        require(!disputeResolved[resultId], "TEEMLVerifier: already resolved");
-        require(r.submitter == msg.sender, "TEEMLVerifier: not submitter");
-        require(disputeExtensions[resultId] < MAX_EXTENSIONS, "TEEMLVerifier: max extensions reached");
+        if (!r.challenged) revert NotChallenged();
+        if (disputeResolved[resultId]) revert AlreadyResolved();
+        if (r.submitter != msg.sender) revert NotSubmitter();
+        if (disputeExtensions[resultId] >= MAX_EXTENSIONS) revert MaxExtensionsReached();
 
         disputeExtensions[resultId] += 1;
         // forge-lint: disable-next-line(unsafe-typecast)
@@ -364,17 +364,17 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
     /// @dev Returns the prover's stake via low-level call for contract wallet compatibility.
     function finalize(bytes32 resultId) external nonReentrant {
         PackedMLResult storage r = _results[resultId];
-        require(r.submittedAt != 0, "TEEMLVerifier: result not found");
-        require(block.timestamp >= r.challengeDeadline, "TEEMLVerifier: window not passed");
-        require(!r.challenged, "TEEMLVerifier: result is challenged");
-        require(!r.finalized, "TEEMLVerifier: already finalized");
+        if (r.submittedAt == 0) revert ResultNotFound();
+        if (block.timestamp < r.challengeDeadline) revert ChallengeWindowNotPassed();
+        if (r.challenged) revert ResultIsChallenged();
+        if (r.finalized) revert AlreadyFinalized();
 
         r.finalized = true;
 
         // Return prover stake to submitter
         if (r.proverStakeAmount > 0) {
             (bool sent,) = r.submitter.call{value: r.proverStakeAmount}("");
-            require(sent, "TEEMLVerifier: stake return failed");
+            if (!sent) revert StakeReturnFailed();
         }
 
         emit ResultExpired(resultId);
@@ -435,11 +435,11 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
         if (proofValid) {
             // Prover was honest — submitter wins both stakes
             (bool sent,) = r.submitter.call{value: totalPot}("");
-            require(sent, "TEEMLVerifier: payout failed");
+            if (!sent) revert PayoutFailed();
         } else {
             // Prover was dishonest — challenger wins both stakes
             (bool sent,) = r.challenger.call{value: totalPot}("");
-            require(sent, "TEEMLVerifier: payout failed");
+            if (!sent) revert PayoutFailed();
         }
 
         emit DisputeResolved(resultId, proofValid);

@@ -5,6 +5,36 @@ pragma solidity ^0.8.20;
 /// @notice Defines the public API for submitting TEE-attested ML results, challenging them,
 ///         and resolving disputes via ZK proofs or timeout.
 interface ITEEMLVerifier {
+    // ─── Custom Errors ──────────────────────────────────────────────────────
+    error ZeroEnclaveKey();
+    error AlreadyRegistered();
+    error NotRegistered();
+    error AlreadyRevoked();
+    error ZeroAddress();
+    error ZeroAmount();
+    error AmountTooHigh();
+    error WindowTooShort();
+    error WindowTooLong();
+    error InsufficientStake();
+    error UnregisteredEnclave();
+    error EnclaveNotActive();
+    error ResultExists();
+    error ResultNotFound();
+    error AlreadyFinalized();
+    error AlreadyChallenged();
+    error InsufficientBond();
+    error ChallengeWindowClosed();
+    error NotChallenged();
+    error AlreadyResolved();
+    error NoVerifierSet();
+    error DeadlineNotReached();
+    error NotSubmitter();
+    error MaxExtensionsReached();
+    error ChallengeWindowNotPassed();
+    error ResultIsChallenged();
+    error StakeReturnFailed();
+    error PayoutFailed();
+
     /// @notice Information about a registered TEE enclave
     /// @param registered Whether this enclave has been registered
     /// @param active Whether this enclave is currently active (not revoked)

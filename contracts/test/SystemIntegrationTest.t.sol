@@ -440,7 +440,7 @@ contract SystemIntegrationTest is Test {
         bytes memory attestation2 = _signTeeAttestation(modelHash, inputHash, result2);
 
         vm.prank(prover);
-        vm.expectRevert("TEEMLVerifier: enclave revoked");
+        vm.expectRevert(ITEEMLVerifier.EnclaveNotActive.selector);
         teeVerifier.submitResult{value: 0.1 ether}(modelHash, inputHash, result2, attestation2);
     }
 
@@ -554,7 +554,7 @@ contract SystemIntegrationTest is Test {
 
         // Can't extend again (max 1)
         vm.prank(prover);
-        vm.expectRevert("TEEMLVerifier: max extensions reached");
+        vm.expectRevert(ITEEMLVerifier.MaxExtensionsReached.selector);
         teeVerifier.extendDisputeWindow(resultId);
     }
 
@@ -583,7 +583,7 @@ contract SystemIntegrationTest is Test {
 
         // Insufficient stake with new requirement
         vm.prank(prover);
-        vm.expectRevert("TEEMLVerifier: insufficient stake");
+        vm.expectRevert(ITEEMLVerifier.InsufficientStake.selector);
         teeVerifier.submitResult{value: 0.1 ether}(modelHash, inputHash, result, attestation);
 
         // Sufficient stake

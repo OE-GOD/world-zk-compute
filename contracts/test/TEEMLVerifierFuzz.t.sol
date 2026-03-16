@@ -92,7 +92,7 @@ contract TEEMLVerifierFuzzTest is Test {
         bytes memory attestation = _signAttestation(modelHash, inputHash, resultData);
 
         if (stake < DEFAULT_PROVER_STAKE) {
-            vm.expectRevert("TEEMLVerifier: insufficient stake");
+            vm.expectRevert(ITEEMLVerifier.InsufficientStake.selector);
             verifier.submitResult{value: stake}(modelHash, inputHash, resultData, attestation);
         } else {
             bytes32 resultId = verifier.submitResult{value: stake}(modelHash, inputHash, resultData, attestation);
@@ -121,7 +121,7 @@ contract TEEMLVerifierFuzzTest is Test {
         vm.prank(challenger);
 
         if (bond < DEFAULT_CHALLENGE_BOND) {
-            vm.expectRevert("TEEMLVerifier: insufficient bond");
+            vm.expectRevert(ITEEMLVerifier.InsufficientBond.selector);
             verifier.challenge{value: bond}(resultId);
         } else {
             verifier.challenge{value: bond}(resultId);
@@ -143,7 +143,7 @@ contract TEEMLVerifierFuzzTest is Test {
         // Warp past challenge window so "window not passed" is not the revert reason
         vm.warp(block.timestamp + 2 hours);
 
-        vm.expectRevert("TEEMLVerifier: result not found");
+        vm.expectRevert(ITEEMLVerifier.ResultNotFound.selector);
         verifier.finalize(resultId);
     }
 
@@ -184,10 +184,10 @@ contract TEEMLVerifierFuzzTest is Test {
     ///         Otherwise: succeed and update state.
     function testFuzz_setChallengeBondAmount_bounds(uint256 amount) public {
         if (amount == 0) {
-            vm.expectRevert("TEEMLVerifier: zero amount");
+            vm.expectRevert(ITEEMLVerifier.ZeroAmount.selector);
             verifier.setChallengeBondAmount(amount);
         } else if (amount > 100 ether) {
-            vm.expectRevert("TEEMLVerifier: amount too high");
+            vm.expectRevert(ITEEMLVerifier.AmountTooHigh.selector);
             verifier.setChallengeBondAmount(amount);
         } else {
             verifier.setChallengeBondAmount(amount);
@@ -214,10 +214,10 @@ contract TEEMLVerifierFuzzTest is Test {
     ///         Otherwise: succeed and update state.
     function testFuzz_setProverStake_bounds(uint256 amount) public {
         if (amount == 0) {
-            vm.expectRevert("TEEMLVerifier: zero amount");
+            vm.expectRevert(ITEEMLVerifier.ZeroAmount.selector);
             verifier.setProverStake(amount);
         } else if (amount > 100 ether) {
-            vm.expectRevert("TEEMLVerifier: amount too high");
+            vm.expectRevert(ITEEMLVerifier.AmountTooHigh.selector);
             verifier.setProverStake(amount);
         } else {
             verifier.setProverStake(amount);
@@ -254,7 +254,7 @@ contract TEEMLVerifierFuzzTest is Test {
         vm.deal(challenger, 1 ether);
         vm.prank(challenger);
 
-        vm.expectRevert("TEEMLVerifier: window closed");
+        vm.expectRevert(ITEEMLVerifier.ChallengeWindowClosed.selector);
         verifier.challenge{value: DEFAULT_CHALLENGE_BOND}(resultId);
     }
 
@@ -273,7 +273,7 @@ contract TEEMLVerifierFuzzTest is Test {
         elapsed = bound(elapsed, 0, cw - 1);
         vm.warp(submitTime + elapsed);
 
-        vm.expectRevert("TEEMLVerifier: window not passed");
+        vm.expectRevert(ITEEMLVerifier.ChallengeWindowNotPassed.selector);
         verifier.finalize(resultId);
     }
 }

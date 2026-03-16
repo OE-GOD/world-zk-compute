@@ -153,7 +153,7 @@ contract TEEMLVerifierTest is Test {
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(wrongKey, digest);
         bytes memory attestation = abi.encodePacked(r, s, v);
 
-        vm.expectRevert("TEEMLVerifier: unregistered enclave");
+        vm.expectRevert(ITEEMLVerifier.UnregisteredEnclave.selector);
         verifier.submitResult{value: DEFAULT_PROVER_STAKE}(modelHash, inputHash, resultData, attestation);
     }
 
@@ -165,7 +165,7 @@ contract TEEMLVerifierTest is Test {
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(unknownKey, digest);
         bytes memory attestation = abi.encodePacked(r, s, v);
 
-        vm.expectRevert("TEEMLVerifier: unregistered enclave");
+        vm.expectRevert(ITEEMLVerifier.UnregisteredEnclave.selector);
         verifier.submitResult{value: DEFAULT_PROVER_STAKE}(modelHash, inputHash, resultData, attestation);
     }
 
@@ -173,7 +173,7 @@ contract TEEMLVerifierTest is Test {
         verifier.revokeEnclave(enclaveAddr);
 
         bytes memory attestation = _signAttestation(modelHash, inputHash, resultData);
-        vm.expectRevert("TEEMLVerifier: enclave revoked");
+        vm.expectRevert(ITEEMLVerifier.EnclaveNotActive.selector);
         verifier.submitResult{value: DEFAULT_PROVER_STAKE}(modelHash, inputHash, resultData, attestation);
     }
 
@@ -202,7 +202,7 @@ contract TEEMLVerifierTest is Test {
     function test_finalize_beforeWindow() public {
         bytes32 resultId = _submitDefault();
 
-        vm.expectRevert("TEEMLVerifier: window not passed");
+        vm.expectRevert(ITEEMLVerifier.ChallengeWindowNotPassed.selector);
         verifier.finalize(resultId);
     }
 
@@ -250,7 +250,7 @@ contract TEEMLVerifierTest is Test {
         address challenger = address(0xC0FFEE);
         vm.deal(challenger, 1 ether);
         vm.prank(challenger);
-        vm.expectRevert("TEEMLVerifier: window closed");
+        vm.expectRevert(ITEEMLVerifier.ChallengeWindowClosed.selector);
         verifier.challenge{value: DEFAULT_CHALLENGE_BOND}(resultId);
     }
 
@@ -260,7 +260,7 @@ contract TEEMLVerifierTest is Test {
         address challenger = address(0xC0FFEE);
         vm.deal(challenger, 1 ether);
         vm.prank(challenger);
-        vm.expectRevert("TEEMLVerifier: insufficient bond");
+        vm.expectRevert(ITEEMLVerifier.InsufficientBond.selector);
         verifier.challenge{value: 0.01 ether}(resultId);
     }
 
@@ -275,7 +275,7 @@ contract TEEMLVerifierTest is Test {
         address challenger2 = address(0xBEEF);
         vm.deal(challenger2, 1 ether);
         vm.prank(challenger2);
-        vm.expectRevert("TEEMLVerifier: already challenged");
+        vm.expectRevert(ITEEMLVerifier.AlreadyChallenged.selector);
         verifier.challenge{value: DEFAULT_CHALLENGE_BOND}(resultId);
     }
 
@@ -287,7 +287,7 @@ contract TEEMLVerifierTest is Test {
         address challenger = address(0xC0FFEE);
         vm.deal(challenger, 1 ether);
         vm.prank(challenger);
-        vm.expectRevert("TEEMLVerifier: already finalized");
+        vm.expectRevert(ITEEMLVerifier.AlreadyFinalized.selector);
         verifier.challenge{value: DEFAULT_CHALLENGE_BOND}(resultId);
     }
 
@@ -344,7 +344,7 @@ contract TEEMLVerifierTest is Test {
     function test_resolveDispute_notChallenged() public {
         bytes32 resultId = _submitDefault();
 
-        vm.expectRevert("TEEMLVerifier: not challenged");
+        vm.expectRevert(ITEEMLVerifier.NotChallenged.selector);
         verifier.resolveDispute(resultId, hex"", bytes32(0), hex"", hex"");
     }
 
@@ -359,7 +359,7 @@ contract TEEMLVerifierTest is Test {
         mockVerifier.setResult(true);
         verifier.resolveDispute(resultId, hex"", bytes32(0), hex"", hex"");
 
-        vm.expectRevert("TEEMLVerifier: already resolved");
+        vm.expectRevert(ITEEMLVerifier.AlreadyResolved.selector);
         verifier.resolveDispute(resultId, hex"", bytes32(0), hex"", hex"");
     }
 
@@ -383,12 +383,12 @@ contract TEEMLVerifierTest is Test {
         verifier.revokeEnclave(enclaveAddr);
 
         bytes memory attestation = _signAttestation(modelHash, inputHash, resultData);
-        vm.expectRevert("TEEMLVerifier: enclave revoked");
+        vm.expectRevert(ITEEMLVerifier.EnclaveNotActive.selector);
         verifier.submitResult{value: DEFAULT_PROVER_STAKE}(modelHash, inputHash, resultData, attestation);
     }
 
     function test_registerEnclave_alreadyRegistered() public {
-        vm.expectRevert("TEEMLVerifier: already registered");
+        vm.expectRevert(ITEEMLVerifier.AlreadyRegistered.selector);
         verifier.registerEnclave(enclaveAddr, imageHash);
     }
 
@@ -423,7 +423,7 @@ contract TEEMLVerifierTest is Test {
         verifier.challenge{value: DEFAULT_CHALLENGE_BOND}(resultId);
 
         vm.warp(block.timestamp + 1 hours + 1);
-        vm.expectRevert("TEEMLVerifier: result is challenged");
+        vm.expectRevert(ITEEMLVerifier.ResultIsChallenged.selector);
         verifier.finalize(resultId);
     }
 
@@ -432,7 +432,7 @@ contract TEEMLVerifierTest is Test {
         vm.warp(block.timestamp + 1 hours + 1);
         verifier.finalize(resultId);
 
-        vm.expectRevert("TEEMLVerifier: already finalized");
+        vm.expectRevert(ITEEMLVerifier.AlreadyFinalized.selector);
         verifier.finalize(resultId);
     }
 
@@ -468,7 +468,7 @@ contract TEEMLVerifierTest is Test {
         vm.deal(challenger, 1 ether);
         vm.prank(challenger);
         // 0.09 ether < 0.1 ether default challengeBondAmount
-        vm.expectRevert("TEEMLVerifier: insufficient bond");
+        vm.expectRevert(ITEEMLVerifier.InsufficientBond.selector);
         verifier.challenge{value: 0.09 ether}(resultId);
     }
 
@@ -476,11 +476,11 @@ contract TEEMLVerifierTest is Test {
         bytes memory attestation = _signAttestation(modelHash, inputHash, resultData);
 
         // No value sent
-        vm.expectRevert("TEEMLVerifier: insufficient stake");
+        vm.expectRevert(ITEEMLVerifier.InsufficientStake.selector);
         verifier.submitResult(modelHash, inputHash, resultData, attestation);
 
         // Insufficient value
-        vm.expectRevert("TEEMLVerifier: insufficient stake");
+        vm.expectRevert(ITEEMLVerifier.InsufficientStake.selector);
         verifier.submitResult{value: 0.05 ether}(modelHash, inputHash, resultData, attestation);
     }
 
@@ -521,7 +521,7 @@ contract TEEMLVerifierTest is Test {
         // Only advance 12 hours (deadline is 24 hours)
         vm.warp(block.timestamp + 12 hours);
 
-        vm.expectRevert("TEEMLVerifier: deadline not reached");
+        vm.expectRevert(ITEEMLVerifier.DeadlineNotReached.selector);
         verifier.resolveDisputeByTimeout(resultId);
     }
 
@@ -555,7 +555,7 @@ contract TEEMLVerifierTest is Test {
         address challenger = address(0xC0FFEE);
         vm.deal(challenger, 1 ether);
         vm.prank(challenger);
-        vm.expectRevert("TEEMLVerifier: insufficient bond");
+        vm.expectRevert(ITEEMLVerifier.InsufficientBond.selector);
         verifier.challenge{value: 0.1 ether}(resultId);
     }
 
@@ -567,7 +567,7 @@ contract TEEMLVerifierTest is Test {
 
         // Now submit requires 0.5 ether
         bytes memory attestation = _signAttestation(modelHash, inputHash, resultData);
-        vm.expectRevert("TEEMLVerifier: insufficient stake");
+        vm.expectRevert(ITEEMLVerifier.InsufficientStake.selector);
         verifier.submitResult{value: 0.1 ether}(modelHash, inputHash, resultData, attestation);
     }
 
@@ -655,7 +655,7 @@ contract TEEMLVerifierTest is Test {
         // The re-entrant call reverts with ReentrancyGuardReentrantCall, which causes the
         // ETH transfer to fail, which causes the outer finalize to revert with "stake return failed".
         // This proves reentrancy is blocked -- the attacker cannot drain funds.
-        vm.expectRevert("TEEMLVerifier: stake return failed");
+        vm.expectRevert(ITEEMLVerifier.StakeReturnFailed.selector);
         verifier.finalize(resultId);
 
         // Verify the result was NOT finalized (attack was fully prevented)
@@ -692,23 +692,23 @@ contract TEEMLVerifierTest is Test {
     // ─── NEW: Input Validation ──────────────────────────────────────────────
 
     function test_setRemainderVerifier_rejectsZero() public {
-        vm.expectRevert("TEEMLVerifier: zero address");
+        vm.expectRevert(ITEEMLVerifier.ZeroAddress.selector);
         verifier.setRemainderVerifier(address(0));
     }
 
     function test_setBondAmount_rejectsZero() public {
-        vm.expectRevert("TEEMLVerifier: zero amount");
+        vm.expectRevert(ITEEMLVerifier.ZeroAmount.selector);
         verifier.setChallengeBondAmount(0);
 
-        vm.expectRevert("TEEMLVerifier: zero amount");
+        vm.expectRevert(ITEEMLVerifier.ZeroAmount.selector);
         verifier.setProverStake(0);
     }
 
     function test_setBondAmount_rejectsExcessive() public {
-        vm.expectRevert("TEEMLVerifier: amount too high");
+        vm.expectRevert(ITEEMLVerifier.AmountTooHigh.selector);
         verifier.setChallengeBondAmount(101 ether);
 
-        vm.expectRevert("TEEMLVerifier: amount too high");
+        vm.expectRevert(ITEEMLVerifier.AmountTooHigh.selector);
         verifier.setProverStake(101 ether);
     }
 
@@ -896,7 +896,7 @@ contract TEEMLVerifierTest is Test {
 
         // Non-submitter tries to extend
         vm.prank(address(0xDEAD));
-        vm.expectRevert("TEEMLVerifier: not submitter");
+        vm.expectRevert(ITEEMLVerifier.NotSubmitter.selector);
         verifier.extendDisputeWindow(resultId);
     }
 
@@ -904,7 +904,7 @@ contract TEEMLVerifierTest is Test {
         bytes memory att = _signAttestation(modelHash, inputHash, resultData);
         bytes32 resultId = verifier.submitResult{value: DEFAULT_PROVER_STAKE}(modelHash, inputHash, resultData, att);
 
-        vm.expectRevert("TEEMLVerifier: not challenged");
+        vm.expectRevert(ITEEMLVerifier.NotChallenged.selector);
         verifier.extendDisputeWindow(resultId);
     }
 
@@ -921,7 +921,7 @@ contract TEEMLVerifierTest is Test {
         verifier.extendDisputeWindow(resultId);
 
         // Second extension fails (MAX_EXTENSIONS = 1)
-        vm.expectRevert("TEEMLVerifier: max extensions reached");
+        vm.expectRevert(ITEEMLVerifier.MaxExtensionsReached.selector);
         verifier.extendDisputeWindow(resultId);
     }
 
@@ -940,7 +940,7 @@ contract TEEMLVerifierTest is Test {
         verifier.resolveDisputeByTimeout(resultId);
 
         // Can't extend after resolution
-        vm.expectRevert("TEEMLVerifier: already resolved");
+        vm.expectRevert(ITEEMLVerifier.AlreadyResolved.selector);
         verifier.extendDisputeWindow(resultId);
     }
 
@@ -961,7 +961,7 @@ contract TEEMLVerifierTest is Test {
 
         // Try timeout at original deadline (should fail since extended)
         vm.warp(extendedDeadline - 1);
-        vm.expectRevert("TEEMLVerifier: deadline not reached");
+        vm.expectRevert(ITEEMLVerifier.DeadlineNotReached.selector);
         verifier.resolveDisputeByTimeout(resultId);
 
         // Timeout at extended deadline works
@@ -992,22 +992,22 @@ contract TEEMLVerifierTest is Test {
     }
 
     function test_setChallengeWindow_tooShort() public {
-        vm.expectRevert("TEEMLVerifier: window too short");
+        vm.expectRevert(ITEEMLVerifier.WindowTooShort.selector);
         verifier.setChallengeWindow(9 minutes);
     }
 
     function test_setChallengeWindow_tooLong() public {
-        vm.expectRevert("TEEMLVerifier: window too long");
+        vm.expectRevert(ITEEMLVerifier.WindowTooLong.selector);
         verifier.setChallengeWindow(8 days);
     }
 
     function test_setDisputeWindow_tooShort() public {
-        vm.expectRevert("TEEMLVerifier: window too short");
+        vm.expectRevert(ITEEMLVerifier.WindowTooShort.selector);
         verifier.setDisputeWindow(59 minutes);
     }
 
     function test_setDisputeWindow_tooLong() public {
-        vm.expectRevert("TEEMLVerifier: window too long");
+        vm.expectRevert(ITEEMLVerifier.WindowTooLong.selector);
         verifier.setDisputeWindow(31 days);
     }
 
