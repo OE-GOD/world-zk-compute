@@ -451,7 +451,7 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
         address callbackContract,
         uint256 expirationSeconds,
         uint8 inputType
-    ) external payable returns (uint256 requestId) {
+    ) external payable whenNotPaused nonReentrant returns (uint256 requestId) {
         if (imageId == bytes32(0)) revert ZeroImageId();
         if (msg.value < 0.0001 ether) revert InsufficientTip();
         if (!IProgramRegistry(registry).isProgramActive(imageId)) revert ProgramNotActive();
@@ -488,7 +488,7 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
         string calldata inputUrl,
         address callbackContract,
         uint256 expirationSeconds
-    ) external payable returns (uint256 requestId) {
+    ) external payable whenNotPaused nonReentrant returns (uint256 requestId) {
         if (imageId == bytes32(0)) revert ZeroImageId();
         if (msg.value < 0.0001 ether) revert InsufficientTip();
         if (!IProgramRegistry(registry).isProgramActive(imageId)) revert ProgramNotActive();

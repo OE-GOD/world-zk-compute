@@ -100,6 +100,7 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
     // ERRORS
     // ========================================================================
 
+    // --- General circuit/proof errors ---
     error CircuitNotRegistered();
     error CircuitNotActive();
     error InvalidProofSelector();
@@ -109,6 +110,58 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
     error ZeroAddress();
     error Groth16VerificationFailed();
     error StylusCallFailed();
+
+    // --- Circuit registration errors ---
+    error CircuitHashZero();
+    error CircuitAlreadyRegistered();
+    error NumLayersZero();
+    error LayerSizesLengthMismatch();
+    error LayerTypesLengthMismatch();
+    error IsCommittedLengthMismatch();
+
+    // --- Hybrid Groth16 errors ---
+    error Groth16OutputsTooShort();
+    error HybridNeedTwoLayers();
+    error HybridLayerZeroNotInput();
+    error Groth16VerifierNotSet();
+
+    // --- Proof decoding errors ---
+    error LayerIndexOutOfBounds();
+
+    // --- DAG circuit registration errors ---
+    error DAGCircuitAlreadyRegistered();
+    error NoComputeLayers();
+    error NoInputLayers();
+    error TooManyComputeLayers();
+    error TooManyInputLayers();
+    error NumSumcheckRoundsLengthMismatch();
+    error AtomOffsetsLengthMismatch();
+    error InputIsCommittedLengthMismatch();
+    error OracleProductOffsetsLengthMismatch();
+    error AtomTargetLayersLengthMismatch();
+    error AtomCommitIdxsLengthMismatch();
+    error PtOffsetsLengthMismatch();
+    error OracleResultIdxsLengthMismatch();
+    error OracleExprCoeffsLengthMismatch();
+
+    // --- DAG hybrid Groth16 errors ---
+    error LTensorOffsetsMismatch();
+    error DAGGroth16OutputsTooShort();
+    error DAGGroth16VerifierNotSet();
+    error DAGCircuitNotRegistered();
+
+    // --- Stylus errors ---
+    error StylusVerifierNotConfigured();
+
+    // --- Batch verification errors ---
+    error BatchSessionNotFound();
+    error BatchUnauthorized();
+    error BatchAlreadyFinalized();
+    error BatchComputeNotDone();
+    error BatchNotFinalized();
+    error BatchPublicClaimCommitmentMismatch();
+    error BatchPedersenOpeningInvalid();
+    error BatchPublicInputMLEMismatch();
 
     // ========================================================================
     // CONSTRUCTOR
@@ -288,7 +341,7 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
     {
         // Layout: rlcBeta(N) + zDotJStar(N) + lTensor(?) + zDotR(1) + mleEval(1)
         uint256 minLen = 2 * numComputeLayers + 2; // rlcBeta + zDotJStar + zDotR + mleEval
-        require(groth16Outputs.length >= minLen, "Hybrid: groth16 outputs too short");
+        if (groth16Outputs.length < minLen) revert Groth16OutputsTooShort();
 
         uint256[] memory rlcBeta = new uint256[](numComputeLayers);
         uint256[] memory zDotJStar = new uint256[](numComputeLayers);
@@ -338,8 +391,8 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
         // Validate circuit structure is compatible with hybrid verifier
         // Requires: input layer + at least 1 computation layer.
         // Input layer may be committed or non-committed; verifyECChecks handles both.
-        require(config.description.numLayers >= 2, "Hybrid: need >= 2 layers (input + compute)");
-        require(config.description.layerTypes[0] == 3, "Hybrid: layer 0 must be input");
+        if (config.description.numLayers < 2) revert HybridNeedTwoLayers();
+        if (config.description.layerTypes[0] != 3) revert HybridLayerZeroNotInput();
     }
 
     /// @dev Build Groth16 inputs and verify the proof via raw staticcall
@@ -369,7 +422,7 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
             verifier = groth16Verifier;
             selector = bytes4(keccak256("verifyProof(uint256[8],uint256[70])"));
         }
-        require(verifier != address(0), "Groth16 verifier not set");
+        if (verifier == address(0)) revert Groth16VerifierNotSet();
     }
 
     /// @dev Call the Groth16 verifier with raw staticcall (inline encoding, no offset/length)
@@ -492,7 +545,7 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
         returns (uint256 numMessages, uint256 numCommits, uint256 numPops)
     {
         (GKRVerifier.GKRProof memory proof,) = decodeProof(proofData, publicInputBytes);
-        require(layerIdx < proof.layerProofs.length, "layer index out of bounds");
+        if (layerIdx >= proof.layerProofs.length) revert LayerIndexOutOfBounds();
         numMessages = proof.layerProofs[layerIdx].sumcheckProof.messages.length;
         numCommits = proof.layerProofs[layerIdx].commitments.length;
         numPops = proof.layerProofs[layerIdx].pops.length;
@@ -958,12 +1011,12 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
         string calldata name,
         bytes32 gensHash
     ) private {
-        require(circuitHash != bytes32(0), "Circuit hash cannot be zero");
-        require(circuits[circuitHash].circuitHash == bytes32(0), "Circuit already registered");
-        require(numLayers > 0, "numLayers must be > 0");
-        require(layerSizes.length == numLayers, "Layer sizes length mismatch");
-        require(layerTypes.length == numLayers, "Layer types length mismatch");
-        require(isCommitted.length == numLayers, "IsCommitted length mismatch");
+        if (circuitHash == bytes32(0)) revert CircuitHashZero();
+        if (circuits[circuitHash].circuitHash != bytes32(0)) revert CircuitAlreadyRegistered();
+        if (numLayers == 0) revert NumLayersZero();
+        if (layerSizes.length != numLayers) revert LayerSizesLengthMismatch();
+        if (layerTypes.length != numLayers) revert LayerTypesLengthMismatch();
+        if (isCommitted.length != numLayers) revert IsCommittedLengthMismatch();
 
         GKRVerifier.CircuitDescription memory desc = GKRVerifier.CircuitDescription({
             numLayers: numLayers, layerSizes: layerSizes, layerTypes: layerTypes, isCommitted: isCommitted
@@ -1022,7 +1075,7 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
         external
         onlyOwner
     {
-        require(circuits[circuitHash].circuitHash != bytes32(0), "Circuit not registered");
+        if (circuits[circuitHash].circuitHash == bytes32(0)) revert CircuitNotRegistered();
         if (verifier == address(0)) revert ZeroAddress();
         circuitGroth16Verifiers[circuitHash] = verifier;
         circuitGroth16Selectors[circuitHash] = _computeGroth16Selector(groth16InputCount);
@@ -1046,34 +1099,34 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
         onlyOwner
         whenNotPaused
     {
-        require(circuitHash != bytes32(0), "Circuit hash cannot be zero");
-        require(dagCircuits[circuitHash].circuitHash == bytes32(0), "DAG circuit already registered");
+        if (circuitHash == bytes32(0)) revert CircuitHashZero();
+        if (dagCircuits[circuitHash].circuitHash != bytes32(0)) revert DAGCircuitAlreadyRegistered();
 
         GKRDAGVerifier.DAGCircuitDescription memory desc = abi.decode(descData, (GKRDAGVerifier.DAGCircuitDescription));
 
         // --- Bounds checks (prevent gas DOS from oversized circuits) ---
-        require(desc.numComputeLayers > 0, "no compute layers");
-        require(desc.numInputLayers > 0, "no input layers");
-        require(desc.numComputeLayers <= 256, "too many compute layers");
-        require(desc.numInputLayers <= 64, "too many input layers");
+        if (desc.numComputeLayers == 0) revert NoComputeLayers();
+        if (desc.numInputLayers == 0) revert NoInputLayers();
+        if (desc.numComputeLayers > 256) revert TooManyComputeLayers();
+        if (desc.numInputLayers > 64) revert TooManyInputLayers();
 
         // --- Array length consistency checks ---
-        require(desc.layerTypes.length == desc.numComputeLayers, "layerTypes length mismatch");
-        require(desc.numSumcheckRounds.length == desc.numComputeLayers, "numSumcheckRounds length mismatch");
-        require(desc.atomOffsets.length == desc.numComputeLayers + 1, "atomOffsets length mismatch");
-        require(desc.inputIsCommitted.length == desc.numInputLayers, "inputIsCommitted length mismatch");
-        require(desc.oracleProductOffsets.length == desc.numComputeLayers + 1, "oracleProductOffsets length mismatch");
+        if (desc.layerTypes.length != desc.numComputeLayers) revert LayerTypesLengthMismatch();
+        if (desc.numSumcheckRounds.length != desc.numComputeLayers) revert NumSumcheckRoundsLengthMismatch();
+        if (desc.atomOffsets.length != desc.numComputeLayers + 1) revert AtomOffsetsLengthMismatch();
+        if (desc.inputIsCommitted.length != desc.numInputLayers) revert InputIsCommittedLengthMismatch();
+        if (desc.oracleProductOffsets.length != desc.numComputeLayers + 1) revert OracleProductOffsetsLengthMismatch();
 
         // --- Atom array consistency ---
         uint256 totalAtoms = desc.atomOffsets[desc.numComputeLayers];
-        require(desc.atomTargetLayers.length == totalAtoms, "atomTargetLayers length mismatch");
-        require(desc.atomCommitIdxs.length == totalAtoms, "atomCommitIdxs length mismatch");
-        require(desc.ptOffsets.length == totalAtoms + 1, "ptOffsets length mismatch");
+        if (desc.atomTargetLayers.length != totalAtoms) revert AtomTargetLayersLengthMismatch();
+        if (desc.atomCommitIdxs.length != totalAtoms) revert AtomCommitIdxsLengthMismatch();
+        if (desc.ptOffsets.length != totalAtoms + 1) revert PtOffsetsLengthMismatch();
 
         // --- Oracle array consistency ---
         uint256 totalProducts = desc.oracleProductOffsets[desc.numComputeLayers];
-        require(desc.oracleResultIdxs.length == totalProducts, "oracleResultIdxs length mismatch");
-        require(desc.oracleExprCoeffs.length == totalProducts, "oracleExprCoeffs length mismatch");
+        if (desc.oracleResultIdxs.length != totalProducts) revert OracleResultIdxsLengthMismatch();
+        if (desc.oracleExprCoeffs.length != totalProducts) revert OracleExprCoeffsLengthMismatch();
 
         dagCircuits[circuitHash] = DAGCircuitConfig({
             circuitHash: circuitHash, description: desc, active: true, name: name, gensHash: gensHash
@@ -1264,7 +1317,7 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
             offset += tensorSize;
         }
         offsets[numGroups] = offset;
-        require(offset == lTensorLen, "lTensor offsets mismatch");
+        if (offset != lTensorLen) revert LTensorOffsetsMismatch();
     }
 
     /// @dev Parse flat groth16Outputs for DAG circuit
@@ -1279,7 +1332,7 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
         uint256 P = _countDAGPublicClaims(desc);
 
         uint256 fixedLen = 2 * N + G + P;
-        require(groth16Outputs.length >= fixedLen, "DAGHybrid: outputs too short");
+        if (groth16Outputs.length < fixedLen) revert DAGGroth16OutputsTooShort();
         uint256 lTensorLen = groth16Outputs.length - fixedLen;
 
         outputs.rlcBeta = new uint256[](N);
@@ -1328,7 +1381,7 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
 
         address verifier = dagCircuitGroth16Verifiers[circuitHash];
         bytes4 selector = dagCircuitGroth16Selectors[circuitHash];
-        require(verifier != address(0), "DAG Groth16 verifier not set");
+        if (verifier == address(0)) revert DAGGroth16VerifierNotSet();
 
         _callGroth16Verifier(verifier, selector, groth16Proof, groth16Inputs);
     }
@@ -1338,7 +1391,7 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
         external
         onlyOwner
     {
-        require(dagCircuits[circuitHash].circuitHash != bytes32(0), "DAG circuit not registered");
+        if (dagCircuits[circuitHash].circuitHash == bytes32(0)) revert DAGCircuitNotRegistered();
         if (verifier == address(0)) revert ZeroAddress();
         dagCircuitGroth16Verifiers[circuitHash] = verifier;
         dagCircuitGroth16Selectors[circuitHash] = _computeGroth16Selector(groth16InputCount);
@@ -1351,7 +1404,7 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
 
     /// @notice Set a per-DAG-circuit Stylus verifier address
     function setDAGStylusVerifier(bytes32 circuitHash, address stylusVerifier) external onlyOwner {
-        require(dagCircuits[circuitHash].circuitHash != bytes32(0), "DAG circuit not registered");
+        if (dagCircuits[circuitHash].circuitHash == bytes32(0)) revert DAGCircuitNotRegistered();
         if (stylusVerifier == address(0)) revert ZeroAddress();
         dagCircuitStylusVerifiers[circuitHash] = stylusVerifier;
         emit DAGStylusVerifierUpdated(circuitHash, stylusVerifier);
@@ -1382,7 +1435,7 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
         }
 
         address stylusVerifier = dagCircuitStylusVerifiers[circuitHash];
-        require(stylusVerifier != address(0), "Stylus verifier not configured");
+        if (stylusVerifier == address(0)) revert StylusVerifierNotConfigured();
 
         // Encode circuit description into flat binary format expected by Stylus
         bytes memory circuitDescData = _encodeFlatCircuitDesc(config.description);
@@ -1538,7 +1591,7 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
         )
     {
         DAGCircuitConfig storage config = dagCircuits[circuitHash];
-        require(config.circuitHash != bytes32(0), "DAG circuit not registered");
+        if (config.circuitHash == bytes32(0)) revert DAGCircuitNotRegistered();
 
         (GKRVerifier.GKRProof memory gkrProof,, GKRDAGVerifier.DAGInputLayerProof[] memory dagInputProofs,) =
             decodeProofForDAG(proof[4:], publicInputs);
@@ -1577,7 +1630,7 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
         returns (uint256 inputCount, uint256 numGroups, uint256 numPubClaims, uint256 numEmbeddedPubInputs)
     {
         DAGCircuitConfig storage config = dagCircuits[circuitHash];
-        require(config.circuitHash != bytes32(0), "DAG circuit not registered");
+        if (config.circuitHash == bytes32(0)) revert DAGCircuitNotRegistered();
 
         (GKRDAGHybridVerifier.DAGTranscriptChallenges memory challenges, uint256[] memory embeddedPubInputs) =
             _replayDAGTranscriptForTest(proof, circuitHash, publicInputs, config);
@@ -1649,7 +1702,7 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
         returns (uint256[] memory groth16Inputs)
     {
         DAGCircuitConfig storage config = dagCircuits[circuitHash];
-        require(config.circuitHash != bytes32(0), "DAG circuit not registered");
+        if (config.circuitHash == bytes32(0)) revert DAGCircuitNotRegistered();
 
         (GKRDAGHybridVerifier.DAGTranscriptChallenges memory challenges, uint256[] memory embeddedPubInputs) =
             _replayDAGTranscriptForTest(proof, circuitHash, publicInputs, config);
@@ -1849,10 +1902,10 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
     ) external whenNotPaused nonReentrant {
         uint256 gasStart = gasleft();
         DAGBatchVerifier.DAGBatchSession memory session = DAGBatchVerifier.loadSession(sessionId);
-        require(session.circuitHash != bytes32(0), "Batch: session not found");
-        require(session.verifier == msg.sender, "Batch: unauthorized");
-        require(!session.finalized, "Batch: already finalized");
-        require(session.nextBatchIdx < session.totalBatches, "Batch: all compute batches done, call finalize");
+        if (session.circuitHash == bytes32(0)) revert BatchSessionNotFound();
+        if (session.verifier != msg.sender) revert BatchUnauthorized();
+        if (session.finalized) revert BatchAlreadyFinalized();
+        if (session.nextBatchIdx >= session.totalBatches) revert BatchComputeNotDone();
 
         if (proof.length < 4) revert InvalidProofLength();
         // forge-lint: disable-next-line(unsafe-typecast)
@@ -2018,10 +2071,10 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
         bytes calldata gensData
     ) external whenNotPaused nonReentrant returns (bool finalized) {
         DAGBatchVerifier.DAGBatchSession memory session = DAGBatchVerifier.loadSession(sessionId);
-        require(session.circuitHash != bytes32(0), "Batch: session not found");
-        require(session.verifier == msg.sender, "Batch: unauthorized");
-        require(!session.finalized, "Batch: already finalized");
-        require(session.nextBatchIdx >= session.totalBatches, "Batch: compute batches not done");
+        if (session.circuitHash == bytes32(0)) revert BatchSessionNotFound();
+        if (session.verifier != msg.sender) revert BatchUnauthorized();
+        if (session.finalized) revert BatchAlreadyFinalized();
+        if (session.nextBatchIdx < session.totalBatches) revert BatchComputeNotDone();
 
         if (proof.length < 4) revert InvalidProofLength();
         // forge-lint: disable-next-line(unsafe-typecast)
@@ -2221,19 +2274,17 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
                 HyraxVerifier.G1Point memory atomCommitment =
                     ctx.proof.layerProofs[j].commitments[ctx.desc.atomCommitIdxs[a]];
 
-                require(
-                    HyraxVerifier.isEqual(claim.commitment, atomCommitment),
-                    "Batch finalize: public claim commitment mismatch"
-                );
+                if (!HyraxVerifier.isEqual(claim.commitment, atomCommitment)) {
+                    revert BatchPublicClaimCommitmentMismatch();
+                }
                 HyraxVerifier.G1Point memory expected = HyraxVerifier.ecAdd(
                     HyraxVerifier.scalarMul(ctx.gens.scalarGen, claim.value),
                     HyraxVerifier.scalarMul(ctx.gens.blindingGen, claim.blinding)
                 );
-                require(HyraxVerifier.isEqual(expected, claim.commitment), "Batch finalize: Pedersen opening invalid");
-                require(
-                    GKRDAGVerifier.evaluateMLEFromData(ctx.publicInputs, claimPoints[cIdx]) == claim.value,
-                    "Batch finalize: public input MLE mismatch"
-                );
+                if (!HyraxVerifier.isEqual(expected, claim.commitment)) revert BatchPedersenOpeningInvalid();
+                if (GKRDAGVerifier.evaluateMLEFromData(ctx.publicInputs, claimPoints[cIdx]) != claim.value) {
+                    revert BatchPublicInputMLEMismatch();
+                }
 
                 nextPubClaimIdx++;
                 cIdx++;
@@ -2261,8 +2312,8 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
     /// @param sessionId The session to clean up (must be finalized)
     function cleanupDAGBatchSession(bytes32 sessionId) external nonReentrant {
         DAGBatchVerifier.DAGBatchSession memory session = DAGBatchVerifier.loadSession(sessionId);
-        require(session.finalized, "Batch: not finalized");
-        require(session.verifier == msg.sender, "Batch: unauthorized");
+        if (!session.finalized) revert BatchNotFinalized();
+        if (session.verifier != msg.sender) revert BatchUnauthorized();
         DAGBatchVerifier.cleanupSession(sessionId);
     }
 

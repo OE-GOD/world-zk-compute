@@ -1029,4 +1029,35 @@ contract ProverRegistryTest is Test {
         vm.expectRevert(abi.encodeWithSelector(ProverRegistry.StringTooLong.selector, "reason", 256));
         registry.slash(prover1, tooLong);
     }
+
+    // ========================================================================
+    // TWO-STEP OWNERSHIP TRANSFER (Ownable2Step)
+    // ========================================================================
+
+    function testTransferOwnership_twoStep() public {
+        address newOwner = address(0xABCD);
+
+        // Step 1: Current owner initiates transfer
+        registry.transferOwnership(newOwner);
+        assertEq(registry.owner(), deployer, "owner unchanged until accepted");
+        assertEq(registry.pendingOwner(), newOwner, "pendingOwner should be set");
+
+        // Step 2: New owner accepts
+        vm.prank(newOwner);
+        registry.acceptOwnership();
+        assertEq(registry.owner(), newOwner, "ownership transferred after acceptance");
+
+        // Old owner can no longer call onlyOwner functions
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, deployer));
+        registry.setMinStake(999);
+    }
+
+    function testAcceptOwnership_wrongCallerReverts() public {
+        address newOwner = address(0xABCD);
+        registry.transferOwnership(newOwner);
+
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, randomUser));
+        vm.prank(randomUser);
+        registry.acceptOwnership();
+    }
 }
