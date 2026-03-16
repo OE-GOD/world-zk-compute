@@ -71,6 +71,7 @@ impl ProofManager {
     ///
     /// This avoids redundant env-var reads when the caller already loaded
     /// the timeout value via `Config::from_env()`.
+    #[allow(dead_code)]
     pub fn with_config_timeout(
         precompute_bin: &str,
         model_path: &str,

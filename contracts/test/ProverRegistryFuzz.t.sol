@@ -390,6 +390,7 @@ contract ProverReputationFuzzTest is Test {
         // Verify score decreased correctly
         uint256 expectedPenalty = (scoreBefore * penaltyBps) / 10000;
         uint256 expectedScore = scoreBefore > expectedPenalty ? scoreBefore - expectedPenalty : 0;
+        // forge-lint: disable-next-line(unsafe-typecast)
         assertEq(after_.score, uint32(expectedScore), "score should decrease by correct penalty amount");
 
         // If score reached 0, prover should be auto-banned

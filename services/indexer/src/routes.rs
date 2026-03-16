@@ -524,7 +524,7 @@ pub fn build_app(
         .route("/stats", get(handle_stats));
 
     // Only register admin routes when ADMIN_API_KEY is configured
-    let admin_key_set = std::env::var("ADMIN_API_KEY").map_or(false, |k| !k.is_empty());
+    let admin_key_set = std::env::var("ADMIN_API_KEY").is_ok_and(|k| !k.is_empty());
     if admin_key_set {
         v1 = v1.route("/admin/reset", post(handle_admin_reset));
     }

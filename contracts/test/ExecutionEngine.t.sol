@@ -1412,6 +1412,7 @@ contract ExecutionEngineTest is Test {
         assertGt(requestId, 0, "Request should be created with exactly 30 days expiration");
 
         ExecutionEngine.ExecutionRequest memory req = engine.getRequest(requestId);
+        // forge-lint: disable-next-line(unsafe-typecast)
         assertEq(req.expiresAt, uint48(block.timestamp + exactly30Days), "expiresAt should match");
     }
 
@@ -1424,6 +1425,7 @@ contract ExecutionEngineTest is Test {
         assertGt(requestId, 0, "Request should be created with exactly 1 minute expiration");
 
         ExecutionEngine.ExecutionRequest memory req = engine.getRequest(requestId);
+        // forge-lint: disable-next-line(unsafe-typecast)
         assertEq(req.expiresAt, uint48(block.timestamp + exactly1Min), "expiresAt should match");
     }
 
