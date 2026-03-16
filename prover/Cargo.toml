@@ -33,7 +33,7 @@ bonsai-sdk = { version = "1.2" }
 boundless-market = { version = "1.1", features = ["gcs"], optional = true }
 
 # SP1 (optional, enable with --features sp1)
-sp1-sdk = { version = "4.0.0", optional = true }
+sp1-sdk = { version = "6.0.2", optional = true }
 
 # Async traits
 async-trait = "0.1"
