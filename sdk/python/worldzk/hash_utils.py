@@ -29,7 +29,10 @@ Example usage::
 from __future__ import annotations
 
 import json
+import logging
 from typing import List, Union
+
+logger = logging.getLogger(__name__)
 
 
 def _keccak256(data: bytes) -> bytes:
@@ -48,7 +51,7 @@ def _keccak256(data: bytes) -> bytes:
         k.update(data)
         return k.digest()
     except (ValueError, ImportError):
-        pass
+        logger.debug("pysha3 (hashlib) not available for keccak256", exc_info=True)
 
     # Try pycryptodome
     try:
@@ -58,7 +61,7 @@ def _keccak256(data: bytes) -> bytes:
         k.update(data)
         return k.digest()
     except ImportError:
-        pass
+        logger.debug("pycryptodome not available for keccak256", exc_info=True)
 
     # Try web3
     try:
@@ -66,7 +69,7 @@ def _keccak256(data: bytes) -> bytes:
 
         return Web3.keccak(data)
     except ImportError:
-        pass
+        logger.debug("web3 not available for keccak256", exc_info=True)
 
     raise ImportError(
         "No keccak256 implementation found. "
