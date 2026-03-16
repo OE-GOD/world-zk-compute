@@ -706,6 +706,59 @@ contract UpgradeableTest is Test {
         engine.unpause();
         assertFalse(engine.paused());
     }
+
+    // ========================================================================
+    // Storage Layout Safety Tests
+    // ========================================================================
+
+    function test_storageLayout_registryAtSlot0() public view {
+        // registry is the first storage variable (slot 0)
+        bytes32 val = vm.load(address(engine), bytes32(uint256(0)));
+        assertEq(address(uint160(uint256(val))), engine.registry());
+    }
+
+    function test_storageLayout_verifierAtSlot1() public view {
+        bytes32 val = vm.load(address(engine), bytes32(uint256(1)));
+        assertEq(address(uint160(uint256(val))), engine.verifier());
+    }
+
+    function test_storageLayout_protocolFeeBpsAtSlot2() public view {
+        bytes32 val = vm.load(address(engine), bytes32(uint256(2)));
+        assertEq(uint256(val), engine.protocolFeeBps());
+    }
+
+    function test_storageLayout_feeRecipientAtSlot3() public view {
+        bytes32 val = vm.load(address(engine), bytes32(uint256(3)));
+        assertEq(address(uint160(uint256(val))), engine.feeRecipient());
+    }
+
+    function test_storageLayout_nextRequestIdAtSlot4() public view {
+        bytes32 val = vm.load(address(engine), bytes32(uint256(4)));
+        assertEq(uint256(val), engine.nextRequestId());
+    }
+
+    function test_storageLayout_gapPreservesUpgradeSpace() public {
+        // After upgrade to V2, existing storage must be intact
+        // First, store some state
+        vm.deal(user1, 1 ether);
+        vm.prank(user1);
+        uint256 reqId = engine.requestExecution{value: 0.01 ether}(
+            bytes32(uint256(1)), bytes32(uint256(2)), "test", address(0), 3600
+        );
+        uint256 feeBeforeUpgrade = engine.protocolFeeBps();
+        address registryBefore = engine.registry();
+
+        // Upgrade to V2
+        UpgradeableExecutionEngineV2 v2Impl = new UpgradeableExecutionEngineV2();
+        engine.upgradeToAndCall(address(v2Impl), "");
+        UpgradeableExecutionEngineV2 v2 = UpgradeableExecutionEngineV2(payable(address(proxy)));
+
+        // Verify storage survived the upgrade
+        assertEq(v2.protocolFeeBps(), feeBeforeUpgrade);
+        assertEq(v2.registry(), registryBefore);
+        assertEq(v2.nextRequestId(), reqId + 1);
+        assertEq(v2.VERSION(), 2);
+    }
 }
 
 // =============================================================================
