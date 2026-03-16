@@ -46,7 +46,7 @@ hex = "0.4"
 toml = "0.8"
 
 # HTTP client for fetching inputs
-reqwest = { version = "0.12", features = ["json", "gzip", "brotli"] }
+reqwest = { version = "0.13", features = ["json", "gzip", "brotli"] }
 
 # CLI
 clap = { version = "4.0", features = ["derive", "env"] }
