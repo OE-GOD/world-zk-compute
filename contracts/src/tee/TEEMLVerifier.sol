@@ -240,6 +240,7 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
         external
         payable
         whenNotPaused
+        nonReentrant
         returns (bytes32 resultId)
     {
         if (msg.value < proverStake) revert InsufficientStake();
@@ -281,7 +282,7 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
 
     /// @inheritdoc ITEEMLVerifier
     /// @dev Sets up a disputeWindow deadline for ZK proof submission.
-    function challenge(bytes32 resultId) external payable whenNotPaused {
+    function challenge(bytes32 resultId) external payable whenNotPaused nonReentrant {
         PackedMLResult storage r = _results[resultId];
         if (r.submittedAt == 0) revert ResultNotFound();
         if (r.finalized) revert AlreadyFinalized();

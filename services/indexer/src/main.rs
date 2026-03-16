@@ -855,7 +855,11 @@ async fn main() -> anyhow::Result<()> {
     //   sleep = base_interval * min(2^consecutive_failures, MAX_BACKOFF_MULTIPLIER)
     // This caps the sleep at 60x the base interval (e.g. 12s * 60 = 720s = 12 min).
     // On success the backoff resets immediately.
+    //
+    // Logging is throttled: first 3 failures log at WARN, subsequent at ERROR
+    // (every 5th failure). This prevents log flooding during extended outages.
     const MAX_BACKOFF_MULTIPLIER: u64 = 60;
+    const CIRCUIT_BREAKER_THRESHOLD: u32 = 3;
 
     let poll_storage = storage.clone();
     let poll_broadcaster = broadcaster.clone();
@@ -886,9 +890,15 @@ async fn main() -> anyhow::Result<()> {
                     .await
                     {
                         Ok(()) => {
-                            if consecutive_failures > 0 {
+                            if consecutive_failures >= CIRCUIT_BREAKER_THRESHOLD {
                                 info!(
-                                    "poll recovered after {} consecutive failure(s); \
+                                    "poll RECOVERED after {} consecutive failure(s) — \
+                                     circuit breaker closed, restoring base interval ({}s)",
+                                    consecutive_failures, poll_interval
+                                );
+                            } else if consecutive_failures > 0 {
+                                info!(
+                                    "poll recovered after {} failure(s); \
                                      restoring base interval ({}s)",
                                     consecutive_failures, poll_interval
                                 );
@@ -896,17 +906,39 @@ async fn main() -> anyhow::Result<()> {
                             consecutive_failures = 0;
                         }
                         Err(e) => {
+                            let prev_failures = consecutive_failures;
                             consecutive_failures = consecutive_failures.saturating_add(1);
                             let next_multiplier =
                                 2u64.saturating_pow(consecutive_failures)
                                     .min(MAX_BACKOFF_MULTIPLIER);
                             let next_sleep = base.saturating_mul(next_multiplier as u32);
-                            warn!(
-                                consecutive_failures = consecutive_failures,
-                                "poll error (consecutive failures: {}): {}; \
-                                 next retry in {:?}",
-                                consecutive_failures, e, next_sleep
-                            );
+
+                            if consecutive_failures == CIRCUIT_BREAKER_THRESHOLD {
+                                // Announce circuit breaker opening
+                                error!(
+                                    consecutive_failures = consecutive_failures,
+                                    "poll circuit breaker OPEN — {} consecutive failures; \
+                                     suppressing per-failure logging. Next retry in {:?}. \
+                                     Error: {}",
+                                    consecutive_failures, next_sleep, e
+                                );
+                            } else if consecutive_failures < CIRCUIT_BREAKER_THRESHOLD {
+                                // Still within threshold — log every failure
+                                warn!(
+                                    consecutive_failures = consecutive_failures,
+                                    "poll error (failures: {}): {}; next retry in {:?}",
+                                    consecutive_failures, e, next_sleep
+                                );
+                            } else if consecutive_failures % 5 == 0 {
+                                // Circuit open — log every 5th failure to reduce noise
+                                error!(
+                                    consecutive_failures = consecutive_failures,
+                                    "poll still failing ({} consecutive); \
+                                     next retry in {:?}. Latest: {}",
+                                    consecutive_failures, next_sleep, e
+                                );
+                            }
+                            let _ = prev_failures; // suppress unused warning
                         }
                     }
                 }

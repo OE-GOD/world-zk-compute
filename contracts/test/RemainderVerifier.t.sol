@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 import "forge-std/Test.sol";
 import "../src/remainder/RemainderVerifier.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "../src/remainder/PoseidonSponge.sol";
 import "../src/remainder/SumcheckVerifier.sol";
 import "../src/remainder/HyraxVerifier.sol";
@@ -5180,5 +5181,214 @@ contract DAGProofVerifiedEventTest is Test {
 
         bool valid = verifier.verifyDAGProofStylus(proof, circuitHash, "", "");
         assertTrue(valid, "Stylus verification should succeed");
+    }
+}
+
+// ============================================================================
+// REENTRANCY GUARD TESTS
+// ============================================================================
+
+/// @notice A harness that extends RemainderVerifier to test reentrancy protection.
+/// @dev Because the batch functions do not make external calls (no natural callback vector),
+///      we simulate reentrancy by calling a nonReentrant function from within another
+///      nonReentrant context. This verifies the guard is active and correctly reverts.
+contract ReentrantRemainderVerifier is RemainderVerifier {
+    /// @notice Which function to re-enter during the simulated attack
+    enum ReentryTarget {
+        Start,
+        Continue,
+        Finalize,
+        Cleanup
+    }
+
+    ReentryTarget public target;
+    bytes public storedProof;
+    bytes32 public storedCircuitHash;
+    bytes public storedPublicInputs;
+    bytes public storedGensData;
+    bytes32 public storedSessionId;
+
+    constructor(address admin) RemainderVerifier(admin) {}
+
+    /// @notice Configure what to re-enter and with what data
+    function setReentryParams(
+        ReentryTarget _target,
+        bytes calldata _proof,
+        bytes32 _circuitHash,
+        bytes calldata _publicInputs,
+        bytes calldata _gensData,
+        bytes32 _sessionId
+    ) external {
+        target = _target;
+        storedProof = _proof;
+        storedCircuitHash = _circuitHash;
+        storedPublicInputs = _publicInputs;
+        storedGensData = _gensData;
+        storedSessionId = _sessionId;
+    }
+
+    /// @notice Enters the nonReentrant mutex and then tries to call a batch function,
+    ///         simulating what would happen if a callback re-entered the contract.
+    function simulateReentrantCall() external nonReentrant {
+        if (target == ReentryTarget.Start) {
+            this.startDAGBatchVerify(storedProof, storedCircuitHash, storedPublicInputs, storedGensData);
+        } else if (target == ReentryTarget.Continue) {
+            this.continueDAGBatchVerify(storedSessionId, storedProof, storedPublicInputs, storedGensData);
+        } else if (target == ReentryTarget.Finalize) {
+            this.finalizeDAGBatchVerify(storedSessionId, storedProof, storedPublicInputs, storedGensData);
+        } else if (target == ReentryTarget.Cleanup) {
+            this.cleanupDAGBatchSession(storedSessionId);
+        }
+    }
+}
+
+contract ReentrancyGuardTest is Test {
+    ReentrantRemainderVerifier verifier;
+
+    // Fixture data
+    bytes proofHex;
+    bytes gensHex;
+    bytes32 circuitHash;
+    bytes publicInputsHex;
+
+    function setUp() public {
+        verifier = new ReentrantRemainderVerifier(address(this));
+        _loadAndRegister();
+    }
+
+    function _loadAndRegister() internal {
+        string memory json = vm.readFile("test/fixtures/phase1a_dag_fixture.json");
+        proofHex = vm.parseJsonBytes(json, ".proof_hex");
+        gensHex = vm.parseJsonBytes(json, ".gens_hex");
+        circuitHash = vm.parseJsonBytes32(json, ".circuit_hash_raw");
+        publicInputsHex = vm.parseJsonBytes(json, ".public_inputs_hex");
+
+        GKRDAGVerifier.DAGCircuitDescription memory desc;
+        desc.numComputeLayers = vm.parseJsonUint(json, ".dag_circuit_description.numComputeLayers");
+        desc.numInputLayers = vm.parseJsonUint(json, ".dag_circuit_description.numInputLayers");
+        desc.layerTypes = _parseJsonUint8Array(json, ".dag_circuit_description.layerTypes");
+        desc.numSumcheckRounds = vm.parseJsonUintArray(json, ".dag_circuit_description.numSumcheckRounds");
+        desc.atomOffsets = vm.parseJsonUintArray(json, ".dag_circuit_description.atomOffsets");
+        desc.atomTargetLayers = vm.parseJsonUintArray(json, ".dag_circuit_description.atomTargetLayers");
+        desc.atomCommitIdxs = vm.parseJsonUintArray(json, ".dag_circuit_description.atomCommitIdxs");
+        desc.ptOffsets = vm.parseJsonUintArray(json, ".dag_circuit_description.ptOffsets");
+        desc.ptData = vm.parseJsonUintArray(json, ".dag_circuit_description.ptData");
+        desc.inputIsCommitted = _parseJsonBoolArray(json, ".dag_circuit_description.inputIsCommitted");
+        desc.oracleProductOffsets = vm.parseJsonUintArray(json, ".dag_circuit_description.oracleProductOffsets");
+        desc.oracleResultIdxs = vm.parseJsonUintArray(json, ".dag_circuit_description.oracleResultIdxs");
+        desc.oracleExprCoeffs = _parseJsonUint256Array(json, ".dag_circuit_description.oracleExprCoeffs");
+
+        verifier.registerDAGCircuit(circuitHash, abi.encode(desc), "xgboost-reentrancy-test", keccak256(gensHex));
+    }
+
+    function _parseJsonUint8Array(string memory json, string memory key) internal pure returns (uint8[] memory result) {
+        uint256[] memory raw = vm.parseJsonUintArray(json, key);
+        result = new uint8[](raw.length);
+        for (uint256 i = 0; i < raw.length; i++) {
+            result[i] = uint8(raw[i]);
+        }
+    }
+
+    function _parseJsonBoolArray(string memory json, string memory key) internal pure returns (bool[] memory result) {
+        bytes memory raw = vm.parseJson(json, key);
+        result = abi.decode(raw, (bool[]));
+    }
+
+    function _parseJsonUint256Array(string memory json, string memory key)
+        internal
+        pure
+        returns (uint256[] memory result)
+    {
+        bytes memory raw = vm.parseJson(json, key);
+        bytes32[] memory parsed = abi.decode(raw, (bytes32[]));
+        result = new uint256[](parsed.length);
+        for (uint256 i = 0; i < parsed.length; i++) {
+            result[i] = uint256(parsed[i]);
+        }
+    }
+
+    // ========================================================================
+    // REENTRANCY TESTS
+    // ========================================================================
+
+    /// @notice Reentrancy into startDAGBatchVerify reverts with ReentrancyGuardReentrantCall
+    function test_reentrancy_start_reverts() public {
+        verifier.setReentryParams(
+            ReentrantRemainderVerifier.ReentryTarget.Start,
+            proofHex,
+            circuitHash,
+            publicInputsHex,
+            gensHex,
+            bytes32(0)
+        );
+
+        vm.expectRevert(ReentrancyGuard.ReentrancyGuardReentrantCall.selector);
+        verifier.simulateReentrantCall();
+    }
+
+    /// @notice Reentrancy into continueDAGBatchVerify reverts with ReentrancyGuardReentrantCall
+    function test_reentrancy_continue_reverts() public {
+        // Start a real session first
+        bytes32 sessionId = verifier.startDAGBatchVerify(proofHex, circuitHash, publicInputsHex, gensHex);
+
+        verifier.setReentryParams(
+            ReentrantRemainderVerifier.ReentryTarget.Continue,
+            proofHex,
+            circuitHash,
+            publicInputsHex,
+            gensHex,
+            sessionId
+        );
+
+        vm.expectRevert(ReentrancyGuard.ReentrancyGuardReentrantCall.selector);
+        verifier.simulateReentrantCall();
+    }
+
+    /// @notice Reentrancy into finalizeDAGBatchVerify reverts with ReentrancyGuardReentrantCall
+    function test_reentrancy_finalize_reverts() public {
+        // Start and complete all compute batches
+        bytes32 sessionId = verifier.startDAGBatchVerify(proofHex, circuitHash, publicInputsHex, gensHex);
+        (,, uint256 totalBatches,,,) = verifier.getDAGBatchSession(sessionId);
+        for (uint256 i = 0; i < totalBatches; i++) {
+            verifier.continueDAGBatchVerify(sessionId, proofHex, publicInputsHex, gensHex);
+        }
+
+        verifier.setReentryParams(
+            ReentrantRemainderVerifier.ReentryTarget.Finalize,
+            proofHex,
+            circuitHash,
+            publicInputsHex,
+            gensHex,
+            sessionId
+        );
+
+        vm.expectRevert(ReentrancyGuard.ReentrancyGuardReentrantCall.selector);
+        verifier.simulateReentrantCall();
+    }
+
+    /// @notice Reentrancy into cleanupDAGBatchSession reverts with ReentrancyGuardReentrantCall
+    function test_reentrancy_cleanup_reverts() public {
+        // Run full batch verification to get a finalized session
+        bytes32 sessionId = verifier.startDAGBatchVerify(proofHex, circuitHash, publicInputsHex, gensHex);
+        (,, uint256 totalBatches,,,) = verifier.getDAGBatchSession(sessionId);
+        for (uint256 i = 0; i < totalBatches; i++) {
+            verifier.continueDAGBatchVerify(sessionId, proofHex, publicInputsHex, gensHex);
+        }
+        while (true) {
+            bool finalized = verifier.finalizeDAGBatchVerify(sessionId, proofHex, publicInputsHex, gensHex);
+            if (finalized) break;
+        }
+
+        verifier.setReentryParams(
+            ReentrantRemainderVerifier.ReentryTarget.Cleanup,
+            proofHex,
+            circuitHash,
+            publicInputsHex,
+            gensHex,
+            sessionId
+        );
+
+        vm.expectRevert(ReentrancyGuard.ReentrancyGuardReentrantCall.selector);
+        verifier.simulateReentrantCall();
     }
 }
