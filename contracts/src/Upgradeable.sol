@@ -94,7 +94,7 @@ abstract contract UUPSUpgradeable {
     // ========================================================================
 
     /// @dev Initialization state
-    uint8 private _initialized;
+    uint8 internal _initialized;
     bool private _initializing;
 
     /// @notice Optional timelock controller address for critical operations
@@ -393,9 +393,11 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
     }
 
     /// @notice Re-initialize for upgrades (bump version)
-    /// @dev Called when upgrading to add new initialization logic
-    function reinitialize(uint256 version) external onlyAdmin {
-        // Add any new initialization logic here
+    /// @dev Called when upgrading to add new initialization logic.
+    ///      Version must be strictly greater than the current initialized version.
+    function reinitialize(uint8 version) external onlyAdmin {
+        if (version <= _initialized) revert AlreadyInitialized();
+        _initialized = version;
         emit Initialized(version);
     }
 
@@ -406,9 +408,7 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
     /// @notice Authorize upgrade
     /// @dev Access control is enforced by the onlyTimelocked modifier on upgradeTo/upgradeToAndCall.
     function _authorizeUpgrade(address newImplementation) internal override {
-        // Could add additional checks here:
-        // - Version validation
-        // - Contract interface checks
+        if (newImplementation.code.length == 0) revert InvalidImplementation();
     }
 
     // ========================================================================
