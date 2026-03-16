@@ -105,6 +105,8 @@ contract RemainderVerifier is Ownable2Step, Pausable {
     error ProofVerificationFailed();
     error InvalidGenerators();
     error ZeroAddress();
+    error Groth16VerificationFailed();
+    error StylusCallFailed();
 
     // ========================================================================
     // CONSTRUCTOR
@@ -402,7 +404,7 @@ contract RemainderVerifier is Ownable2Step, Pausable {
                     revert(add(returnData, 32), mload(returnData))
                 }
             }
-            revert("Groth16 verification failed");
+            revert Groth16VerificationFailed();
         }
     }
 
@@ -1389,7 +1391,7 @@ contract RemainderVerifier is Ownable2Step, Pausable {
                     revert(add(result, 32), mload(result))
                 }
             }
-            revert("Stylus verifier call failed");
+            revert StylusCallFailed();
         }
 
         return abi.decode(result, (bool));
