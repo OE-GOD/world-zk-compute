@@ -1084,6 +1084,11 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
     }
 
     /// @notice Verify a DAG circuit proof (compute layers only — input layers verified separately)
+    /// @param proof Proof blob (starts with "REM1" selector)
+    /// @param circuitHash SHA-256 of the registered DAG circuit description
+    /// @param publicInputs ABI-encoded public input values
+    /// @param gensData Pedersen generator points
+    /// @return valid True if the proof verifies successfully
     function verifyDAGProof(
         bytes calldata proof,
         bytes32 circuitHash,
@@ -1136,6 +1141,12 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
 
     /// @notice Verify a DAG circuit proof using the hybrid Groth16 approach.
     /// @dev Flow: decode inner proof → replay transcript → verify Groth16 → EC checks
+    /// @param innerProof Inner GKR proof blob (starts with "REM1" selector)
+    /// @param circuitHash SHA-256 of the registered DAG circuit description
+    /// @param publicInputs ABI-encoded public input values
+    /// @param gensData Pedersen generator points
+    /// @param groth16Proof Groth16 proof (8 uint256: 2 G1 points + 1 G2 point)
+    /// @param groth16Outputs Groth16 public outputs (rlcBeta + zDotJStar + lTensorFlat + zDotR + mleEval)
     function verifyDAGWithGroth16(
         bytes calldata innerProof,
         bytes32 circuitHash,
@@ -1720,6 +1731,11 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
     ///      be "replayed" across blocks because the session ID would differ. After finalization and
     ///      cleanup, the storage slots are zeroed and cannot be reused -- starting a new verification
     ///      for the same circuit in a later block produces a different session ID.
+    /// @param proof Proof blob (starts with "REM1" selector)
+    /// @param circuitHash SHA-256 of the registered DAG circuit description
+    /// @param publicInputs ABI-encoded public input values
+    /// @param gensData Pedersen generator points
+    /// @return sessionId Unique session identifier for subsequent continue/finalize calls
     function startDAGBatchVerify(
         bytes calldata proof,
         bytes32 circuitHash,
@@ -1821,6 +1837,10 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
     ///      STATE PERSISTENCE: After each batch, the Poseidon sponge state (4 uint256 values)
     ///      and layer bindings are written to storage for the next batch to consume. The
     ///      CrossBatchData arrays grow with each batch as more bindings accumulate.
+    /// @param sessionId Session ID returned by startDAGBatchVerify
+    /// @param proof Full proof blob (re-supplied; only relevant layers are decoded)
+    /// @param publicInputs ABI-encoded public input values
+    /// @param gensData Pedersen generator points
     function continueDAGBatchVerify(
         bytes32 sessionId,
         bytes calldata proof,
@@ -1985,6 +2005,10 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
     ///      COMPLETION: When this function returns true, the session is marked as finalized.
     ///      The proof has been fully verified across all transactions. The session can then be
     ///      cleaned up via cleanupDAGBatchSession to reclaim storage gas refunds.
+    /// @param sessionId Session ID returned by startDAGBatchVerify
+    /// @param proof Full proof blob (re-supplied for input layer decoding)
+    /// @param publicInputs ABI-encoded public input values
+    /// @param gensData Pedersen generator points
     /// @return finalized True if all input layers have been verified and the session is complete.
     ///         False if more finalize calls are needed.
     function finalizeDAGBatchVerify(
