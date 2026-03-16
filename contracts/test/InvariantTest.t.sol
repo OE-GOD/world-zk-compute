@@ -6,7 +6,7 @@ import "../src/tee/TEEMLVerifier.sol";
 import "../src/tee/ITEEMLVerifier.sol";
 import "../src/ExecutionEngine.sol";
 import "../src/ProgramRegistry.sol";
-import "../src/MockRiscZeroVerifier.sol";
+import "../src/mocks/MockRiscZeroVerifier.sol";
 import "../src/ProverRegistry.sol";
 import "../src/ProverReputation.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";

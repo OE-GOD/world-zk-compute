@@ -5,7 +5,7 @@ import "forge-std/Test.sol";
 import "../src/tee/TEEMLVerifier.sol";
 import "../src/ExecutionEngine.sol";
 import "../src/ProgramRegistry.sol";
-import "../src/MockRiscZeroVerifier.sol";
+import "../src/mocks/MockRiscZeroVerifier.sol";
 import {IProofVerifier} from "../src/IProofVerifier.sol";
 
 /// @dev Mock RemainderVerifier that returns a configurable result for verifyDAGProof

@@ -4,7 +4,7 @@ pragma solidity ^0.8.20;
 import "forge-std/Script.sol";
 import "../src/ProgramRegistry.sol";
 import "../src/ExecutionEngine.sol";
-import "../src/MockRiscZeroVerifier.sol";
+import "../src/mocks/MockRiscZeroVerifier.sol";
 
 /// @title DeployLocalScript
 /// @notice LOCAL DEPLOYMENT (Mock Verifier) — for Anvil testing only

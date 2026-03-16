@@ -344,16 +344,14 @@ contract RiscZeroVerifierRouterTest is Test {
         assertEq(router.defaultVerifier(), address(0));
     }
 
-    // --- transferAdmin ---
+    // --- transferAdmin (two-step) ---
 
-    function test_transferAdmin_changesAdmin() public {
+    function test_transferAdmin_setsPendingAdmin() public {
         address newAdmin = address(0xABCD);
-
-        vm.expectEmit(true, true, false, false);
-        emit AdminTransferred(admin, newAdmin);
-
         router.transferAdmin(newAdmin);
-        assertEq(router.admin(), newAdmin);
+        assertEq(router.pendingAdmin(), newAdmin);
+        // Admin hasn't changed yet
+        assertEq(router.admin(), admin);
     }
 
     function test_transferAdmin_revertsForNonAdmin() public {
@@ -362,17 +360,46 @@ contract RiscZeroVerifierRouterTest is Test {
         router.transferAdmin(address(0x1234));
     }
 
-    function test_transferAdmin_oldAdminLosesAccess() public {
+    function test_acceptAdmin_completesTransfer() public {
         address newAdmin = address(0xABCD);
         router.transferAdmin(newAdmin);
 
-        // Old admin can no longer add verifiers
-        vm.expectRevert(RiscZeroVerifierRouter.NotAdmin.selector);
+        vm.expectEmit(true, true, false, false);
+        emit AdminTransferred(admin, newAdmin);
+
+        vm.prank(newAdmin);
+        router.acceptAdmin();
+        assertEq(router.admin(), newAdmin);
+        assertEq(router.pendingAdmin(), address(0));
+    }
+
+    function test_acceptAdmin_revertsForNonPendingAdmin() public {
+        address newAdmin = address(0xABCD);
+        router.transferAdmin(newAdmin);
+
+        vm.prank(nonAdmin);
+        vm.expectRevert(RiscZeroVerifierRouter.NotPendingAdmin.selector);
+        router.acceptAdmin();
+    }
+
+    function test_twoStepAdmin_oldAdminRetainsAccessUntilAccepted() public {
+        address newAdmin = address(0xABCD);
+        router.transferAdmin(newAdmin);
+
+        // Old admin still has access
         router.addVerifier(SELECTOR_A, address(verifierA), "Test");
 
-        // New admin can
+        // Accept transfer
         vm.prank(newAdmin);
-        router.addVerifier(SELECTOR_A, address(verifierA), "Test");
+        router.acceptAdmin();
+
+        // Old admin loses access
+        vm.expectRevert(RiscZeroVerifierRouter.NotAdmin.selector);
+        router.addVerifier(SELECTOR_B, address(verifierB), "Test2");
+
+        // New admin has access
+        vm.prank(newAdmin);
+        router.addVerifier(SELECTOR_B, address(verifierB), "Test2");
     }
 
     // --- verify: routing ---

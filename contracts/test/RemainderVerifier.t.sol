@@ -16,7 +16,7 @@ import {GKRHybridVerifier} from "../src/remainder/GKRHybridVerifier.sol";
 import "../src/RemainderVerifierAdapter.sol";
 import "../src/ProgramRegistry.sol";
 import "../src/ExecutionEngine.sol";
-import "../src/MockRiscZeroVerifier.sol";
+import "../src/mocks/MockRiscZeroVerifier.sol";
 
 contract PoseidonSpongeTest is Test {
     /// @notice Test that the sponge initializes correctly

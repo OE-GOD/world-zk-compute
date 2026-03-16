@@ -6,7 +6,7 @@
     "src/remainder/DAGRemainderGroth16Verifier.sol",
     "src/remainder/RemainderGroth16Verifier.sol",
     "src/remainder/PoseidonSponge.sol",
-    "src/MockRiscZeroVerifier.sol"
+    "src/mocks/MockRiscZeroVerifier.sol"
   ],
   "detectors_to_run": "reentrancy-eth,reentrancy-no-eth,uninitialized-state,arbitrary-send-eth,locked-ether,suicidal,unchecked-transfer,controlled-delegatecall,tx-origin,unprotected-upgrade,shadowing-state,missing-zero-check,calls-loop,unchecked-lowlevel,uninitialized-local,unused-return,delegatecall-loop,msg-value-loop,encode-packed-collision,incorrect-equality,deprecated-standards,divide-before-multiply,weak-prng,incorrect-shift,write-after-write,tautology",
   "exclude_informational": true,

@@ -24,6 +24,9 @@ contract RiscZeroVerifierRouter is IRiscZeroVerifier {
     /// @notice Admin who can add/remove verifiers
     address public admin;
 
+    /// @notice Pending admin for two-step transfer
+    address public pendingAdmin;
+
     /// @notice Mapping of selector (first 4 bytes of seal) to verifier
     mapping(bytes4 => VerifierInfo) public verifiers;
 
@@ -47,6 +50,7 @@ contract RiscZeroVerifierRouter is IRiscZeroVerifier {
     // ========================================================================
 
     error NotAdmin();
+    error NotPendingAdmin();
     error InvalidSeal();
     error NoVerifierFound();
     error VerifierNotActive();
@@ -148,10 +152,17 @@ contract RiscZeroVerifierRouter is IRiscZeroVerifier {
         emit DefaultVerifierSet(verifier);
     }
 
-    /// @notice Transfer admin rights
+    /// @notice Initiate admin transfer (two-step)
     function transferAdmin(address newAdmin) external onlyAdmin {
-        emit AdminTransferred(admin, newAdmin);
-        admin = newAdmin;
+        pendingAdmin = newAdmin;
+    }
+
+    /// @notice Accept admin transfer (must be called by pending admin)
+    function acceptAdmin() external {
+        if (msg.sender != pendingAdmin) revert NotPendingAdmin();
+        emit AdminTransferred(admin, pendingAdmin);
+        admin = pendingAdmin;
+        pendingAdmin = address(0);
     }
 
     // ========================================================================

@@ -6,7 +6,7 @@ import "../src/ProgramRegistry.sol";
 import "../src/ProverRegistry.sol";
 import "../src/ProverReputation.sol";
 import "../src/ExecutionEngine.sol";
-import "../src/MockRiscZeroVerifier.sol";
+import "../src/mocks/MockRiscZeroVerifier.sol";
 import "../src/tee/TEEMLVerifier.sol";
 
 /// @dev Minimal ERC20 for ProverRegistry staking in local deployments

@@ -4,7 +4,7 @@ pragma solidity ^0.8.20;
 import "forge-std/Test.sol";
 import "../src/Upgradeable.sol";
 import "../src/TimelockController.sol";
-import "../src/MockRiscZeroVerifier.sol";
+import "../src/mocks/MockRiscZeroVerifier.sol";
 
 /// @dev V2 implementation for testing upgrades — adds a new storage variable
 contract UpgradeableExecutionEngineV2 is UUPSUpgradeable {

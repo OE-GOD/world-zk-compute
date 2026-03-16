@@ -6,7 +6,7 @@ import "../src/ExecutionEngine.sol";
 import "../src/ProgramRegistry.sol";
 import "../src/ProverRegistry.sol";
 import "../src/ProverReputation.sol";
-import "../src/MockRiscZeroVerifier.sol";
+import "../src/mocks/MockRiscZeroVerifier.sol";
 import "../src/tee/TEEMLVerifier.sol";
 import "../src/RiscZeroVerifierRouter.sol";
 import "../src/RiscZeroVerifierAdapter.sol";
