@@ -528,4 +528,93 @@ contract ProverReputationFuzzTest is Test {
         vm.expectRevert(ProverReputation.AlreadyRegistered.selector);
         rep.register();
     }
+
+    // ========================================================================
+    // Fuzz Test 9: Slash penalty math is precise
+    // ========================================================================
+
+    /// @notice Verify penalty = (score * bps) / 10000, score never negative.
+    function testFuzz_slashPenaltyMath(uint256 penaltyBps, uint8 preSuccesses) public {
+        penaltyBps = bound(penaltyBps, 1, 10000);
+        preSuccesses = uint8(bound(preSuccesses, 0, 200));
+
+        address prover = address(0x8888);
+        _registerProver(prover);
+
+        // Build up score with successes first
+        for (uint256 i = 0; i < preSuccesses; i++) {
+            vm.prank(reporter);
+            rep.recordSuccess(prover, 100, 0.1 ether);
+        }
+
+        ProverReputation.Reputation memory before = rep.getReputation(prover);
+        uint256 scoreBefore = uint256(before.score);
+
+        rep.slash(prover, "math test", penaltyBps);
+
+        ProverReputation.Reputation memory after_ = rep.getReputation(prover);
+        uint256 expectedPenalty = (scoreBefore * penaltyBps) / 10000;
+        uint256 expectedScore = scoreBefore > expectedPenalty ? scoreBefore - expectedPenalty : 0;
+
+        assertEq(after_.score, uint32(expectedScore), "score after slash must match formula");
+        assertLe(after_.score, uint32(scoreBefore), "score must not increase after slash");
+    }
+
+    // ========================================================================
+    // Fuzz Test 10: Consecutive slashes respect cooldown
+    // ========================================================================
+
+    /// @notice Two slashes within cooldown period should revert.
+    function testFuzz_slashCooldownEnforced(uint256 delay) public {
+        delay = bound(delay, 0, 2 hours);
+
+        address prover = address(0x9999);
+        _registerProver(prover);
+
+        rep.slash(prover, "first", 100);
+
+        vm.warp(block.timestamp + delay);
+
+        if (delay < rep.slashCooldown()) {
+            vm.expectRevert(ProverReputation.SlashCooldownActive.selector);
+            rep.slash(prover, "second", 100);
+        } else {
+            // Should succeed after cooldown
+            rep.slash(prover, "second", 100);
+            assertEq(rep.totalSlashEvents(prover), 2, "should have 2 slash events");
+        }
+    }
+
+    // ========================================================================
+    // Fuzz Test 11: Success rate calculation is consistent
+    // ========================================================================
+
+    /// @notice successRate = (completed * 10000) / totalJobs when totalJobs > 0.
+    function testFuzz_successRateConsistency(uint8 successes, uint8 failures) public {
+        successes = uint8(bound(successes, 1, 50));
+        failures = uint8(bound(failures, 0, 50));
+
+        address prover = address(0xAAAA);
+        _registerProver(prover);
+
+        for (uint256 i = 0; i < successes; i++) {
+            vm.prank(reporter);
+            rep.recordSuccess(prover, 100, 0.1 ether);
+        }
+        for (uint256 i = 0; i < failures; i++) {
+            ProverReputation.Reputation memory r = rep.getReputation(prover);
+            if (r.isBanned) break;
+            vm.prank(reporter);
+            rep.recordFailure(prover, "rate test");
+        }
+
+        ProverReputation.Reputation memory final_ = rep.getReputation(prover);
+        uint256 rate = rep.getSuccessRate(prover);
+
+        if (final_.totalJobs > 0) {
+            uint256 expected = (uint256(final_.completedJobs) * 10000) / uint256(final_.totalJobs);
+            assertEq(rate, expected, "success rate must match formula");
+            assertLe(rate, 10000, "success rate must not exceed 100%");
+        }
+    }
 }

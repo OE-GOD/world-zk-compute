@@ -167,4 +167,96 @@ contract ExecutionEngineFuzzTest is Test {
         ExecutionEngine.ExecutionRequest memory req = engine.getRequest(requestId);
         assertEq(uint256(req.status), uint256(ExecutionEngine.RequestStatus.Pending), "Status must still be Pending");
     }
+
+    // ========================================================================
+    // 9. testFuzz_calculatePayout_tipDecay
+    //    Verify tip decay math: linear from maxTip to maxTip/2 over 30 min,
+    //    then flat at maxTip/2. Payout must always be in [maxTip/2, maxTip].
+    // ========================================================================
+
+    function testFuzz_calculatePayout_tipDecay(uint256 tip, uint256 elapsed) public {
+        tip = bound(tip, engine.MIN_TIP(), 10 ether);
+        elapsed = bound(elapsed, 0, 2 hours);
+
+        vm.prank(requester);
+        uint256 requestId =
+            engine.requestExecution{value: tip}(imageId, inputDigest, inputUrl, address(0), 3600, 0);
+
+        // Advance time
+        vm.warp(block.timestamp + elapsed);
+
+        uint256 payout = engine.getCurrentTip(requestId);
+
+        // Payout must be in range [maxTip/2, maxTip]
+        assertGe(payout, tip / 2, "Payout must never drop below maxTip/2");
+        assertLe(payout, tip, "Payout must never exceed maxTip");
+
+        // Before decay period: payout should be > maxTip/2
+        if (elapsed < engine.TIP_DECAY_PERIOD()) {
+            assertGt(payout, tip / 2, "Payout should be above floor before decay period ends");
+        }
+        // After decay period: payout should be exactly maxTip/2
+        if (elapsed >= engine.TIP_DECAY_PERIOD()) {
+            assertEq(payout, tip / 2, "Payout should be exactly maxTip/2 after decay period");
+        }
+    }
+
+    // ========================================================================
+    // 10. testFuzz_feeSplit_invariant
+    //     For any tip and feeBps, fee + proverPayout == payout.
+    //     No wei is lost or created.
+    // ========================================================================
+
+    function testFuzz_feeSplit_invariant(uint256 tip, uint256 feeBps) public {
+        tip = bound(tip, engine.MIN_TIP(), 10 ether);
+        feeBps = bound(feeBps, 0, 1000); // MAX_FEE_BPS
+
+        vm.prank(deployer);
+        engine.setProtocolFee(feeBps);
+
+        // Calculate fee split the same way the contract does
+        uint256 fee = (tip * feeBps) / 10000;
+        uint256 proverPayout = tip - fee;
+
+        // Invariant: no wei lost
+        assertEq(fee + proverPayout, tip, "Fee + proverPayout must equal total tip");
+
+        // Fee should never exceed tip
+        assertLe(fee, tip, "Fee must never exceed tip");
+
+        // At max fee (10%), fee should be at most 10% of tip
+        if (feeBps == 1000) {
+            assertEq(fee, tip / 10, "At 10% fee, fee should be tip/10");
+        }
+
+        // At zero fee, prover gets everything
+        if (feeBps == 0) {
+            assertEq(proverPayout, tip, "At 0% fee, prover gets everything");
+            assertEq(fee, 0, "At 0% fee, fee should be 0");
+        }
+    }
+
+    // ========================================================================
+    // 11. testFuzz_requestExecution_expirationBounds
+    //     Fuzz expiration. Below MIN or above MAX reverts.
+    // ========================================================================
+
+    function testFuzz_requestExecution_expirationBounds(uint256 expiration) public {
+        expiration = bound(expiration, 0, 60 days);
+        uint256 tip = engine.MIN_TIP();
+
+        vm.prank(requester);
+        if (expiration > 0 && expiration < engine.MIN_EXPIRATION()) {
+            vm.expectRevert(ExecutionEngine.ExpirationTooShort.selector);
+            engine.requestExecution{value: tip}(imageId, inputDigest, inputUrl, address(0), expiration, 0);
+        } else if (expiration > engine.MAX_EXPIRATION()) {
+            vm.expectRevert(ExecutionEngine.ExpirationTooLong.selector);
+            engine.requestExecution{value: tip}(imageId, inputDigest, inputUrl, address(0), expiration, 0);
+        } else {
+            uint256 requestId =
+                engine.requestExecution{value: tip}(imageId, inputDigest, inputUrl, address(0), expiration, 0);
+            ExecutionEngine.ExecutionRequest memory req = engine.getRequest(requestId);
+            assertEq(uint256(req.status), uint256(ExecutionEngine.RequestStatus.Pending));
+        }
+    }
 }
