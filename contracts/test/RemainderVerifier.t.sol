@@ -367,9 +367,7 @@ contract RemainderVerifierTest is Test {
         committed[0] = true;
         committed[1] = false;
 
-        verifier.registerCircuitWithGens(
-            newCircuitHash, 2, sizes, types, committed, "gens-test", expectedGensHash
-        );
+        verifier.registerCircuitWithGens(newCircuitHash, 2, sizes, types, committed, "gens-test", expectedGensHash);
         vm.stopPrank();
 
         // Build a valid-looking proof (correct selector) but with WRONG generators data
@@ -3894,7 +3892,7 @@ contract GKRDAGVerifierTest is Test {
 
     /// @notice Test registration reverts when numComputeLayers == 0
     function test_register_dag_circuit_no_compute_layers_reverts() public {
-        (, bytes memory gensHex,, , GKRDAGVerifier.DAGCircuitDescription memory desc) = _loadFixture();
+        (, bytes memory gensHex,,, GKRDAGVerifier.DAGCircuitDescription memory desc) = _loadFixture();
 
         // Override numComputeLayers to 0
         desc.numComputeLayers = 0;
@@ -4050,12 +4048,8 @@ contract GKRDAGVerifierTest is Test {
 
     /// @notice Diagnostic: step-by-step transcript trace for DAG circuit
     function test_dag_transcript_trace() public {
-        (
-            bytes memory proofHex,
-            ,
-            bytes32 circuitHash,,
-            GKRDAGVerifier.DAGCircuitDescription memory desc
-        ) = _loadFixture();
+        (bytes memory proofHex,, bytes32 circuitHash,, GKRDAGVerifier.DAGCircuitDescription memory desc) =
+            _loadFixture();
 
         // Decode proof
         bytes memory proofData = _stripSelector(proofHex);

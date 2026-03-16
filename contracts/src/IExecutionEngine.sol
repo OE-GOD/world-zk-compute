@@ -55,9 +55,7 @@ interface IExecutionEngine {
     event ExecutionClaimed(uint256 indexed requestId, address indexed prover, uint256 claimDeadline);
 
     /// @notice Emitted when a proof is verified and the prover is paid
-    event ExecutionCompleted(
-        uint256 indexed requestId, address indexed prover, bytes32 journalDigest, uint256 payout
-    );
+    event ExecutionCompleted(uint256 indexed requestId, address indexed prover, bytes32 journalDigest, uint256 payout);
 
     /// @notice Emitted when a request passes its expiration time
     event ExecutionExpired(uint256 indexed requestId);

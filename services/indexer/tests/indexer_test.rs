@@ -343,7 +343,10 @@ async fn test_api_versioned_results() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     // Verify X-API-Version header is present and set to v1
-    let version_header = resp.headers().get("x-api-version").expect("missing X-API-Version header");
+    let version_header = resp
+        .headers()
+        .get("x-api-version")
+        .expect("missing X-API-Version header");
     assert_eq!(version_header, "v1");
 
     let body = resp.into_body().collect().await.unwrap().to_bytes();
@@ -530,13 +533,7 @@ fn test_storage_concurrent_access() {
         let storage = s.clone();
         handles.push(thread::spawn(move || {
             storage
-                .insert_result(
-                    &format!("0x{:04x}", i),
-                    "0xm",
-                    "0xi",
-                    "0xa",
-                    i as u64,
-                )
+                .insert_result(&format!("0x{:04x}", i), "0xm", "0xi", "0xa", i as u64)
                 .unwrap();
         }));
     }

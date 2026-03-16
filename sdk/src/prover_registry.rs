@@ -182,12 +182,7 @@ impl ProverRegistryClient {
         let provider = self.build_provider();
         let contract = ProverRegistry::new(self.client.contract_address(), provider);
 
-        let receipt = contract
-            .deactivate()
-            .send()
-            .await?
-            .get_receipt()
-            .await?;
+        let receipt = contract.deactivate().send().await?.get_receipt().await?;
 
         Ok(receipt.transaction_hash)
     }
@@ -200,12 +195,7 @@ impl ProverRegistryClient {
         let provider = self.build_provider();
         let contract = ProverRegistry::new(self.client.contract_address(), provider);
 
-        let receipt = contract
-            .reactivate()
-            .send()
-            .await?
-            .get_receipt()
-            .await?;
+        let receipt = contract.reactivate().send().await?.get_receipt().await?;
 
         Ok(receipt.transaction_hash)
     }
@@ -259,10 +249,7 @@ impl ProverRegistryClient {
     ///
     /// Returns the on-chain `Prover` struct with stake, reputation, stats, etc.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(prover = %prover)))]
-    pub async fn get_prover_info(
-        &self,
-        prover: Address,
-    ) -> anyhow::Result<ProverRegistry::Prover> {
+    pub async fn get_prover_info(&self, prover: Address) -> anyhow::Result<ProverRegistry::Prover> {
         let provider = self.build_provider();
         let contract = ProverRegistry::new(self.client.contract_address(), provider);
 
@@ -394,10 +381,7 @@ impl ProverRegistryClient {
 
     /// Set the minimum stake requirement (owner only).
     #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
-    pub async fn set_min_stake(
-        &self,
-        min_stake: U256,
-    ) -> anyhow::Result<alloy::primitives::B256> {
+    pub async fn set_min_stake(&self, min_stake: U256) -> anyhow::Result<alloy::primitives::B256> {
         let provider = self.build_provider();
         let contract = ProverRegistry::new(self.client.contract_address(), provider);
 
@@ -556,7 +540,7 @@ mod tests {
         let prover = ProverRegistry::Prover {
             owner: Address::ZERO,
             stake: U256::from(1_000_000_000_000_000_000u64), // 1 ETH
-            reputation: U256::from(5000u64),                  // 50%
+            reputation: U256::from(5000u64),                 // 50%
             proofsSubmitted: U256::from(10u64),
             proofsFailed: U256::from(1u64),
             totalEarnings: U256::from(500_000_000_000_000u64),

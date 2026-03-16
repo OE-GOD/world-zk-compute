@@ -84,10 +84,7 @@ impl RateLimitState {
         if timestamps.len() >= limit as usize {
             // Calculate retry-after: time until the oldest entry in the window expires
             let oldest = timestamps[0];
-            let reset_secs = (oldest + self.config.window)
-                .duration_since(now)
-                .as_secs()
-                + 1;
+            let reset_secs = (oldest + self.config.window).duration_since(now).as_secs() + 1;
             Err(RateLimitInfo {
                 limit,
                 remaining: 0,
@@ -98,10 +95,7 @@ impl RateLimitState {
                 self.config.window.as_secs()
             } else {
                 let oldest = timestamps[0];
-                (oldest + self.config.window)
-                    .duration_since(now)
-                    .as_secs()
-                    + 1
+                (oldest + self.config.window).duration_since(now).as_secs() + 1
             };
             timestamps.push(now);
             // remaining is calculated AFTER pushing (this request counts)
@@ -226,18 +220,12 @@ fn extract_client_ip<B>(req: &Request<B>) -> IpAddr {
 /// Append standard rate-limit headers to a response.
 fn set_rate_limit_headers(resp: &mut Response<Body>, info: &RateLimitInfo) {
     let headers = resp.headers_mut();
-    headers.insert(
-        "x-ratelimit-limit",
-        HeaderValue::from(info.limit as u64),
-    );
+    headers.insert("x-ratelimit-limit", HeaderValue::from(info.limit as u64));
     headers.insert(
         "x-ratelimit-remaining",
         HeaderValue::from(info.remaining as u64),
     );
-    headers.insert(
-        "x-ratelimit-reset",
-        HeaderValue::from(info.reset_secs),
-    );
+    headers.insert("x-ratelimit-reset", HeaderValue::from(info.reset_secs));
 }
 
 fn rate_limit_response(info: &RateLimitInfo) -> Response<Body> {

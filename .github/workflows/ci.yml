@@ -12,33 +12,8 @@ env:
   RUST_VERSION: "1.92.0"
 
 jobs:
-  solidity:
-    name: Solidity Tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@v1
-
-      - name: Install forge dependencies
-        run: |
-          cd contracts
-          forge install foundry-rs/forge-std --no-git
-          forge install risc0/risc0-ethereum --no-git
-
-      - name: Check Solidity formatting
-        run: |
-          cd contracts
-          forge fmt --check
-
-      - name: Run Solidity tests
-        run: |
-          cd contracts
-          forge test -vv
+  # NOTE: Solidity tests are handled by contracts-ci.yml (more thorough:
+  # includes gas regression, contract sizes, and fixture checks).
 
   rust:
     name: Rust Build & Lint

@@ -353,8 +353,7 @@ pub fn estimate_continue_gas(batch_idx: u32, layers_per_batch: u32) -> u64 {
     // Apply a mild complexity factor based on batch index.
     let complexity_bump = (batch_idx as u64).min(10) * 500_000;
 
-    let per_layer =
-        (CONTINUE_GAS_UPPER - CONTINUE_GAS_LOWER) / (full_batch as u64);
+    let per_layer = (CONTINUE_GAS_UPPER - CONTINUE_GAS_LOWER) / (full_batch as u64);
     let base = CONTINUE_GAS_LOWER + (layers_per_batch as u64) * per_layer + complexity_bump;
 
     // Clamp to observed upper bound
@@ -388,8 +387,7 @@ pub fn estimate_finalize_gas(groups_per_batch: u32) -> u64 {
         return FINALIZE_GAS_LOWER;
     }
     let full_batch = GROUPS_PER_FINALIZE_BATCH as u32;
-    let per_group =
-        (FINALIZE_GAS_UPPER - FINALIZE_GAS_LOWER) / (full_batch as u64);
+    let per_group = (FINALIZE_GAS_UPPER - FINALIZE_GAS_LOWER) / (full_batch as u64);
     let base = FINALIZE_GAS_LOWER + (groups_per_batch as u64) * per_group;
     base.min(FINALIZE_GAS_UPPER)
 }
@@ -615,10 +613,7 @@ impl<'a> RpcGasEstimator<'a> {
     ///
     /// Returns an error if the RPC call fails or the contract reverts (e.g.,
     /// circuit not registered, invalid proof format).
-    pub async fn estimate_start_gas(
-        &self,
-        proof: &ProofData,
-    ) -> anyhow::Result<u64> {
+    pub async fn estimate_start_gas(&self, proof: &ProofData) -> anyhow::Result<u64> {
         let provider = self.build_provider();
         let contract = RemainderVerifier::new(self.client.contract_address(), &provider);
 
@@ -730,10 +725,7 @@ impl<'a> RpcGasEstimator<'a> {
     /// # Errors
     ///
     /// Returns an error if the session does not exist or the RPC call fails.
-    pub async fn estimate_cleanup_gas(
-        &self,
-        session_id: B256,
-    ) -> anyhow::Result<u64> {
+    pub async fn estimate_cleanup_gas(&self, session_id: B256) -> anyhow::Result<u64> {
         let provider = self.build_provider();
         let contract = RemainderVerifier::new(self.client.contract_address(), &provider);
 
@@ -922,7 +914,8 @@ impl<'a> RpcGasEstimator<'a> {
             + finalize_gas_per_step.iter().sum::<u64>()
             + cleanup_gas;
 
-        let estimated_eth_cost = gas_price_gwei.map(|gwei| estimate_total_cost_eth(total_gas, gwei));
+        let estimated_eth_cost =
+            gas_price_gwei.map(|gwei| estimate_total_cost_eth(total_gas, gwei));
 
         Ok(RpcBatchGasEstimate {
             start_gas,
@@ -1270,8 +1263,11 @@ mod tests {
     fn test_estimate_total_batches_88_layers_lpb8() {
         let (cont, fin) = estimate_total_batches(88, 8);
         assert_eq!(cont, 11); // ceil(88 / 8)
-        // Estimated groups from 88 layers: (88*2+4)/5 = 36, ceil(36/16) = 3
-        assert!(fin >= 2 && fin <= 4, "Expected 2-4 finalize batches, got {fin}");
+                              // Estimated groups from 88 layers: (88*2+4)/5 = 36, ceil(36/16) = 3
+        assert!(
+            fin >= 2 && fin <= 4,
+            "Expected 2-4 finalize batches, got {fin}"
+        );
     }
 
     #[test]
@@ -1361,10 +1357,7 @@ mod tests {
         cleanup: u64,
         gas_price_gwei: Option<f64>,
     ) -> RpcBatchGasEstimate {
-        let total = start
-            + continues.iter().sum::<u64>()
-            + finalizes.iter().sum::<u64>()
-            + cleanup;
+        let total = start + continues.iter().sum::<u64>() + finalizes.iter().sum::<u64>() + cleanup;
         let estimated_eth_cost = gas_price_gwei.map(|g| estimate_total_cost_eth(total, g));
         RpcBatchGasEstimate {
             start_gas: start,
@@ -1417,13 +1410,7 @@ mod tests {
 
     #[test]
     fn test_rpc_estimate_avg_continue_gas_empty() {
-        let est = make_rpc_estimate(
-            17_000_000,
-            vec![],
-            vec![15_000_000],
-            400_000,
-            None,
-        );
+        let est = make_rpc_estimate(17_000_000, vec![], vec![15_000_000], 400_000, None);
         assert_eq!(est.avg_continue_gas(), 0);
     }
 
@@ -1442,13 +1429,7 @@ mod tests {
 
     #[test]
     fn test_rpc_estimate_avg_finalize_gas_empty() {
-        let est = make_rpc_estimate(
-            17_000_000,
-            vec![20_000_000],
-            vec![],
-            400_000,
-            None,
-        );
+        let est = make_rpc_estimate(17_000_000, vec![20_000_000], vec![], 400_000, None);
         assert_eq!(est.avg_finalize_gas(), 0);
     }
 
@@ -1466,13 +1447,7 @@ mod tests {
 
     #[test]
     fn test_rpc_estimate_max_single_tx_start_is_max() {
-        let est = make_rpc_estimate(
-            29_000_000,
-            vec![13_000_000],
-            vec![9_000_000],
-            400_000,
-            None,
-        );
+        let est = make_rpc_estimate(29_000_000, vec![13_000_000], vec![9_000_000], 400_000, None);
         assert_eq!(est.max_single_tx_gas(), 29_000_000);
     }
 
@@ -1536,9 +1511,8 @@ mod tests {
     fn test_rpc_estimate_xgboost_like_session() {
         // Simulate a realistic XGBoost 88-layer session
         let continues = vec![
-            13_500_000, 18_000_000, 20_000_000, 22_000_000, 24_000_000,
-            25_000_000, 26_000_000, 27_000_000, 27_500_000, 28_000_000,
-            15_000_000, // last batch with fewer layers
+            13_500_000, 18_000_000, 20_000_000, 22_000_000, 24_000_000, 25_000_000, 26_000_000,
+            27_000_000, 27_500_000, 28_000_000, 15_000_000, // last batch with fewer layers
         ];
         let finalizes = vec![22_000_000, 20_000_000, 9_500_000];
         let est = make_rpc_estimate(17_500_000, continues, finalizes, 300_000, Some(30.0));

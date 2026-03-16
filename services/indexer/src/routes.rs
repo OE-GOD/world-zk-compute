@@ -68,9 +68,7 @@ fn is_valid_hex(s: &str) -> bool {
 
 /// Validate a raw query string length. Must be called before the
 /// deserialized filter is inspected.
-fn validate_raw_query(
-    raw: &Option<String>,
-) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+fn validate_raw_query(raw: &Option<String>) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
     if let Some(ref qs) = raw {
         if qs.len() > MAX_QUERY_STRING_LENGTH {
             return Err((
@@ -91,9 +89,7 @@ fn validate_raw_query(
 ///
 /// Returns `Ok(())` when the filter is acceptable, or a 400 error response
 /// listing every validation violation found.
-fn validate_query_params(
-    filter: &ResultFilter,
-) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+fn validate_query_params(filter: &ResultFilter) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
     let mut violations: Vec<String> = Vec::new();
 
     // --- limit ---
@@ -169,9 +165,8 @@ fn validate_query_params(
 
     // --- offset + after_id mutual exclusion ---
     if filter.offset.is_some() && filter.after_id.is_some() {
-        violations.push(
-            "offset and after_id are mutually exclusive; use one or the other".to_string(),
-        );
+        violations
+            .push("offset and after_id are mutually exclusive; use one or the other".to_string());
     }
 
     // --- offset + limit deep pagination guard ---
@@ -230,10 +225,7 @@ fn validate_id(id: &str) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
 /// Middleware that reads `X-Request-ID` from the incoming request header
 /// (or generates a new UUID v4 if absent), attaches it to a tracing span
 /// for the request, and includes it in the response headers.
-async fn request_id_middleware(
-    request: Request<axum::body::Body>,
-    next: Next,
-) -> Response {
+async fn request_id_middleware(request: Request<axum::body::Body>, next: Next) -> Response {
     let request_id = request
         .headers()
         .get(&X_REQUEST_ID)
@@ -793,8 +785,7 @@ mod tests {
     async fn test_health_reports_block_number() {
         let s = test_storage();
         s.set_last_indexed_block(12345).unwrap();
-        s.insert_result("0x01", "0xm", "0xi", "0xa", 100)
-            .unwrap();
+        s.insert_result("0x01", "0xm", "0xi", "0xa", 100).unwrap();
         let app = build_app(s, test_broadcaster(), test_rate_limit_config());
 
         let req = axum::http::Request::builder()
@@ -886,7 +877,8 @@ mod tests {
         s.insert_result("0x01", "0xm", "0xi", "0xa", 1).unwrap();
         s.insert_result("0x02", "0xm", "0xi", "0xa", 2).unwrap();
         s.insert_result("0x03", "0xm", "0xi", "0xa", 3).unwrap();
-        s.update_result_status("0x02", "challenged", Some("0xc")).unwrap();
+        s.update_result_status("0x02", "challenged", Some("0xc"))
+            .unwrap();
         s.update_result_status("0x03", "finalized", None).unwrap();
         let app = build_app(s, test_broadcaster(), test_rate_limit_config());
 
@@ -1247,7 +1239,8 @@ mod tests {
         let err: ErrorResponse = serde_json::from_slice(&body).unwrap();
         // Both violations should appear separated by "; "
         assert!(
-            err.error.contains("limit must be between") && err.error.contains("submitter must be a hex"),
+            err.error.contains("limit must be between")
+                && err.error.contains("submitter must be a hex"),
             "expected multiple violations, got: {}",
             err.error
         );
@@ -1284,11 +1277,11 @@ mod tests {
         assert!(is_valid_hex("0xabc"));
         assert!(is_valid_hex("0xABCDEF0123456789"));
         assert!(is_valid_hex("0x1"));
-        assert!(!is_valid_hex("0x"));       // no digits after prefix
-        assert!(!is_valid_hex("abc"));       // missing 0x prefix
-        assert!(!is_valid_hex("0xZZZ"));     // invalid hex digits
-        assert!(!is_valid_hex(""));          // empty
-        assert!(!is_valid_hex("0xab cd"));   // space
+        assert!(!is_valid_hex("0x")); // no digits after prefix
+        assert!(!is_valid_hex("abc")); // missing 0x prefix
+        assert!(!is_valid_hex("0xZZZ")); // invalid hex digits
+        assert!(!is_valid_hex("")); // empty
+        assert!(!is_valid_hex("0xab cd")); // space
     }
 
     // -----------------------------------------------------------------------
@@ -1338,12 +1331,7 @@ mod tests {
             retry_after.is_some(),
             "response should include Retry-After header"
         );
-        let retry_secs: u64 = retry_after
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .parse()
-            .unwrap();
+        let retry_secs: u64 = retry_after.unwrap().to_str().unwrap().parse().unwrap();
         assert!(
             retry_secs > 0 && retry_secs <= 61,
             "retry-after should be between 1 and 61 seconds, got {}",
@@ -1726,7 +1714,10 @@ mod tests {
         let readiness: super::ReadinessResponse = serde_json::from_slice(&body).unwrap();
         assert!(!readiness.ready);
         assert_eq!(readiness.last_indexed_block, 0);
-        assert_eq!(readiness.checks.indexing, "stale", "indexing check should be stale when no blocks indexed");
+        assert_eq!(
+            readiness.checks.indexing, "stale",
+            "indexing check should be stale when no blocks indexed"
+        );
     }
 
     #[tokio::test]
@@ -1773,15 +1764,9 @@ mod tests {
             "missing 'last_indexed_block' field"
         );
         // "reason" field was removed; verify it is not present
-        assert!(
-            v.get("reason").is_none(),
-            "reason field should not exist"
-        );
+        assert!(v.get("reason").is_none(), "reason field should not exist");
         // "checks" should be present
-        assert!(
-            v.get("checks").is_some(),
-            "missing 'checks' field"
-        );
+        assert!(v.get("checks").is_some(), "missing 'checks' field");
     }
 
     #[tokio::test]
@@ -1805,7 +1790,10 @@ mod tests {
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         let readiness: super::ReadinessResponse = serde_json::from_slice(&body).unwrap();
         assert!(!readiness.ready);
-        assert_eq!(readiness.checks.db, "error", "db check should be error when storage is unhealthy");
+        assert_eq!(
+            readiness.checks.db, "error",
+            "db check should be error when storage is unhealthy"
+        );
     }
 
     #[tokio::test]
@@ -1933,10 +1921,8 @@ mod tests {
         let s = test_storage();
         s.insert_result("0x01", "0xm", "0xi", "0xcharlie", 1)
             .unwrap();
-        s.insert_result("0x02", "0xm", "0xi", "0xalice", 2)
-            .unwrap();
-        s.insert_result("0x03", "0xm", "0xi", "0xbob", 3)
-            .unwrap();
+        s.insert_result("0x02", "0xm", "0xi", "0xalice", 2).unwrap();
+        s.insert_result("0x03", "0xm", "0xi", "0xbob", 3).unwrap();
         let app = build_app(s, test_broadcaster(), test_rate_limit_config());
 
         let req = axum::http::Request::builder()
@@ -1960,10 +1946,8 @@ mod tests {
         let s = test_storage();
         s.insert_result("0x01", "0xm", "0xi", "0xcharlie", 1)
             .unwrap();
-        s.insert_result("0x02", "0xm", "0xi", "0xalice", 2)
-            .unwrap();
-        s.insert_result("0x03", "0xm", "0xi", "0xbob", 3)
-            .unwrap();
+        s.insert_result("0x02", "0xm", "0xi", "0xalice", 2).unwrap();
+        s.insert_result("0x03", "0xm", "0xi", "0xbob", 3).unwrap();
         let app = build_app(s, test_broadcaster(), test_rate_limit_config());
 
         let req = axum::http::Request::builder()
@@ -2088,7 +2072,13 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         let status = resp.status();
         let headers = resp.headers().clone();
-        let body = resp.into_body().collect().await.unwrap().to_bytes().to_vec();
+        let body = resp
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec();
         (status, headers, body)
     }
 
@@ -2098,8 +2088,7 @@ mod tests {
         s.insert_result("0x01", "0xm", "0xi", "0xa", 1).unwrap();
         let app = build_app(s, test_broadcaster(), test_rate_limit_config());
 
-        let (status, headers, _body) =
-            get_with_headers(app, "/api/v1/results").await;
+        let (status, headers, _body) = get_with_headers(app, "/api/v1/results").await;
         assert_eq!(status, StatusCode::OK);
         assert!(
             headers.get("x-total-count").is_some(),
@@ -2120,8 +2109,7 @@ mod tests {
         }
         let app = build_app(s, test_broadcaster(), test_rate_limit_config());
 
-        let (status, headers, _body) =
-            get_with_headers(app, "/api/v1/results?limit=2").await;
+        let (status, headers, _body) = get_with_headers(app, "/api/v1/results?limit=2").await;
         assert_eq!(status, StatusCode::OK);
 
         let total: u64 = headers
@@ -2131,7 +2119,10 @@ mod tests {
             .unwrap()
             .parse()
             .unwrap();
-        assert_eq!(total, 5, "x-total-count should reflect all matching results");
+        assert_eq!(
+            total, 5,
+            "x-total-count should reflect all matching results"
+        );
     }
 
     #[tokio::test]
@@ -2143,8 +2134,7 @@ mod tests {
         }
         let app = build_app(s, test_broadcaster(), test_rate_limit_config());
 
-        let (status, headers, _body) =
-            get_with_headers(app, "/api/v1/results?limit=3").await;
+        let (status, headers, _body) = get_with_headers(app, "/api/v1/results?limit=3").await;
         assert_eq!(status, StatusCode::OK);
 
         let has_more = headers.get("x-has-more").unwrap().to_str().unwrap();
@@ -2160,8 +2150,7 @@ mod tests {
         }
         let app = build_app(s, test_broadcaster(), test_rate_limit_config());
 
-        let (status, headers, body) =
-            get_with_headers(app, "/api/v1/results").await;
+        let (status, headers, body) = get_with_headers(app, "/api/v1/results").await;
         assert_eq!(status, StatusCode::OK);
 
         let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
@@ -2185,10 +2174,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         let page1: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
         assert_eq!(page1.data.len(), 2);
-        assert_eq!(
-            headers.get("x-has-more").unwrap().to_str().unwrap(),
-            "true"
-        );
+        assert_eq!(headers.get("x-has-more").unwrap().to_str().unwrap(), "true");
 
         let (status, _headers, body) =
             get_with_headers(app.clone(), "/api/v1/results?limit=2&offset=2").await;
@@ -2221,14 +2207,8 @@ mod tests {
     async fn test_after_id_cursor_pagination() {
         let s = test_storage();
         for i in 0..5u64 {
-            s.insert_result(
-                &format!("0x{:02x}", i),
-                "0xm",
-                "0xi",
-                "0xa",
-                i * 10,
-            )
-            .unwrap();
+            s.insert_result(&format!("0x{:02x}", i), "0xm", "0xi", "0xa", i * 10)
+                .unwrap();
         }
         let app = build_app(s, test_broadcaster(), test_rate_limit_config());
 
@@ -2266,11 +2246,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_offset_and_after_id_mutually_exclusive() {
-        let app = build_app(
-            test_storage(),
-            test_broadcaster(),
-            test_rate_limit_config(),
-        );
+        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results?offset=5&after_id=0x01")
@@ -2291,11 +2267,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_deep_pagination_rejected() {
-        let app = build_app(
-            test_storage(),
-            test_broadcaster(),
-            test_rate_limit_config(),
-        );
+        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results?offset=9500&limit=600")
@@ -2336,16 +2308,12 @@ mod tests {
         s.insert_result("0x02", "0xm", "0xi", "0xa", 2).unwrap();
         let app = build_app(s, test_broadcaster(), test_rate_limit_config());
 
-        let (status, headers, body) =
-            get_with_headers(app, "/api/v1/results").await;
+        let (status, headers, body) = get_with_headers(app, "/api/v1/results").await;
         assert_eq!(status, StatusCode::OK);
 
         let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
         assert_eq!(page.data.len(), 2);
-        assert_eq!(
-            headers.get("x-total-count").unwrap().to_str().unwrap(),
-            "2"
-        );
+        assert_eq!(headers.get("x-total-count").unwrap().to_str().unwrap(), "2");
         assert_eq!(
             headers.get("x-has-more").unwrap().to_str().unwrap(),
             "false"
@@ -2387,11 +2355,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_after_id_too_long_returns_400() {
-        let app = build_app(
-            test_storage(),
-            test_broadcaster(),
-            test_rate_limit_config(),
-        );
+        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
 
         let long_id = "x".repeat(200);
         let req = axum::http::Request::builder()

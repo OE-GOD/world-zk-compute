@@ -101,9 +101,7 @@ impl SDKMetrics {
     /// Increments the `sdk_request_total` counter with status `"ok"` and
     /// observes the duration in the `sdk_request_duration_seconds` histogram.
     pub fn record_success(&self, method: &str, duration_secs: f64) {
-        self.request_total
-            .with_label_values(&[method, "ok"])
-            .inc();
+        self.request_total.with_label_values(&[method, "ok"]).inc();
         self.request_duration
             .with_label_values(&[method])
             .observe(duration_secs);

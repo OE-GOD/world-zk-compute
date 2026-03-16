@@ -178,7 +178,7 @@ contract RemainderVerifier is Ownable2Step, Pausable {
         bytes32 circuitHash,
         bytes calldata publicInputs,
         bytes calldata gensData
-    ) external virtual view whenNotPaused {
+    ) external view virtual whenNotPaused {
         // Check circuit is registered and active
         CircuitConfig storage config = circuits[circuitHash];
         if (config.circuitHash == bytes32(0)) revert CircuitNotRegistered();
@@ -1034,9 +1034,7 @@ contract RemainderVerifier is Ownable2Step, Pausable {
         require(desc.numSumcheckRounds.length == desc.numComputeLayers, "numSumcheckRounds length mismatch");
         require(desc.atomOffsets.length == desc.numComputeLayers + 1, "atomOffsets length mismatch");
         require(desc.inputIsCommitted.length == desc.numInputLayers, "inputIsCommitted length mismatch");
-        require(
-            desc.oracleProductOffsets.length == desc.numComputeLayers + 1, "oracleProductOffsets length mismatch"
-        );
+        require(desc.oracleProductOffsets.length == desc.numComputeLayers + 1, "oracleProductOffsets length mismatch");
 
         // --- Atom array consistency ---
         uint256 totalAtoms = desc.atomOffsets[desc.numComputeLayers];

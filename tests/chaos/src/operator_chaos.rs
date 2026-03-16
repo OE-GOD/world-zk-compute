@@ -968,9 +968,7 @@ mod tests {
         // 4. While open, subsequent calls should be rejected immediately
         //    without hitting the RPC (fast-fail / backoff behavior).
         let rejected: Result<(), _> = cb
-            .call(|| async {
-                panic!("this closure should never execute when breaker is open")
-            })
+            .call(|| async { panic!("this closure should never execute when breaker is open") })
             .await;
         assert!(rejected.is_err());
         match rejected.unwrap_err() {
@@ -1215,7 +1213,11 @@ mod tests {
         // 5. Confirm the breaker still functions correctly after rapid cycling:
         //    a successful call should pass through without issues.
         let result = cb.call_sync(|| Ok::<_, anyhow::Error>(42));
-        assert_eq!(result.unwrap(), 42, "breaker should work normally after rapid cycling");
+        assert_eq!(
+            result.unwrap(),
+            42,
+            "breaker should work normally after rapid cycling"
+        );
         assert_eq!(cb.state(), State::Closed);
     }
 }

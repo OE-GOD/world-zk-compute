@@ -27,11 +27,7 @@ pub fn log_enclave_registered(
 }
 
 /// Log an audit event for enclave registration attempt (before tx submission).
-pub fn log_enclave_registration_attempted(
-    enclave_address: &str,
-    pcr0: &str,
-    skip_verify: bool,
-) {
+pub fn log_enclave_registration_attempted(enclave_address: &str, pcr0: &str, skip_verify: bool) {
     tracing::info!(
         target: "audit",
         event = "enclave_registration_attempted",
@@ -43,11 +39,7 @@ pub fn log_enclave_registration_attempted(
 }
 
 /// Log an audit event for a dispute submission (challenge detected and proof submitted).
-pub fn log_dispute_submitted(
-    result_id: &str,
-    challenger: &str,
-    tx_hash: &str,
-) {
+pub fn log_dispute_submitted(result_id: &str, challenger: &str, tx_hash: &str) {
     tracing::info!(
         target: "audit",
         event = "dispute_submitted",
@@ -59,11 +51,7 @@ pub fn log_dispute_submitted(
 }
 
 /// Log an audit event for a failed dispute resolution.
-pub fn log_dispute_failed(
-    result_id: &str,
-    challenger: &str,
-    error: &str,
-) {
+pub fn log_dispute_failed(result_id: &str, challenger: &str, error: &str) {
     tracing::warn!(
         target: "audit",
         event = "dispute_failed",
@@ -75,11 +63,7 @@ pub fn log_dispute_failed(
 }
 
 /// Log an audit event for a challenge detection.
-pub fn log_challenge_detected(
-    result_id: &str,
-    challenger: &str,
-    block_number: u64,
-) {
+pub fn log_challenge_detected(result_id: &str, challenger: &str, block_number: u64) {
     tracing::warn!(
         target: "audit",
         event = "challenge_detected",
@@ -91,11 +75,7 @@ pub fn log_challenge_detected(
 }
 
 /// Log an audit event for result submission.
-pub fn log_result_submitted(
-    tx_hash: &str,
-    model_name: &str,
-    feature_count: usize,
-) {
+pub fn log_result_submitted(tx_hash: &str, model_name: &str, feature_count: usize) {
     tracing::info!(
         target: "audit",
         event = "result_submitted",
@@ -107,10 +87,7 @@ pub fn log_result_submitted(
 }
 
 /// Log an audit event for prover slashing (dispute lost by prover).
-pub fn log_prover_slashed(
-    result_id: &str,
-    prover_won: bool,
-) {
+pub fn log_prover_slashed(result_id: &str, prover_won: bool) {
     if !prover_won {
         tracing::warn!(
             target: "audit",
@@ -140,10 +117,7 @@ pub fn log_config_loaded(
 }
 
 /// Log an audit event for auto-finalization of a result.
-pub fn log_result_finalized(
-    result_id: &str,
-    tx_hash: &str,
-) {
+pub fn log_result_finalized(result_id: &str, tx_hash: &str) {
     tracing::info!(
         target: "audit",
         event = "result_finalized",
@@ -153,13 +127,8 @@ pub fn log_result_finalized(
     );
 }
 
-
 /// Log an audit event for proof verification submission.
-pub fn log_proof_verification_submitted(
-    result_id: &str,
-    circuit_hash: &str,
-    proof_size: usize,
-) {
+pub fn log_proof_verification_submitted(result_id: &str, circuit_hash: &str, proof_size: usize) {
     tracing::info!(
         target: "audit",
         event = "proof_verification_submitted",
@@ -196,12 +165,7 @@ mod tests {
         log_result_submitted("0xtx2", "iris-model", 4);
         log_prover_slashed("0xresult4", false);
         log_prover_slashed("0xresult5", true); // should not log (prover won)
-        log_config_loaded(
-            "http://localhost:8545",
-            "0xcontract",
-            false,
-            true,
-        );
+        log_config_loaded("http://localhost:8545", "0xcontract", false, true);
         log_result_finalized("0xresult6", "0xtx3");
         log_proof_verification_submitted("0xresult7", "0xcircuit1", 1024);
     }
@@ -218,7 +182,9 @@ mod tests {
         let captured = Arc::new(Mutex::new(Vec::<String>::new()));
         let captured_clone = captured.clone();
 
-        let layer = TestAuditLayer { captured: captured_clone };
+        let layer = TestAuditLayer {
+            captured: captured_clone,
+        };
 
         let subscriber = tracing_subscriber::registry().with(layer);
         let _guard = tracing::subscriber::set_default(subscriber);

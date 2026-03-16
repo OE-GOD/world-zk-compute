@@ -257,8 +257,7 @@ contract RemainderVerifierAdapterTest is Test {
     function test_verify_zeroCircuitHash() public {
         // The adapter does not validate circuitHash -- passes through to underlying verifier.
         vm.expectCall(
-            address(mockVerifier),
-            abi.encodeCall(RemainderVerifier.verifyOrRevert, (TEST_PROOF, bytes32(0), hex"", ""))
+            address(mockVerifier), abi.encodeCall(RemainderVerifier.verifyOrRevert, (TEST_PROOF, bytes32(0), hex"", ""))
         );
 
         adapter.verify(TEST_PROOF, bytes32(0), hex"");

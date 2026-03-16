@@ -382,10 +382,7 @@ impl ExecutionEngineClient {
         let provider = self.build_provider();
         let contract = ExecutionEngine::new(self.client.contract_address(), provider);
 
-        let req = contract
-            .getRequest(U256::from(request_id))
-            .call()
-            .await?;
+        let req = contract.getRequest(U256::from(request_id)).call().await?;
 
         Ok(req)
     }
@@ -396,9 +393,8 @@ impl ExecutionEngineClient {
     #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(request_id)))]
     pub async fn get_request_status(&self, request_id: u64) -> anyhow::Result<RequestStatus> {
         let req = self.get_request(request_id).await?;
-        RequestStatus::from_u8(req.status).ok_or_else(|| {
-            anyhow::anyhow!("unknown request status: {}", req.status)
-        })
+        RequestStatus::from_u8(req.status)
+            .ok_or_else(|| anyhow::anyhow!("unknown request status: {}", req.status))
     }
 
     /// Get the current tip for a request (decreases over time via linear decay).
@@ -423,12 +419,11 @@ impl ExecutionEngineClient {
     ///
     /// * `offset` - Number of matching requests to skip.
     /// * `limit` - Maximum number of request IDs to return.
-    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(offset, limit)))]
-    pub async fn get_pending_requests(
-        &self,
-        offset: u64,
-        limit: u64,
-    ) -> anyhow::Result<Vec<U256>> {
+    #[cfg_attr(
+        feature = "tracing",
+        tracing::instrument(skip_all, fields(offset, limit))
+    )]
+    pub async fn get_pending_requests(&self, offset: u64, limit: u64) -> anyhow::Result<Vec<U256>> {
         let provider = self.build_provider();
         let contract = ExecutionEngine::new(self.client.contract_address(), provider);
 
@@ -442,10 +437,7 @@ impl ExecutionEngineClient {
 
     /// Get prover statistics (completed count and total earnings).
     #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(prover = %prover)))]
-    pub async fn get_prover_stats(
-        &self,
-        prover: Address,
-    ) -> anyhow::Result<(U256, U256)> {
+    pub async fn get_prover_stats(&self, prover: Address) -> anyhow::Result<(U256, U256)> {
         let provider = self.build_provider();
         let contract = ExecutionEngine::new(self.client.contract_address(), provider);
 

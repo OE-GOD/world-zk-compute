@@ -23,7 +23,7 @@ Prover submits proof → Contract verifies → Prover gets paid
 ```
 ├── contracts/               Foundry Solidity contracts
 │   ├── src/                   Core contracts + Remainder verifier suite
-│   ├── test/                  167+ Solidity tests
+│   ├── test/                  789 Solidity tests
 │   ├── script/                Deployment scripts (Local, Testnet, Remainder)
 │   └── stylus/gkr-verifier/  Arbitrum Stylus WASM port (Rust, 85 tests)
 ├── prover/                  Rust prover node (risc0-zkvm v3.0)
@@ -80,13 +80,13 @@ curl -X POST http://localhost:8080/infer \
 
 | Component | Tests | What |
 |-----------|-------|------|
-| Solidity | 167 | Remainder verifier, DAG verifier, batch verifier, Groth16 hybrid, E2E |
+| Solidity | 789 | Remainder verifier, DAG verifier, batch verifier, Groth16 hybrid, TEE, ExecutionEngine, fuzz |
 | Stylus (Rust) | 85 | BN254 field/EC ops, Poseidon, GKR, Hyrax, sumcheck, proof decoding |
 | Remainder (Rust) | 34 | XGBoost circuit, GKR prove-and-verify, model parsing, ABI encoding |
 | gnark (Go) | 14 | Groth16 circuit compilation, proving, per-layer num_vars |
 | TypeScript SDK | 199 | TEE verifier, event watcher, batch verifier, Anvil integration |
 | Python SDK | 449 | Client, verifier, XGBoost, LightGBM, batch, events, CLI |
-| **Total** | **948+** | All run in CI |
+| **Total** | **1,570+** | All run in CI |
 
 ## Architecture
 
@@ -230,7 +230,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ### Run Tests
 
 ```bash
-# Solidity (167 tests)
+# Solidity (789 tests)
 cd contracts && forge install foundry-rs/forge-std --no-git && forge install risc0/risc0-ethereum --no-git
 forge test -vv
 
@@ -243,7 +243,7 @@ cd contracts/stylus/gkr-verifier && cargo test --no-default-features
 # gnark Go (14 tests)
 cd examples/xgboost-remainder/gnark-wrapper && go test -v ./...
 
-# Python SDK (37 tests)
+# Python SDK (449 tests)
 cd sdk/python && pip install -e ".[dev]" && pytest -v
 ```
 
@@ -316,7 +316,7 @@ All components tested in GitHub Actions on every push/PR:
 
 | Job | What |
 |-----|------|
-| `solidity` | forge fmt + forge test (167 tests) |
+| `solidity` | forge fmt + forge test (789 tests) |
 | `rust` | clippy + cargo test (prover + SDK) |
 | `remainder` | fmt + clippy + cargo test (34 tests) |
 | `stylus` | fmt + clippy + cargo test + WASM build (85 tests) |
@@ -360,7 +360,7 @@ All components tested in GitHub Actions on every push/PR:
 - [x] **Groth16 hybrid verification** (gnark SNARK wrapping, 3416 public inputs)
 - [x] **Stylus WASM port** (full GKR DAG verifier on Arbitrum, ~23.7KB Brotli)
 - [x] **TEE + ZK dispute system** (AWS Nitro attestation, operator service)
-- [x] **Multi-language SDKs** (Rust, TypeScript, Python — 948+ tests)
+- [x] **Multi-language SDKs** (Rust, TypeScript, Python — 1,570+ tests)
 - [x] **Production hardening** (CI/CD, monitoring, Docker Compose, Helm charts)
 - [ ] Arbitrum Stylus testnet deployment
 - [ ] Batch verification orchestrator SDK

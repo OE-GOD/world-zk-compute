@@ -279,8 +279,10 @@ async fn cmd_submit(
     );
 
     // 2. Call enclave /infer
-    let enclave_client =
-        enclave::EnclaveClient::with_config_timeout(&config.enclave_url, config.enclave_timeout_secs);
+    let enclave_client = enclave::EnclaveClient::with_config_timeout(
+        &config.enclave_url,
+        config.enclave_timeout_secs,
+    );
 
     let health = enclave_client.health().await?;
     if !health {
@@ -464,7 +466,9 @@ async fn shutdown_signal() -> &'static str {
 #[tracing::instrument(skip(config))]
 async fn cmd_watch(config: &Config, metrics_port: u16, dry_run: bool) -> anyhow::Result<()> {
     if dry_run {
-        tracing::info!("[DRY-RUN] Dry-run mode enabled. No on-chain transactions will be submitted.");
+        tracing::info!(
+            "[DRY-RUN] Dry-run mode enabled. No on-chain transactions will be submitted."
+        );
     }
     let contract_addr: Address = config
         .tee_verifier_address
@@ -648,11 +652,7 @@ async fn cmd_watch(config: &Config, metrics_port: u16, dry_run: bool) -> anyhow:
                     );
 
                     // Audit log: challenge detected
-                    audit::log_challenge_detected(
-                        &rid_hex,
-                        &format!("{}", challenger),
-                        from_block,
-                    );
+                    audit::log_challenge_detected(&rid_hex, &format!("{}", challenger), from_block);
 
                     // Track the dispute deadline in persisted state
                     let now = std::time::SystemTime::now()
@@ -887,8 +887,10 @@ async fn cmd_register(
     expected_pcr0: Option<&str>,
     skip_verify: bool,
 ) -> anyhow::Result<()> {
-    let enclave_client =
-        enclave::EnclaveClient::with_config_timeout(&config.enclave_url, config.enclave_timeout_secs);
+    let enclave_client = enclave::EnclaveClient::with_config_timeout(
+        &config.enclave_url,
+        config.enclave_timeout_secs,
+    );
 
     // 1. Get enclave address first (needed for nonce computation)
     let info = enclave_client.info().await?;
@@ -1292,11 +1294,7 @@ mod tests {
     #[test]
     fn test_cli_watch_dry_run_flag() {
         // Verify the --dry-run flag is parsed correctly
-        let cli = Cli::parse_from([
-            "tee-operator",
-            "watch",
-            "--dry-run",
-        ]);
+        let cli = Cli::parse_from(["tee-operator", "watch", "--dry-run"]);
         match cli.command {
             Commands::Watch { dry_run, .. } => assert!(dry_run, "--dry-run should be true"),
             _ => panic!("expected Watch command"),
@@ -1306,10 +1304,7 @@ mod tests {
     #[test]
     fn test_cli_watch_default_no_dry_run() {
         // Verify the default is dry_run=false
-        let cli = Cli::parse_from([
-            "tee-operator",
-            "watch",
-        ]);
+        let cli = Cli::parse_from(["tee-operator", "watch"]);
         match cli.command {
             Commands::Watch { dry_run, .. } => assert!(!dry_run, "default dry_run should be false"),
             _ => panic!("expected Watch command"),
@@ -1322,11 +1317,15 @@ mod tests {
         let cli = Cli::parse_from([
             "tee-operator",
             "watch",
-            "--metrics-port", "8080",
+            "--metrics-port",
+            "8080",
             "--dry-run",
         ]);
         match cli.command {
-            Commands::Watch { metrics_port, dry_run } => {
+            Commands::Watch {
+                metrics_port,
+                dry_run,
+            } => {
                 assert_eq!(metrics_port, 8080);
                 assert!(dry_run);
             }

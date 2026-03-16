@@ -86,8 +86,7 @@ contract ExecutionEngineTest is Test {
 
     function testRequestExecution() public {
         vm.prank(requester);
-        uint256 requestId =
-            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         assertEq(requestId, 1);
 
@@ -115,8 +114,7 @@ contract ExecutionEngineTest is Test {
 
     function testCancelExecution() public {
         vm.prank(requester);
-        uint256 requestId =
-            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         uint256 balanceBefore = requester.balance;
 
@@ -136,8 +134,7 @@ contract ExecutionEngineTest is Test {
 
     function testClaimExecution() public {
         vm.prank(requester);
-        uint256 requestId =
-            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         vm.prank(prover);
         engine.claimExecution(requestId);
@@ -149,8 +146,7 @@ contract ExecutionEngineTest is Test {
 
     function testClaimExecutionExpiredRequest() public {
         vm.prank(requester);
-        uint256 requestId =
-            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         // Fast forward past expiration
         vm.warp(block.timestamp + 3601);
@@ -162,8 +158,7 @@ contract ExecutionEngineTest is Test {
 
     function testReclaimAfterDeadline() public {
         vm.prank(requester);
-        uint256 requestId =
-            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         // First prover claims
         vm.prank(prover);
@@ -187,8 +182,7 @@ contract ExecutionEngineTest is Test {
 
     function testSubmitProof() public {
         vm.prank(requester);
-        uint256 requestId =
-            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         vm.prank(prover);
         engine.claimExecution(requestId);
@@ -215,8 +209,7 @@ contract ExecutionEngineTest is Test {
 
     function testSubmitProofNotClaimant() public {
         vm.prank(requester);
-        uint256 requestId =
-            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         vm.prank(prover);
         engine.claimExecution(requestId);
@@ -229,8 +222,7 @@ contract ExecutionEngineTest is Test {
 
     function testSubmitProofAfterDeadline() public {
         vm.prank(requester);
-        uint256 requestId =
-            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         vm.prank(prover);
         engine.claimExecution(requestId);
@@ -249,8 +241,7 @@ contract ExecutionEngineTest is Test {
 
     function testTipDecay() public {
         vm.prank(requester);
-        uint256 requestId =
-            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         // At t=0, tip should be max
         uint256 tip0 = engine.getCurrentTip(requestId);
@@ -273,8 +264,7 @@ contract ExecutionEngineTest is Test {
 
     function testProverStats() public {
         vm.prank(requester);
-        uint256 requestId =
-            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         vm.prank(prover);
         engine.claimExecution(requestId);
@@ -350,8 +340,7 @@ contract ExecutionEngineTest is Test {
         vm.warp(2000);
 
         vm.prank(requester);
-        uint256 requestId =
-            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         vm.warp(2100);
         vm.prank(prover);
@@ -408,8 +397,7 @@ contract ExecutionEngineTest is Test {
         vm.warp(uint256(nearMax));
 
         vm.prank(requester);
-        uint256 requestId =
-            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         ExecutionEngine.ExecutionRequest memory req = engine.getRequest(requestId);
         assertEq(req.createdAt, nearMax);
@@ -698,8 +686,7 @@ contract ExecutionEngineTest is Test {
     function testPausedClaimExecutionReverts() public {
         // Create request before pausing
         vm.prank(requester);
-        uint256 requestId =
-            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         vm.prank(deployer);
         engine.pause();
@@ -712,8 +699,7 @@ contract ExecutionEngineTest is Test {
     function testPausedSubmitProofReverts() public {
         // Create request and claim before pausing
         vm.prank(requester);
-        uint256 requestId =
-            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         vm.prank(prover);
         engine.claimExecution(requestId);
@@ -729,8 +715,7 @@ contract ExecutionEngineTest is Test {
     function testCancelExecutionWorksWhilePaused() public {
         // Create request before pausing
         vm.prank(requester);
-        uint256 requestId =
-            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         vm.prank(deployer);
         engine.pause();
@@ -756,8 +741,7 @@ contract ExecutionEngineTest is Test {
 
         // Request should work again after unpause
         vm.prank(requester);
-        uint256 requestId =
-            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
         assertEq(requestId, 1);
     }
 
@@ -898,8 +882,7 @@ contract ExecutionEngineTest is Test {
     function testFullPauseCancelUnpauseFlow() public {
         // 1. Create a request
         vm.prank(requester);
-        uint256 requestId =
-            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         // 2. Pause the engine
         vm.prank(deployer);
@@ -943,8 +926,7 @@ contract ExecutionEngineTest is Test {
     function testPausedViewFunctionsStillWork() public {
         // Create a request before pausing
         vm.prank(requester);
-        uint256 requestId =
-            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         vm.prank(deployer);
         engine.pause();
@@ -1118,9 +1100,8 @@ contract ExecutionEngineTest is Test {
         RevertingCallback revertingCallback = new RevertingCallback();
 
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(
-            imageId, inputDigest, inputUrl, address(revertingCallback), 3600
-        );
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(revertingCallback), 3600);
 
         vm.prank(prover);
         engine.claimExecution(requestId);
@@ -1158,9 +1139,8 @@ contract ExecutionEngineTest is Test {
         CustomErrorCallback customCallback = new CustomErrorCallback();
 
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(
-            imageId, inputDigest, inputUrl, address(customCallback), 3600
-        );
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(customCallback), 3600);
 
         vm.prank(prover);
         engine.claimExecution(requestId);
@@ -1191,9 +1171,8 @@ contract ExecutionEngineTest is Test {
         EmptyRevertCallback emptyCallback = new EmptyRevertCallback();
 
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(
-            imageId, inputDigest, inputUrl, address(emptyCallback), 3600
-        );
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(emptyCallback), 3600);
 
         vm.prank(prover);
         engine.claimExecution(requestId);
@@ -1224,9 +1203,8 @@ contract ExecutionEngineTest is Test {
         MockCallback successCallback = new MockCallback();
 
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(
-            imageId, inputDigest, inputUrl, address(successCallback), 3600
-        );
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(successCallback), 3600);
 
         vm.prank(prover);
         engine.claimExecution(requestId);
@@ -1252,9 +1230,8 @@ contract ExecutionEngineTest is Test {
         RevertingCallback revertingCallback = new RevertingCallback();
 
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(
-            imageId, inputDigest, inputUrl, address(revertingCallback), 3600
-        );
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(revertingCallback), 3600);
 
         vm.prank(prover);
         engine.claimExecution(requestId);
@@ -1276,8 +1253,7 @@ contract ExecutionEngineTest is Test {
     function testNoCallbackContractNoCallbackFailedEvent() public {
         // Request with no callback contract (address(0))
         vm.prank(requester);
-        uint256 requestId =
-            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         vm.prank(prover);
         engine.claimExecution(requestId);
@@ -1301,9 +1277,8 @@ contract ExecutionEngineTest is Test {
         RevertingCallback revertingCallback = new RevertingCallback();
 
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(
-            imageId, inputDigest, inputUrl, address(revertingCallback), 3600
-        );
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(revertingCallback), 3600);
 
         vm.prank(prover);
         engine.claimExecution(requestId);
@@ -1325,9 +1300,8 @@ contract ExecutionEngineTest is Test {
         CustomErrorCallback customCallback = new CustomErrorCallback();
 
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(
-            imageId, inputDigest, inputUrl, address(customCallback), 3600
-        );
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(customCallback), 3600);
 
         vm.prank(prover);
         engine.claimExecution(requestId);
@@ -1348,9 +1322,8 @@ contract ExecutionEngineTest is Test {
         EmptyRevertCallback emptyCallback = new EmptyRevertCallback();
 
         vm.prank(requester);
-        uint256 requestId = engine.requestExecution{value: 0.1 ether}(
-            imageId, inputDigest, inputUrl, address(emptyCallback), 3600
-        );
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(emptyCallback), 3600);
 
         vm.prank(prover);
         engine.claimExecution(requestId);
@@ -1369,8 +1342,7 @@ contract ExecutionEngineTest is Test {
     /// @notice T462: address(0) callback skips the call entirely, no CallbackFailed event
     function test_zero_address_callback_skips_call() public {
         vm.prank(requester);
-        uint256 requestId =
-            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
 
         vm.prank(prover);
         engine.claimExecution(requestId);

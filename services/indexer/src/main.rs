@@ -430,7 +430,10 @@ impl Storage for SqliteStorage {
         let conn = match self.lock() {
             Ok(c) => c,
             Err(e) => {
-                tracing::error!("Lock poisoned in get_last_indexed_block - returning 0: {}", e);
+                tracing::error!(
+                    "Lock poisoned in get_last_indexed_block - returning 0: {}",
+                    e
+                );
                 self.lock_poisoned.store(true, Ordering::SeqCst);
                 return 0;
             }

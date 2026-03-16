@@ -5,13 +5,7 @@ permissions: read-all
 on:
   push:
     branches: [main]
-    paths:
-      - 'contracts/**'
-      - 'scripts/check-gas-regression.sh'
   pull_request:
-    paths:
-      - 'contracts/**'
-      - 'scripts/check-gas-regression.sh'
   workflow_dispatch:
 
 jobs:

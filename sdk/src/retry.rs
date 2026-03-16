@@ -142,7 +142,11 @@ where
             }
         }
 
-        trace_debug!(attempt, max_retries = policy.max_retries, "starting attempt");
+        trace_debug!(
+            attempt,
+            max_retries = policy.max_retries,
+            "starting attempt"
+        );
 
         // Execute the attempt, optionally wrapped in a per-attempt timeout.
         let attempt_result = if let Some(per_attempt) = policy.timeout {
@@ -184,10 +188,7 @@ where
                 if let Some(total) = policy.total_timeout {
                     let remaining = total.saturating_sub(start.elapsed());
                     if remaining.is_zero() {
-                        trace_debug!(
-                            attempt,
-                            "total timeout exceeded during backoff, aborting"
-                        );
+                        trace_debug!(attempt, "total timeout exceeded during backoff, aborting");
                         return Err(last_err.unwrap_or_else(|| {
                             anyhow::anyhow!(
                                 "total timeout ({total:?}) exceeded after {attempt} attempt(s)"

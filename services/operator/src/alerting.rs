@@ -970,11 +970,17 @@ mod tests {
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].id, id);
         assert_eq!(
-            active[0].metadata.get("result_id").expect("result_id should be in metadata"),
+            active[0]
+                .metadata
+                .get("result_id")
+                .expect("result_id should be in metadata"),
             "0xdeadbeef"
         );
         assert_eq!(
-            active[0].metadata.get("chain_id").expect("chain_id should be in metadata"),
+            active[0]
+                .metadata
+                .get("chain_id")
+                .expect("chain_id should be in metadata"),
             "11155111"
         );
     }
@@ -1019,8 +1025,7 @@ mod tests {
             routing_key: "abc123".into(),
             service_name: "operator".into(),
         };
-        let json =
-            serde_json::to_string(&channel).expect("AlertChannel should serialize to JSON");
+        let json = serde_json::to_string(&channel).expect("AlertChannel should serialize to JSON");
         let parsed: serde_json::Value = serde_json::from_str(&json)
             .expect("serialized AlertChannel should parse as JSON Value");
         assert_eq!(parsed["type"], "pager_duty");
@@ -1028,8 +1033,8 @@ mod tests {
         assert_eq!(parsed["service_name"], "operator");
 
         // Round-trip.
-        let deser: AlertChannel = serde_json::from_str(&json)
-            .expect("AlertChannel should round-trip through JSON");
+        let deser: AlertChannel =
+            serde_json::from_str(&json).expect("AlertChannel should round-trip through JSON");
         assert_eq!(deser.channel_type(), "pagerduty");
     }
 

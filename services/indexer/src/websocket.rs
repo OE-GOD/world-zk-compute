@@ -303,10 +303,7 @@ impl EventBroadcaster {
 
     /// Returns the number of events currently in the replay buffer.
     pub fn buffer_len(&self) -> usize {
-        self.event_buffer
-            .read()
-            .map(|buf| buf.len())
-            .unwrap_or(0)
+        self.event_buffer.read().map(|buf| buf.len()).unwrap_or(0)
     }
 
     /// Returns the current number of active WebSocket connections.

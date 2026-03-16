@@ -372,7 +372,10 @@ library GKRVerifier {
     ///      Shred a occupies positions 0..M-1, shred b occupies positions M..2M-1
     ///      After sumcheck binding r, claims are at points (0, r) and (1, r)
     ///      where the first variable selects the shred and r selects within the shred
-    function _deriveInputClaimPoints(uint256[] memory mulBindings, uint256 /* inputSize */)
+    function _deriveInputClaimPoints(
+        uint256[] memory mulBindings,
+        uint256 /* inputSize */
+    )
         private
         pure
         returns (uint256[][] memory claimPoints)
@@ -452,7 +455,7 @@ library GKRVerifier {
         pure
         returns (uint256[] memory result)
     {
-        uint256 tensorLen = 1 << lHalfLen;
+        uint256 tensorLen = uint256(1) << lHalfLen;
         result = new uint256[](tensorLen);
 
         for (uint256 c = 0; c < claimPoints.length; c++) {
@@ -497,7 +500,7 @@ library GKRVerifier {
     ///      tensor([r]) = [(1-r), r]
     ///      tensor([r1, r2]) = [(1-r1)(1-r2), r1(1-r2), (1-r1)r2, r1*r2]
     function _initializeTensor(uint256[] memory coords) private pure returns (uint256[] memory table) {
-        uint256 size = 1 << coords.length;
+        uint256 size = uint256(1) << coords.length;
         table = new uint256[](size);
         table[0] = 1;
 
@@ -537,7 +540,7 @@ library GKRVerifier {
     /// @dev MLE(x) = sum_{w in {0,1}^n} data[w] * prod_{i} (x_i * w_i + (1-x_i) * (1-w_i))
     function evaluateMLEFromData(uint256[] memory data, uint256[] memory point) internal pure returns (uint256) {
         uint256 n = point.length;
-        require(data.length <= (1 << n), "GKRVerifier: data too large for point");
+        require(data.length <= (uint256(1) << n), "GKRVerifier: data too large for point");
 
         uint256 result = 0;
 

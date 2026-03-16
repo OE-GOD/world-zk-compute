@@ -599,7 +599,11 @@ impl Config {
         }
 
         // 3. Validate contract addresses (all must be 0x + 40 hex chars)
-        Self::validate_eth_address(&self.tee_verifier_address, "tee_verifier_address", &mut errors);
+        Self::validate_eth_address(
+            &self.tee_verifier_address,
+            "tee_verifier_address",
+            &mut errors,
+        );
         for (i, addr) in self.contract_addresses.iter().enumerate() {
             Self::validate_eth_address(addr, &format!("contract_addresses[{}]", i), &mut errors);
         }
@@ -781,9 +785,7 @@ impl Config {
         };
 
         // rpc_url: warn if using the default localhost value
-        if self.rpc_url == "http://127.0.0.1:8545"
-            && std::env::var("OPERATOR_RPC_URL").is_err()
-        {
+        if self.rpc_url == "http://127.0.0.1:8545" && std::env::var("OPERATOR_RPC_URL").is_err() {
             tracing::warn!(
                 "OPERATOR_RPC_URL is not set -- using default '{}'. \
                  This is unsuitable for production.",
@@ -959,8 +961,14 @@ rpc_url = "https://rpc.example.com"
         let _lock = ENV_LOCK.lock().unwrap();
         clear_all_env_vars();
 
-        std::env::set_var("OPERATOR_PRIVATE_KEY", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
-        std::env::set_var("TEE_VERIFIER_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var(
+            "OPERATOR_PRIVATE_KEY",
+            "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+        );
+        std::env::set_var(
+            "TEE_VERIFIER_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
 
         let config = Config::from_env(None).unwrap();
         assert_eq!(config.rpc_url, "http://127.0.0.1:8545");
@@ -1006,8 +1014,14 @@ proof_retry_delay_secs = 20
 
         let config = Config::from_env(Some(&path)).unwrap();
         assert_eq!(config.rpc_url, "https://from-toml.example.com");
-        assert_eq!(config.private_key, "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc");
-        assert_eq!(config.tee_verifier_address, "0x3333333333333333333333333333333333333333");
+        assert_eq!(
+            config.private_key,
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        );
+        assert_eq!(
+            config.tee_verifier_address,
+            "0x3333333333333333333333333333333333333333"
+        );
         assert_eq!(config.enclave_url, "http://toml-enclave:9999");
         assert_eq!(config.model_path, "/toml/model.json");
         assert_eq!(config.proofs_dir, "/toml/proofs");
@@ -1046,8 +1060,14 @@ metrics_port = 8888
 
         // Set env vars that should override TOML values
         std::env::set_var("OPERATOR_RPC_URL", "https://from-env.example.com");
-        std::env::set_var("OPERATOR_PRIVATE_KEY", "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
-        std::env::set_var("TEE_VERIFIER_ADDRESS", "0x2222222222222222222222222222222222222222");
+        std::env::set_var(
+            "OPERATOR_PRIVATE_KEY",
+            "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        );
+        std::env::set_var(
+            "TEE_VERIFIER_ADDRESS",
+            "0x2222222222222222222222222222222222222222",
+        );
         std::env::set_var("NITRO_VERIFICATION", "true");
         std::env::set_var("ATTESTATION_CACHE_TTL", "120");
         std::env::set_var("METRICS_PORT", "7777");
@@ -1056,8 +1076,14 @@ metrics_port = 8888
 
         // Env vars should win
         assert_eq!(config.rpc_url, "https://from-env.example.com");
-        assert_eq!(config.private_key, "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
-        assert_eq!(config.tee_verifier_address, "0x2222222222222222222222222222222222222222");
+        assert_eq!(
+            config.private_key,
+            "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        );
+        assert_eq!(
+            config.tee_verifier_address,
+            "0x2222222222222222222222222222222222222222"
+        );
         assert!(config.nitro_verification);
         assert_eq!(config.attestation_cache_ttl, 120);
         assert_eq!(config.metrics_port, 7777);
@@ -1198,8 +1224,14 @@ path = "/app/model.json"
         let _lock = ENV_LOCK.lock().unwrap();
         clear_all_env_vars();
 
-        std::env::set_var("OPERATOR_PRIVATE_KEY", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
-        std::env::set_var("TEE_VERIFIER_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var(
+            "OPERATOR_PRIVATE_KEY",
+            "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+        );
+        std::env::set_var(
+            "TEE_VERIFIER_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
         std::env::set_var("MODEL_PATH", "/custom/model.json");
 
         let config = Config::from_env(None).unwrap();
@@ -1513,8 +1545,14 @@ model_hash = "{}"
 
         // When MODEL_PATH is set via env var and no [[models]] section exists,
         // a default model entry should be created from it.
-        std::env::set_var("OPERATOR_PRIVATE_KEY", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
-        std::env::set_var("TEE_VERIFIER_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var(
+            "OPERATOR_PRIVATE_KEY",
+            "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+        );
+        std::env::set_var(
+            "TEE_VERIFIER_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
         std::env::set_var("MODEL_PATH", "/env/model.json");
 
         let config = Config::from_env(None).unwrap();
@@ -1603,8 +1641,14 @@ webhook_url = "https://hooks.slack.com/services/T00/B00/XXXX"
         let _lock = ENV_LOCK.lock().unwrap();
         clear_all_env_vars();
 
-        std::env::set_var("OPERATOR_PRIVATE_KEY", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
-        std::env::set_var("TEE_VERIFIER_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var(
+            "OPERATOR_PRIVATE_KEY",
+            "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+        );
+        std::env::set_var(
+            "TEE_VERIFIER_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
 
         let config = Config::from_env(None).unwrap();
         assert!(config.webhook_url.is_none());
@@ -1617,8 +1661,14 @@ webhook_url = "https://hooks.slack.com/services/T00/B00/XXXX"
         let _lock = ENV_LOCK.lock().unwrap();
         clear_all_env_vars();
 
-        std::env::set_var("OPERATOR_PRIVATE_KEY", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
-        std::env::set_var("TEE_VERIFIER_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var(
+            "OPERATOR_PRIVATE_KEY",
+            "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+        );
+        std::env::set_var(
+            "TEE_VERIFIER_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
         std::env::set_var("WEBHOOK_URL", "https://hooks.example.com/webhook");
 
         let config = Config::from_env(None).unwrap();
@@ -1662,8 +1712,14 @@ webhook_url = "https://toml-webhook.example.com"
         let _lock = ENV_LOCK.lock().unwrap();
         clear_all_env_vars();
 
-        std::env::set_var("OPERATOR_PRIVATE_KEY", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
-        std::env::set_var("TEE_VERIFIER_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var(
+            "OPERATOR_PRIVATE_KEY",
+            "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+        );
+        std::env::set_var(
+            "TEE_VERIFIER_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
 
         let config = Config::from_env(None).unwrap();
         assert!(!config.dry_run);
@@ -1676,8 +1732,14 @@ webhook_url = "https://toml-webhook.example.com"
         let _lock = ENV_LOCK.lock().unwrap();
         clear_all_env_vars();
 
-        std::env::set_var("OPERATOR_PRIVATE_KEY", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
-        std::env::set_var("TEE_VERIFIER_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var(
+            "OPERATOR_PRIVATE_KEY",
+            "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+        );
+        std::env::set_var(
+            "TEE_VERIFIER_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
         std::env::set_var("DRY_RUN", "true");
 
         let config = Config::from_env(None).unwrap();
@@ -1737,7 +1799,10 @@ dry_run = true
 
         // When only TEE_VERIFIER_ADDRESS is set (no CONTRACT_ADDRESSES),
         // contract_addresses should contain just that one address.
-        std::env::set_var("OPERATOR_PRIVATE_KEY", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
+        std::env::set_var(
+            "OPERATOR_PRIVATE_KEY",
+            "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+        );
         std::env::set_var(
             "TEE_VERIFIER_ADDRESS",
             "0x1111111111111111111111111111111111111111",
@@ -1763,7 +1828,10 @@ dry_run = true
         let _lock = ENV_LOCK.lock().unwrap();
         clear_all_env_vars();
 
-        std::env::set_var("OPERATOR_PRIVATE_KEY", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
+        std::env::set_var(
+            "OPERATOR_PRIVATE_KEY",
+            "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+        );
         std::env::set_var(
             "TEE_VERIFIER_ADDRESS",
             "0x1111111111111111111111111111111111111111",
@@ -1802,7 +1870,10 @@ dry_run = true
         let _lock = ENV_LOCK.lock().unwrap();
         clear_all_env_vars();
 
-        std::env::set_var("OPERATOR_PRIVATE_KEY", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
+        std::env::set_var(
+            "OPERATOR_PRIVATE_KEY",
+            "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+        );
         std::env::set_var(
             "TEE_VERIFIER_ADDRESS",
             "0x1111111111111111111111111111111111111111",
@@ -1836,7 +1907,10 @@ dry_run = true
         let _lock = ENV_LOCK.lock().unwrap();
         clear_all_env_vars();
 
-        std::env::set_var("OPERATOR_PRIVATE_KEY", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
+        std::env::set_var(
+            "OPERATOR_PRIVATE_KEY",
+            "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+        );
         std::env::set_var(
             "TEE_VERIFIER_ADDRESS",
             "0x1111111111111111111111111111111111111111",
@@ -1989,8 +2063,14 @@ rpc_url = "https://rpc.example.com"
         let _lock = ENV_LOCK.lock().unwrap();
         clear_all_env_vars();
 
-        std::env::set_var("OPERATOR_PRIVATE_KEY", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
-        std::env::set_var("TEE_VERIFIER_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var(
+            "OPERATOR_PRIVATE_KEY",
+            "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+        );
+        std::env::set_var(
+            "TEE_VERIFIER_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
 
         let config = Config::from_env(None).unwrap();
         assert_eq!(config.enclave_timeout_secs, 30);
@@ -2004,8 +2084,14 @@ rpc_url = "https://rpc.example.com"
         let _lock = ENV_LOCK.lock().unwrap();
         clear_all_env_vars();
 
-        std::env::set_var("OPERATOR_PRIVATE_KEY", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
-        std::env::set_var("TEE_VERIFIER_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var(
+            "OPERATOR_PRIVATE_KEY",
+            "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+        );
+        std::env::set_var(
+            "TEE_VERIFIER_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
         std::env::set_var("ENCLAVE_TIMEOUT_SECS", "60");
         std::env::set_var("PROVER_TIMEOUT_SECS", "600");
 
@@ -2068,8 +2154,14 @@ prover_timeout_secs = 500
         let _lock = ENV_LOCK.lock().unwrap();
         clear_all_env_vars();
 
-        std::env::set_var("OPERATOR_PRIVATE_KEY", "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890");
-        std::env::set_var("TEE_VERIFIER_ADDRESS", "0x1111111111111111111111111111111111111111");
+        std::env::set_var(
+            "OPERATOR_PRIVATE_KEY",
+            "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+        );
+        std::env::set_var(
+            "TEE_VERIFIER_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
         std::env::set_var("ENCLAVE_TIMEOUT_SECS", "not_a_number");
         std::env::set_var("PROVER_TIMEOUT_SECS", "");
 
@@ -2137,9 +2229,7 @@ rpc_url = "https://rpc.example.com"
             }],
             dry_run: false,
             state_file: "./operator-state.json".to_string(),
-            contract_addresses: vec![
-                "0x1111111111111111111111111111111111111111".to_string(),
-            ],
+            contract_addresses: vec!["0x1111111111111111111111111111111111111111".to_string()],
             enclave_timeout_secs: 30,
             prover_timeout_secs: 300,
             prover_max_retries: 3,
@@ -2253,7 +2343,9 @@ rpc_url = "https://rpc.example.com"
         config.enclave_url = "http://".to_string();
         let errors = config.validate().unwrap_err();
         assert!(
-            errors.iter().any(|e| e.contains("enclave_url") && e.contains("missing a host")),
+            errors
+                .iter()
+                .any(|e| e.contains("enclave_url") && e.contains("missing a host")),
             "Expected error about missing host, got: {:?}",
             errors
         );
@@ -2304,7 +2396,9 @@ rpc_url = "https://rpc.example.com"
         config.metrics_port = 80;
         let errors = config.validate().unwrap_err();
         assert!(
-            errors.iter().any(|e| e.contains("metrics_port") && e.contains("privileged")),
+            errors
+                .iter()
+                .any(|e| e.contains("metrics_port") && e.contains("privileged")),
             "Expected metrics_port privileged error, got: {:?}",
             errors
         );
@@ -2455,7 +2549,9 @@ escalation_timeout_secs = 300
         config.prover_retry_max_delay_secs = 5;
         let errors = config.validate().unwrap_err();
         assert!(
-            errors.iter().any(|e| e.contains("prover_retry_max_delay_secs")),
+            errors
+                .iter()
+                .any(|e| e.contains("prover_retry_max_delay_secs")),
             "Expected prover_retry_max_delay_secs error, got: {:?}",
             errors
         );

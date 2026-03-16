@@ -55,8 +55,7 @@ mod tests {
         }
 
         fn set_partitioned(&self, partitioned: bool) {
-            self.partitioned
-                .store(partitioned, Ordering::SeqCst);
+            self.partitioned.store(partitioned, Ordering::SeqCst);
         }
 
         #[allow(dead_code)]
@@ -234,7 +233,10 @@ mod tests {
             }
         }
 
-        assert_eq!(failures, 20, "all 20 concurrent submissions should fail during partition");
+        assert_eq!(
+            failures, 20,
+            "all 20 concurrent submissions should fail during partition"
+        );
         assert_eq!(client.circuit_breaker.state(), State::Open);
     }
 
@@ -262,8 +264,14 @@ mod tests {
         }
 
         // We should see a mix of successes and failures
-        assert!(successes > 0, "some submissions should succeed during connected periods");
-        assert!(failures > 0, "some submissions should fail during partitioned periods");
+        assert!(
+            successes > 0,
+            "some submissions should succeed during connected periods"
+        );
+        assert!(
+            failures > 0,
+            "some submissions should fail during partitioned periods"
+        );
 
         // Breaker trip count should reflect the flapping
         assert!(
@@ -338,7 +346,11 @@ mod tests {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             match self {
                 RpcError::RateLimited { retry_after_ms } => {
-                    write!(f, "429 Too Many Requests (retry after {}ms)", retry_after_ms)
+                    write!(
+                        f,
+                        "429 Too Many Requests (retry after {}ms)",
+                        retry_after_ms
+                    )
                 }
                 RpcError::ServerError(msg) => write!(f, "500 Internal Server Error: {}", msg),
                 RpcError::ConnectionRefused => write!(f, "connection refused"),
@@ -617,7 +629,7 @@ mod tests {
             Self {
                 attestation: Mutex::new(MockAttestationDoc::with_issued_at(
                     now.saturating_sub(7200), // issued 2 hours ago
-                    3600,                      // valid for 1 hour (expired 1 hour ago)
+                    3600,                     // valid for 1 hour (expired 1 hour ago)
                 )),
                 replay_protection: Mutex::new(ReplayProtection::new(60, 1)),
                 successful_inferences: AtomicU64::new(0),
@@ -659,7 +671,7 @@ mod tests {
                     self.attestation_expired_rejections
                         .fetch_add(1, Ordering::Relaxed);
                     return Err(
-                        "attestation expired mid-request: result cannot be attested".to_string(),
+                        "attestation expired mid-request: result cannot be attested".to_string()
                     );
                 }
             }
@@ -823,7 +835,10 @@ mod tests {
             }
         }
 
-        assert_eq!(successes, 10, "all requests should succeed with valid attestation");
+        assert_eq!(
+            successes, 10,
+            "all requests should succeed with valid attestation"
+        );
     }
 
     #[test]
@@ -1229,7 +1244,10 @@ mod tests {
         let enclave_result = enclave.process_request("nonce-combo", now, 1);
 
         assert!(rpc_result.is_err(), "RPC should be rate-limited");
-        assert!(enclave_result.is_err(), "enclave should reject expired attestation");
+        assert!(
+            enclave_result.is_err(),
+            "enclave should reject expired attestation"
+        );
 
         // After fixing both issues
         enclave.refresh_attestation();
@@ -1259,9 +1277,7 @@ mod tests {
             }),
         );
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server_handle = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();

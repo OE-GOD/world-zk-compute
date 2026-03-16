@@ -357,8 +357,7 @@ library GKRDAGVerifier {
         _absorbCommitments(lp.commitments, sponge);
 
         // Compute RLC eval and beta from all incoming claims
-        (, uint256 rlcBeta) =
-            _computeRlcEvalAndBeta(layerIdx, ctx, bindings, rlcCoeffs);
+        (, uint256 rlcBeta) = _computeRlcEvalAndBeta(layerIdx, ctx, bindings, rlcCoeffs);
 
         // Verify sumcheck and PoP
         _verifySumcheckAndPoP(layerIdx, lp, ctx.desc, ctx.gens, sponge, bindings, rlcBeta);

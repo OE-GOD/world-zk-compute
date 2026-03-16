@@ -49,18 +49,17 @@ pub use client::Client;
 pub use event_watcher::{TEEEvent, TEEEventWatcher};
 pub use execution_engine::{ExecutionEngineClient, RequestStatus};
 pub use fixture::{DAGFixture, ProofData};
+pub use gas_estimation::{
+    estimate_batch_session, estimate_continue_gas, estimate_finalize_gas, estimate_input_groups,
+    estimate_start_gas, estimate_total_batches, estimate_total_cost_eth, estimate_total_cost_usd,
+    xgboost_reference_estimate, BatchGasEstimate, GasRange, RpcBatchGasEstimate, RpcGasEstimator,
+    GROUPS_PER_FINALIZE_BATCH, LAYERS_PER_BATCH,
+};
 pub use hash::{
     compute_input_hash, compute_input_hash_from_json, compute_model_hash,
     compute_model_hash_from_file, compute_result_hash, compute_result_hash_from_bytes,
 };
-pub use retry::{is_retryable, retry_with_backoff, RetryPolicy};
-pub use gas_estimation::{
-    estimate_batch_session, estimate_continue_gas, estimate_finalize_gas,
-    estimate_input_groups, estimate_start_gas, estimate_total_batches,
-    estimate_total_cost_eth, estimate_total_cost_usd, xgboost_reference_estimate,
-    BatchGasEstimate, GasRange, RpcBatchGasEstimate, RpcGasEstimator,
-    GROUPS_PER_FINALIZE_BATCH, LAYERS_PER_BATCH,
-};
 pub use prover_registry::ProverRegistryClient;
+pub use retry::{is_retryable, retry_with_backoff, RetryPolicy};
 pub use tee::TEEVerifier;
 pub use verifier::{BatchProgress, BatchSession, DAGVerifier};

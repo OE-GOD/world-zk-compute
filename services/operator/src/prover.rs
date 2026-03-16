@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
-use tokio::process::Command;
 use tokio::fs;
+use tokio::process::Command;
 
 /// Default connection timeout for prover HTTP requests (seconds).
 const DEFAULT_PROVER_CONNECT_TIMEOUT_SECS: u64 = 5;
@@ -193,9 +193,7 @@ impl ProofManager {
             }
 
             let result = match &self.mode {
-                ProverMode::Subprocess => {
-                    self.generate_proof_subprocess(result_id, features).await
-                }
+                ProverMode::Subprocess => self.generate_proof_subprocess(result_id, features).await,
                 ProverMode::Http { url } => {
                     self.generate_proof_http(url, result_id, features).await
                 }
@@ -216,8 +214,7 @@ impl ProofManager {
             }
         }
 
-        Err(last_error
-            .unwrap_or_else(|| anyhow::anyhow!("Proof generation failed after retries")))
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("Proof generation failed after retries")))
     }
 
     async fn generate_proof_subprocess(
@@ -722,10 +719,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let pm = make_test_pm(&dir);
 
-        let (mock_url, _h) = spawn_mock_server(
-            "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_string(),
-        )
-        .await;
+        let (mock_url, _h) =
+            spawn_mock_server("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_string()).await;
 
         let result = pm
             .generate_proof_http(&mock_url, "test-empty-body", "[1.0, 2.0]")
@@ -836,11 +831,7 @@ mod tests {
             .await;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("500"),
-            "Expected HTTP 500 error, got: {}",
-            err
-        );
+        assert!(err.contains("500"), "Expected HTTP 500 error, got: {}", err);
     }
 
     #[tokio::test]
@@ -996,7 +987,11 @@ mod tests {
             "Expected missing fields error, got: {}",
             err_msg
         );
-        assert!(err_msg.contains("circuit_hash"), "Should mention circuit_hash: {}", err_msg);
+        assert!(
+            err_msg.contains("circuit_hash"),
+            "Should mention circuit_hash: {}",
+            err_msg
+        );
     }
 
     #[tokio::test]

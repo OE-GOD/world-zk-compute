@@ -500,7 +500,12 @@ contract ProverReputation {
     }
 
     /// @notice Update tier based on score
-    function _updateTier(address prover, uint256 /* oldScore */) internal {
+    function _updateTier(
+        address prover,
+        uint256 /* oldScore */
+    )
+        internal
+    {
         Reputation storage rep = reputations[prover];
         uint8 oldTier = rep.tier;
         uint8 newTier = _calculateTier(rep.score);

@@ -61,7 +61,13 @@ async fn get_request(app: axum::Router, uri: &str) -> (StatusCode, Vec<u8>) {
         .unwrap();
     let resp = app.oneshot(req).await.unwrap();
     let status = resp.status();
-    let body = resp.into_body().collect().await.unwrap().to_bytes().to_vec();
+    let body = resp
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes()
+        .to_vec();
     (status, body)
 }
 
@@ -159,14 +165,8 @@ mod rest_stats {
         let s = make_storage();
         // 2 submitted, 1 challenged, 3 finalized, 1 resolved
         for i in 0..7u32 {
-            s.insert_result(
-                &format!("0x{:02x}", i),
-                "0xm",
-                "0xi",
-                "0xa",
-                i as u64,
-            )
-            .unwrap();
+            s.insert_result(&format!("0x{:02x}", i), "0xm", "0xi", "0xa", i as u64)
+                .unwrap();
         }
         s.update_result_status("0x02", "challenged", Some("0xc"))
             .unwrap();
@@ -202,8 +202,7 @@ mod rest_stats {
     #[tokio::test]
     async fn stats_via_versioned_api() {
         let s = seed_storage(3);
-        s.update_result_status("0x0001", "finalized", None)
-            .unwrap();
+        s.update_result_status("0x0001", "finalized", None).unwrap();
 
         let app = build_app(s, make_broadcaster());
         let (status, body) = get_request(app, "/api/v1/stats").await;
@@ -261,10 +260,8 @@ mod rest_results {
     #[tokio::test]
     async fn list_results_filter_by_status() {
         let s = seed_storage(4);
-        s.update_result_status("0x0001", "finalized", None)
-            .unwrap();
-        s.update_result_status("0x0003", "finalized", None)
-            .unwrap();
+        s.update_result_status("0x0001", "finalized", None).unwrap();
+        s.update_result_status("0x0003", "finalized", None).unwrap();
 
         let app = build_app(s, make_broadcaster());
         let (status, body) = get_request(app, "/results?status=finalized").await;
@@ -280,8 +277,7 @@ mod rest_results {
         let s = seed_storage(6);
         // seed_storage uses submitter_{i%2}, so submitter_0 for even, submitter_1 for odd
         let app = build_app(s, make_broadcaster());
-        let (status, body) =
-            get_request(app, "/results?submitter=0xaa00").await;
+        let (status, body) = get_request(app, "/results?submitter=0xaa00").await;
 
         assert_eq!(status, StatusCode::OK);
         let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
@@ -294,8 +290,7 @@ mod rest_results {
         let s = seed_storage(9);
         // model_{i%3} => model_0 at 0,3,6; model_1 at 1,4,7; model_2 at 2,5,8
         let app = build_app(s, make_broadcaster());
-        let (status, body) =
-            get_request(app, "/results?model_hash=0xmodel_2").await;
+        let (status, body) = get_request(app, "/results?model_hash=0xmodel_2").await;
 
         assert_eq!(status, StatusCode::OK);
         let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
@@ -345,11 +340,7 @@ mod rest_results {
         assert_eq!(page.data.len(), 2);
 
         // Filter: submitter=0xcc11 + status=finalized => only 0x01
-        let (status, body) = get_request(
-            app,
-            "/results?status=finalized&submitter=0xcc11",
-        )
-        .await;
+        let (status, body) = get_request(app, "/results?status=finalized&submitter=0xcc11").await;
         assert_eq!(status, StatusCode::OK);
         let page: PaginatedResponse<ResultRow> = serde_json::from_slice(&body).unwrap();
         assert_eq!(page.data.len(), 1);
@@ -384,7 +375,10 @@ mod rest_results {
 
         assert_eq!(status, StatusCode::NOT_FOUND);
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert!(v.get("error").is_some(), "404 response should have 'error' field");
+        assert!(
+            v.get("error").is_some(),
+            "404 response should have 'error' field"
+        );
     }
 
     #[tokio::test]
@@ -435,8 +429,7 @@ mod rest_results {
             .unwrap();
 
         let app = build_app(s, make_broadcaster());
-        let (status, body) =
-            get_request(app, "/api/v1/results/0xversioned").await;
+        let (status, body) = get_request(app, "/api/v1/results/0xversioned").await;
 
         assert_eq!(status, StatusCode::OK);
         let row: ResultRow = serde_json::from_slice(&body).unwrap();
@@ -447,8 +440,7 @@ mod rest_results {
     async fn versioned_api_not_found() {
         let s = make_storage();
         let app = build_app(s, make_broadcaster());
-        let (status, _) =
-            get_request(app, "/api/v1/results/missing").await;
+        let (status, _) = get_request(app, "/api/v1/results/missing").await;
 
         assert_eq!(status, StatusCode::NOT_FOUND);
     }
@@ -466,9 +458,7 @@ mod websocket_tests {
     use tokio_tungstenite::tungstenite::Message;
 
     /// Start the app on a random port and return (addr, broadcaster).
-    async fn start_server(
-        storage: Arc<dyn Storage>,
-    ) -> (SocketAddr, Arc<EventBroadcaster>) {
+    async fn start_server(storage: Arc<dyn Storage>) -> (SocketAddr, Arc<EventBroadcaster>) {
         let broadcaster = make_broadcaster();
         let app = build_app(storage, broadcaster.clone());
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -493,9 +483,7 @@ mod websocket_tests {
         let (addr, broadcaster) = start_server(s).await;
 
         let url = format!("ws://{}/ws/events", addr);
-        let (mut ws, _) = tokio_tungstenite::connect_async(&url)
-            .await
-            .unwrap();
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
         // Broadcast an event
         let event = WsEvent {
@@ -508,14 +496,11 @@ mod websocket_tests {
         broadcaster.broadcast(event.clone());
 
         // Read the event from the WebSocket
-        let msg = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            ws.next(),
-        )
-        .await
-        .expect("timeout waiting for ws message")
-        .expect("stream ended")
-        .expect("ws error");
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next())
+            .await
+            .expect("timeout waiting for ws message")
+            .expect("stream ended")
+            .expect("ws error");
 
         let text = extract_text(msg);
         let received: SequencedEvent = serde_json::from_str(&text).unwrap();
@@ -529,9 +514,7 @@ mod websocket_tests {
         let (addr, broadcaster) = start_server(s).await;
 
         let url = format!("ws://{}/ws/events", addr);
-        let (mut ws, _) = tokio_tungstenite::connect_async(&url)
-            .await
-            .unwrap();
+        let (mut ws, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
 
         // Subscribe to only ResultChallenged events
         let subscribe_msg = serde_json::json!({
@@ -559,14 +542,11 @@ mod websocket_tests {
         });
 
         // We should receive only the ResultChallenged event
-        let msg = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            ws.next(),
-        )
-        .await
-        .expect("timeout waiting for ws message")
-        .expect("stream ended")
-        .expect("ws error");
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next())
+            .await
+            .expect("timeout waiting for ws message")
+            .expect("stream ended")
+            .expect("ws error");
 
         let text = extract_text(msg);
         let received: SequencedEvent = serde_json::from_str(&text).unwrap();
@@ -590,14 +570,11 @@ mod websocket_tests {
         broadcaster.broadcast(event);
 
         for ws in [&mut ws1, &mut ws2] {
-            let msg = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                ws.next(),
-            )
-            .await
-            .expect("timeout")
-            .expect("stream ended")
-            .expect("ws error");
+            let msg = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next())
+                .await
+                .expect("timeout")
+                .expect("stream ended")
+                .expect("ws error");
 
             let text = extract_text(msg);
             let received: SequencedEvent = serde_json::from_str(&text).unwrap();
@@ -629,14 +606,11 @@ mod websocket_tests {
         }
 
         for expected in &event_types {
-            let msg = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                ws.next(),
-            )
-            .await
-            .expect("timeout")
-            .expect("stream ended")
-            .expect("ws error");
+            let msg = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next())
+                .await
+                .expect("timeout")
+                .expect("stream ended")
+                .expect("ws error");
 
             let text = extract_text(msg);
             let received: SequencedEvent = serde_json::from_str(&text).unwrap();
@@ -703,9 +677,7 @@ mod db_correctness {
     #[test]
     fn insert_duplicate_is_ignored() {
         let s = make_storage();
-        let n1 = s
-            .insert_result("dup-id", "0xm", "0xi", "0xs", 1)
-            .unwrap();
+        let n1 = s.insert_result("dup-id", "0xm", "0xi", "0xs", 1).unwrap();
         assert_eq!(n1, 1);
 
         let n2 = s
@@ -777,14 +749,8 @@ mod db_correctness {
         // If we insert more than 50, the default limit should cap it
         let s = make_storage();
         for i in 0..60 {
-            s.insert_result(
-                &format!("r{:04}", i),
-                "0xm",
-                "0xi",
-                "0xa",
-                i as u64,
-            )
-            .unwrap();
+            s.insert_result(&format!("r{:04}", i), "0xm", "0xi", "0xa", i as u64)
+                .unwrap();
         }
 
         let results = s
