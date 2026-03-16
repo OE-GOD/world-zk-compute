@@ -4128,6 +4128,7 @@ contract GKRDAGVerifierTest is Test {
     /// @notice Test unregistered circuit reverts
     function test_dag_unregistered_circuit_reverts() public {
         bytes32 fakeHash = keccak256("nonexistent");
+        // forge-lint: disable-next-line(unsafe-typecast)
         bytes memory fakeProof = abi.encodePacked(bytes4("REM1"), bytes32(0));
 
         vm.expectRevert(RemainderVerifier.CircuitNotRegistered.selector);
@@ -4165,6 +4166,7 @@ contract GKRDAGVerifierTest is Test {
         bytes memory descData = abi.encode(desc);
         verifier.registerDAGCircuit(circuitHash, descData, "xgboost-phase1a", gensHash);
 
+        // forge-lint: disable-next-line(unsafe-typecast)
         bytes memory badProof = abi.encodePacked(bytes4("FAKE"), bytes32(0));
 
         vm.expectRevert(RemainderVerifier.InvalidProofSelector.selector);
@@ -4969,6 +4971,7 @@ contract DAGBatchVerifierTest is Test {
 
     /// @notice Start with invalid proof selector reverts
     function test_dag_batch_invalid_selector_reverts() public {
+        // forge-lint: disable-next-line(unsafe-typecast)
         bytes memory badProof = abi.encodePacked(bytes4("FAKE"), bytes32(0));
         vm.expectRevert(RemainderVerifier.InvalidProofSelector.selector);
         verifier.startDAGBatchVerify(badProof, circuitHash, publicInputsHex, gensHex);

@@ -39,16 +39,12 @@ pub struct ConfigFile {
     pub expected_pcr0: Option<String>,
     pub attestation_cache_ttl: Option<u64>,
     pub attestation_freshness_secs: Option<u64>,
-    pub prover_url: Option<String>,
-    pub metrics_port: Option<u16>,
     pub max_proof_retries: Option<u32>,
     pub proof_retry_delay_secs: Option<u64>,
     /// Webhook URL for dispute notifications (optional).
     /// When set, the operator sends JSON payloads to this URL on
     /// challenge, proof submission, and dispute resolution events.
     pub webhook_url: Option<String>,
-    /// Generic retry: maximum number of attempts (overrides max_proof_retries if set).
-    pub retry_max_attempts: Option<u32>,
     /// Generic retry: base delay in milliseconds between retries.
     pub retry_base_delay_ms: Option<u64>,
     /// Generic retry: maximum delay in milliseconds (caps exponential backoff).
@@ -72,15 +68,6 @@ pub struct ConfigFile {
     /// Total request timeout for prover HTTP requests (seconds).
     /// Default: 300 (proof generation can take several minutes).
     pub prover_timeout_secs: Option<u64>,
-    /// Prover-specific retry: maximum number of retries (default: 3).
-    /// Env var: `PROVER_MAX_RETRIES`.
-    pub prover_max_retries: Option<u32>,
-    /// Prover-specific retry: base delay in seconds between retries (default: 5).
-    /// Env var: `PROVER_RETRY_DELAY_SECS`.
-    pub prover_retry_delay_secs: Option<u64>,
-    /// Prover-specific retry: maximum delay in seconds for exponential backoff cap (default: 300).
-    /// Env var: `PROVER_RETRY_MAX_DELAY_SECS`.
-    pub prover_retry_max_delay_secs: Option<u64>,
     /// Time in seconds before an unacknowledged critical alert is escalated.
     /// Default: 900 (15 minutes). A value of 0 means immediate escalation,
     /// which is almost certainly unintended.
@@ -126,14 +113,6 @@ pub struct Config {
     pub attestation_cache_ttl: u64,
     /// Maximum age in seconds for a valid attestation document (default: 600 = 10 min).
     pub attestation_freshness_secs: u64,
-    /// URL of the warm prover HTTP service (optional).
-    /// Not yet consumed by all code paths; kept for forward compatibility.
-    #[allow(dead_code)]
-    pub prover_url: Option<String>,
-    /// Port for the health/metrics HTTP server.
-    /// Available for use by callers; cmd_watch currently takes this via CLI arg.
-    #[allow(dead_code)]
-    pub metrics_port: u16,
     /// Maximum number of proof generation retries on failure (0 = no retries).
     pub max_proof_retries: u32,
     /// Base delay in seconds between proof generation retries (exponential backoff).
@@ -155,10 +134,6 @@ pub struct Config {
     pub retry_max_delay_ms: u64,
     /// Multi-model registry. Always contains at least one entry (the default model).
     pub models: Vec<ModelConfig>,
-    /// Dry-run mode: simulate the full flow without sending on-chain transactions.
-    /// Useful for testing operator configuration against a real chain without spending gas.
-    #[allow(dead_code)]
-    pub dry_run: bool,
     /// Path to the operator state file for crash recovery.
     /// The watcher persists its progress here after each poll cycle so that it
     /// can resume from the same block after a restart.
@@ -286,14 +261,6 @@ impl Config {
             );
         }
 
-        let prover_url = std::env::var("PROVER_URL").ok().or(file_cfg.prover_url);
-
-        let metrics_port = std::env::var("METRICS_PORT")
-            .ok()
-            .and_then(|v| v.parse::<u16>().ok())
-            .or(file_cfg.metrics_port)
-            .unwrap_or(9090);
-
         let max_proof_retries = std::env::var("MAX_PROOF_RETRIES")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
@@ -327,12 +294,6 @@ impl Config {
             .and_then(|v| v.parse::<u64>().ok())
             .or(file_cfg.retry_max_delay_ms)
             .unwrap_or(30000);
-
-        let dry_run = std::env::var("DRY_RUN")
-            .ok()
-            .and_then(|v| v.parse::<bool>().ok())
-            .or(file_cfg.dry_run)
-            .unwrap_or(false);
 
         let state_file = std::env::var("STATE_FILE")
             .ok()
@@ -425,8 +386,6 @@ impl Config {
             expected_pcr0,
             attestation_cache_ttl,
             attestation_freshness_secs,
-            prover_url,
-            metrics_port,
             max_proof_retries,
             proof_retry_delay_secs,
             webhook_url,
@@ -434,7 +393,6 @@ impl Config {
             retry_base_delay_ms,
             retry_max_delay_ms,
             models,
-            dry_run,
             state_file,
             contract_addresses,
             enclave_timeout_secs,
