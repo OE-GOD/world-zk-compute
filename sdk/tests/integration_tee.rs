@@ -111,9 +111,9 @@ sol! {
         function disputeProverWon(bytes32 resultId) external view returns (bool);
         function enclaves(address key) external view returns (bool registered, bool active, bytes32 enclaveImageHash, uint256 registeredAt);
 
-        // Constants
-        function CHALLENGE_WINDOW() external view returns (uint256);
-        function DISPUTE_WINDOW() external view returns (uint256);
+        // Storage getters (mutable state, not constants)
+        function challengeWindow() external view returns (uint256);
+        function disputeWindow() external view returns (uint256);
 
         // Constructor
         constructor(address _admin, address _remainderVerifier);
@@ -140,6 +140,9 @@ fn load_contract_bytecode() -> Bytes {
         .expect("bytecode.object not found in artifact");
     bytecode_hex.parse::<Bytes>().expect("invalid bytecode hex")
 }
+
+/// Anvil default chain ID.
+const ANVIL_CHAIN_ID: u64 = 31337;
 
 /// Anvil pre-funded private keys (from Anvil default accounts).
 const ADMIN_KEY: &str = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
@@ -235,24 +238,63 @@ impl TestContext {
     }
 }
 
+/// Compute the EIP-712 domain separator matching TEEMLVerifier's `_computeDomainSeparator()`.
+fn compute_domain_separator(chain_id: u64, verifying_contract: Address) -> B256 {
+    let eip712_domain_typehash = keccak256(
+        "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)",
+    );
+    let name_hash = keccak256("TEEMLVerifier");
+    let version_hash = keccak256("1");
+
+    // abi.encode(typehash, nameHash, versionHash, chainId, verifyingContract)
+    let encoded = (
+        eip712_domain_typehash,
+        name_hash,
+        version_hash,
+        U256::from(chain_id),
+        verifying_contract,
+    )
+        .abi_encode_params();
+    keccak256(&encoded)
+}
+
 /// Build an ECDSA attestation matching what TEEMLVerifier.submitResult expects.
+/// Uses EIP-712 structured data signing with the contract's domain separator.
 async fn build_attestation(
     enclave_key: &str,
     model_hash: B256,
     input_hash: B256,
     result: &[u8],
+    chain_id: u64,
+    verifying_contract: Address,
 ) -> Vec<u8> {
     let signer = parse_signer(enclave_key);
     let result_hash = keccak256(result);
-    let message = keccak256(
+
+    // RESULT_TYPEHASH = keccak256("TEEMLResult(bytes32 modelHash,bytes32 inputHash,bytes32 resultHash)")
+    let result_typehash =
+        keccak256("TEEMLResult(bytes32 modelHash,bytes32 inputHash,bytes32 resultHash)");
+
+    // structHash = keccak256(abi.encode(RESULT_TYPEHASH, modelHash, inputHash, resultHash))
+    let struct_hash = keccak256(
+        (result_typehash, model_hash, input_hash, result_hash).abi_encode_params(),
+    );
+
+    // domainSeparator
+    let domain_separator = compute_domain_separator(chain_id, verifying_contract);
+
+    // digest = keccak256("\x19\x01" || domainSeparator || structHash)
+    let digest = keccak256(
         [
-            model_hash.as_slice(),
-            input_hash.as_slice(),
-            result_hash.as_slice(),
+            b"\x19\x01".as_slice(),
+            domain_separator.as_slice(),
+            struct_hash.as_slice(),
         ]
         .concat(),
     );
-    let sig = signer.sign_message(message.as_slice()).await.unwrap();
+
+    // Sign the raw EIP-712 digest (no personal message prefix)
+    let sig = signer.sign_hash(&digest).await.unwrap();
     sig.as_bytes().to_vec()
 }
 
@@ -280,7 +322,9 @@ async fn setup_submitted_result(ctx: &TestContext) -> B256 {
     let model_hash = B256::from([0x01u8; 32]);
     let input_hash = B256::from([0x02u8; 32]);
     let result_data = b"test-result-data";
-    let attestation = build_attestation(USER_KEY, model_hash, input_hash, result_data).await;
+    let attestation = build_attestation(
+        USER_KEY, model_hash, input_hash, result_data, ANVIL_CHAIN_ID, ctx.contract_addr,
+    ).await;
     let stake = U256::from(100_000_000_000_000_000u128);
 
     let receipt = admin
@@ -334,10 +378,10 @@ async fn test_deploy_and_initial_state() {
     assert_eq!(bond, U256::from(100_000_000_000_000_000u128));
 
     // Challenge window = 1 hour, Dispute window = 24 hours
-    let cw = contract.CHALLENGE_WINDOW().call().await.unwrap();
+    let cw = contract.challengeWindow().call().await.unwrap();
     assert_eq!(cw, U256::from(3600u64));
 
-    let dw = contract.DISPUTE_WINDOW().call().await.unwrap();
+    let dw = contract.disputeWindow().call().await.unwrap();
     assert_eq!(dw, U256::from(86400u64));
 
     println!("test_deploy_and_initial_state PASSED");
@@ -410,7 +454,9 @@ async fn test_submit_result_with_stake() {
     let model_hash = B256::from([0x01u8; 32]);
     let input_hash = B256::from([0x02u8; 32]);
     let result_data = b"prediction:class_0";
-    let attestation = build_attestation(USER_KEY, model_hash, input_hash, result_data).await;
+    let attestation = build_attestation(
+        USER_KEY, model_hash, input_hash, result_data, ANVIL_CHAIN_ID, ctx.contract_addr,
+    ).await;
     let stake = U256::from(100_000_000_000_000_000u128);
 
     let receipt = admin
@@ -448,8 +494,9 @@ async fn test_submit_result_with_stake() {
     assert!(!valid);
 
     // Insufficient stake should revert (use .call() to check)
-    let attestation2 =
-        build_attestation(USER_KEY, B256::from([0x03u8; 32]), input_hash, result_data).await;
+    let attestation2 = build_attestation(
+        USER_KEY, B256::from([0x03u8; 32]), input_hash, result_data, ANVIL_CHAIN_ID, ctx.contract_addr,
+    ).await;
     let result = admin
         .submitResult(
             B256::from([0x03u8; 32]),
@@ -676,7 +723,9 @@ async fn test_pause_unpause_flow() {
     let model_hash = B256::from([0x70u8; 32]);
     let input_hash = B256::from([0x80u8; 32]);
     let result_data = b"pause-test";
-    let attestation = build_attestation(USER_KEY, model_hash, input_hash, result_data).await;
+    let attestation = build_attestation(
+        USER_KEY, model_hash, input_hash, result_data, ANVIL_CHAIN_ID, ctx.contract_addr,
+    ).await;
     let submit = admin
         .submitResult(
             model_hash,
@@ -822,7 +871,9 @@ async fn test_revoke_enclave() {
     let model_hash = B256::from([0x90u8; 32]);
     let input_hash = B256::from([0xA0u8; 32]);
     let result_data = b"revoked-test";
-    let attestation = build_attestation(USER_KEY, model_hash, input_hash, result_data).await;
+    let attestation = build_attestation(
+        USER_KEY, model_hash, input_hash, result_data, ANVIL_CHAIN_ID, ctx.contract_addr,
+    ).await;
     let submit = admin
         .submitResult(
             model_hash,

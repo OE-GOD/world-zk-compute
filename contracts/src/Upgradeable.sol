@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {IRiscZeroVerifier} from "risc0-ethereum/IRiscZeroVerifier.sol";
+import {IProgramRegistry} from "./IProgramRegistry.sol";
 
 /// @title ERC1967 Storage Slots
 /// @notice Standard storage slots for proxy contracts
@@ -266,6 +267,15 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
     /// @notice Maximum protocol fee in basis points (10%)
     uint256 private constant MAX_FEE_BPS = 1000;
 
+    /// @notice Default expiration time for requests when none specified
+    uint256 public constant DEFAULT_EXPIRATION = 1 hours;
+
+    /// @notice Maximum allowed expiration duration (30 days)
+    uint256 public constant MAX_EXPIRATION = 30 days;
+
+    /// @notice Minimum allowed expiration duration (1 minute)
+    uint256 public constant MIN_EXPIRATION = 1 minutes;
+
     // ========================================================================
     // STORAGE (must maintain layout across upgrades!)
     // ========================================================================
@@ -343,6 +353,11 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
     error ReentrancyGuardReentrantCall();
     error TransferFailed();
     error FeeTooHigh();
+    error ZeroImageId();
+    error ProgramNotActive();
+    error ExpirationTooLong();
+    error ExpirationTooShort();
+    error ExpirationOverflow();
 
     // ========================================================================
     // MODIFIERS
@@ -424,7 +439,14 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
         uint256 expirationSeconds,
         uint8 inputType
     ) external payable returns (uint256 requestId) {
+        if (imageId == bytes32(0)) revert ZeroImageId();
         require(msg.value >= 0.0001 ether, "Insufficient tip");
+        if (!IProgramRegistry(registry).isProgramActive(imageId)) revert ProgramNotActive();
+
+        uint256 expiration = expirationSeconds > 0 ? expirationSeconds : DEFAULT_EXPIRATION;
+        if (expiration > MAX_EXPIRATION) revert ExpirationTooLong();
+        if (expiration < MIN_EXPIRATION) revert ExpirationTooShort();
+        if (block.timestamp + expiration > type(uint48).max) revert ExpirationOverflow();
 
         requestId = nextRequestId++;
 
@@ -435,7 +457,7 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
             requester: msg.sender,
             createdAt: uint48(block.timestamp),
             // forge-lint: disable-next-line(unsafe-typecast)
-            expiresAt: uint48(block.timestamp + (expirationSeconds > 0 ? expirationSeconds : 1 hours)),
+            expiresAt: uint48(block.timestamp + expiration),
             callbackContract: callbackContract,
             status: 0, // Pending
             claimedBy: address(0),
@@ -454,7 +476,14 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
         address callbackContract,
         uint256 expirationSeconds
     ) external payable returns (uint256 requestId) {
+        if (imageId == bytes32(0)) revert ZeroImageId();
         require(msg.value >= 0.0001 ether, "Insufficient tip");
+        if (!IProgramRegistry(registry).isProgramActive(imageId)) revert ProgramNotActive();
+
+        uint256 expiration = expirationSeconds > 0 ? expirationSeconds : DEFAULT_EXPIRATION;
+        if (expiration > MAX_EXPIRATION) revert ExpirationTooLong();
+        if (expiration < MIN_EXPIRATION) revert ExpirationTooShort();
+        if (block.timestamp + expiration > type(uint48).max) revert ExpirationOverflow();
 
         requestId = nextRequestId++;
 
@@ -465,7 +494,7 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
             requester: msg.sender,
             createdAt: uint48(block.timestamp),
             // forge-lint: disable-next-line(unsafe-typecast)
-            expiresAt: uint48(block.timestamp + (expirationSeconds > 0 ? expirationSeconds : 1 hours)),
+            expiresAt: uint48(block.timestamp + expiration),
             callbackContract: callbackContract,
             status: 0, // Pending
             claimedBy: address(0),

@@ -65,7 +65,7 @@ RUN apt-get update && apt-get install -y \
 RUN curl -L https://risczero.com/install | bash \
     && /root/.risc0/bin/rzup install r0vm 3.0.5 \
     || true
-ENV PATH="/root/.risc0/bin:${PATH}"
+RUN cp /root/.risc0/bin/r0vm /usr/local/bin/r0vm && chmod +x /usr/local/bin/r0vm
 
 # Create non-root user
 RUN useradd -m -u 1000 prover
