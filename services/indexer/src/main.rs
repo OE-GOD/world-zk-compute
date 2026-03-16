@@ -929,7 +929,7 @@ async fn main() -> anyhow::Result<()> {
                                     "poll error (failures: {}): {}; next retry in {:?}",
                                     consecutive_failures, e, next_sleep
                                 );
-                            } else if consecutive_failures % 5 == 0 {
+                            } else if consecutive_failures.is_multiple_of(5) {
                                 // Circuit open — log every 5th failure to reduce noise
                                 error!(
                                     consecutive_failures = consecutive_failures,

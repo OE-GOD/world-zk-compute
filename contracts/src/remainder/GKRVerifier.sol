@@ -15,6 +15,24 @@ import {CommittedSumcheckVerifier} from "./CommittedSumcheckVerifier.sol";
 ///   3. At the input layer, verify against Hyrax commitments
 library GKRVerifier {
     // ========================================================================
+    // ERRORS
+    // ========================================================================
+
+    error WrongNumberOfLayerProofs();
+    error NoOutputClaimCommitments();
+    error CommittedSumcheckFailed();
+    error ProofOfProductFailed();
+    error NoCommitments();
+    error SubtractNeedsTwoCommitments();
+    error NotEnoughCommitmentsForPoP();
+    error NoCommitmentsForClaim();
+    error NoBindingsForReferencingLayer();
+    error CommittedInputVerificationFailed();
+    error PublicInputCommitmentMismatch();
+    error Log2OfZero();
+    error DataTooLargeForPoint();
+
+    // ========================================================================
     // CONSTANTS
     // ========================================================================
 
@@ -67,13 +85,13 @@ library GKRVerifier {
         HyraxVerifier.PedersenGens memory gens,
         PoseidonSponge.Sponge memory sponge
     ) internal view returns (bool) {
-        require(proof.layerProofs.length == circuit.numLayers - 1, "GKRVerifier: wrong number of layer proofs");
+        if (proof.layerProofs.length != circuit.numLayers - 1) revert WrongNumberOfLayerProofs();
 
         // Step 1: Squeeze output challenge — becomes claim_point for first layer
         uint256 outputChallenge = PoseidonSponge.squeeze(sponge) % FR_MODULUS;
 
         // Use the prover's Pedersen commitment to the output claim (includes blinding factor).
-        require(proof.outputClaimCommitments.length > 0, "GKRVerifier: no output claim commitments");
+        if (proof.outputClaimCommitments.length == 0) revert NoOutputClaimCommitments();
         HyraxVerifier.G1Point memory currentClaimCommitment = proof.outputClaimCommitments[0];
 
         // Absorb claim commitment and squeeze claim aggregation coefficient
@@ -158,10 +176,10 @@ library GKRVerifier {
 
         bool scValid =
             CommittedSumcheckVerifier.verify(layerProof.sumcheckProof, oracleEval, degree, bindings, gens, sponge);
-        require(scValid, "GKRVerifier: committed sumcheck failed");
+        if (!scValid) revert CommittedSumcheckFailed();
 
         // Verify ProofOfProduct
-        require(_verifyProducts(layerProof, gens, sponge), "GKRVerifier: PoP failed");
+        if (!_verifyProducts(layerProof, gens, sponge)) revert ProofOfProductFailed();
 
         // Extract claim for next layer
         nextClaim = _extractClaimCommitment(layerProof.commitments);
@@ -231,7 +249,7 @@ library GKRVerifier {
         view
         returns (HyraxVerifier.G1Point memory)
     {
-        require(commitments.length > 0, "GKRVerifier: no commitments");
+        if (commitments.length == 0) revert NoCommitments();
 
         if (layerType == 1) {
             // Multiply gate: result = last commitment (final Composite), scaled by rlcBeta
@@ -239,7 +257,7 @@ library GKRVerifier {
         } else {
             // Add/subtract gate: 2 products with coefficients [rlcBeta, -rlcBeta]
             // oracle_eval = rlcBeta * commitment[0] - rlcBeta * commitment[1]
-            require(commitments.length >= 2, "GKRVerifier: subtract needs 2 commitments");
+            if (commitments.length < 2) revert SubtractNeedsTwoCommitments();
             HyraxVerifier.G1Point memory pos = HyraxVerifier.scalarMul(commitments[0], rlcBeta);
             HyraxVerifier.G1Point memory neg = HyraxVerifier.scalarMul(commitments[1], FR_MODULUS - rlcBeta);
             return HyraxVerifier.ecAdd(pos, neg);
@@ -265,7 +283,7 @@ library GKRVerifier {
         // windows(3) yields triples: (com[i], com[i+1], com[i+2])
         uint256 commitIdx = 0;
         for (uint256 i = 0; i < layerProof.pops.length; i++) {
-            require(commitIdx + 2 < layerProof.commitments.length, "GKRVerifier: not enough commitments for PoP");
+            if (commitIdx + 2 >= layerProof.commitments.length) revert NotEnoughCommitmentsForPoP();
 
             bool popValid = HyraxVerifier.verifyProofOfProduct(
                 layerProof.pops[i],
@@ -289,7 +307,7 @@ library GKRVerifier {
         pure
         returns (HyraxVerifier.G1Point memory)
     {
-        require(commitments.length > 0, "GKRVerifier: no commitments for claim");
+        if (commitments.length == 0) revert NoCommitmentsForClaim();
         return commitments[0];
     }
 
@@ -320,20 +338,18 @@ library GKRVerifier {
             if (circuit.isCommitted[i]) {
                 // For committed input: derive claim points from the multiply layer that references it
                 // The multiply layer (layer i+1) creates claims at points based on shred offsets
-                require(
-                    i + 1 < circuit.numLayers && allBindings[i + 1].length > 0,
-                    "GKRVerifier: no bindings for referencing layer"
-                );
+                if (i + 1 >= circuit.numLayers || allBindings[i + 1].length == 0) {
+                    revert NoBindingsForReferencingLayer();
+                }
                 uint256[] memory mulBindings = allBindings[i + 1];
 
                 // Build claim points: for a 2-shred input (a, b), the multiply layer
                 // creates 2 claims at points (0, r) and (1, r) where r = multiply binding
                 uint256[][] memory claimPoints = _deriveInputClaimPoints(mulBindings, circuit.layerSizes[i]);
 
-                require(
-                    _verifyCommittedInputMultiClaim(proof.inputProofs[hyraxProofIdx], claimPoints, sponge, gens),
-                    "GKRVerifier: committed input verification failed"
-                );
+                if (!_verifyCommittedInputMultiClaim(proof.inputProofs[hyraxProofIdx], claimPoints, sponge, gens)) {
+                    revert CommittedInputVerificationFailed();
+                }
                 hyraxProofIdx++;
             } else {
                 // Public input: claim point = bindings from the layer that references it
@@ -341,10 +357,9 @@ library GKRVerifier {
                 uint256[] memory pubBindings = _findReferringBindings(i, circuit, allBindings);
                 uint256 mleEval = evaluateMLEFromData(publicInputs, pubBindings);
                 HyraxVerifier.G1Point memory expectedCom = HyraxVerifier.scalarMul(gens.scalarGen, mleEval);
-                require(
-                    HyraxVerifier.isEqual(expectedCom, currentClaimCommitment),
-                    "GKRVerifier: public input commitment mismatch"
-                );
+                if (!HyraxVerifier.isEqual(expectedCom, currentClaimCommitment)) {
+                    revert PublicInputCommitmentMismatch();
+                }
             }
         }
 
@@ -523,7 +538,7 @@ library GKRVerifier {
 
     /// @notice Compute floor(log2(x)) for x > 0
     function _log2(uint256 x) private pure returns (uint256 result) {
-        require(x > 0, "GKRVerifier: log2(0)");
+        if (x == 0) revert Log2OfZero();
         result = 0;
         uint256 v = x;
         while (v > 1) {
@@ -540,7 +555,7 @@ library GKRVerifier {
     /// @dev MLE(x) = sum_{w in {0,1}^n} data[w] * prod_{i} (x_i * w_i + (1-x_i) * (1-w_i))
     function evaluateMLEFromData(uint256[] memory data, uint256[] memory point) internal pure returns (uint256) {
         uint256 n = point.length;
-        require(data.length <= (uint256(1) << n), "GKRVerifier: data too large for point");
+        if (data.length > (uint256(1) << n)) revert DataTooLargeForPoint();
 
         uint256 result = 0;
 

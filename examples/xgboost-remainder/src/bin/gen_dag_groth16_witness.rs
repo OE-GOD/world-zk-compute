@@ -51,11 +51,11 @@ fn fr_to_hex(val: &Fr) -> String {
 }
 
 fn parse_point_from_json(val: &serde_json::Value) -> Bn256Point {
-    serde_json::from_value(val.clone()).unwrap()
+    serde_json::from_value(val.clone()).expect("failed to parse EC point from proof JSON")
 }
 
 fn parse_fr_from_json(val: &serde_json::Value) -> Fr {
-    serde_json::from_value(val.clone()).unwrap()
+    serde_json::from_value(val.clone()).expect("failed to parse Fr field element from proof JSON")
 }
 
 fn compute_beta_fr(bindings: &[Fr], claim_point: &[Fr]) -> Fr {
@@ -180,9 +180,13 @@ fn resolve_point_template(
 
 fn parse_template_entry(entry: &str) -> u64 {
     if let Some(rest) = entry.strip_prefix('B') {
-        rest.parse::<u64>().unwrap()
+        rest.parse::<u64>()
+            .unwrap_or_else(|e| panic!("invalid binding index in template entry '{}': {}", entry, e))
     } else if let Some(rest) = entry.strip_prefix('F') {
-        20000 + rest.parse::<u64>().unwrap()
+        20000
+            + rest.parse::<u64>().unwrap_or_else(|e| {
+                panic!("invalid fixed index in template entry '{}': {}", entry, e)
+            })
     } else {
         panic!("Unknown template entry: {}", entry);
     }
@@ -307,7 +311,9 @@ fn main() -> Result<()> {
     let config = GKRCircuitProverConfig::hyrax_compatible_runtime_optimized_default();
     let verifier_config = GKRCircuitVerifierConfig::new_from_prover_config(&config, false);
 
-    let mut provable = prover_circuit.gen_hyrax_provable_circuit().unwrap();
+    let mut provable = prover_circuit
+        .gen_hyrax_provable_circuit()
+        .expect("failed to generate Hyrax provable circuit from DAG builder");
     let committer = PedersenCommitter::new(512, "xgboost-remainder Pedersen committer", None);
     let mut rng = thread_rng();
     let mut vander = VandermondeInverse::new();
@@ -335,7 +341,9 @@ fn main() -> Result<()> {
     eprintln!("Public input values: {} elements", pub_values.len());
 
     // Verify proof
-    let verifiable = verifier_circuit.gen_hyrax_verifiable_circuit().unwrap();
+    let verifiable = verifier_circuit
+        .gen_hyrax_verifiable_circuit()
+        .expect("failed to generate Hyrax verifiable circuit");
     let verifier_committer =
         PedersenCommitter::new(512, "xgboost-remainder Pedersen committer", None);
     let mut verifier_transcript: ECTranscript<Bn256Point, PoseidonSponge<Fq>> =
@@ -393,7 +401,11 @@ fn main() -> Result<()> {
         proof.public_inputs.iter().for_each(|(_, mle)| {
             t.append_input_scalar_field_elems(
                 "Public input layer values",
-                &mle.as_ref().unwrap().f.iter().collect::<Vec<_>>(),
+                &mle.as_ref()
+                    .expect("public input MLE must be present in proof")
+                    .f
+                    .iter()
+                    .collect::<Vec<_>>(),
             );
         });
         proof.hyrax_input_proofs.iter().for_each(|ip| {
@@ -431,7 +443,11 @@ fn main() -> Result<()> {
             proof.public_inputs.iter().for_each(|(_, mle)| {
                 t2.append_input_scalar_field_elems(
                     "Public input layer values",
-                    &mle.as_ref().unwrap().f.iter().collect::<Vec<_>>(),
+                    &mle.as_ref()
+                        .expect("public input MLE must be present in proof")
+                        .f
+                        .iter()
+                        .collect::<Vec<_>>(),
                 );
             });
             proof.hyrax_input_proofs.iter().for_each(|ip| {
@@ -474,7 +490,7 @@ fn main() -> Result<()> {
             .intermediate_layers
             .iter()
             .find(|ld| ld.layer_id() == *layer_id)
-            .unwrap();
+            .unwrap_or_else(|| panic!("layer {:?} not found in circuit description", layer_id));
         let layer_claims_vec = claim_tracker.remove(layer_id).unwrap_or_default();
         let num_rounds = layer_desc.sumcheck_round_indices().len();
         let degree = layer_desc.max_degree();
@@ -541,12 +557,13 @@ fn main() -> Result<()> {
             new_with_values(&psl_desc, &layer_proof.commitments);
 
         // PODP — extract private fields via JSON serialization
-        let podp_json = serde_json::to_value(&layer_proof.proof_of_sumcheck.podp).unwrap();
+        let podp_json = serde_json::to_value(&layer_proof.proof_of_sumcheck.podp)
+            .expect("failed to serialize PODP proof to JSON");
         let podp_commit_d: Bn256Point = parse_point_from_json(&podp_json["commit_d"]);
         let podp_commit_d_dot_a: Bn256Point = parse_point_from_json(&podp_json["commit_d_dot_a"]);
         let podp_z_vector: Vec<Fr> = podp_json["z_vector"]
             .as_array()
-            .unwrap()
+            .expect("PODP z_vector must be a JSON array")
             .iter()
             .map(parse_fr_from_json)
             .collect();
@@ -746,7 +763,8 @@ fn main() -> Result<()> {
             );
 
             // Process each group
-            let input_eval_json = serde_json::to_value(&input_proof.evaluation_proofs).unwrap();
+            let input_eval_json = serde_json::to_value(&input_proof.evaluation_proofs)
+                .expect("failed to serialize input evaluation proofs to JSON");
 
             for (g, group) in groups.iter().enumerate() {
                 // Squeeze RLC coefficients
@@ -765,7 +783,7 @@ fn main() -> Result<()> {
                     parse_point_from_json(&podp_json["commit_d_dot_a"]);
                 let z_vector: Vec<Fr> = podp_json["z_vector"]
                     .as_array()
-                    .unwrap()
+                    .expect("input PODP z_vector must be a JSON array")
                     .iter()
                     .map(parse_fr_from_json)
                     .collect();
@@ -926,13 +944,13 @@ fn main() -> Result<()> {
         let mut repr = <Fr as PrimeField>::Repr::default();
         repr.as_mut()
             .copy_from_slice(hash_elems[0].to_repr().as_ref());
-        Fr::from_repr(repr).unwrap()
+        Fr::from_repr(repr).expect("circuit hash element 0 must be a valid Fr field element")
     };
     let circuit_hash_1_fr = {
         let mut repr = <Fr as PrimeField>::Repr::default();
         repr.as_mut()
             .copy_from_slice(hash_elems[1].to_repr().as_ref());
-        Fr::from_repr(repr).unwrap()
+        Fr::from_repr(repr).expect("circuit hash element 1 must be a valid Fr field element")
     };
 
     let abi_bytes = abi_encode::encode_hyrax_proof(&proof, &circuit_hash)?;
@@ -976,7 +994,7 @@ fn main() -> Result<()> {
                 .intermediate_layers
                 .iter()
                 .find(|l| l.layer_id() == *layer_id)
-                .unwrap();
+                .unwrap_or_else(|| panic!("layer {:?} not found in circuit description", layer_id));
             if ld.max_degree() == 3 {
                 1
             } else {
@@ -993,7 +1011,7 @@ fn main() -> Result<()> {
                 .intermediate_layers
                 .iter()
                 .find(|l| l.layer_id() == *layer_id)
-                .unwrap();
+                .unwrap_or_else(|| panic!("layer {:?} not found in circuit description", layer_id));
             ld.sumcheck_round_indices().len()
         })
         .collect();
@@ -1131,7 +1149,7 @@ fn main() -> Result<()> {
                 .intermediate_layers
                 .iter()
                 .find(|l| l.layer_id() == *layer_id)
-                .unwrap();
+                .unwrap_or_else(|| panic!("layer {:?} not found in circuit description", layer_id));
             json!({
                 "proof_idx": idx,
                 "layer_type": if ld.max_degree() == 3 { 1 } else { 0 },

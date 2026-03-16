@@ -184,7 +184,7 @@ pub async fn rate_limit_middleware(
                     Response::builder()
                         .status(StatusCode::TOO_MANY_REQUESTS)
                         .body(Body::empty())
-                        .unwrap()
+                        .expect("building a simple response with no headers should never fail")
                 })
         }
     }

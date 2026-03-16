@@ -63,12 +63,12 @@ fn fr_to_hex(val: &Fr) -> String {
 
 /// Parse a Bn256Point from its serde JSON representation (compressed hex)
 fn parse_point_from_json(val: &serde_json::Value) -> Bn256Point {
-    serde_json::from_value(val.clone()).unwrap()
+    serde_json::from_value(val.clone()).expect("failed to parse EC point from proof JSON")
 }
 
 /// Parse an Fr scalar from its serde JSON representation (LE hex string)
 fn parse_fr_from_json(val: &serde_json::Value) -> Fr {
-    serde_json::from_value(val.clone()).unwrap()
+    serde_json::from_value(val.clone()).expect("failed to parse Fr field element from proof JSON")
 }
 
 /// Compute beta(r, c) = prod_i (r_i * c_i + (1 - r_i) * (1 - c_i)) over Fr
@@ -317,7 +317,11 @@ fn main() -> Result<()> {
         proof.public_inputs.iter().for_each(|(_, mle)| {
             t.append_input_scalar_field_elems(
                 "Public input layer values",
-                &mle.as_ref().unwrap().f.iter().collect::<Vec<_>>(),
+                &mle.as_ref()
+                    .expect("public input MLE must be present in proof")
+                    .f
+                    .iter()
+                    .collect::<Vec<_>>(),
             );
         });
         proof.hyrax_input_proofs.iter().for_each(|ip| {
@@ -368,8 +372,15 @@ fn main() -> Result<()> {
             .intermediate_layers
             .iter()
             .find(|ld| ld.layer_id() == *_layer_id)
-            .unwrap();
-        let layer_claims_vec = claim_tracker.remove(&layer_desc.layer_id()).unwrap();
+            .unwrap_or_else(|| panic!("layer {:?} not found in circuit description", _layer_id));
+        let layer_claims_vec = claim_tracker
+            .remove(&layer_desc.layer_id())
+            .unwrap_or_else(|| {
+                panic!(
+                    "no claims found for layer {:?} in claim tracker",
+                    layer_desc.layer_id()
+                )
+            });
 
         // RLC coefficients (from transcript squeeze)
         let random_coefficients = match global_claim_agg_strategy() {
@@ -440,12 +451,13 @@ fn main() -> Result<()> {
             new_with_values(&psl_desc, &layer_proof.commitments);
 
         // PODP — extract private fields via JSON serialization
-        let podp_json = serde_json::to_value(&layer_proof.proof_of_sumcheck.podp).unwrap();
+        let podp_json = serde_json::to_value(&layer_proof.proof_of_sumcheck.podp)
+            .expect("failed to serialize PODP proof to JSON");
         let podp_commit_d: Bn256Point = parse_point_from_json(&podp_json["commit_d"]);
         let podp_commit_d_dot_a: Bn256Point = parse_point_from_json(&podp_json["commit_d_dot_a"]);
         let podp_z_vector: Vec<Fr> = podp_json["z_vector"]
             .as_array()
-            .unwrap()
+            .expect("PODP z_vector must be a JSON array")
             .iter()
             .map(parse_fr_from_json)
             .collect();
@@ -548,14 +560,15 @@ fn main() -> Result<()> {
     t.append_ec_point("Commitment to evaluation", com_eval);
 
     // Input PODP — extract private fields via JSON
-    let input_eval_json = serde_json::to_value(&input_proof.evaluation_proofs[0]).unwrap();
+    let input_eval_json = serde_json::to_value(&input_proof.evaluation_proofs[0])
+        .expect("failed to serialize input evaluation proof to JSON");
     let input_podp_json = &input_eval_json["podp_evaluation_proof"];
     let input_podp_commit_d: Bn256Point = parse_point_from_json(&input_podp_json["commit_d"]);
     let input_podp_commit_d_dot_a: Bn256Point =
         parse_point_from_json(&input_podp_json["commit_d_dot_a"]);
     let input_podp_z_vector: Vec<Fr> = input_podp_json["z_vector"]
         .as_array()
-        .unwrap()
+        .expect("input PODP z_vector must be a JSON array")
         .iter()
         .map(parse_fr_from_json)
         .collect();
@@ -603,7 +616,11 @@ fn main() -> Result<()> {
             proof.public_inputs.iter().for_each(|(_, mle)| {
                 t2.append_input_scalar_field_elems(
                     "Public input layer values",
-                    &mle.as_ref().unwrap().f.iter().collect::<Vec<_>>(),
+                    &mle.as_ref()
+                        .expect("public input MLE must be present in proof")
+                        .f
+                        .iter()
+                        .collect::<Vec<_>>(),
                 );
             });
             proof.hyrax_input_proofs.iter().for_each(|ip| {
@@ -791,13 +808,13 @@ fn main() -> Result<()> {
         let mut repr = <Fr as PrimeField>::Repr::default();
         repr.as_mut()
             .copy_from_slice(hash_elems[0].to_repr().as_ref());
-        Fr::from_repr(repr).unwrap()
+        Fr::from_repr(repr).expect("circuit hash element 0 must be a valid Fr field element")
     };
     let circuit_hash_1_fr = {
         let mut repr = <Fr as PrimeField>::Repr::default();
         repr.as_mut()
             .copy_from_slice(hash_elems[1].to_repr().as_ref());
-        Fr::from_repr(repr).unwrap()
+        Fr::from_repr(repr).expect("circuit hash element 1 must be a valid Fr field element")
     };
     let circuit_hash_0 = fr_to_hex(&circuit_hash_0_fr);
     let circuit_hash_1 = fr_to_hex(&circuit_hash_1_fr);

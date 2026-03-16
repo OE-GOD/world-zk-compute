@@ -83,8 +83,10 @@ fn sha256_hash_chain(elems: &[Fq]) -> (Fq, Fq) {
     first_half[..16].copy_from_slice(&hash_result[..16]);
     second_half[..16].copy_from_slice(&hash_result[16..]);
 
-    let fq1 = Fq::from_repr(first_half).unwrap();
-    let fq2 = Fq::from_repr(second_half).unwrap();
+    let fq1 = Fq::from_repr(first_half)
+        .expect("first 16 bytes of circuit hash must be a valid Fq field element");
+    let fq2 = Fq::from_repr(second_half)
+        .expect("second 16 bytes of circuit hash must be a valid Fq field element");
     (fq1, fq2)
 }
 
@@ -178,7 +180,7 @@ fn main() -> Result<()> {
         for i in 0..16 {
             le[i] = be_bytes[15 - i];
         }
-        Fq::from_repr(le).unwrap()
+        Fq::from_repr(le).expect("constant circuit hash hex must produce a valid Fq element")
     };
     // Circuit desc hash 2: 0x000000000000000000000000000000005daa4b26c457652c4f9715758acff1bc
     let circuit_hash_2 = {
@@ -188,7 +190,7 @@ fn main() -> Result<()> {
         for i in 0..16 {
             le[i] = be_bytes[15 - i];
         }
-        Fq::from_repr(le).unwrap()
+        Fq::from_repr(le).expect("constant circuit hash hex must produce a valid Fq element")
     };
 
     // Verify our parsed values match the debug output
@@ -218,7 +220,8 @@ fn main() -> Result<()> {
         .flat_map(|ip| {
             ip.input_commitment.iter().map(|pt| {
                 use shared_types::curves::PrimeOrderCurve;
-                pt.affine_coordinates().unwrap()
+                pt.affine_coordinates()
+                    .expect("EC point must have valid affine coordinates")
             })
         })
         .collect();
@@ -319,17 +322,24 @@ fn main() -> Result<()> {
         eprintln!("  y: {}", fq_to_hex(&cy));
 
         // Also check what serde_json produces (compressed hex)
-        let json_val = serde_json::to_value(olp.claim_commitment).unwrap();
-        let hex_str = json_val.as_str().unwrap();
+        let json_val = serde_json::to_value(olp.claim_commitment)
+            .expect("failed to serialize claim commitment to JSON");
+        let hex_str = json_val
+            .as_str()
+            .expect("serialized EC point must be a JSON string");
         eprintln!("  compressed hex: {}", hex_str);
         eprintln!(
             "  compressed len: {} bytes",
-            hex::decode(hex_str).unwrap().len()
+            hex::decode(hex_str)
+                .expect("compressed hex must be valid hex")
+                .len()
         );
 
         // Decompress and compare
-        let compressed_bytes = hex::decode(hex_str).unwrap();
-        let (x_be, y_be) = abi_encode::decompress_point(&compressed_bytes).unwrap();
+        let compressed_bytes =
+            hex::decode(hex_str).expect("compressed hex must be valid hex");
+        let (x_be, y_be) = abi_encode::decompress_point(&compressed_bytes)
+            .expect("failed to decompress EC point");
         let decompressed_x_hex = format!("0x{}", hex::encode(x_be));
         let decompressed_y_hex = format!("0x{}", hex::encode(y_be));
         eprintln!("  decompressed x: {}", decompressed_x_hex);
@@ -365,14 +375,20 @@ fn main() -> Result<()> {
     let proof_json = serde_json::to_value(&proof)?;
     let layer_proofs_json = proof_json["circuit_proof"]["layer_proofs"]
         .as_array()
-        .unwrap();
+        .expect("layer_proofs must be a JSON array");
     let mut layer_debug_info: Vec<serde_json::Value> = Vec::new();
     for (i, lp_entry) in layer_proofs_json.iter().enumerate() {
-        let lp_arr = lp_entry.as_array().unwrap();
+        let lp_arr = lp_entry
+            .as_array()
+            .expect("each layer proof entry must be a JSON array");
         let layer_id = &lp_arr[0];
         let lp = &lp_arr[1];
-        let commitments = lp["commitments"].as_array().unwrap();
-        let pops = lp["proofs_of_product"].as_array().unwrap();
+        let commitments = lp["commitments"]
+            .as_array()
+            .expect("commitments must be a JSON array");
+        let pops = lp["proofs_of_product"]
+            .as_array()
+            .expect("proofs_of_product must be a JSON array");
         let agg = &lp["maybe_proof_of_claim_agg"];
         eprintln!("\n  Layer proof {} (id={}):", i, layer_id);
         eprintln!("    commitments: {}", commitments.len());
@@ -411,7 +427,11 @@ fn main() -> Result<()> {
         proof.public_inputs.iter().for_each(|(_, mle)| {
             custom_transcript.append_input_scalar_field_elems(
                 "Public input layer values",
-                &mle.as_ref().unwrap().f.iter().collect::<Vec<_>>(),
+                &mle.as_ref()
+                    .expect("public input MLE must be present in proof")
+                    .f
+                    .iter()
+                    .collect::<Vec<_>>(),
             );
         });
         proof.hyrax_input_proofs.iter().for_each(|ip| {
@@ -448,9 +468,16 @@ fn main() -> Result<()> {
             .intermediate_layers
             .iter()
             .find(|ld| ld.layer_id() == *layer_id)
-            .unwrap();
+            .unwrap_or_else(|| panic!("layer {:?} not found in circuit description", layer_id));
 
-        let layer_claims_vec = claim_tracker.remove(&layer_desc.layer_id()).unwrap();
+        let layer_claims_vec = claim_tracker
+            .remove(&layer_desc.layer_id())
+            .unwrap_or_else(|| {
+                panic!(
+                    "no claims found for layer {:?} in claim tracker",
+                    layer_desc.layer_id()
+                )
+            });
 
         eprintln!("\n=== Layer {:?} verification intermediates ===", layer_id);
         eprintln!("  num_claims: {}", layer_claims_vec.len());

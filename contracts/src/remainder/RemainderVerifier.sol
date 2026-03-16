@@ -158,6 +158,7 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
     error BatchUnauthorized();
     error BatchAlreadyFinalized();
     error BatchComputeNotDone();
+    error BatchAllComputeDone();
     error BatchNotFinalized();
     error BatchPublicClaimCommitmentMismatch();
     error BatchPedersenOpeningInvalid();
@@ -1905,7 +1906,7 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
         if (session.circuitHash == bytes32(0)) revert BatchSessionNotFound();
         if (session.verifier != msg.sender) revert BatchUnauthorized();
         if (session.finalized) revert BatchAlreadyFinalized();
-        if (session.nextBatchIdx >= session.totalBatches) revert BatchComputeNotDone();
+        if (session.nextBatchIdx >= session.totalBatches) revert BatchAllComputeDone();
 
         if (proof.length < 4) revert InvalidProofLength();
         // forge-lint: disable-next-line(unsafe-typecast)

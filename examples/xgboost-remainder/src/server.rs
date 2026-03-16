@@ -70,7 +70,11 @@ impl RateLimiter {
             return true; // unlimited
         }
 
-        let mut clients = self.clients.lock().unwrap();
+        let mut clients = self.clients.lock().unwrap_or_else(|poisoned| {
+            // Recover from a poisoned mutex (another thread panicked while holding the lock).
+            // Rate limiting should not crash the server, so we recover the inner data.
+            poisoned.into_inner()
+        });
         let now = Instant::now();
         let capacity = (self.max_per_minute + self.burst) as f64;
 
@@ -480,7 +484,8 @@ async fn prove_handler(
     let mut headers = axum::http::HeaderMap::new();
     headers.insert(
         "X-Request-Duration",
-        HeaderValue::from_str(&format!("{}ms", duration_ms)).unwrap(),
+        HeaderValue::from_str(&format!("{}ms", duration_ms))
+            .expect("numeric duration string is always valid ASCII"),
     );
 
     Ok((headers, response))
@@ -591,7 +596,8 @@ async fn batch_prove_handler(
     let mut headers = axum::http::HeaderMap::new();
     headers.insert(
         "X-Request-Duration",
-        HeaderValue::from_str(&format!("{}ms", duration_ms)).unwrap(),
+        HeaderValue::from_str(&format!("{}ms", duration_ms))
+            .expect("numeric duration string is always valid ASCII"),
     );
 
     Ok((headers, response))

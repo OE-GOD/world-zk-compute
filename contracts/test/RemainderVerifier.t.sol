@@ -442,7 +442,7 @@ contract RemainderVerifierTest is Test {
         uint8[] memory types = new uint8[](0);
         bool[] memory committed = new bool[](0);
 
-        vm.expectRevert("numLayers must be > 0");
+        vm.expectRevert(RemainderVerifier.NumLayersZero.selector);
         verifier.registerCircuit(keccak256("zero-layers"), 0, sizes, types, committed, "zero-layers");
     }
 
@@ -454,7 +454,7 @@ contract RemainderVerifierTest is Test {
         types[0] = 3;
         bool[] memory committed = new bool[](1);
 
-        vm.expectRevert("Circuit hash cannot be zero");
+        vm.expectRevert(RemainderVerifier.CircuitHashZero.selector);
         verifier.registerCircuit(bytes32(0), 1, sizes, types, committed, "zero-hash");
     }
 
@@ -474,7 +474,7 @@ contract RemainderVerifierTest is Test {
         bool[] memory committed = new bool[](4);
         committed[0] = true;
 
-        vm.expectRevert("Circuit already registered");
+        vm.expectRevert(RemainderVerifier.CircuitAlreadyRegistered.selector);
         verifier.registerCircuit(circuitHash, 4, sizes, types, committed, "duplicate");
     }
 
@@ -484,7 +484,7 @@ contract RemainderVerifierTest is Test {
         uint8[] memory types = new uint8[](0);
         bool[] memory committed = new bool[](0);
 
-        vm.expectRevert("numLayers must be > 0");
+        vm.expectRevert(RemainderVerifier.NumLayersZero.selector);
         verifier.registerCircuitWithGens(
             keccak256("zero-layers-gens"), 0, sizes, types, committed, "zero-layers-gens", bytes32(uint256(1))
         );
@@ -498,7 +498,7 @@ contract RemainderVerifierTest is Test {
         uint8[] memory types = new uint8[](3);
         bool[] memory committed = new bool[](3);
 
-        vm.expectRevert("Layer sizes length mismatch");
+        vm.expectRevert(RemainderVerifier.LayerSizesLengthMismatch.selector);
         verifier.registerCircuit(keccak256("mismatch"), 3, sizes, types, committed, "mismatch");
     }
 }
@@ -579,7 +579,7 @@ contract RemainderVerifierTestDAGSecurity is Test {
 
         // Attempt to continue from a different address
         vm.prank(address(0xdead));
-        vm.expectRevert("Batch: unauthorized");
+        vm.expectRevert(RemainderVerifier.BatchUnauthorized.selector);
         verifier.continueDAGBatchVerify(sessionId, proofHex, publicInputsHex, gensHex);
     }
 
@@ -598,7 +598,7 @@ contract RemainderVerifierTestDAGSecurity is Test {
 
         // Attempt to finalize from a different address
         vm.prank(address(0xdead));
-        vm.expectRevert("Batch: unauthorized");
+        vm.expectRevert(RemainderVerifier.BatchUnauthorized.selector);
         verifier.finalizeDAGBatchVerify(sessionId, proofHex, publicInputsHex, gensHex);
     }
 }
@@ -3415,7 +3415,7 @@ contract GKRHybridVerifierTest is Test {
         uint256[8] memory fakeProof;
         uint256[] memory fakeOutputs = new uint256[](14);
 
-        vm.expectRevert("Groth16 verifier not set");
+        vm.expectRevert(RemainderVerifier.Groth16VerifierNotSet.selector);
         freshVerifier.verifyWithGroth16(proofHex, circuitHash, publicInputs, gensHex, fakeProof, fakeOutputs);
     }
 
@@ -3909,7 +3909,7 @@ contract GKRDAGVerifierTest is Test {
 
         verifier.registerDAGCircuit(circuitHash, descData, "xgboost-phase1a", gensHash);
 
-        vm.expectRevert("DAG circuit already registered");
+        vm.expectRevert(RemainderVerifier.DAGCircuitAlreadyRegistered.selector);
         verifier.registerDAGCircuit(circuitHash, descData, "xgboost-phase1a-dup", gensHash);
     }
 
@@ -3929,7 +3929,7 @@ contract GKRDAGVerifierTest is Test {
         bytes32 hash = bytes32(uint256(0xdead01));
         bytes32 gensHash = keccak256(gensHex);
 
-        vm.expectRevert("no compute layers");
+        vm.expectRevert(RemainderVerifier.NoComputeLayers.selector);
         verifier.registerDAGCircuit(hash, abi.encode(desc), "bad-circuit", gensHash);
     }
 
@@ -3944,7 +3944,7 @@ contract GKRDAGVerifierTest is Test {
         bytes32 hash = bytes32(uint256(0xdead02));
         bytes32 gensHash = keccak256(gensHex);
 
-        vm.expectRevert("no input layers");
+        vm.expectRevert(RemainderVerifier.NoInputLayers.selector);
         verifier.registerDAGCircuit(hash, abi.encode(desc), "bad-circuit", gensHash);
     }
 
@@ -3963,7 +3963,7 @@ contract GKRDAGVerifierTest is Test {
         bytes32 hash = bytes32(uint256(0xdead03));
         bytes32 gensHash = keccak256(gensHex);
 
-        vm.expectRevert("too many compute layers");
+        vm.expectRevert(RemainderVerifier.TooManyComputeLayers.selector);
         verifier.registerDAGCircuit(hash, abi.encode(desc), "bad-circuit", gensHash);
     }
 
@@ -3977,7 +3977,7 @@ contract GKRDAGVerifierTest is Test {
         bytes32 hash = bytes32(uint256(0xdead04));
         bytes32 gensHash = keccak256(gensHex);
 
-        vm.expectRevert("too many input layers");
+        vm.expectRevert(RemainderVerifier.TooManyInputLayers.selector);
         verifier.registerDAGCircuit(hash, abi.encode(desc), "bad-circuit", gensHash);
     }
 
@@ -3991,7 +3991,7 @@ contract GKRDAGVerifierTest is Test {
         bytes32 hash = bytes32(uint256(0xdead05));
         bytes32 gensHash = keccak256(gensHex);
 
-        vm.expectRevert("numSumcheckRounds length mismatch");
+        vm.expectRevert(RemainderVerifier.NumSumcheckRoundsLengthMismatch.selector);
         verifier.registerDAGCircuit(hash, abi.encode(desc), "bad-circuit", gensHash);
     }
 
@@ -4005,7 +4005,7 @@ contract GKRDAGVerifierTest is Test {
         bytes32 hash = bytes32(uint256(0xdead06));
         bytes32 gensHash = keccak256(gensHex);
 
-        vm.expectRevert("inputIsCommitted length mismatch");
+        vm.expectRevert(RemainderVerifier.InputIsCommittedLengthMismatch.selector);
         verifier.registerDAGCircuit(hash, abi.encode(desc), "bad-circuit", gensHash);
     }
 
@@ -4019,7 +4019,7 @@ contract GKRDAGVerifierTest is Test {
         bytes32 hash = bytes32(uint256(0xdead07));
         bytes32 gensHash = keccak256(gensHex);
 
-        vm.expectRevert("oracleProductOffsets length mismatch");
+        vm.expectRevert(RemainderVerifier.OracleProductOffsetsLengthMismatch.selector);
         verifier.registerDAGCircuit(hash, abi.encode(desc), "bad-circuit", gensHash);
     }
 
@@ -4034,7 +4034,7 @@ contract GKRDAGVerifierTest is Test {
         bytes32 hash = bytes32(uint256(0xdead08));
         bytes32 gensHash = keccak256(gensHex);
 
-        vm.expectRevert("atomTargetLayers length mismatch");
+        vm.expectRevert(RemainderVerifier.AtomTargetLayersLengthMismatch.selector);
         verifier.registerDAGCircuit(hash, abi.encode(desc), "bad-circuit", gensHash);
     }
 
@@ -4044,7 +4044,7 @@ contract GKRDAGVerifierTest is Test {
 
         bytes32 gensHash = keccak256(gensHex);
 
-        vm.expectRevert("Circuit hash cannot be zero");
+        vm.expectRevert(RemainderVerifier.CircuitHashZero.selector);
         verifier.registerDAGCircuit(bytes32(0), abi.encode(desc), "bad-circuit", gensHash);
     }
 
@@ -4754,7 +4754,7 @@ contract DAGBatchVerifierTest is Test {
 
         // A different address tries to continue
         vm.prank(address(0xBEEF));
-        vm.expectRevert("Batch: unauthorized");
+        vm.expectRevert(RemainderVerifier.BatchUnauthorized.selector);
         verifier.continueDAGBatchVerify(sessionId, proofHex, publicInputsHex, gensHex);
     }
 
@@ -4770,7 +4770,7 @@ contract DAGBatchVerifierTest is Test {
 
         // A different address tries to finalize
         vm.prank(address(0xBEEF));
-        vm.expectRevert("Batch: unauthorized");
+        vm.expectRevert(RemainderVerifier.BatchUnauthorized.selector);
         verifier.finalizeDAGBatchVerify(sessionId, proofHex, publicInputsHex, gensHex);
     }
 
@@ -4779,7 +4779,7 @@ contract DAGBatchVerifierTest is Test {
         bytes32 sessionId = _runFullBatchVerification();
 
         vm.prank(address(0xBEEF));
-        vm.expectRevert("Batch: unauthorized");
+        vm.expectRevert(RemainderVerifier.BatchUnauthorized.selector);
         verifier.cleanupDAGBatchSession(sessionId);
     }
 
@@ -4792,7 +4792,7 @@ contract DAGBatchVerifierTest is Test {
         bytes32 sessionId = verifier.startDAGBatchVerify(proofHex, circuitHash, publicInputsHex, gensHex);
 
         // Try to finalize immediately (only batch 0 done, need 1..10)
-        vm.expectRevert("Batch: compute batches not done");
+        vm.expectRevert(RemainderVerifier.BatchComputeNotDone.selector);
         verifier.finalizeDAGBatchVerify(sessionId, proofHex, publicInputsHex, gensHex);
     }
 
@@ -4807,7 +4807,7 @@ contract DAGBatchVerifierTest is Test {
         }
 
         // Try to continue again
-        vm.expectRevert("Batch: all compute batches done, call finalize");
+        vm.expectRevert(RemainderVerifier.BatchAllComputeDone.selector);
         verifier.continueDAGBatchVerify(sessionId, proofHex, publicInputsHex, gensHex);
     }
 
@@ -4816,7 +4816,7 @@ contract DAGBatchVerifierTest is Test {
         bytes32 sessionId = _runFullBatchVerification();
 
         // Try to finalize again
-        vm.expectRevert("Batch: already finalized");
+        vm.expectRevert(RemainderVerifier.BatchAlreadyFinalized.selector);
         verifier.finalizeDAGBatchVerify(sessionId, proofHex, publicInputsHex, gensHex);
     }
 
@@ -4824,7 +4824,7 @@ contract DAGBatchVerifierTest is Test {
     function test_dag_batch_continue_after_finalize_reverts() public {
         bytes32 sessionId = _runFullBatchVerification();
 
-        vm.expectRevert("Batch: already finalized");
+        vm.expectRevert(RemainderVerifier.BatchAlreadyFinalized.selector);
         verifier.continueDAGBatchVerify(sessionId, proofHex, publicInputsHex, gensHex);
     }
 
@@ -4832,7 +4832,7 @@ contract DAGBatchVerifierTest is Test {
     function test_dag_batch_nonexistent_session_reverts() public {
         bytes32 fakeSession = keccak256("nonexistent");
 
-        vm.expectRevert("Batch: session not found");
+        vm.expectRevert(RemainderVerifier.BatchSessionNotFound.selector);
         verifier.continueDAGBatchVerify(fakeSession, proofHex, publicInputsHex, gensHex);
     }
 
@@ -4947,7 +4947,7 @@ contract DAGBatchVerifierTest is Test {
     function test_dag_batch_cleanup_before_finalize_reverts() public {
         bytes32 sessionId = verifier.startDAGBatchVerify(proofHex, circuitHash, publicInputsHex, gensHex);
 
-        vm.expectRevert("Batch: not finalized");
+        vm.expectRevert(RemainderVerifier.BatchNotFinalized.selector);
         verifier.cleanupDAGBatchSession(sessionId);
     }
 

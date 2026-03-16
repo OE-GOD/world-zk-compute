@@ -133,7 +133,9 @@ fn cauchy_mds(xs: &[Fq; 3], ys: &[Fq; 3]) -> Matrix3 {
     for i in 0..3 {
         for j in 0..3 {
             let sum = xs[i] + ys[j];
-            m[i][j] = sum.invert().unwrap();
+            m[i][j] = sum
+                .invert()
+                .expect("Cauchy MDS matrix element must be invertible (xs[i]+ys[j] != 0)");
         }
     }
     m
@@ -191,7 +193,9 @@ fn mat_invert(m: &Matrix3) -> Matrix3 {
         }
         aug.swap(col, pivot);
 
-        let inv = aug[col][col].invert().unwrap();
+        let inv = aug[col][col]
+            .invert()
+            .expect("pivot element must be invertible during Gauss-Jordan elimination");
         for item in &mut aug[col] {
             *item *= inv;
         }
@@ -471,7 +475,9 @@ fn factorize_mds(m: &Matrix3) -> (Matrix3, ([Fq; 3], [Fq; 2])) {
 
     // Invert 2x2 sub-matrix
     let det = m_hat[0][0] * m_hat[1][1] - m_hat[0][1] * m_hat[1][0];
-    let det_inv = det.invert().unwrap();
+    let det_inv = det
+        .invert()
+        .expect("MDS sub-matrix determinant must be invertible");
     let m_hat_inv = [
         [m_hat[1][1] * det_inv, -m_hat[0][1] * det_inv],
         [-m_hat[1][0] * det_inv, m_hat[0][0] * det_inv],

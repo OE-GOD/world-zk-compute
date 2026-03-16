@@ -134,7 +134,9 @@ fn main() {
     let mut mds = [[Fq::ZERO; 3]; 3];
     for i in 0..3 {
         for j in 0..3 {
-            mds[i][j] = (xs[i] + ys[j]).invert().unwrap();
+            mds[i][j] = (xs[i] + ys[j])
+                .invert()
+                .expect("Cauchy MDS matrix element must be invertible (xs[i]+ys[j] != 0)");
         }
     }
 

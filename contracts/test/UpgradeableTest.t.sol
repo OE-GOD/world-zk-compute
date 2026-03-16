@@ -481,6 +481,30 @@ contract UpgradeableTest is Test {
     // 12. Pause / unpause
     // ========================================================================
 
+    function test_pauseBlocksRequestExecution() public {
+        engine.pause();
+        assertTrue(engine.paused());
+
+        bytes32 imageId = bytes32(uint256(1));
+        bytes32 inputDigest = bytes32(uint256(2));
+        vm.deal(user1, 1 ether);
+        vm.prank(user1);
+        vm.expectRevert(UpgradeableExecutionEngine.EnforcedPause.selector);
+        engine.requestExecution{value: 0.01 ether}(imageId, inputDigest, "url", address(0), 3600);
+    }
+
+    function test_pauseBlocksRequestExecutionWithInputType() public {
+        engine.pause();
+        assertTrue(engine.paused());
+
+        bytes32 imageId = bytes32(uint256(1));
+        bytes32 inputDigest = bytes32(uint256(2));
+        vm.deal(user1, 1 ether);
+        vm.prank(user1);
+        vm.expectRevert(UpgradeableExecutionEngine.EnforcedPause.selector);
+        engine.requestExecution{value: 0.01 ether}(imageId, inputDigest, "url", address(0), 3600, 1);
+    }
+
     function test_pauseBlocksClaimExecution() public {
         // Create a request first
         bytes32 imageId = bytes32(uint256(1));

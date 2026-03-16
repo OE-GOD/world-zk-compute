@@ -112,7 +112,7 @@ fn bench_json_serialization(c: &mut Criterion) {
         b.iter(|| serde_json::to_string(black_box(&result)));
     });
 
-    let json_str = serde_json::to_string(&result).unwrap();
+    let json_str = serde_json::to_string(&result).expect("failed to serialize benchmark result");
     group.bench_function("deserialize", |b| {
         b.iter(|| serde_json::from_str::<JobResult>(black_box(&json_str)));
     });

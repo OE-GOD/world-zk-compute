@@ -818,7 +818,9 @@ fn main() -> Result<()> {
     let mut succinct_sub_times_opt: Option<Vec<Duration>> = None;
 
     if !config.union_only {
-        let w_elf = wrapper_elf.as_ref().unwrap();
+        let w_elf = wrapper_elf
+            .as_ref()
+            .expect("wrapper_elf is always Some when union_only is false");
 
         // Clone receipts before Test 3 consumes them (needed for Test 6: Union)
         let receipts_for_wrapper = receipts.clone();
@@ -851,7 +853,9 @@ fn main() -> Result<()> {
             inner_image_id,
             succinct_receipts,
             &succinct_journals,
-            succinct_sub_times_opt.as_ref().unwrap(),
+            succinct_sub_times_opt
+                .as_ref()
+                .expect("succinct_sub_times_opt is always Some at this point"),
         )?;
         succinct_wrapped_time = succinct_wrapped.wrapper_time;
         print!("{}", succinct_wrapped);

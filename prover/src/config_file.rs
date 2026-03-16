@@ -303,7 +303,8 @@ impl Config {
     /// Generate a sample configuration file
     pub fn sample() -> String {
         let config = Config::default();
-        let sample = toml::to_string_pretty(&config).unwrap();
+        let sample = toml::to_string_pretty(&config)
+            .expect("serializing default Config to TOML should never fail");
 
         // Add comments
         let header = r#"# World ZK Compute Prover Configuration

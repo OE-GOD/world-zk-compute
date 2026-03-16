@@ -95,7 +95,10 @@ fn main() -> Result<()> {
         eprintln!("Using built-in sample model...");
         model::sample_model()
     } else {
-        let path = args.model.as_ref().unwrap();
+        let path = args
+            .model
+            .as_ref()
+            .expect("--model is required when --sample is not set (checked above)");
         eprintln!("Loading {} model from {:?}...", args.model_format, path);
         load_model(path, &args.model_format)?
     };

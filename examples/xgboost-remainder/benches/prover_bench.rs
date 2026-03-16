@@ -64,7 +64,8 @@ fn bench_model_loading(c: &mut Criterion) {
 
     c.bench_function("model_parse_json", |b| {
         b.iter(|| {
-            let model: model::XgboostModel = serde_json::from_str(json).unwrap();
+            let model: model::XgboostModel =
+                serde_json::from_str(json).expect("failed to parse sample model JSON");
             criterion::black_box(model);
         });
     });
