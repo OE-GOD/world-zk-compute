@@ -1,2 +1,1 @@
-web3>=6.0.0
-eth-account>=0.9.0
+worldzk[web3]>=1.0.0

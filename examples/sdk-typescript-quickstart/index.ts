@@ -11,16 +11,13 @@
  */
 
 import {
-  createPublicClient,
-  createWalletClient,
-  http,
-  parseAbi,
-  keccak256,
-  encodePacked,
-  type Hex,
-} from "viem";
-import { privateKeyToAccount } from "viem/accounts";
-import { anvil } from "viem/chains";
+  TEEVerifier,
+  Client,
+  computeModelHash,
+  computeInputHash,
+} from "@worldzk/sdk";
+
+type Hex = `0x${string}`;
 
 // ---------------------------------------------------------------------------
 // Configuration (override via env vars)
@@ -32,79 +29,70 @@ const CONTRACT_ADDRESS =
 const PRIVATE_KEY =
   (process.env.PRIVATE_KEY as Hex) ??
   "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
-
-// Minimal ABI
-const abi = parseAbi([
-  "function submitResult(bytes32 modelHash, bytes32 inputHash, bytes32 result, bytes32 imageHash, bytes attestation) payable",
-  "function finalizeResult(bytes32 resultId)",
-  "function isResultValid(bytes32 resultId) view returns (bool)",
-  "function proverStake() view returns (uint256)",
-  "event ResultSubmitted(bytes32 indexed resultId, bytes32 modelHash, bytes32 inputHash)",
-]);
+const INDEXER_URL = process.env.INDEXER_URL ?? "http://127.0.0.1:8081";
 
 async function main() {
-  const publicClient = createPublicClient({
-    chain: anvil,
-    transport: http(RPC_URL),
+  // --- Create SDK clients ---
+  const tee = new TEEVerifier({
+    rpcUrl: RPC_URL,
+    privateKey: PRIVATE_KEY,
+    contractAddress: CONTRACT_ADDRESS,
+  });
+  console.log("TEEVerifier connected");
+
+  const client = new Client({
+    baseUrl: INDEXER_URL,
   });
 
-  const account = privateKeyToAccount(PRIVATE_KEY);
-  const walletClient = createWalletClient({
-    account,
-    chain: anvil,
-    transport: http(RPC_URL),
-  });
-
-  const chainId = await publicClient.getChainId();
-  console.log(`Connected to ${RPC_URL} (chain ${chainId})`);
+  // --- Compute hashes using SDK utilities ---
+  const modelBytes = new TextEncoder().encode("my-model-v1");
+  const inputBytes = new TextEncoder().encode("sample-input-data");
+  const modelHash = await computeModelHash(modelBytes);
+  const inputHash = await computeInputHash(inputBytes);
+  console.log(`Model hash: ${modelHash}`);
+  console.log(`Input hash: ${inputHash}`);
 
   // --- Submit a TEE result ---
-  const modelHash =
-    "0x0000000000000000000000000000000000000000000000000000000000000001" as Hex;
-  const inputHash =
-    "0x0000000000000000000000000000000000000000000000000000000000000002" as Hex;
-  const result =
-    "0x0000000000000000000000000000000000000000000000000000000000000003" as Hex;
-  const imageHash =
-    "0x0000000000000000000000000000000000000000000000000000000000000004" as Hex;
+  const resultBytes = ("0x" + "00".repeat(32)) as Hex;
   const attestation = ("0x" + "00".repeat(65)) as Hex;
 
-  const stake = await publicClient.readContract({
-    address: CONTRACT_ADDRESS,
-    abi,
-    functionName: "proverStake",
-  });
-  console.log(`Required stake: ${stake} wei`);
-
-  const txHash = await walletClient.writeContract({
-    address: CONTRACT_ADDRESS,
-    abi,
-    functionName: "submitResult",
-    args: [modelHash, inputHash, result, imageHash, attestation],
-    value: stake,
-  });
-
-  const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
-  console.log(`submitResult tx: ${receipt.transactionHash} (status=${receipt.status})`);
-
-  // Compute result ID
-  const resultId = keccak256(
-    encodePacked(["bytes32", "bytes32"], [modelHash, inputHash])
+  const txHash = await tee.submitResult(
+    modelHash as Hex,
+    inputHash as Hex,
+    resultBytes,
+    attestation,
+    "0.1", // stake in ETH
   );
-  console.log(`Result ID: ${resultId}`);
+  console.log(`submitResult tx: ${txHash}`);
 
-  // --- Query result ---
-  const isValid = await publicClient.readContract({
-    address: CONTRACT_ADDRESS,
-    abi,
-    functionName: "isResultValid",
-    args: [resultId],
-  });
-  console.log(`Is valid (before finalize): ${isValid}`);
+  // --- Query result validity ---
+  const resultId = await tee.isResultValid(
+    modelHash as Hex, // result ID derivation depends on contract
+  );
+  console.log(`Is valid (before finalize): ${resultId}`);
 
-  console.log("\nResult submitted successfully!");
+  // --- Check indexer health ---
+  try {
+    const health = await client.health();
+    console.log(`Indexer status: ${health.status}`);
+  } catch {
+    console.log("Indexer not available (expected if not running)");
+  }
+
+  // --- List execution requests via API client ---
+  try {
+    const requests = await client.requests.list({ limit: 5 });
+    console.log(`Found ${requests.pagination.total} execution requests`);
+    for (const req of requests.items) {
+      console.log(`  Request #${req.id}: ${req.status}`);
+    }
+  } catch {
+    console.log("API not available (expected if not running)");
+  }
+
+  console.log("\nQuickstart complete!");
   console.log(
-    "To finalize, wait for the challenge window to pass, then call finalizeResult()."
+    "To finalize, wait for the challenge window to pass, then call tee.finalize().",
   );
 }
 

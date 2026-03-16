@@ -3,7 +3,7 @@
 World ZK Compute — Python SDK Quickstart
 
 Prerequisites:
-  1. pip install web3 eth-account
+  1. pip install worldzk[web3]
   2. Start Anvil: anvil --block-time 1
   3. Deploy TEEMLVerifier contract and set CONTRACT_ADDRESS below
 
@@ -13,10 +13,13 @@ Usage:
 
 import os
 import sys
-import time
 
-from eth_account import Account
-from web3 import Web3
+from worldzk import (
+    Client,
+    TEEVerifier,
+    compute_model_hash,
+    compute_input_hash,
+)
 
 # ---------------------------------------------------------------------------
 # Configuration (override via env vars)
@@ -30,105 +33,75 @@ PRIVATE_KEY = os.environ.get(
     "PRIVATE_KEY",
     "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
 )
-
-# Minimal ABI for TEEMLVerifier (submit, finalize, query)
-TEE_ABI = [
-    {
-        "type": "function",
-        "name": "submitResult",
-        "inputs": [
-            {"name": "modelHash", "type": "bytes32"},
-            {"name": "inputHash", "type": "bytes32"},
-            {"name": "result", "type": "bytes32"},
-            {"name": "imageHash", "type": "bytes32"},
-            {"name": "attestation", "type": "bytes"},
-        ],
-        "outputs": [],
-        "stateMutability": "payable",
-    },
-    {
-        "type": "function",
-        "name": "finalizeResult",
-        "inputs": [{"name": "resultId", "type": "bytes32"}],
-        "outputs": [],
-        "stateMutability": "nonpayable",
-    },
-    {
-        "type": "function",
-        "name": "isResultValid",
-        "inputs": [{"name": "resultId", "type": "bytes32"}],
-        "outputs": [{"name": "", "type": "bool"}],
-        "stateMutability": "view",
-    },
-    {
-        "type": "function",
-        "name": "proverStake",
-        "inputs": [],
-        "outputs": [{"name": "", "type": "uint256"}],
-        "stateMutability": "view",
-    },
-    {
-        "type": "event",
-        "name": "ResultSubmitted",
-        "inputs": [
-            {"name": "resultId", "type": "bytes32", "indexed": True},
-            {"name": "modelHash", "type": "bytes32", "indexed": False},
-            {"name": "inputHash", "type": "bytes32", "indexed": False},
-        ],
-        "anonymous": False,
-    },
-]
+INDEXER_URL = os.environ.get("INDEXER_URL", "http://127.0.0.1:8081")
 
 
 def main():
-    w3 = Web3(Web3.HTTPProvider(RPC_URL))
-    if not w3.is_connected():
-        print(f"Cannot connect to {RPC_URL}")
-        sys.exit(1)
-    print(f"Connected to {RPC_URL} (chain {w3.eth.chain_id})")
-
-    account: Account = Account.from_key(PRIVATE_KEY)
-    contract = w3.eth.contract(
-        address=Web3.to_checksum_address(CONTRACT_ADDRESS), abi=TEE_ABI
+    # --- Create SDK clients ---
+    tee = TEEVerifier(
+        rpc_url=RPC_URL,
+        private_key=PRIVATE_KEY,
+        contract_address=CONTRACT_ADDRESS,
     )
+    print(f"TEEVerifier connected (account: {tee.account_address})")
+
+    client = Client(base_url=INDEXER_URL)
+
+    # --- Compute hashes using SDK utilities ---
+    model_hash = compute_model_hash(b"my-model-v1")
+    input_hash = compute_input_hash(b"sample-input-data")
+    print(f"Model hash: {model_hash}")
+    print(f"Input hash: {input_hash}")
 
     # --- Submit a TEE result ---
-    model_hash = b"\x00" * 31 + b"\x01"
-    input_hash = b"\x00" * 31 + b"\x02"
-    result = b"\x00" * 31 + b"\x03"
-    image_hash = b"\x00" * 31 + b"\x04"
+    result_data = b"\x00" * 32  # mock result
     attestation = b"\x00" * 65  # mock attestation
+    stake_wei = 100_000_000_000_000_000  # 0.1 ETH
 
-    stake = contract.functions.proverStake().call()
-    print(f"Required stake: {stake} wei")
-
-    tx = contract.functions.submitResult(
-        model_hash, input_hash, result, image_hash, attestation
-    ).build_transaction(
-        {
-            "from": account.address,
-            "value": stake,
-            "nonce": w3.eth.get_transaction_count(account.address),
-            "gas": 500_000,
-        }
+    result_id = tee.submit_result(
+        model_hash=model_hash,
+        input_hash=input_hash,
+        result=result_data,
+        attestation=attestation,
+        stake_wei=stake_wei,
     )
-    signed = account.sign_transaction(tx)
-    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-    receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
-    print(f"submitResult tx: {receipt['transactionHash'].hex()} (status={receipt['status']})")
-
-    # Compute result ID
-    result_id = Web3.solidity_keccak(
-        ["bytes32", "bytes32"], [model_hash, input_hash]
-    )
-    print(f"Result ID: {result_id.hex()}")
+    print(f"submitResult result ID: {result_id}")
 
     # --- Query result ---
-    is_valid = contract.functions.isResultValid(result_id).call()
+    ml_result = tee.get_result(result_id)
+    print(f"Submitter: {ml_result.submitter}")
+    print(f"Finalized: {ml_result.finalized}")
+    print(f"Challenged: {ml_result.challenged}")
+
+    is_valid = tee.is_result_valid(result_id)
     print(f"Is valid (before finalize): {is_valid}")
 
-    print("\nResult submitted successfully!")
-    print("To finalize, wait for the challenge window to pass, then call finalizeResult().")
+    # --- Check indexer health ---
+    try:
+        health = client.health()
+        print(f"Indexer status: {health.status}, block: {health.last_indexed_block}")
+    except Exception:
+        print("Indexer not available (expected if not running)")
+
+    # --- List results via indexer ---
+    try:
+        results = client.list_results(limit=5)
+        print(f"Found {len(results)} indexed results")
+        for r in results:
+            print(f"  {r.id}: {r.status}")
+    except Exception:
+        print("Indexer not available (expected if not running)")
+
+    # --- Get statistics ---
+    try:
+        stats = client.stats()
+        print(f"Total submitted: {stats.total_submitted}")
+        print(f"Total finalized: {stats.total_finalized}")
+    except Exception:
+        print("Indexer not available (expected if not running)")
+
+    print("\nQuickstart complete!")
+    print("To finalize, wait for the challenge window, then call tee.finalize().")
 
 
 if __name__ == "__main__":
