@@ -13,6 +13,7 @@ use alloy::{
     signers::local::PrivateKeySigner,
 };
 use clap::{Parser, Subcommand};
+use secrecy::{ExposeSecret, SecretString};
 use std::sync::Arc;
 use tracing::{debug, error, info};
 
@@ -279,7 +280,7 @@ async fn main() -> anyhow::Result<()> {
             run_prover(
                 rpc_url,
                 ws_url,
-                private_key,
+                SecretString::from(private_key),
                 engine_address,
                 registry_address,
                 min_tip,
@@ -342,7 +343,7 @@ async fn main() -> anyhow::Result<()> {
 async fn run_prover(
     rpc_url: String,
     ws_url: Option<String>,
-    private_key: String,
+    private_key: SecretString,
     engine_address: String,
     registry_address: Option<String>,
     min_tip: f64,
@@ -480,7 +481,7 @@ async fn run_prover(
     }
 
     // Build provider with signer
-    let signer: PrivateKeySigner = private_key.parse()?;
+    let signer: PrivateKeySigner = private_key.expose_secret().parse()?;
     let wallet_address = signer.address();
     info!("Prover wallet: {}", wallet_address);
 

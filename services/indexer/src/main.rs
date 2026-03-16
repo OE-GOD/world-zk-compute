@@ -34,6 +34,8 @@ pub struct Config {
     pub poll_interval_secs: u64,
     /// Maximum requests per IP per minute (default: 100).
     pub rate_limit_per_ip: u32,
+    /// Trusted reverse proxy CIDR ranges for X-Forwarded-For header trust.
+    pub trusted_proxies: rate_limit::TrustedProxyConfig,
 }
 
 impl Config {
@@ -102,6 +104,10 @@ impl Config {
             .unwrap_or_else(|_| "100".to_string())
             .parse()
             .map_err(|_| anyhow::anyhow!("invalid RATE_LIMIT_PER_IP"))?;
+        let trusted_proxies = std::env::var("TRUSTED_PROXIES")
+            .ok()
+            .map(|s| rate_limit::TrustedProxyConfig::from_env_str(&s))
+            .unwrap_or_default();
         Ok(Self {
             rpc_url,
             contract_address,
@@ -111,6 +117,7 @@ impl Config {
             port,
             poll_interval_secs,
             rate_limit_per_ip,
+            trusted_proxies,
         })
     }
 }
@@ -210,11 +217,22 @@ impl SqliteStorage {
     }
 
     fn lock(&self) -> anyhow::Result<std::sync::MutexGuard<'_, Connection>> {
-        self.conn.lock().map_err(|e| {
-            tracing::error!("Storage mutex lock poisoned: {}", e);
-            self.lock_poisoned.store(true, Ordering::SeqCst);
-            anyhow::anyhow!("storage lock poisoned")
-        })
+        match self.conn.lock() {
+            Ok(guard) => Ok(guard),
+            Err(poisoned) => {
+                // Recover from a poisoned mutex: another thread panicked while
+                // holding the lock. The SQLite connection itself is likely still
+                // usable (the panic may have been caused by application logic,
+                // not a corrupt connection). Log the event and flag it for
+                // the /health endpoint, but keep serving.
+                tracing::error!(
+                    "Storage mutex was poisoned (a thread panicked while holding the lock). \
+                     Recovering inner connection."
+                );
+                self.lock_poisoned.store(true, Ordering::SeqCst);
+                Ok(poisoned.into_inner())
+            }
+        }
     }
 
     /// Run pending database migrations.
@@ -734,15 +752,21 @@ pub(crate) struct AppState {
 // ---------------------------------------------------------------------------
 
 pub fn build_app(storage: Arc<dyn Storage>, broadcaster: Arc<EventBroadcaster>) -> Router {
-    routes::build_app(storage, broadcaster, rate_limit::RateLimitConfig::default())
+    routes::build_app(
+        storage,
+        broadcaster,
+        rate_limit::RateLimitConfig::default(),
+        rate_limit::TrustedProxyConfig::default(),
+    )
 }
 
 pub fn build_app_with_rate_limit(
     storage: Arc<dyn Storage>,
     broadcaster: Arc<EventBroadcaster>,
     rate_limit_config: rate_limit::RateLimitConfig,
+    trusted_proxies: rate_limit::TrustedProxyConfig,
 ) -> Router {
-    routes::build_app(storage, broadcaster, rate_limit_config)
+    routes::build_app(storage, broadcaster, rate_limit_config, trusted_proxies)
 }
 
 // ---------------------------------------------------------------------------
@@ -841,13 +865,20 @@ async fn main() -> anyhow::Result<()> {
     let broadcaster = Arc::new(EventBroadcaster::new(256));
 
     info!("  max_ws_connections: {}", broadcaster.max_connections());
+    info!("  max_ws_per_ip:    {}", broadcaster.max_per_ip());
     info!("  rate_limit_per_ip: {} req/min", config.rate_limit_per_ip);
+    info!("  trusted_proxies: {}", std::env::var("TRUSTED_PROXIES").unwrap_or_else(|_| "(none -- XFF headers ignored)".to_string()));
+    if std::env::var("API_KEY").ok().filter(|k| !k.is_empty()).is_some() {
+        info!("  api_key_auth:   enabled");
+    } else {
+        info!("  api_key_auth:   disabled (set API_KEY to enable)");
+    }
 
     let rl_config = rate_limit::RateLimitConfig {
         max_requests: config.rate_limit_per_ip,
         window: std::time::Duration::from_secs(60),
     };
-    let app = build_app_with_rate_limit(storage.clone(), broadcaster.clone(), rl_config);
+    let app = build_app_with_rate_limit(storage.clone(), broadcaster.clone(), rl_config, config.trusted_proxies.clone());
 
     // Spawn the event polling loop with shutdown support and circuit breaker.
     //
@@ -952,9 +983,12 @@ async fn main() -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", config.port)).await?;
     info!("listening on 0.0.0.0:{}", config.port);
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
 
     // Signal the poll loop to stop and wait for it
     let _ = poll_shutdown_tx.send(true);

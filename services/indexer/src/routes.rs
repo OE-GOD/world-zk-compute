@@ -15,7 +15,7 @@ use std::sync::Arc;
 use tower_http::set_header::SetResponseHeaderLayer;
 use uuid::Uuid;
 
-use super::rate_limit::{RateLimitConfig, RateLimitLayer};
+use super::rate_limit::{RateLimitConfig, RateLimitLayer, TrustedProxyConfig};
 use super::websocket::{self, EventBroadcaster};
 use super::{AppState, PaginatedResponse, ResultFilter, ResultRow, StatsResponse, Storage};
 
@@ -265,6 +265,53 @@ async fn request_id_middleware(request: Request<axum::body::Body>, next: Next) -
     }
 
     response
+}
+
+// ---------------------------------------------------------------------------
+// API-key middleware
+// ---------------------------------------------------------------------------
+
+/// Optional API key authentication middleware.
+///
+/// When the captured `api_key` is `Some(key)`, requires
+/// `Authorization: Bearer <key>` on all requests routed through this
+/// middleware. Returns 401 if missing/wrong.
+/// When `api_key` is `None`, this is a no-op pass-through.
+///
+/// The key is captured once at router-construction time (from `API_KEY`
+/// env var) so that tests mutating the env do not race with concurrent
+/// non-serial tests.
+async fn api_key_middleware(
+    axum::extract::State(api_key): axum::extract::State<Option<String>>,
+    req: Request<axum::body::Body>,
+    next: Next,
+) -> Response {
+    let Some(ref expected) = api_key else {
+        return next.run(req).await;
+    };
+
+    let auth_header = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+
+    match auth_header {
+        Some(value) if value.starts_with("Bearer ") && &value[7..] == expected.as_str() => {
+            next.run(req).await
+        }
+        _ => {
+            let body = serde_json::json!({
+                "error": "Unauthorized",
+                "message": "Valid API key required. Set Authorization: Bearer <key> header."
+            });
+            (
+                StatusCode::UNAUTHORIZED,
+                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                serde_json::to_string(&body).unwrap_or_default(),
+            )
+                .into_response()
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -520,6 +567,11 @@ pub(crate) async fn handle_admin_reset(
 /// aliases, infrastructure endpoints, `X-API-Version` response header,
 /// and per-IP rate limiting.
 ///
+/// Reads `API_KEY` from the environment at call time. When set (non-empty),
+/// all `/api/v1/*` and backward-compat data routes require
+/// `Authorization: Bearer <key>`. Health, readiness, and WebSocket endpoints
+/// remain public.
+///
 /// The `rate_limit_config` controls the maximum number of requests per IP
 /// within a sliding time window. Set via `RATE_LIMIT_PER_IP` env var
 /// (default 100 req/min).
@@ -527,6 +579,23 @@ pub fn build_app(
     storage: Arc<dyn Storage>,
     broadcaster: Arc<EventBroadcaster>,
     rate_limit_config: RateLimitConfig,
+    trusted_proxies: TrustedProxyConfig,
+) -> Router {
+    let api_key: Option<String> = std::env::var("API_KEY").ok().filter(|k| !k.is_empty());
+    build_app_with_key(storage, broadcaster, rate_limit_config, trusted_proxies, api_key)
+}
+
+/// Build the application router with an explicit API key value.
+///
+/// This is the inner implementation behind [`build_app`]. Production code
+/// should use `build_app` (reads `API_KEY` from the environment). Tests
+/// call this directly to avoid env-var mutation races.
+pub fn build_app_with_key(
+    storage: Arc<dyn Storage>,
+    broadcaster: Arc<EventBroadcaster>,
+    rate_limit_config: RateLimitConfig,
+    trusted_proxies: TrustedProxyConfig,
+    api_key: Option<String>,
 ) -> Router {
     let state = AppState {
         storage,
@@ -553,20 +622,26 @@ pub fn build_app(
     // Use new_without_cleanup so tests don't need a tokio runtime at layer
     // construction time. In production the main() function constructs the
     // layer with cleanup enabled via build_app_with_rate_limit.
-    let rate_layer = RateLimitLayer::new_without_cleanup(rate_limit_config);
+    let rate_layer = RateLimitLayer::new_without_cleanup(rate_limit_config, trusted_proxies);
 
-    Router::new()
-        // Versioned API under /api/v1/
+    // Group API routes behind the optional API-key middleware so that
+    // /health, /ready, and /ws/events remain publicly accessible.
+    let api_routes = Router::new()
         .nest("/api/v1", v1.clone())
         // Backward compat: keep unversioned routes working
         .route("/results", get(handle_list_results))
         .route("/results/:id", get(handle_get_result))
         .route("/stats", get(handle_stats))
-        // Unversioned infrastructure endpoints
+        .layer(middleware::from_fn_with_state(api_key, api_key_middleware));
+
+    Router::new()
+        // API routes (protected by optional API-key auth)
+        .merge(api_routes)
+        // Unversioned infrastructure endpoints (always public)
         .route("/health", get(handle_health))
         .route("/ready", get(handle_ready))
         .with_state(state)
-        // WebSocket routes (different state type)
+        // WebSocket routes (different state type, always public)
         .merge(ws_routes)
         // Request correlation ID middleware
         .layer(middleware::from_fn(request_id_middleware))
@@ -612,7 +687,7 @@ mod tests {
     async fn test_versioned_results_endpoint() {
         let s = test_storage();
         s.insert_result("0xabc", "0xm", "0xi", "0xa", 1).unwrap();
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results")
@@ -638,7 +713,7 @@ mod tests {
     async fn test_versioned_result_by_id() {
         let s = test_storage();
         s.insert_result("0xdef", "0xm", "0xi", "0xa", 42).unwrap();
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results/0xdef")
@@ -658,7 +733,7 @@ mod tests {
     async fn test_versioned_stats() {
         let s = test_storage();
         s.insert_result("0x01", "0xm", "0xi", "0xa", 1).unwrap();
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/stats")
@@ -674,7 +749,7 @@ mod tests {
     async fn test_backward_compat_results() {
         let s = test_storage();
         s.insert_result("0x01", "0xm", "0xi", "0xa", 1).unwrap();
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         // Old unversioned path should still work
         let req = axum::http::Request::builder()
@@ -690,7 +765,7 @@ mod tests {
     #[tokio::test]
     async fn test_health_no_version_prefix() {
         let s = test_storage();
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/health")
@@ -706,7 +781,7 @@ mod tests {
     #[tokio::test]
     async fn test_versioned_not_found() {
         let s = test_storage();
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results/0xnonexistent")
@@ -729,7 +804,7 @@ mod tests {
         s.insert_result("0x02", "0xm", "0xi", "0xa", 2).unwrap();
         s.update_result_status("0x02", "challenged", Some("0xc"))
             .unwrap();
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results?status=challenged")
@@ -754,7 +829,7 @@ mod tests {
             .unwrap();
         s.insert_result("0x02", "0xm", "0xi", "0xbbb222", 2)
             .unwrap();
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results?submitter=0xbbb222")
@@ -781,7 +856,7 @@ mod tests {
             .unwrap();
         s.update_result_status("0x03", "finalized", None).unwrap();
 
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/stats")
@@ -804,7 +879,7 @@ mod tests {
         let s = test_storage();
         s.set_last_indexed_block(12345).unwrap();
         s.insert_result("0x01", "0xm", "0xi", "0xa", 100).unwrap();
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/health")
@@ -827,7 +902,7 @@ mod tests {
         s.insert_result("0x01", "0xm", "0xi", "0xa", 10).unwrap();
         s.insert_result("0x02", "0xm", "0xi", "0xa", 50).unwrap();
         s.insert_result("0x03", "0xm", "0xi", "0xa", 30).unwrap();
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results")
@@ -850,7 +925,7 @@ mod tests {
             s.insert_result(&format!("0x{:02x}", i), "0xm", "0xi", "0xa", i)
                 .unwrap();
         }
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results?limit=3")
@@ -872,7 +947,7 @@ mod tests {
         s.insert_result("0x01", "0xm", "0xi", "0xa", 10).unwrap();
         s.insert_result("0x02", "0xm", "0xi", "0xa", 50).unwrap();
         s.insert_result("0x03", "0xm", "0xi", "0xa", 30).unwrap();
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results?sort_by=block_number&sort_order=asc")
@@ -898,7 +973,7 @@ mod tests {
         s.update_result_status("0x02", "challenged", Some("0xc"))
             .unwrap();
         s.update_result_status("0x03", "finalized", None).unwrap();
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results?sort_by=status&sort_order=asc")
@@ -922,7 +997,7 @@ mod tests {
         s.insert_result("0x01", "0xm", "0xi", "0xa", 10).unwrap();
         s.insert_result("0x02", "0xm", "0xi", "0xa", 20).unwrap();
         s.insert_result("0x03", "0xm", "0xi", "0xa", 30).unwrap();
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         // submitted_at maps to the timestamp column; all default to 0 in
         // test storage, so the secondary tiebreaker (id ASC) determines order.
@@ -944,7 +1019,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_results_invalid_sort_by_returns_400() {
-        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(test_storage(), test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results?sort_by=id")
@@ -965,7 +1040,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_results_invalid_sort_order_returns_400() {
-        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(test_storage(), test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results?sort_order=random")
@@ -990,7 +1065,7 @@ mod tests {
         s.insert_result("0x01", "0xm", "0xi", "0xa", 10).unwrap();
         s.insert_result("0x02", "0xm", "0xi", "0xa", 50).unwrap();
         s.insert_result("0x03", "0xm", "0xi", "0xa", 30).unwrap();
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         // No sort_by or sort_order -> defaults to block_number DESC
         let req = axum::http::Request::builder()
@@ -1013,7 +1088,7 @@ mod tests {
         // Second insert with same ID should be ignored (INSERT OR IGNORE)
         s.insert_result("0x01", "0xdifferent", "0xi", "0xb", 2)
             .unwrap();
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results/0x01")
@@ -1034,7 +1109,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalid_status_returns_400() {
-        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(test_storage(), test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results?status=invalid")
@@ -1055,7 +1130,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_limit_zero_returns_400() {
-        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(test_storage(), test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results?limit=0")
@@ -1076,7 +1151,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_limit_exceeds_max_returns_400() {
-        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(test_storage(), test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results?limit=5000")
@@ -1097,7 +1172,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_result_id_too_long_returns_400() {
-        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(test_storage(), test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let long_id = "x".repeat(200);
         let req = axum::http::Request::builder()
@@ -1119,7 +1194,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_submitter_invalid_hex_returns_400() {
-        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(test_storage(), test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results?submitter=not_hex")
@@ -1143,7 +1218,7 @@ mod tests {
         let s = test_storage();
         s.insert_result("0x01", "0xm", "0xi", "0xabcdef1234567890", 1)
             .unwrap();
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results?submitter=0xabcdef1234567890")
@@ -1156,7 +1231,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_submitter_0x_only_returns_400() {
-        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(test_storage(), test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results?submitter=0x")
@@ -1177,7 +1252,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_status_too_long_returns_400() {
-        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(test_storage(), test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let long_status = "a".repeat(300);
         let req = axum::http::Request::builder()
@@ -1199,7 +1274,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_submitter_too_long_returns_400() {
-        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(test_storage(), test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let long_submitter = format!("0x{}", "a".repeat(300));
         let req = axum::http::Request::builder()
@@ -1221,7 +1296,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_model_hash_too_long_returns_400() {
-        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(test_storage(), test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let long_hash = "h".repeat(300);
         let req = axum::http::Request::builder()
@@ -1243,7 +1318,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_model_hash_invalid_hex_returns_400() {
-        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(test_storage(), test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results?model_hash=not_hex_value")
@@ -1264,7 +1339,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_model_hash_valid_hex_accepted() {
-        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(test_storage(), test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results?model_hash=0xabcdef1234")
@@ -1277,7 +1352,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_after_id_invalid_hex_returns_400() {
-        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(test_storage(), test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results?after_id=not_a_hex_id")
@@ -1298,7 +1373,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_after_id_valid_hex_accepted() {
-        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(test_storage(), test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results?after_id=0xabc123")
@@ -1317,7 +1392,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_multiple_violations_returned_together() {
-        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(test_storage(), test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results?limit=0&submitter=not_hex")
@@ -1340,7 +1415,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_query_string_too_long_returns_400() {
-        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(test_storage(), test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         // Build a query string > 4KB
         let long_value = "a".repeat(4100);
@@ -1390,7 +1465,7 @@ mod tests {
             max_requests: 3,
             window: std::time::Duration::from_secs(60),
         };
-        let app = build_app(s, test_broadcaster(), rl_config);
+        let app = build_app_with_key(s, test_broadcaster(), rl_config, TrustedProxyConfig::default(), None);
 
         // First 3 requests should succeed
         for i in 0..3 {
@@ -1448,37 +1523,53 @@ mod tests {
         let s = test_storage();
         s.insert_result("0x01", "0xm", "0xi", "0xa", 1).unwrap();
 
-        // Allow only 1 request per minute
+        // Allow only 1 request per minute. Trust 192.168.0.0/16 as proxy.
         let rl_config = RateLimitConfig {
             max_requests: 1,
             window: std::time::Duration::from_secs(60),
         };
-        let app = build_app(s, test_broadcaster(), rl_config);
+        let trusted = TrustedProxyConfig::from_env_str("192.168.0.0/16");
+        let app = build_app_with_key(s, test_broadcaster(), rl_config, trusted, None);
 
-        // First request from IP 10.0.0.1 should succeed
-        let req = axum::http::Request::builder()
+        // First request from IP 10.0.0.1 (via trusted proxy) should succeed
+        let mut req = axum::http::Request::builder()
             .uri("/health")
             .header("x-forwarded-for", "10.0.0.1")
             .body(Body::empty())
             .unwrap();
+        req.extensions_mut()
+            .insert(axum::extract::ConnectInfo(std::net::SocketAddr::new(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 1)),
+                12345,
+            )));
         let resp = app.clone().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
 
         // Second request from same IP should be blocked
-        let req = axum::http::Request::builder()
+        let mut req = axum::http::Request::builder()
             .uri("/health")
             .header("x-forwarded-for", "10.0.0.1")
             .body(Body::empty())
             .unwrap();
+        req.extensions_mut()
+            .insert(axum::extract::ConnectInfo(std::net::SocketAddr::new(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 1)),
+                12345,
+            )));
         let resp = app.clone().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
 
         // Request from different IP should still succeed
-        let req = axum::http::Request::builder()
+        let mut req = axum::http::Request::builder()
             .uri("/health")
             .header("x-forwarded-for", "10.0.0.2")
             .body(Body::empty())
             .unwrap();
+        req.extensions_mut()
+            .insert(axum::extract::ConnectInfo(std::net::SocketAddr::new(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 1)),
+                12345,
+            )));
         let resp = app.clone().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
     }
@@ -1493,7 +1584,7 @@ mod tests {
             max_requests: 2,
             window: std::time::Duration::from_secs(60),
         };
-        let app = build_app(s, test_broadcaster(), rl_config);
+        let app = build_app_with_key(s, test_broadcaster(), rl_config, TrustedProxyConfig::default(), None);
 
         // Use up quota across different endpoints
         let req = axum::http::Request::builder()
@@ -1530,7 +1621,7 @@ mod tests {
     async fn test_admin_reset_auth_scenarios() {
         // --- Scenario 1: no ADMIN_API_KEY → route not registered → 404 ---
         std::env::remove_var("ADMIN_API_KEY");
-        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(test_storage(), test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .method("POST")
@@ -1542,7 +1633,7 @@ mod tests {
 
         // --- Scenario 2: wrong key → 401 ---
         std::env::set_var("ADMIN_API_KEY", "correct-secret-key");
-        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(test_storage(), test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .method("POST")
@@ -1555,7 +1646,7 @@ mod tests {
 
         // --- Scenario 3: valid key → 200 ---
         std::env::set_var("ADMIN_API_KEY", "test-admin-key-123");
-        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(test_storage(), test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .method("POST")
@@ -1573,7 +1664,7 @@ mod tests {
 
         // --- Scenario 4: env var unset → route not registered → 404 ---
         std::env::remove_var("ADMIN_API_KEY");
-        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(test_storage(), test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .method("POST")
@@ -1599,7 +1690,7 @@ mod tests {
             max_requests: 10,
             window: std::time::Duration::from_secs(60),
         };
-        let app = build_app(s, test_broadcaster(), rl_config);
+        let app = build_app_with_key(s, test_broadcaster(), rl_config, TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/health")
@@ -1644,7 +1735,7 @@ mod tests {
             max_requests: 5,
             window: std::time::Duration::from_secs(60),
         };
-        let app = build_app(s, test_broadcaster(), rl_config);
+        let app = build_app_with_key(s, test_broadcaster(), rl_config, TrustedProxyConfig::default(), None);
 
         // Make 3 requests and verify remaining decreases each time.
         for i in 0u32..3 {
@@ -1682,7 +1773,7 @@ mod tests {
             max_requests: 1,
             window: std::time::Duration::from_secs(60),
         };
-        let app = build_app(s, test_broadcaster(), rl_config);
+        let app = build_app_with_key(s, test_broadcaster(), rl_config, TrustedProxyConfig::default(), None);
 
         // First request succeeds.
         let req = axum::http::Request::builder()
@@ -1734,7 +1825,7 @@ mod tests {
             max_requests: 50,
             window: std::time::Duration::from_secs(60),
         };
-        let app = build_app(s, test_broadcaster(), rl_config);
+        let app = build_app_with_key(s, test_broadcaster(), rl_config, TrustedProxyConfig::default(), None);
 
         // Test on a versioned API endpoint (not just /health)
         let req = axum::http::Request::builder()
@@ -1784,7 +1875,7 @@ mod tests {
     async fn test_ready_returns_503_when_no_blocks_indexed() {
         let s = test_storage();
         // Do not set last_indexed_block -- defaults to 0
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/ready")
@@ -1808,7 +1899,7 @@ mod tests {
     async fn test_ready_returns_200_when_blocks_indexed() {
         let s = test_storage();
         s.set_last_indexed_block(42).unwrap();
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/ready")
@@ -1832,7 +1923,7 @@ mod tests {
         // "reason" when the service is ready (skip_serializing_if).
         let s = test_storage();
         s.set_last_indexed_block(10).unwrap();
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/ready")
@@ -1861,7 +1952,7 @@ mod tests {
             .store(true, std::sync::atomic::Ordering::SeqCst);
         let s: Arc<dyn super::super::Storage> = Arc::new(sqlite);
         s.set_last_indexed_block(100).unwrap();
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/ready")
@@ -1884,7 +1975,7 @@ mod tests {
     async fn test_ready_db_connectivity_check_passes() {
         let s = test_storage();
         s.set_last_indexed_block(5).unwrap();
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/ready")
@@ -1905,7 +1996,7 @@ mod tests {
     async fn test_ready_response_has_required_fields() {
         let s = test_storage();
         s.set_last_indexed_block(1).unwrap();
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/ready")
@@ -1932,7 +2023,7 @@ mod tests {
         s.insert_result("0x01", "0xm", "0xi", "0xa", 30).unwrap();
         s.insert_result("0x02", "0xm", "0xi", "0xa", 10).unwrap();
         s.insert_result("0x03", "0xm", "0xi", "0xa", 20).unwrap();
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results?sort_by=block_number&sort_order=asc")
@@ -1956,7 +2047,7 @@ mod tests {
         s.insert_result("0x01", "0xm", "0xi", "0xa", 30).unwrap();
         s.insert_result("0x02", "0xm", "0xi", "0xa", 10).unwrap();
         s.insert_result("0x03", "0xm", "0xi", "0xa", 20).unwrap();
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results?sort_by=block_number&sort_order=desc")
@@ -1982,7 +2073,7 @@ mod tests {
         s.insert_result("0x03", "0xm", "0xi", "0xa", 3).unwrap();
         s.update_result_status("0x02", "finalized", None).unwrap();
         s.update_result_status("0x03", "challenged", None).unwrap();
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results?sort_by=status&sort_order=asc")
@@ -2007,7 +2098,7 @@ mod tests {
             .unwrap();
         s.insert_result("0x02", "0xm", "0xi", "0xalice", 2).unwrap();
         s.insert_result("0x03", "0xm", "0xi", "0xbob", 3).unwrap();
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results?sort_by=submitter&sort_order=asc")
@@ -2032,7 +2123,7 @@ mod tests {
             .unwrap();
         s.insert_result("0x02", "0xm", "0xi", "0xalice", 2).unwrap();
         s.insert_result("0x03", "0xm", "0xi", "0xbob", 3).unwrap();
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results?sort_by=submitter&sort_order=desc")
@@ -2056,7 +2147,7 @@ mod tests {
         s.insert_result("0x01", "0xm", "0xi", "0xa", 10).unwrap();
         s.insert_result("0x02", "0xm", "0xi", "0xa", 50).unwrap();
         s.insert_result("0x03", "0xm", "0xi", "0xa", 30).unwrap();
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results")
@@ -2076,7 +2167,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalid_sort_by_returns_400() {
-        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(test_storage(), test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results?sort_by=nonexistent")
@@ -2097,7 +2188,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalid_sort_order_returns_400() {
-        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(test_storage(), test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results?sort_order=updown")
@@ -2122,7 +2213,7 @@ mod tests {
         s.insert_result("0x01", "0xm", "0xi", "0xa", 10).unwrap();
         s.insert_result("0x02", "0xm", "0xi", "0xa", 50).unwrap();
         s.insert_result("0x03", "0xm", "0xi", "0xa", 30).unwrap();
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results?sort_order=asc")
@@ -2170,7 +2261,7 @@ mod tests {
     async fn test_pagination_headers_present_on_list() {
         let s = test_storage();
         s.insert_result("0x01", "0xm", "0xi", "0xa", 1).unwrap();
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let (status, headers, _body) = get_with_headers(app, "/api/v1/results").await;
         assert_eq!(status, StatusCode::OK);
@@ -2191,7 +2282,7 @@ mod tests {
             s.insert_result(&format!("0x{:02x}", i), "0xm", "0xi", "0xa", i)
                 .unwrap();
         }
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let (status, headers, _body) = get_with_headers(app, "/api/v1/results?limit=2").await;
         assert_eq!(status, StatusCode::OK);
@@ -2216,7 +2307,7 @@ mod tests {
             s.insert_result(&format!("0x{:02x}", i), "0xm", "0xi", "0xa", i)
                 .unwrap();
         }
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let (status, headers, _body) = get_with_headers(app, "/api/v1/results?limit=3").await;
         assert_eq!(status, StatusCode::OK);
@@ -2232,7 +2323,7 @@ mod tests {
             s.insert_result(&format!("0x{:02x}", i), "0xm", "0xi", "0xa", i)
                 .unwrap();
         }
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let (status, headers, body) = get_with_headers(app, "/api/v1/results").await;
         assert_eq!(status, StatusCode::OK);
@@ -2251,7 +2342,7 @@ mod tests {
             s.insert_result(&format!("0x{:02x}", i), "0xm", "0xi", "0xa", i * 10)
                 .unwrap();
         }
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let (status, headers, body) =
             get_with_headers(app.clone(), "/api/v1/results?limit=2&offset=0").await;
@@ -2294,7 +2385,7 @@ mod tests {
             s.insert_result(&format!("0x{:02x}", i), "0xm", "0xi", "0xa", i * 10)
                 .unwrap();
         }
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let (status, _headers, body) =
             get_with_headers(app.clone(), "/api/v1/results?limit=2").await;
@@ -2330,7 +2421,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_offset_and_after_id_mutually_exclusive() {
-        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(test_storage(), test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results?offset=5&after_id=0x01")
@@ -2351,7 +2442,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_deep_pagination_rejected() {
-        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(test_storage(), test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results?offset=9500&limit=600")
@@ -2374,7 +2465,7 @@ mod tests {
     async fn test_offset_within_limit_accepted() {
         let s = test_storage();
         s.insert_result("0x01", "0xm", "0xi", "0xa", 1).unwrap();
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results?offset=100&limit=50")
@@ -2390,7 +2481,7 @@ mod tests {
         let s = test_storage();
         s.insert_result("0x01", "0xm", "0xi", "0xa", 1).unwrap();
         s.insert_result("0x02", "0xm", "0xi", "0xa", 2).unwrap();
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let (status, headers, body) = get_with_headers(app, "/api/v1/results").await;
         assert_eq!(status, StatusCode::OK);
@@ -2412,7 +2503,7 @@ mod tests {
         s.insert_result("0x03", "0xm", "0xi", "0xa", 3).unwrap();
         s.update_result_status("0x01", "finalized", None).unwrap();
         s.update_result_status("0x02", "finalized", None).unwrap();
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let (status, headers, body) =
             get_with_headers(app, "/api/v1/results?status=finalized&limit=1").await;
@@ -2439,7 +2530,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_after_id_too_long_returns_400() {
-        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(test_storage(), test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let long_id = "x".repeat(200);
         let req = axum::http::Request::builder()
@@ -2466,7 +2557,7 @@ mod tests {
             s.insert_result(&format!("0x{:02x}", i), "0xm", "0xi", "0xa", i * 10)
                 .unwrap();
         }
-        let app = build_app(s, test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(s, test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let (status, _headers, body) =
             get_with_headers(app, "/api/v1/results?limit=2&offset=1").await;
@@ -2486,7 +2577,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_model_hash_not_hex_returns_400() {
-        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(test_storage(), test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results?model_hash=not_a_hex_value")
@@ -2507,7 +2598,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_model_hash_valid_long_hex_accepted() {
-        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(test_storage(), test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results?model_hash=0xabcdef1234567890")
@@ -2520,7 +2611,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_model_hash_bare_0x_returns_400() {
-        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(test_storage(), test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results?model_hash=0x")
@@ -2541,7 +2632,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_after_id_bare_0x_returns_400() {
-        let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
+        let app = build_app_with_key(test_storage(), test_broadcaster(), test_rate_limit_config(), TrustedProxyConfig::default(), None);
 
         let req = axum::http::Request::builder()
             .uri("/api/v1/results?after_id=0x")
@@ -2558,5 +2649,74 @@ mod tests {
             "expected after_id validation error, got: {}",
             err.error
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // API key authentication tests
+    // -----------------------------------------------------------------------
+
+    /// Helper: build an app with the given API key baked in.
+    fn build_app_with_test_key(api_key: Option<&str>) -> Router {
+        build_app_with_key(
+            test_storage(),
+            test_broadcaster(),
+            test_rate_limit_config(),
+            TrustedProxyConfig::default(),
+            api_key.map(|s| s.to_string()),
+        )
+    }
+
+    #[tokio::test]
+    async fn test_api_key_no_env_passes_through() {
+        // When no API key is configured, requests pass through
+        let app = build_app_with_test_key(None);
+        let resp = app
+            .oneshot(Request::builder().uri("/api/v1/stats").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_api_key_rejects_wrong_key() {
+        let app = build_app_with_test_key(Some("test-secret-key"));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/stats")
+                    .header("Authorization", "Bearer wrong-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_api_key_accepts_correct_key() {
+        let app = build_app_with_test_key(Some("test-secret-key"));
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/stats")
+                    .header("Authorization", "Bearer test-secret-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_api_key_health_always_public() {
+        // /health should be accessible even when API key is configured
+        let app = build_app_with_test_key(Some("test-secret-key"));
+        let resp = app
+            .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 }

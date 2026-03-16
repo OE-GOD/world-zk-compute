@@ -13,6 +13,22 @@ import {GKRDAGVerifier} from "./GKRDAGVerifier.sol";
 ///      On-chain verifies: EC equation checks (alpha MSM, oracle eval, PODP, PoP, input PODP).
 library GKRDAGHybridVerifier {
     // ========================================================================
+    // ERRORS
+    // ========================================================================
+
+    error PoPFailed();
+    error PODPEq1Failed();
+    error PODPEq2Failed();
+    error InputPODPEq1Failed();
+    error InputPODPEq2Failed();
+    error PublicClaimCommitmentMismatch();
+    error PedersenOpeningInvalid();
+    error MleEvalMismatch();
+    error OnChainMLEMismatch();
+    error NotEnoughCommitsForPoP();
+    error Log2OfZero();
+
+    // ========================================================================
     // CONSTANTS
     // ========================================================================
 
@@ -428,7 +444,7 @@ library GKRDAGHybridVerifier {
 
         // PoP verification (per-PoP challenges)
         if (lp.pops.length > 0) {
-            require(_verifyLayerPoPs(lp, layerCh.popChallenges, gens), "DAGHybrid: PoP failed");
+            if (!_verifyLayerPoPs(lp, layerCh.popChallenges, gens)) revert PoPFailed();
         }
     }
 
@@ -448,7 +464,7 @@ library GKRDAGHybridVerifier {
             _msmWithTruncatedGens(gens.messageGens, podp.zVector),
             HyraxVerifier.scalarMul(gens.blindingGen, podp.zDelta)
         );
-        require(HyraxVerifier.isEqual(lhs1, comZ), "DAGHybrid: PODP Eq1 failed");
+        if (!HyraxVerifier.isEqual(lhs1, comZ)) revert PODPEq1Failed();
 
         // Eq2: c * dotProduct + commitDDotA == zDotJStar * g_scalar + z_beta * h
         HyraxVerifier.G1Point memory lhs2 =
@@ -456,7 +472,7 @@ library GKRDAGHybridVerifier {
         HyraxVerifier.G1Point memory comZDotA = HyraxVerifier.ecAdd(
             HyraxVerifier.scalarMul(gens.scalarGen, zDotJStar), HyraxVerifier.scalarMul(gens.blindingGen, podp.zBeta)
         );
-        require(HyraxVerifier.isEqual(lhs2, comZDotA), "DAGHybrid: PODP Eq2 failed");
+        if (!HyraxVerifier.isEqual(lhs2, comZDotA)) revert PODPEq2Failed();
     }
 
     /// @dev Context for input layer EC verification (avoids stack-too-deep).
@@ -568,7 +584,7 @@ library GKRDAGHybridVerifier {
             _msmWithTruncatedGens(gens.messageGens, podp.zVector),
             HyraxVerifier.scalarMul(gens.blindingGen, podp.zDelta)
         );
-        require(HyraxVerifier.isEqual(lhs1, comZ), "DAGHybrid: Input PODP Eq1 failed");
+        if (!HyraxVerifier.isEqual(lhs1, comZ)) revert InputPODPEq1Failed();
 
         // Eq2: c * comY + commitDDotA == zDotR * g_scalar + z_beta * h
         HyraxVerifier.G1Point memory lhs2 =
@@ -576,7 +592,7 @@ library GKRDAGHybridVerifier {
         HyraxVerifier.G1Point memory comZDotA = HyraxVerifier.ecAdd(
             HyraxVerifier.scalarMul(gens.scalarGen, zDotR), HyraxVerifier.scalarMul(gens.blindingGen, podp.zBeta)
         );
-        require(HyraxVerifier.isEqual(lhs2, comZDotA), "DAGHybrid: Input PODP Eq2 failed");
+        if (!HyraxVerifier.isEqual(lhs2, comZDotA)) revert InputPODPEq2Failed();
     }
 
     /// @notice Context for public value claim verification (avoids stack-too-deep).
@@ -648,25 +664,24 @@ library GKRDAGHybridVerifier {
 
         // 1. Commitment consistency
         uint256 commitIdx = ctx.desc.atomCommitIdxs[atomIdx];
-        require(
-            HyraxVerifier.isEqual(claim.commitment, ctx.proof.layerProofs[sourceLayer].commitments[commitIdx]),
-            "DAGHybrid: public claim commitment mismatch"
-        );
+        if (!HyraxVerifier.isEqual(claim.commitment, ctx.proof.layerProofs[sourceLayer].commitments[commitIdx])) {
+            revert PublicClaimCommitmentMismatch();
+        }
 
         // 2. Pedersen opening: g*value + h*blinding == commitment
         HyraxVerifier.G1Point memory expected = HyraxVerifier.ecAdd(
             HyraxVerifier.scalarMul(ctx.gens.scalarGen, claim.value),
             HyraxVerifier.scalarMul(ctx.gens.blindingGen, claim.blinding)
         );
-        require(HyraxVerifier.isEqual(expected, claim.commitment), "DAGHybrid: Pedersen opening invalid");
+        if (!HyraxVerifier.isEqual(expected, claim.commitment)) revert PedersenOpeningInvalid();
 
         // 3. MLE eval from Groth16 matches claim value
-        require(ctx.mleEval[claimIdx] == claim.value, "DAGHybrid: mleEval mismatch");
+        if (ctx.mleEval[claimIdx] != claim.value) revert MleEvalMismatch();
 
         // 4. Defense-in-depth: verify MLE on-chain too
         uint256[] memory claimPoint = _resolvePoint(atomIdx, ctx.allBindings[sourceLayer], ctx.desc);
         uint256 onChainMle = GKRDAGVerifier.evaluateMLEFromData(ctx.publicInputs, claimPoint);
-        require(onChainMle == claim.value, "DAGHybrid: on-chain MLE mismatch");
+        if (onChainMle != claim.value) revert OnChainMLEMismatch();
     }
 
     // ========================================================================
@@ -988,7 +1003,7 @@ library GKRDAGHybridVerifier {
 
         uint256 commitIdx = 0;
         for (uint256 i = 0; i < layerProof.pops.length; i++) {
-            require(commitIdx + 2 < layerProof.commitments.length, "DAGHybrid: not enough commits for PoP");
+            if (commitIdx + 2 >= layerProof.commitments.length) revert NotEnoughCommitsForPoP();
 
             if (!_popCheckEquations(
                     layerProof.pops[i],
@@ -1155,7 +1170,7 @@ library GKRDAGHybridVerifier {
 
     /// @notice floor(log2(x)) for x > 0
     function _log2(uint256 x) private pure returns (uint256 result) {
-        require(x > 0, "GKRDAGHybrid: log2(0)");
+        if (x == 0) revert Log2OfZero();
         result = 0;
         uint256 v = x;
         while (v > 1) {

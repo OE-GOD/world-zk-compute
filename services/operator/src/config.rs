@@ -1,4 +1,5 @@
 use alloy::primitives::keccak256;
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 
 /// Configuration for a single model in the registry.
@@ -85,6 +86,8 @@ pub struct ConfigFile {
     pub prover_retry_delay_secs: Option<u64>,
     /// Prover-specific retry: maximum delay in seconds (backoff cap). Default: 300.
     pub prover_retry_max_delay_secs: Option<u64>,
+    /// Bind address for the metrics HTTP server. Default: "127.0.0.1".
+    pub metrics_bind_addr: Option<String>,
 }
 
 impl ConfigFile {
@@ -108,7 +111,10 @@ impl ConfigFile {
 #[derive(Debug)]
 pub struct Config {
     pub rpc_url: String,
-    pub private_key: String,
+    /// Private key for signing on-chain transactions.
+    /// Wrapped in `SecretString` to prevent accidental logging and ensure
+    /// the value is zeroized on drop.
+    pub private_key: SecretString,
     pub tee_verifier_address: String,
     pub enclave_url: String,
     /// Legacy single model path. Kept for backward compatibility.
@@ -172,6 +178,9 @@ pub struct Config {
     /// Used as default when `--metrics-port` CLI flag is not provided.
     /// Env var: `METRICS_PORT`. Default: 9090.
     pub metrics_port: u16,
+    /// Bind address for the metrics HTTP server.
+    /// Env var: `METRICS_BIND_ADDR`. Default: "127.0.0.1".
+    pub metrics_bind_addr: String,
     /// Dry-run mode: simulate the full flow without sending on-chain transactions.
     /// Used as default when `--dry-run` CLI flag is not provided.
     /// Env var: `DRY_RUN`. Default: false.
@@ -207,14 +216,15 @@ impl Config {
         };
 
         // Helper: env var wins, then config file, then default.
-        let private_key = std::env::var("OPERATOR_PRIVATE_KEY")
+        let private_key: SecretString = std::env::var("OPERATOR_PRIVATE_KEY")
             .ok()
             .or(file_cfg.private_key)
             .ok_or_else(|| {
                 anyhow::anyhow!(
                     "OPERATOR_PRIVATE_KEY is required (set env var or private_key in config file)"
                 )
-            })?;
+            })?
+            .into();
 
         let tee_verifier_address = std::env::var("TEE_VERIFIER_ADDRESS")
             .ok()
@@ -408,6 +418,11 @@ impl Config {
             .or(file_cfg.metrics_port)
             .unwrap_or(9090);
 
+        let metrics_bind_addr = std::env::var("METRICS_BIND_ADDR")
+            .ok()
+            .or(file_cfg.metrics_bind_addr)
+            .unwrap_or_else(|| "127.0.0.1".to_string());
+
         let prover_url = std::env::var("PROVER_URL").ok().or(file_cfg.prover_url);
 
         let config = Self {
@@ -440,6 +455,7 @@ impl Config {
             escalation_timeout_secs,
             dry_run,
             metrics_port,
+            metrics_bind_addr,
             prover_url,
         };
 
@@ -581,17 +597,17 @@ impl Config {
         }
 
         // 2. Private key must be valid hex (64 chars or 0x-prefixed 66 chars)
-        if !self.private_key.is_empty() {
-            let stripped = self
-                .private_key
-                .strip_prefix("0x")
-                .unwrap_or(&self.private_key);
-            if stripped.len() != 64 || !stripped.chars().all(|c| c.is_ascii_hexdigit()) {
-                errors.push(
-                    "private_key is invalid: must be 64 hex characters \
-                     (or 0x-prefixed 66 characters)"
-                        .to_string(),
-                );
+        {
+            let pk = self.private_key.expose_secret();
+            if !pk.is_empty() {
+                let stripped = pk.strip_prefix("0x").unwrap_or(pk);
+                if stripped.len() != 64 || !stripped.chars().all(|c| c.is_ascii_hexdigit()) {
+                    errors.push(
+                        "private_key is invalid: must be 64 hex characters \
+                         (or 0x-prefixed 66 characters)"
+                            .to_string(),
+                    );
+                }
             }
         }
 
@@ -801,7 +817,7 @@ impl Config {
 
         // private_key: should not be empty (from_env already requires it,
         // but guard against future changes)
-        if self.private_key.is_empty() {
+        if self.private_key.expose_secret().is_empty() {
             errors.push(
                 "OPERATOR_PRIVATE_KEY is required but empty. \
                  Set the env var or private_key in the config file."
@@ -1021,7 +1037,7 @@ proof_retry_delay_secs = 20
         let config = Config::from_env(Some(&path)).unwrap();
         assert_eq!(config.rpc_url, "https://from-toml.example.com");
         assert_eq!(
-            config.private_key,
+            config.private_key.expose_secret(),
             "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
         );
         assert_eq!(
@@ -1083,7 +1099,7 @@ metrics_port = 8888
         // Env vars should win
         assert_eq!(config.rpc_url, "https://from-env.example.com");
         assert_eq!(
-            config.private_key,
+            config.private_key.expose_secret(),
             "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
         );
         assert_eq!(
@@ -2208,7 +2224,8 @@ rpc_url = "https://rpc.example.com"
         Config {
             rpc_url: "https://rpc.example.com".to_string(),
             private_key: "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
-                .to_string(),
+                .to_string()
+                .into(),
             tee_verifier_address: "0x1111111111111111111111111111111111111111".to_string(),
             enclave_url: "http://127.0.0.1:8080".to_string(),
             model_path: "./model.json".to_string(),
@@ -2241,6 +2258,7 @@ rpc_url = "https://rpc.example.com"
             escalation_timeout_secs: 900,
             prover_url: None,
             metrics_port: 9090,
+            metrics_bind_addr: "127.0.0.1".to_string(),
             dry_run: false,
         }
     }
@@ -2255,7 +2273,7 @@ rpc_url = "https://rpc.example.com"
     fn test_validate_valid_config_with_0x_private_key() {
         let mut config = make_valid_config();
         config.private_key =
-            "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890".to_string();
+            "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890".to_string().into();
         assert!(config.validate().is_ok());
     }
 
@@ -2292,7 +2310,7 @@ rpc_url = "https://rpc.example.com"
     #[test]
     fn test_validate_invalid_private_key_too_short() {
         let mut config = make_valid_config();
-        config.private_key = "abcdef".to_string();
+        config.private_key = "abcdef".to_string().into();
         let errors = config.validate().unwrap_err();
         assert!(errors.iter().any(|e| e.contains("private_key")));
     }
@@ -2301,7 +2319,7 @@ rpc_url = "https://rpc.example.com"
     fn test_validate_invalid_private_key_non_hex() {
         let mut config = make_valid_config();
         config.private_key =
-            "zzzzzz1234567890abcdef1234567890abcdef1234567890abcdef1234567890".to_string();
+            "zzzzzz1234567890abcdef1234567890abcdef1234567890abcdef1234567890".to_string().into();
         let errors = config.validate().unwrap_err();
         assert!(errors.iter().any(|e| e.contains("private_key")));
     }
@@ -2569,7 +2587,7 @@ escalation_timeout_secs = 300
     fn test_validate_multiple_errors() {
         let mut config = make_valid_config();
         config.rpc_url = "bad-url".to_string();
-        config.private_key = "short".to_string();
+        config.private_key = "short".to_string().into();
         config.tee_verifier_address = "bad-addr".to_string();
         config.contract_addresses = vec!["bad-addr".to_string()];
         let errors = config.validate().unwrap_err();

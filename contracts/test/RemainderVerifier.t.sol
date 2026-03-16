@@ -3730,7 +3730,7 @@ contract GKRHybridVerifierTest is Test {
         // The mleEval defense-in-depth check passes (on-chain MLE matches Groth16 output).
         // But the claim commitment check fails because the fixture's final layer commitment
         // is a Hyrax commitment (committed input), not scalarMul(g, mleEval).
-        vm.expectRevert("Hybrid: public input claim mismatch");
+        vm.expectRevert(GKRHybridVerifier.PublicInputClaimMismatch.selector);
         freshVerifier.verifyWithGroth16(innerProof, circuitHash, publicValuesAbi, gensHex, groth16Proof, groth16Outputs);
     }
 
@@ -3766,7 +3766,7 @@ contract GKRHybridVerifierTest is Test {
 
         // Should NOT revert with "Hybrid: layer 0 must be committed" — that constraint is removed.
         // It will revert at the claim commitment check (fixture has Hyrax commitment, not scalar).
-        vm.expectRevert("Hybrid: public input claim mismatch");
+        vm.expectRevert(GKRHybridVerifier.PublicInputClaimMismatch.selector);
         freshVerifier.verifyWithGroth16(innerProof, circuitHash, publicValuesAbi, gensHex, groth16Proof, groth16Outputs);
     }
 

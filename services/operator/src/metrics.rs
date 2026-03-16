@@ -278,7 +278,7 @@ async fn json_metrics_handler(State(state): State<Arc<MetricsState>>) -> Json<Me
 ///
 /// It should be spawned as a background task via `tokio::spawn`.
 #[allow(dead_code)]
-pub async fn serve_metrics(state: Arc<MetricsState>, port: u16) {
+pub async fn serve_metrics(state: Arc<MetricsState>, port: u16, bind_addr: &str) {
     // Versioned API routes under /api/v1/ with X-API-Version header
     let versioned = Router::new()
         .route("/health", get(health_handler))
@@ -297,7 +297,7 @@ pub async fn serve_metrics(state: Arc<MetricsState>, port: u16) {
         .nest("/api/v1", versioned)
         .with_state(state);
 
-    let addr = format!("0.0.0.0:{}", port);
+    let addr = format!("{}:{}", bind_addr, port);
     tracing::info!("Metrics server listening on {}", addr);
 
     let listener = match tokio::net::TcpListener::bind(&addr).await {
@@ -322,6 +322,7 @@ pub async fn serve_metrics(state: Arc<MetricsState>, port: u16) {
 pub async fn serve_metrics_with_shutdown(
     state: Arc<MetricsState>,
     port: u16,
+    bind_addr: &str,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) {
     let versioned = Router::new()
@@ -339,7 +340,7 @@ pub async fn serve_metrics_with_shutdown(
         .nest("/api/v1", versioned)
         .with_state(state.clone());
 
-    let addr = format!("0.0.0.0:{}", port);
+    let addr = format!("{}:{}", bind_addr, port);
     tracing::info!("Metrics server (with shutdown) listening on {}", addr);
 
     let listener = match tokio::net::TcpListener::bind(&addr).await {

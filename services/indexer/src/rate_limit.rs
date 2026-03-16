@@ -12,6 +12,7 @@
 
 use axum::body::Body;
 use axum::http::{HeaderValue, Request, Response, StatusCode};
+use ipnet::IpNet;
 use std::collections::HashMap;
 use std::future::Future;
 use std::net::IpAddr;
@@ -50,18 +51,69 @@ impl Default for RateLimitConfig {
     }
 }
 
+/// Configuration for trusted reverse proxies.
+///
+/// When the peer (socket) IP matches a trusted proxy CIDR, the
+/// `X-Forwarded-For` / `X-Real-IP` headers are honoured. Otherwise
+/// only the socket address is used, preventing header-spoofing attacks.
+#[derive(Debug, Clone)]
+pub struct TrustedProxyConfig {
+    /// CIDR ranges that are trusted reverse proxies.
+    trusted_cidrs: Vec<IpNet>,
+}
+
+impl TrustedProxyConfig {
+    /// Parse a comma-separated list of CIDR ranges (e.g. "10.0.0.0/8,172.16.0.0/12").
+    /// Skips invalid entries with a warning.
+    pub fn from_env_str(s: &str) -> Self {
+        let trusted_cidrs: Vec<IpNet> = s
+            .split(',')
+            .map(|c| c.trim())
+            .filter(|c| !c.is_empty())
+            .filter_map(|c| match c.parse::<IpNet>() {
+                Ok(net) => Some(net),
+                Err(e) => {
+                    tracing::warn!("Ignoring invalid trusted proxy CIDR '{}': {}", c, e);
+                    None
+                }
+            })
+            .collect();
+        Self { trusted_cidrs }
+    }
+
+    /// Create an empty config (no proxies trusted -- fail-secure default).
+    pub fn none() -> Self {
+        Self {
+            trusted_cidrs: Vec::new(),
+        }
+    }
+
+    /// Returns `true` if the given IP falls within any trusted CIDR.
+    pub fn is_trusted(&self, ip: IpAddr) -> bool {
+        self.trusted_cidrs.iter().any(|net| net.contains(&ip))
+    }
+}
+
+impl Default for TrustedProxyConfig {
+    fn default() -> Self {
+        Self::none()
+    }
+}
+
 /// Shared state for the rate limiter, tracking per-IP request timestamps.
 #[derive(Clone)]
 pub struct RateLimitState {
     config: RateLimitConfig,
+    trusted_proxies: TrustedProxyConfig,
     /// Map from IP address to list of request timestamps within the window.
     requests: Arc<Mutex<HashMap<IpAddr, Vec<Instant>>>>,
 }
 
 impl RateLimitState {
-    pub fn new(config: RateLimitConfig) -> Self {
+    pub fn new(config: RateLimitConfig, trusted_proxies: TrustedProxyConfig) -> Self {
         Self {
             config,
+            trusted_proxies,
             requests: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -133,8 +185,8 @@ pub struct RateLimitLayer {
 }
 
 impl RateLimitLayer {
-    pub fn new(config: RateLimitConfig) -> Self {
-        let state = RateLimitState::new(config);
+    pub fn new(config: RateLimitConfig, trusted_proxies: TrustedProxyConfig) -> Self {
+        let state = RateLimitState::new(config, trusted_proxies);
 
         // Spawn a background cleanup task every 60 seconds to prevent memory leaks
         let cleanup_state = state.clone();
@@ -152,9 +204,9 @@ impl RateLimitLayer {
     /// Create a layer without spawning the background cleanup task.
     /// Useful for tests where a tokio runtime may not be available at
     /// construction time.
-    pub fn new_without_cleanup(config: RateLimitConfig) -> Self {
+    pub fn new_without_cleanup(config: RateLimitConfig, trusted_proxies: TrustedProxyConfig) -> Self {
         Self {
-            state: RateLimitState::new(config),
+            state: RateLimitState::new(config, trusted_proxies),
         }
     }
 }
@@ -177,43 +229,46 @@ pub struct RateLimitService<S> {
     state: RateLimitState,
 }
 
-/// Extract client IP from the request.
+/// Extract client IP from the request, only trusting proxy headers from
+/// verified trusted proxies.
 ///
-/// Checks (in order):
-/// 1. `X-Forwarded-For` header (first IP)
-/// 2. `X-Real-IP` header
-/// 3. Connected peer address from axum's `ConnectInfo`
-/// 4. Fallback to 127.0.0.1
-fn extract_client_ip<B>(req: &Request<B>) -> IpAddr {
-    // Try X-Forwarded-For first
-    if let Some(forwarded) = req.headers().get("x-forwarded-for") {
-        if let Ok(value) = forwarded.to_str() {
-            if let Some(first) = value.split(',').next() {
-                if let Ok(ip) = first.trim().parse::<IpAddr>() {
-                    return ip;
+/// When the peer IP is within a trusted proxy CIDR range, `X-Forwarded-For`
+/// and `X-Real-IP` headers are honoured. Otherwise, only the socket address
+/// is used.
+fn extract_client_ip<B>(req: &Request<B>, trusted_proxies: &TrustedProxyConfig) -> IpAddr {
+    // Get peer IP from socket first
+    let peer_ip = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|ci| ci.0.ip());
+
+    // Only trust proxy headers if peer is a trusted proxy
+    if let Some(peer) = peer_ip {
+        if trusted_proxies.is_trusted(peer) {
+            // Try X-Forwarded-For first
+            if let Some(forwarded) = req.headers().get("x-forwarded-for") {
+                if let Ok(value) = forwarded.to_str() {
+                    if let Some(first) = value.split(',').next() {
+                        if let Ok(ip) = first.trim().parse::<IpAddr>() {
+                            return ip;
+                        }
+                    }
+                }
+            }
+
+            // Try X-Real-IP
+            if let Some(real_ip) = req.headers().get("x-real-ip") {
+                if let Ok(value) = real_ip.to_str() {
+                    if let Ok(ip) = value.trim().parse::<IpAddr>() {
+                        return ip;
+                    }
                 }
             }
         }
+        return peer;
     }
 
-    // Try X-Real-IP
-    if let Some(real_ip) = req.headers().get("x-real-ip") {
-        if let Ok(value) = real_ip.to_str() {
-            if let Ok(ip) = value.trim().parse::<IpAddr>() {
-                return ip;
-            }
-        }
-    }
-
-    // Try ConnectInfo (axum extension)
-    if let Some(connect_info) = req
-        .extensions()
-        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-    {
-        return connect_info.0.ip();
-    }
-
-    // Fallback
+    // No ConnectInfo and no trusted proxy -- fallback
     IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
 }
 
@@ -263,7 +318,7 @@ where
     }
 
     fn call(&mut self, req: Request<Body>) -> Self::Future {
-        let ip = extract_client_ip(&req);
+        let ip = extract_client_ip(&req, &self.state.trusted_proxies);
 
         match self.state.check(ip) {
             Ok(info) => {
@@ -306,7 +361,7 @@ mod tests {
         let state = RateLimitState::new(RateLimitConfig {
             max_requests: 5,
             window: Duration::from_secs(60),
-        });
+        }, TrustedProxyConfig::default());
 
         let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         for i in 0..5u32 {
@@ -321,7 +376,7 @@ mod tests {
         let state = RateLimitState::new(RateLimitConfig {
             max_requests: 3,
             window: Duration::from_secs(60),
-        });
+        }, TrustedProxyConfig::default());
 
         let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         for _ in 0..3 {
@@ -342,7 +397,7 @@ mod tests {
         let state = RateLimitState::new(RateLimitConfig {
             max_requests: 2,
             window: Duration::from_secs(60),
-        });
+        }, TrustedProxyConfig::default());
 
         let ip1 = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         let ip2 = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
@@ -363,7 +418,7 @@ mod tests {
         let state = RateLimitState::new(RateLimitConfig {
             max_requests: 100,
             window: Duration::from_secs(0), // instant expiry for testing
-        });
+        }, TrustedProxyConfig::default());
 
         let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         state.check(ip).ok();
@@ -376,23 +431,39 @@ mod tests {
 
     #[test]
     fn test_extract_ip_from_x_forwarded_for() {
-        let req = Request::builder()
+        let trusted = TrustedProxyConfig::from_env_str("10.0.0.0/8");
+
+        let mut req = Request::builder()
             .header("x-forwarded-for", "203.0.113.50, 70.41.3.18")
             .body(Body::empty())
             .unwrap();
+        // Insert ConnectInfo for a trusted proxy
+        req.extensions_mut()
+            .insert(axum::extract::ConnectInfo(std::net::SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+                12345,
+            )));
 
-        let ip = extract_client_ip(&req);
+        let ip = extract_client_ip(&req, &trusted);
         assert_eq!(ip, IpAddr::V4(Ipv4Addr::new(203, 0, 113, 50)));
     }
 
     #[test]
     fn test_extract_ip_from_x_real_ip() {
-        let req = Request::builder()
+        let trusted = TrustedProxyConfig::from_env_str("10.0.0.0/8");
+
+        let mut req = Request::builder()
             .header("x-real-ip", "198.51.100.42")
             .body(Body::empty())
             .unwrap();
+        // Insert ConnectInfo for a trusted proxy
+        req.extensions_mut()
+            .insert(axum::extract::ConnectInfo(std::net::SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+                12345,
+            )));
 
-        let ip = extract_client_ip(&req);
+        let ip = extract_client_ip(&req, &trusted);
         assert_eq!(ip, IpAddr::V4(Ipv4Addr::new(198, 51, 100, 42)));
     }
 
@@ -400,8 +471,62 @@ mod tests {
     fn test_extract_ip_fallback() {
         let req = Request::builder().body(Body::empty()).unwrap();
 
-        let ip = extract_client_ip(&req);
+        let ip = extract_client_ip(&req, &TrustedProxyConfig::none());
         assert_eq!(ip, IpAddr::V4(Ipv4Addr::LOCALHOST));
+    }
+
+    #[test]
+    fn test_extract_ip_xff_ignored_from_untrusted_peer() {
+        // Request has XFF but peer is not trusted -- should use fallback
+        let req = Request::builder()
+            .header("x-forwarded-for", "203.0.113.50, 70.41.3.18")
+            .body(Body::empty())
+            .unwrap();
+
+        let trusted = TrustedProxyConfig::none();
+        let ip = extract_client_ip(&req, &trusted);
+        // No ConnectInfo, so fallback to localhost
+        assert_eq!(ip, IpAddr::V4(Ipv4Addr::LOCALHOST));
+    }
+
+    #[test]
+    fn test_extract_ip_xff_honored_from_trusted_peer() {
+        let trusted = TrustedProxyConfig::from_env_str("10.0.0.0/8");
+
+        let mut req = Request::builder()
+            .header("x-forwarded-for", "203.0.113.50, 10.0.0.1")
+            .body(Body::empty())
+            .unwrap();
+        // Insert ConnectInfo for a trusted proxy
+        req.extensions_mut()
+            .insert(axum::extract::ConnectInfo(std::net::SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+                12345,
+            )));
+
+        let ip = extract_client_ip(&req, &trusted);
+        assert_eq!(ip, IpAddr::V4(Ipv4Addr::new(203, 0, 113, 50)));
+    }
+
+    #[test]
+    fn test_trusted_proxy_config_parsing() {
+        let config = TrustedProxyConfig::from_env_str("10.0.0.0/8, 172.16.0.0/12");
+        assert!(config.is_trusted(IpAddr::V4(Ipv4Addr::new(10, 1, 2, 3))));
+        assert!(config.is_trusted(IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1))));
+        assert!(!config.is_trusted(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))));
+    }
+
+    #[test]
+    fn test_trusted_proxy_config_empty() {
+        let config = TrustedProxyConfig::none();
+        assert!(!config.is_trusted(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
+    }
+
+    #[test]
+    fn test_trusted_proxy_config_invalid_cidr_skipped() {
+        let config = TrustedProxyConfig::from_env_str("10.0.0.0/8, not-a-cidr, 172.16.0.0/12");
+        assert!(config.is_trusted(IpAddr::V4(Ipv4Addr::new(10, 1, 2, 3))));
+        assert!(config.is_trusted(IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1))));
     }
 
     #[test]
@@ -463,7 +588,7 @@ mod tests {
         let state = RateLimitState::new(RateLimitConfig {
             max_requests: 10,
             window: Duration::from_secs(60),
-        });
+        }, TrustedProxyConfig::default());
 
         let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
 

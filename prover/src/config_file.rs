@@ -21,6 +21,7 @@
 //! port = 9090
 //! ```
 
+use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tracing::info;
@@ -47,9 +48,11 @@ pub struct Config {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProverSection {
-    /// Private key for signing transactions (env: PRIVATE_KEY)
+    /// Private key for signing transactions (env: PRIVATE_KEY).
+    /// Wrapped in `SecretString` to prevent accidental logging and ensure
+    /// the value is zeroized on drop.
     #[serde(skip_serializing)]
-    pub private_key: Option<String>,
+    pub private_key: Option<SecretString>,
     /// RPC URL for World Chain (env: RPC_URL)
     pub rpc_url: String,
     /// Execution Engine contract address
@@ -81,9 +84,11 @@ impl Default for ProverSection {
 pub struct ProvingSection {
     /// Proving mode: local, bonsai, hybrid
     pub mode: String,
-    /// Bonsai API key (env: BONSAI_API_KEY)
-    #[serde(skip_serializing)]
-    pub bonsai_api_key: Option<String>,
+    /// Bonsai API key (env: BONSAI_API_KEY).
+    /// Wrapped in `SecretString` to prevent accidental logging and ensure
+    /// the value is zeroized on drop.
+    #[serde(skip_serializing, skip_deserializing)]
+    pub bonsai_api_key: Option<SecretString>,
     /// Maximum concurrent proofs
     pub max_concurrent: usize,
     /// Enable GPU acceleration
@@ -225,7 +230,7 @@ impl Config {
     fn apply_env_overrides(&mut self) {
         // Private key
         if let Ok(key) = std::env::var("PRIVATE_KEY") {
-            self.prover.private_key = Some(key);
+            self.prover.private_key = Some(key.into());
         }
 
         // RPC URL
@@ -240,7 +245,7 @@ impl Config {
 
         // Bonsai API key
         if let Ok(key) = std::env::var("BONSAI_API_KEY") {
-            self.proving.bonsai_api_key = Some(key);
+            self.proving.bonsai_api_key = Some(key.into());
         }
 
         // Log level
@@ -378,7 +383,7 @@ port = 8080
     #[test]
     fn test_validation_invalid_mode() {
         let mut config = Config::default();
-        config.prover.private_key = Some("0x123".to_string());
+        config.prover.private_key = Some("0x123".to_string().into());
         config.proving.mode = "invalid".to_string();
         assert!(config.validate().is_err());
     }
@@ -386,7 +391,7 @@ port = 8080
     #[test]
     fn test_validation_bonsai_without_key() {
         let mut config = Config::default();
-        config.prover.private_key = Some("0x123".to_string());
+        config.prover.private_key = Some("0x123".to_string().into());
         config.proving.mode = "bonsai".to_string();
         config.proving.bonsai_api_key = None;
         assert!(config.validate().is_err());
@@ -395,7 +400,7 @@ port = 8080
     #[test]
     fn test_validation_success() {
         let mut config = Config::default();
-        config.prover.private_key = Some("0x123".to_string());
+        config.prover.private_key = Some("0x123".to_string().into());
         assert!(config.validate().is_ok());
     }
 

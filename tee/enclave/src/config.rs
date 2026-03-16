@@ -1,6 +1,7 @@
 //! Configuration for the TEE enclave application.
 
 use crate::model::ModelFormat;
+use secrecy::SecretString;
 
 /// Application configuration, loaded from environment variables.
 pub struct Config {
@@ -11,7 +12,7 @@ pub struct Config {
     /// HTTP server port.
     pub port: u16,
     /// Optional hex-encoded private key. If not set, a random key is generated.
-    pub private_key: Option<String>,
+    pub private_key: Option<SecretString>,
     /// Whether to use real AWS Nitro attestation.
     /// When true and no private key is set, a random key is generated and
     /// bound to the enclave image via Nitro attestation.
@@ -60,7 +61,7 @@ impl Config {
             if trimmed.is_empty() {
                 None
             } else {
-                Some(trimmed)
+                Some(SecretString::from(trimmed))
             }
         });
 

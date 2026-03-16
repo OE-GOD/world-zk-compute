@@ -89,7 +89,7 @@ contract StylusAdapterTest is Test {
     /// @notice Test setting Stylus verifier for unregistered circuit reverts
     function test_set_stylus_verifier_unregistered_reverts() public {
         bytes32 unknownHash = bytes32(uint256(0xdead));
-        vm.expectRevert("DAG circuit not registered");
+        vm.expectRevert(RemainderVerifier.DAGCircuitNotRegistered.selector);
         verifier.setDAGStylusVerifier(unknownHash, address(mockStylus));
     }
 
@@ -154,7 +154,7 @@ contract StylusAdapterTest is Test {
         // forge-lint: disable-next-line(unsafe-typecast)
         bytes memory proof = abi.encodePacked(bytes4("REM1"), bytes32(uint256(1)));
 
-        vm.expectRevert("Stylus verifier not configured");
+        vm.expectRevert(RemainderVerifier.StylusVerifierNotConfigured.selector);
         verifier.verifyDAGProofStylus(proof, circuitHash, new bytes(0), new bytes(0));
     }
 

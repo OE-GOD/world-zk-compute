@@ -18,6 +18,13 @@ import {HyraxVerifier} from "./HyraxVerifier.sol";
 ///      5. Verify PODP(alpha, dot_product, j_star)
 library CommittedSumcheckVerifier {
     // ========================================================================
+    // ERRORS
+    // ========================================================================
+
+    error BindingsLengthMismatch();
+    error InverseOfZero();
+
+    // ========================================================================
     // CONSTANTS
     // ========================================================================
 
@@ -57,7 +64,7 @@ library CommittedSumcheckVerifier {
         PoseidonSponge.Sponge memory sponge
     ) internal view returns (bool valid) {
         uint256 n = proof.messages.length;
-        require(bindings.length == n, "CommittedSumcheck: bindings length mismatch");
+        if (bindings.length != n) revert BindingsLengthMismatch();
 
         // Step 1: Squeeze rho challenges (n+1 values for batching rows)
         uint256[] memory rhos = new uint256[](n + 1);
@@ -190,7 +197,7 @@ library CommittedSumcheckVerifier {
 
     /// @notice Modular inverse via Fermat's little theorem: a^(p-2) mod p
     function modInverse(uint256 a, uint256 p) internal pure returns (uint256) {
-        require(a != 0, "CommittedSumcheck: inverse of zero");
+        if (a == 0) revert InverseOfZero();
         return modExp(a, p - 2, p);
     }
 

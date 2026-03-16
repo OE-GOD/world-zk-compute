@@ -16,6 +16,20 @@ import {PoseidonSponge} from "./PoseidonSponge.sol";
 ///      dot product argument across the L tensor coefficients.
 library HyraxVerifier {
     // ========================================================================
+    // ERRORS
+    // ========================================================================
+
+    error EmptyCommitment();
+    error LCoeffsLengthMismatch();
+    error ZVectorLengthMismatch();
+    error PODPVectorLengthMismatch();
+    error NotEnoughGeneratorsForPODP();
+    error InnerProductLengthMismatch();
+    error EcAddFailed();
+    error EcMulFailed();
+    error MSMLengthMismatch();
+
+    // ========================================================================
     // CONSTANTS
     // ========================================================================
 
@@ -96,9 +110,9 @@ library HyraxVerifier {
         PedersenGens memory gens
     ) internal view returns (bool) {
         uint256 numRows = proof.commitmentRows.length;
-        require(numRows > 0, "HyraxVerifier: empty commitment");
-        require(lCoeffs.length == numRows, "HyraxVerifier: L coeffs length mismatch");
-        require(proof.podp.zVector.length == rCoeffs.length, "HyraxVerifier: z_vector length != R coeffs length");
+        if (numRows == 0) revert EmptyCommitment();
+        if (lCoeffs.length != numRows) revert LCoeffsLengthMismatch();
+        if (proof.podp.zVector.length != rCoeffs.length) revert ZVectorLengthMismatch();
 
         // Step 1: Compute T' = sum(L_i * C_i) — MSM over commitment rows
         // This is com_x: the commitment to the L-tensor-compressed column vector
@@ -135,8 +149,8 @@ library HyraxVerifier {
         uint256[] memory aVector,
         PedersenGens memory gens
     ) internal view returns (bool) {
-        require(podp.zVector.length == aVector.length, "HyraxVerifier: PODP vector length mismatch");
-        require(podp.zVector.length <= gens.messageGens.length, "HyraxVerifier: not enough generators for PODP");
+        if (podp.zVector.length != aVector.length) revert PODPVectorLengthMismatch();
+        if (podp.zVector.length > gens.messageGens.length) revert NotEnoughGeneratorsForPODP();
 
         // 1. Compute z_dot_a = <z_vector, a_vector> (mod Fr)
         uint256 zDotA = innerProduct(podp.zVector, aVector);
@@ -165,7 +179,7 @@ library HyraxVerifier {
 
     /// @notice Compute inner product <a, b> mod Fr
     function innerProduct(uint256[] memory a, uint256[] memory b) internal pure returns (uint256 result) {
-        require(a.length == b.length, "HyraxVerifier: inner product length mismatch");
+        if (a.length != b.length) revert InnerProductLengthMismatch();
         result = 0;
         for (uint256 i = 0; i < a.length; i++) {
             result = addmod(result, mulmod(a[i], b[i], FR_MODULUS), FR_MODULUS);
@@ -295,7 +309,7 @@ library HyraxVerifier {
             success := staticcall(gas(), 0x06, input, 0x80, output, 0x40)
         }
 
-        require(success, "HyraxVerifier: ecAdd failed");
+        if (!success) revert EcAddFailed();
         r.x = output[0];
         r.y = output[1];
     }
@@ -314,7 +328,7 @@ library HyraxVerifier {
             success := staticcall(gas(), 0x07, input, 0x60, output, 0x40)
         }
 
-        require(success, "HyraxVerifier: ecMul failed");
+        if (!success) revert EcMulFailed();
         r.x = output[0];
         r.y = output[1];
     }
@@ -327,7 +341,7 @@ library HyraxVerifier {
         view
         returns (G1Point memory result)
     {
-        require(points.length == scalars.length, "HyraxVerifier: MSM length mismatch");
+        if (points.length != scalars.length) revert MSMLengthMismatch();
         if (points.length == 0) return G1Point(0, 0); // Identity element
 
         // Start with first term

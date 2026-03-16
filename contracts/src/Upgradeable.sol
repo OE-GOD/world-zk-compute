@@ -519,7 +519,7 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
     }
 
     /// @notice Claim execution
-    function claimExecution(uint256 requestId) external whenNotPaused {
+    function claimExecution(uint256 requestId) external whenNotPaused nonReentrant {
         ExecutionRequest storage req = requests[requestId];
         if (req.id == 0) revert RequestNotFound();
         if (req.status != 0) revert NotPending();

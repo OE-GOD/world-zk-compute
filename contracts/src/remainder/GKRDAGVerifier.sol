@@ -15,6 +15,22 @@ import {GKRVerifier} from "./GKRVerifier.sol";
 ///      - Point templates (claim points derived from bindings + fixed values)
 library GKRDAGVerifier {
     // ========================================================================
+    // ERRORS
+    // ========================================================================
+
+    error EvalProofCountMismatch();
+    error NotEnoughPublicValueClaims();
+    error PublicClaimCommitmentMismatch();
+    error PedersenOpeningInvalid();
+    error PublicInputMLEMismatch();
+    error SumcheckFailed();
+    error PoPFailed();
+    error NotEnoughCommitmentsForPoP();
+    error CommittedInputEvalFailed();
+    error DataTooLargeForPoint();
+    error Log2OfZero();
+
+    // ========================================================================
     // CONSTANTS
     // ========================================================================
 
@@ -210,7 +226,7 @@ library GKRDAGVerifier {
         uint256[] memory sortedIndices = _sortClaimIndices(claimPoints);
         uint256[][] memory groups = _groupClaimsByRHalf(claimPoints, sortedIndices, logNCols);
 
-        require(groups.length == dagProof.podps.length, "GKRDAGVerifier: eval proof count mismatch");
+        if (groups.length != dagProof.podps.length) revert EvalProofCountMismatch();
         if (endGroup > groups.length) endGroup = groups.length;
 
         EvalGroupCtx memory egCtx;
@@ -307,26 +323,21 @@ library GKRDAGVerifier {
         HyraxVerifier.G1Point memory atomCommitment,
         uint256 claimIdx
     ) private view {
-        require(claimIdx < ctx.publicValueClaims.length, "GKRDAGVerifier: not enough public value claims");
+        if (claimIdx >= ctx.publicValueClaims.length) revert NotEnoughPublicValueClaims();
         PublicValueClaim memory claim = ctx.publicValueClaims[claimIdx];
 
         // 1. Commitment consistency: claim commitment matches atom commitment
-        require(
-            HyraxVerifier.isEqual(claim.commitment, atomCommitment), "GKRDAGVerifier: public claim commitment mismatch"
-        );
+        if (!HyraxVerifier.isEqual(claim.commitment, atomCommitment)) revert PublicClaimCommitmentMismatch();
 
         // 2. Pedersen opening: g*value + h*blinding == commitment
         HyraxVerifier.G1Point memory expected = HyraxVerifier.ecAdd(
             HyraxVerifier.scalarMul(ctx.gens.scalarGen, claim.value),
             HyraxVerifier.scalarMul(ctx.gens.blindingGen, claim.blinding)
         );
-        require(HyraxVerifier.isEqual(expected, claim.commitment), "GKRDAGVerifier: Pedersen opening invalid");
+        if (!HyraxVerifier.isEqual(expected, claim.commitment)) revert PedersenOpeningInvalid();
 
         // 3. MLE evaluation: MLE(pubData, point) == value
-        require(
-            evaluateMLEFromData(ctx.publicInputs, claimPoint) == claim.value,
-            "GKRDAGVerifier: public input MLE mismatch"
-        );
+        if (evaluateMLEFromData(ctx.publicInputs, claimPoint) != claim.value) revert PublicInputMLEMismatch();
     }
 
     // ========================================================================
@@ -389,13 +400,12 @@ library GKRDAGVerifier {
 
         // Verify committed sumcheck
         uint256 degree = (desc.layerTypes[layerIdx] == 1) ? 3 : 2;
-        require(
-            CommittedSumcheckVerifier.verify(lp.sumcheckProof, oracleEval, degree, bindings, gens, sponge),
-            "GKRDAGVerifier: sumcheck failed"
-        );
+        if (!CommittedSumcheckVerifier.verify(lp.sumcheckProof, oracleEval, degree, bindings, gens, sponge)) {
+            revert SumcheckFailed();
+        }
 
         // Verify ProofOfProduct
-        require(_verifyProducts(lp, gens, sponge), "GKRDAGVerifier: PoP failed");
+        if (!_verifyProducts(lp, gens, sponge)) revert PoPFailed();
     }
 
     // ========================================================================
@@ -546,7 +556,7 @@ library GKRDAGVerifier {
 
         uint256 commitIdx = 0;
         for (uint256 i = 0; i < layerProof.pops.length; i++) {
-            require(commitIdx + 2 < layerProof.commitments.length, "GKRDAGVerifier: not enough commitments for PoP");
+            if (commitIdx + 2 >= layerProof.commitments.length) revert NotEnoughCommitmentsForPoP();
 
             bool popValid = HyraxVerifier.verifyProofOfProduct(
                 layerProof.pops[i],
@@ -606,7 +616,7 @@ library GKRDAGVerifier {
         uint256[][] memory groups = _groupClaimsByRHalf(claimPoints, sortedIndices, logNCols);
 
         // Step 3: Verify each group against its eval proof
-        require(groups.length == dagProof.podps.length, "GKRDAGVerifier: eval proof count mismatch");
+        if (groups.length != dagProof.podps.length) revert EvalProofCountMismatch();
 
         EvalGroupCtx memory egCtx;
         egCtx.dagProof = dagProof;
@@ -685,10 +695,9 @@ library GKRDAGVerifier {
         evalProof.podp = egCtx.dagProof.podps[groupIdx];
         evalProof.comEval = egCtx.dagProof.comEvals[groupIdx];
 
-        require(
-            HyraxVerifier.verifyEvaluation(evalProof, lCoeffs, rCoeffs, 0, podpChallenge, egCtx.gens),
-            "GKRDAGVerifier: committed input eval failed"
-        );
+        if (!HyraxVerifier.verifyEvaluation(evalProof, lCoeffs, rCoeffs, 0, podpChallenge, egCtx.gens)) {
+            revert CommittedInputEvalFailed();
+        }
     }
 
     /// @notice Sort claim indices lexicographically by point (insertion sort for small arrays).
@@ -862,7 +871,7 @@ library GKRDAGVerifier {
     function evaluateMLEFromData(uint256[] memory data, uint256[] memory point) internal pure returns (uint256) {
         uint256 n = point.length;
         // forge-lint: disable-next-line(incorrect-shift)
-        require(data.length <= (1 << n), "GKRDAGVerifier: data too large");
+        if (data.length > (1 << n)) revert DataTooLargeForPoint();
 
         uint256 result = 0;
         for (uint256 w = 0; w < data.length; w++) {
@@ -885,7 +894,7 @@ library GKRDAGVerifier {
 
     /// @notice floor(log2(x)) for x > 0
     function _log2(uint256 x) private pure returns (uint256 result) {
-        require(x > 0, "GKRDAGVerifier: log2(0)");
+        if (x == 0) revert Log2OfZero();
         result = 0;
         uint256 v = x;
         while (v > 1) {

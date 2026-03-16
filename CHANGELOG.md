@@ -6,10 +6,58 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Added
-- Production hardening phase 2: fuzz tests, invariant tests, improved error handling
-- Monitoring stack: Prometheus scrape configs, Grafana dashboards (operator, enclave, indexer, Sepolia)
-- Comprehensive documentation: architecture, threat model, runbook, troubleshooting, upgrade guide
+_No unreleased changes._
+
+## [2026-03-16] - Security Hardening, Custom Errors, and Quality Improvements (Phases 71-77)
+
+### Security
+
+- **Ownable2Step migration**: `ProverRegistry` and `ProverReputation` upgraded from `Ownable` to `Ownable2Step` for safer ownership transfers (Phase 77)
+- **Reentrancy guards**: Added `nonReentrant` to `TEEMLVerifier.extendDisputeWindow` and `submitResult` (T413)
+- **Custom errors**: Converted all `require()` string reverts to gas-efficient custom errors in `TEEMLVerifier`, `ProverReputation`, `Upgradeable`, and `ProgramRegistry` (Phases 75-77)
+- **Guardian override**: Added `guardianOverride` modifier to `ProgramRegistry.updateProgramUrl` for emergency admin control (T423)
+- **Code-length validation**: `ProgramRegistry.updateVerifier` now validates the verifier address has code deployed (T399)
+- **Hex validation**: Indexer now validates `model_hash` and `after_id` parameters for proper hex format (T416)
+- **SSRF protection**: Prover security hardening with SSRF protection and auth improvements (T397/T403/T409)
+- **Hardened Upgradeable**: Strengthened `reinitialize` and `_authorizeUpgrade` in UUPS proxy (Phase 74)
+- **Critical unwrap fixes**: Fixed `unwrap()` panics, mutex poisoning, and error swallowing in Rust prover (Phase 74)
+
+### Gas Optimizations
+
+- **Cached storage refs**: Cache storage references in `RemainderVerifier` circuit management functions to reduce redundant SLOADs (T420)
+- **Custom errors save gas**: Custom errors use 4-byte selectors instead of storing revert strings, saving ~200 gas per revert (Phases 75-76)
+- **DAG deactivation**: Added `deactivateDAGCircuit` for circuit lifecycle management (Phase 75)
+
+### Documentation
+
+- **NatSpec annotations**: Added `@param` and `@return` NatSpec comments to `RemainderVerifier` DAG functions (T421)
+- **NatSpec across contracts**: Phase 77 added comprehensive NatSpec to security-hardened contracts
+- **SDK quickstart**: Updated quickstart examples to use SDK classes (T396)
+- **Interface updates**: Fixed dead config fields and updated contract interfaces (Phase 71)
+
+### Testing
+
+- **String length bounds tests**: Added bounds checking tests for `ProgramRegistry` and `ProverRegistry` string fields (T418)
+- **Fuzz tests**: Added fuzz tests for tip decay, fee splits, slash math, and cooldowns
+- **Operator unit tests**: Comprehensive unit tests for operator `chain.rs`
+- **ProverRegistry fuzz tests**: Added fuzz tests and storage layout safety tests (T388/T404)
+- **Ownable2Step tests**: Added tests verifying two-step ownership transfer behavior
+
+### CI/CD
+
+- **Fixture freshness check**: CI now validates test fixtures are up-to-date (T424)
+- **Deduplicated CI jobs**: Removed redundant TypeScript SDK, lint, and build jobs (Phase 76)
+- **World Chain deploy workflow**: Added deployment workflow for World Chain (Phase 70)
+- **Rust CI caching**: Improved Rust build caching in CI (Phase 70)
+
+### Infrastructure
+
+- **Operator improvements**: LRU eviction for caches, config validation, admin API warning headers (T394/T395/T408)
+- **Python SDK fix**: Fixed silent exception swallowing in Python SDK (T392)
+- **Indexer hardening**: Circuit breaker logging improvements (Phase 77)
+- **Helm chart**: Added HPA and PDB for prover and indexer (T405)
+- **Lint cleanup**: Suppressed remaining clippy warnings and fixed `map_or` (Phase 73)
+- **Reputation tracking**: Added `reportBadProof` function for missed claim deadline tracking (T387)
 
 ## [2026-03-13] - Production Hardening and Documentation
 

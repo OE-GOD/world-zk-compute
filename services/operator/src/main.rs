@@ -21,6 +21,7 @@ use tracing::Instrument;
 use uuid::Uuid;
 
 use config::{Config, ModelConfig};
+use secrecy::ExposeSecret;
 use prover::ProofManager;
 use store::StateStore;
 use tee_operator::alerting::{AlertConfig, AlertManager, AlertSeverity};
@@ -316,7 +317,7 @@ async fn cmd_submit(
     // 3. Submit on-chain
     let chain_client = chain::ChainClient::new(
         &config.rpc_url,
-        &config.private_key,
+        config.private_key.expose_secret(),
         &config.tee_verifier_address,
     )?;
 
@@ -490,7 +491,7 @@ async fn cmd_watch(config: &Config, metrics_port: u16, dry_run: bool) -> anyhow:
     let watcher = EventWatcher::new(&config.rpc_url, contract_addr);
     let chain_client = Arc::new(chain::ChainClient::new_with_dry_run(
         &config.rpc_url,
-        &config.private_key,
+        config.private_key.expose_secret(),
         &config.tee_verifier_address,
         dry_run,
     )?);
@@ -576,8 +577,9 @@ async fn cmd_watch(config: &Config, metrics_port: u16, dry_run: bool) -> anyhow:
     {
         let ms = metrics_state.clone();
         let cancel_rx = shutdown.subscribe_cancel();
+        let bind_addr = config.metrics_bind_addr.clone();
         tokio::spawn(async move {
-            metrics::serve_metrics_with_shutdown(ms, metrics_port, cancel_rx).await;
+            metrics::serve_metrics_with_shutdown(ms, metrics_port, &bind_addr, cancel_rx).await;
         });
     }
 
@@ -984,7 +986,7 @@ async fn cmd_register(
     // 6. Register on-chain
     let chain_client = chain::ChainClient::new(
         &config.rpc_url,
-        &config.private_key,
+        config.private_key.expose_secret(),
         &config.tee_verifier_address,
     )?;
 

@@ -6,6 +6,9 @@ pragma solidity ^0.8.20;
 /// @dev Allows configuring predetermined responses, tracks method call counts and
 ///      last call data, and emits the same events as the real ExecutionEngine.
 contract MockExecutionEngine {
+    error TransferFailed();
+    error MockSubmitProofReverted(string reason);
+
     // ========================================================================
     // TYPES (mirrored from ExecutionEngine)
     // ========================================================================
@@ -234,7 +237,7 @@ contract MockExecutionEngine {
         // Refund tip
         if (req.tip > 0) {
             (bool success,) = payable(msg.sender).call{value: req.tip}("");
-            require(success, "Transfer failed");
+            if (!success) revert TransferFailed();
         }
 
         emit ExecutionCancelled(requestId);
@@ -257,7 +260,7 @@ contract MockExecutionEngine {
     /// @notice Mock submitProof
     function submitProof(uint256 requestId, bytes calldata seal, bytes calldata journal) external {
         if (shouldRevertOnSubmitProof) {
-            revert(submitProofRevertReason);
+            revert MockSubmitProofReverted(submitProofRevertReason);
         }
 
         _callCounts["submitProof"]++;

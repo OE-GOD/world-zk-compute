@@ -23,6 +23,8 @@ use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
+use secrecy::ExposeSecret;
+
 use attestation::Attestor;
 use config::Config;
 use metrics::{Metrics, MetricsSnapshot};
@@ -897,7 +899,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // When NITRO_ENABLED=true and no private key is set, generate a random key.
     // The Nitro attestation will bind this key to the enclave image.
     let mut attestor = match &config.private_key {
-        Some(key) => Attestor::from_private_key(key)
+        Some(key) => Attestor::from_private_key(key.expose_secret())
             .map_err(|e| format!("Invalid ENCLAVE_PRIVATE_KEY: {}", e))?,
         None => {
             if config.nitro_enabled {

@@ -239,11 +239,10 @@ contract ProverReputation is Ownable2Step {
         }
 
         // Update score
-        uint256 oldScore = rep.score;
         rep.score = _boundScore(uint256(rep.score) + bonus);
 
         // Update tier if changed
-        _updateTier(prover, oldScore);
+        _updateTier(prover);
 
         emit JobCompleted(prover, proofTimeMs, rep.score);
     }
@@ -263,11 +262,10 @@ contract ProverReputation is Ownable2Step {
         rep.lastUpdateAt = uint64(block.timestamp);
 
         // Apply penalty
-        uint256 oldScore = rep.score;
         uint256 currentScore = uint256(rep.score);
         rep.score = _boundScore(currentScore > FAILURE_PENALTY ? currentScore - FAILURE_PENALTY : 0);
 
-        _updateTier(prover, oldScore);
+        _updateTier(prover);
 
         emit JobFailed(prover, reason, rep.score);
     }
@@ -285,11 +283,10 @@ contract ProverReputation is Ownable2Step {
         rep.lastUpdateAt = uint64(block.timestamp);
 
         // Apply heavy penalty
-        uint256 oldScore = rep.score;
         uint256 currentScore = uint256(rep.score);
         rep.score = _boundScore(currentScore > ABANDON_PENALTY ? currentScore - ABANDON_PENALTY : 0);
 
-        _updateTier(prover, oldScore);
+        _updateTier(prover);
 
         emit JobAbandoned(prover, requestId, rep.score);
     }
@@ -320,12 +317,11 @@ contract ProverReputation is Ownable2Step {
         rep.lastUpdateAt = uint64(block.timestamp);
 
         // Apply penalty
-        uint256 oldScore = rep.score;
         uint256 currentScore = uint256(rep.score);
         uint256 penalty = (currentScore * penaltyBps) / 10000;
         rep.score = _boundScore(currentScore > penalty ? currentScore - penalty : 0);
 
-        _updateTier(prover, oldScore);
+        _updateTier(prover);
 
         emit ProverSlashed(prover, reason, penaltyBps);
 
@@ -523,12 +519,7 @@ contract ProverReputation is Ownable2Step {
     }
 
     /// @notice Update tier based on score
-    function _updateTier(
-        address prover,
-        uint256 /* oldScore */
-    )
-        internal
-    {
+    function _updateTier(address prover) internal {
         Reputation storage rep = reputations[prover];
         uint8 oldTier = rep.tier;
         uint8 newTier = _calculateTier(rep.score);

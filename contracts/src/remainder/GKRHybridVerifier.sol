@@ -17,6 +17,26 @@ import {GKRVerifier} from "./GKRVerifier.sol";
 ///      tensor, MLE eval) while keeping security-critical transcript replay and EC checks.
 library GKRHybridVerifier {
     // ========================================================================
+    // ERRORS
+    // ========================================================================
+
+    error NeedAtLeastOneLayerProof();
+    error NoOutputClaims();
+    error NoInputProofs();
+    error LayerPODPFailed();
+    error LayerPoPFailed();
+    error InputHyraxFailed();
+    error MleEvalMismatch();
+    error PublicInputClaimMismatch();
+    error PODPEq1Failed();
+    error PODPEq2Failed();
+    error NotEnoughCommitsForPoP();
+    error InputPODPEq1Failed();
+    error InputPODPEq2Failed();
+    error NoCommitments();
+    error SubtractNeedsTwoCommitments();
+
+    // ========================================================================
     // CONSTANTS
     // ========================================================================
 
@@ -73,14 +93,14 @@ library GKRHybridVerifier {
         PoseidonSponge.Sponge memory sponge
     ) internal pure returns (TranscriptChallenges memory challenges) {
         uint256 numLayers = proof.layerProofs.length;
-        require(numLayers >= 1, "GKRHybrid: need at least 1 layer proof");
+        if (numLayers < 1) revert NeedAtLeastOneLayerProof();
 
         // Step 1: Squeeze output challenges (num_vars values)
         uint256 numVars = proof.layerProofs[0].sumcheckProof.messages.length;
         challenges.outputChallenges = _squeezeMultiple(sponge, numVars);
 
         // Step 2: Absorb output claim commitment, squeeze claim agg coefficient
-        require(proof.outputClaimCommitments.length > 0, "GKRHybrid: no output claims");
+        if (proof.outputClaimCommitments.length == 0) revert NoOutputClaims();
         PoseidonSponge.absorb(sponge, proof.outputClaimCommitments[0].x);
         PoseidonSponge.absorb(sponge, proof.outputClaimCommitments[0].y);
         challenges.claimAggCoeff = PoseidonSponge.squeeze(sponge) % FR_MODULUS;
@@ -143,7 +163,7 @@ library GKRHybridVerifier {
         challenges.inputRlcCoeffs = _squeezeMultiple(sponge, 2);
 
         // Absorb comEval
-        require(proof.inputProofs.length > 0, "GKRHybrid: no input proofs");
+        if (proof.inputProofs.length == 0) revert NoInputProofs();
         PoseidonSponge.absorb(sponge, proof.inputProofs[0].comEval.x);
         PoseidonSponge.absorb(sponge, proof.inputProofs[0].comEval.y);
 
@@ -177,8 +197,8 @@ library GKRHybridVerifier {
             // proof.layerProofs[0] = output layer = circuit.layerTypes[numLayers-1]
             uint8 layerType = circuit.layerTypes[circuit.numLayers - 1 - i];
 
-            require(
-                _verifyLayerPODP(
+            if (
+                !_verifyLayerPODP(
                     proof.layerProofs[i],
                     challenges.layers[i].rhos,
                     challenges.layers[i].gammas,
@@ -187,25 +207,22 @@ library GKRHybridVerifier {
                     outputs.zDotJStar[i],
                     layerType,
                     gens
-                ),
-                "Hybrid: Layer PODP failed"
-            );
+                )
+            ) revert LayerPODPFailed();
 
             // PoP verification (if layer has product triples)
             if (proof.layerProofs[i].pops.length > 0) {
-                require(
-                    _verifyLayerPoPs(proof.layerProofs[i], challenges.layers[i].popChallenge, gens),
-                    "Hybrid: Layer PoP failed"
-                );
+                if (!_verifyLayerPoPs(proof.layerProofs[i], challenges.layers[i].popChallenge, gens)) {
+                    revert LayerPoPFailed();
+                }
             }
         }
 
         // Input Hyrax verification (committed input layer)
         if (proof.inputProofs.length > 0) {
-            require(
-                _verifyInputHyrax(proof.inputProofs[0], challenges.inputPodpChallenge, outputs, gens),
-                "Hybrid: Input Hyrax failed"
-            );
+            if (!_verifyInputHyrax(proof.inputProofs[0], challenges.inputPodpChallenge, outputs, gens)) {
+                revert InputHyraxFailed();
+            }
         }
 
         // Public input claim verification (for non-committed input layers)
@@ -219,12 +236,12 @@ library GKRHybridVerifier {
                 revPoint[i] = challenges.mleEvalPoint[bLen - 1 - i];
             }
             uint256 onChainMle = GKRVerifier.evaluateMLEFromData(pubInputs, revPoint);
-            require(outputs.mleEval == onChainMle, "Hybrid: mleEval mismatch");
+            if (outputs.mleEval != onChainMle) revert MleEvalMismatch();
 
             // Verify the MLE evaluation matches the final claim commitment
             HyraxVerifier.G1Point memory claimCom = proof.layerProofs[numComputeLayers - 1].commitments[0];
             HyraxVerifier.G1Point memory expectedCom = HyraxVerifier.scalarMul(gens.scalarGen, outputs.mleEval);
-            require(HyraxVerifier.isEqual(expectedCom, claimCom), "Hybrid: public input claim mismatch");
+            if (!HyraxVerifier.isEqual(expectedCom, claimCom)) revert PublicInputClaimMismatch();
         }
 
         return true;
@@ -288,7 +305,7 @@ library GKRHybridVerifier {
             _msmWithTruncatedGens(gens.messageGens, podp.zVector),
             HyraxVerifier.scalarMul(gens.blindingGen, podp.zDelta)
         );
-        require(HyraxVerifier.isEqual(lhs1, comZ), "Hybrid: PODP Eq1 failed");
+        if (!HyraxVerifier.isEqual(lhs1, comZ)) revert PODPEq1Failed();
 
         // Eq2: c * dotProduct + commitDDotA == zDotJStar * g_scalar + z_beta * h
         HyraxVerifier.G1Point memory lhs2 =
@@ -296,7 +313,7 @@ library GKRHybridVerifier {
         HyraxVerifier.G1Point memory comZDotA = HyraxVerifier.ecAdd(
             HyraxVerifier.scalarMul(gens.scalarGen, zDotJStar), HyraxVerifier.scalarMul(gens.blindingGen, podp.zBeta)
         );
-        require(HyraxVerifier.isEqual(lhs2, comZDotA), "Hybrid: PODP Eq2 failed");
+        if (!HyraxVerifier.isEqual(lhs2, comZDotA)) revert PODPEq2Failed();
 
         return true;
     }
@@ -312,7 +329,7 @@ library GKRHybridVerifier {
 
         uint256 commitIdx = 0;
         for (uint256 i = 0; i < layerProof.pops.length; i++) {
-            require(commitIdx + 2 < layerProof.commitments.length, "GKRHybrid: not enough commits for PoP");
+            if (commitIdx + 2 >= layerProof.commitments.length) revert NotEnoughCommitsForPoP();
 
             if (!_popCheckEquations(
                     layerProof.pops[i],
@@ -355,7 +372,7 @@ library GKRHybridVerifier {
             _msmWithTruncatedGens(gens.messageGens, inputProof.podp.zVector),
             HyraxVerifier.scalarMul(gens.blindingGen, inputProof.podp.zDelta)
         );
-        require(HyraxVerifier.isEqual(lhs1, comZ), "Hybrid: Input PODP Eq1 failed");
+        if (!HyraxVerifier.isEqual(lhs1, comZ)) revert InputPODPEq1Failed();
 
         // Step 4: PODP Eq2 — dot product consistency
         // c * comY + commitDDotA == zDotR * g_scalar + z_beta * h
@@ -366,7 +383,7 @@ library GKRHybridVerifier {
             HyraxVerifier.scalarMul(gens.scalarGen, outputs.zDotR),
             HyraxVerifier.scalarMul(gens.blindingGen, inputProof.podp.zBeta)
         );
-        require(HyraxVerifier.isEqual(lhs2, comZDotA), "Hybrid: Input PODP Eq2 failed");
+        if (!HyraxVerifier.isEqual(lhs2, comZDotA)) revert InputPODPEq2Failed();
 
         return true;
     }
@@ -436,14 +453,14 @@ library GKRHybridVerifier {
         view
         returns (HyraxVerifier.G1Point memory)
     {
-        require(commitments.length > 0, "GKRHybrid: no commitments");
+        if (commitments.length == 0) revert NoCommitments();
 
         if (layerType == 1) {
             // Multiply: rlcBeta * last commitment
             return HyraxVerifier.scalarMul(commitments[commitments.length - 1], rlcBeta);
         } else {
             // Subtract: rlcBeta * com[0] - rlcBeta * com[1]
-            require(commitments.length >= 2, "GKRHybrid: subtract needs 2 commitments");
+            if (commitments.length < 2) revert SubtractNeedsTwoCommitments();
             HyraxVerifier.G1Point memory pos = HyraxVerifier.scalarMul(commitments[0], rlcBeta);
             HyraxVerifier.G1Point memory neg = HyraxVerifier.scalarMul(commitments[1], FR_MODULUS - rlcBeta);
             return HyraxVerifier.ecAdd(pos, neg);

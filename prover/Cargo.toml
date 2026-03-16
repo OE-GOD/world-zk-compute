@@ -64,6 +64,7 @@ dotenvy = "0.15"
 once_cell = "1.19"
 
 # Crypto
+secrecy = { version = "0.10", features = ["serde"] }  # Zeroize-on-drop wrappers for secrets
 sha2 = "0.10"
 k256 = { version = "0.13", features = ["ecdsa"] }
 base64 = "0.22"

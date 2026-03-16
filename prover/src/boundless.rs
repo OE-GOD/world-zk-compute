@@ -20,6 +20,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use boundless_market::storage::StorageUploaderType;
 use boundless_market::{Client, StorageUploaderConfig};
+use secrecy::{ExposeSecret, SecretString};
 use tracing::info;
 use url::Url;
 
@@ -41,8 +42,10 @@ pub enum StorageProvider {
 pub struct BoundlessConfig {
     /// Base chain RPC URL
     pub rpc_url: String,
-    /// Private key for signing market transactions
-    pub private_key: String,
+    /// Private key for signing market transactions.
+    /// Wrapped in `SecretString` to prevent accidental logging and ensure
+    /// the value is zeroized on drop.
+    pub private_key: SecretString,
     /// Storage provider for uploading program/input data
     pub storage_provider: StorageProvider,
     /// Maximum time to wait for proof fulfillment (seconds)
@@ -57,9 +60,10 @@ impl BoundlessConfig {
         let rpc_url = std::env::var("BOUNDLESS_RPC_URL")
             .context("BOUNDLESS_RPC_URL environment variable not set")?;
 
-        let private_key = std::env::var("BOUNDLESS_PRIVATE_KEY")
+        let private_key: SecretString = std::env::var("BOUNDLESS_PRIVATE_KEY")
             .or_else(|_| std::env::var("PRIVATE_KEY"))
-            .context("Neither BOUNDLESS_PRIVATE_KEY nor PRIVATE_KEY environment variable set")?;
+            .context("Neither BOUNDLESS_PRIVATE_KEY nor PRIVATE_KEY environment variable set")?
+            .into();
 
         let timeout_secs = std::env::var("BOUNDLESS_TIMEOUT_SECS")
             .ok()
@@ -84,7 +88,7 @@ impl BoundlessConfig {
 
     /// Check if Boundless is configured
     pub fn is_configured(&self) -> bool {
-        !self.rpc_url.is_empty() && !self.private_key.is_empty()
+        !self.rpc_url.is_empty() && !self.private_key.expose_secret().is_empty()
     }
 
     /// Detect storage provider from environment variables
@@ -164,7 +168,7 @@ impl BoundlessProver {
         // Build the Boundless client
         let client = Client::builder()
             .with_rpc_url(Url::parse(&self.config.rpc_url)?)
-            .with_private_key_str(&self.config.private_key)?
+            .with_private_key_str(self.config.private_key.expose_secret())?
             .with_uploader_config(&storage_config)
             .await?
             .build()

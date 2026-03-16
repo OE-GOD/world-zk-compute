@@ -44,13 +44,14 @@
 //! On receiving a `since_id`, all buffered events with `sequence_id > since_id`
 //! are replayed before switching to live streaming.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::State;
+use axum::extract::{ConnectInfo, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
@@ -64,6 +65,9 @@ use tracing::{debug, info, warn};
 
 /// Default maximum number of concurrent WebSocket connections.
 const DEFAULT_MAX_WS_CONNECTIONS: usize = 100;
+
+/// Default maximum number of WebSocket connections from a single IP address.
+const DEFAULT_MAX_WS_PER_IP: usize = 5;
 
 /// Default number of recent events kept in the replay buffer.
 const DEFAULT_EVENT_BUFFER_SIZE: usize = 1000;
@@ -199,6 +203,10 @@ pub struct EventBroadcaster {
     active_connections: AtomicUsize,
     /// Maximum allowed concurrent connections.
     max_connections: usize,
+    /// Per-IP connection counts for preventing a single IP from exhausting all slots.
+    per_ip_connections: Mutex<HashMap<IpAddr, usize>>,
+    /// Maximum connections allowed from a single IP address.
+    max_per_ip: usize,
 }
 
 impl EventBroadcaster {
@@ -213,6 +221,10 @@ impl EventBroadcaster {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(DEFAULT_MAX_WS_CONNECTIONS);
+        let max_per_ip = std::env::var("MAX_WS_CONNECTIONS_PER_IP")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_MAX_WS_PER_IP);
         Self {
             sender,
             next_sequence_id: AtomicU64::new(1),
@@ -220,6 +232,8 @@ impl EventBroadcaster {
             buffer_capacity: DEFAULT_EVENT_BUFFER_SIZE,
             active_connections: AtomicUsize::new(0),
             max_connections,
+            per_ip_connections: Mutex::new(HashMap::new()),
+            max_per_ip,
         }
     }
 
@@ -233,6 +247,8 @@ impl EventBroadcaster {
             buffer_capacity: DEFAULT_EVENT_BUFFER_SIZE,
             active_connections: AtomicUsize::new(0),
             max_connections,
+            per_ip_connections: Mutex::new(HashMap::new()),
+            max_per_ip: DEFAULT_MAX_WS_PER_IP,
         }
     }
 
@@ -250,6 +266,8 @@ impl EventBroadcaster {
             buffer_capacity: buffer_size,
             active_connections: AtomicUsize::new(0),
             max_connections,
+            per_ip_connections: Mutex::new(HashMap::new()),
+            max_per_ip: DEFAULT_MAX_WS_PER_IP,
         }
     }
 
@@ -339,6 +357,51 @@ impl EventBroadcaster {
     fn release_slot(&self) {
         self.active_connections.fetch_sub(1, Ordering::AcqRel);
     }
+
+    /// Try to acquire a per-IP connection slot. Returns `true` if the IP is
+    /// under its per-IP limit, `false` if the limit is reached.
+    ///
+    /// Also acquires a global slot. If the global limit is reached, returns
+    /// `false` without incrementing the per-IP counter.
+    fn try_acquire_slot_for_ip(&self, ip: IpAddr) -> bool {
+        // Check global limit first
+        if !self.try_acquire_slot() {
+            return false;
+        }
+
+        let mut map = self.per_ip_connections.lock().unwrap_or_else(|e| e.into_inner());
+        let count = map.entry(ip).or_insert(0);
+        if *count >= self.max_per_ip {
+            // Release the global slot we just acquired
+            self.release_slot();
+            return false;
+        }
+        *count += 1;
+        true
+    }
+
+    /// Release a per-IP connection slot and the corresponding global slot.
+    fn release_slot_for_ip(&self, ip: IpAddr) {
+        self.release_slot();
+        let mut map = self.per_ip_connections.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(count) = map.get_mut(&ip) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                map.remove(&ip);
+            }
+        }
+    }
+
+    /// Returns the current number of connections from the given IP.
+    pub fn connections_for_ip(&self, ip: IpAddr) -> usize {
+        let map = self.per_ip_connections.lock().unwrap_or_else(|e| e.into_inner());
+        map.get(&ip).copied().unwrap_or(0)
+    }
+
+    /// Returns the configured maximum per-IP connection limit.
+    pub fn max_per_ip(&self) -> usize {
+        self.max_per_ip
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -356,17 +419,22 @@ impl EventBroadcaster {
 ///     .with_state(Arc::new(EventBroadcaster::new(256)));
 /// ```
 pub async fn ws_handler(
+    connect_info: Option<ConnectInfo<std::net::SocketAddr>>,
     State(broadcaster): State<Arc<EventBroadcaster>>,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
-    if !broadcaster.try_acquire_slot() {
+    let peer_ip = connect_info
+        .map(|ci| ci.0.ip())
+        .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+
+    if !broadcaster.try_acquire_slot_for_ip(peer_ip) {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             "Too many WebSocket connections",
         )
             .into_response();
     }
-    ws.on_upgrade(move |socket| handle_ws_connection(socket, broadcaster))
+    ws.on_upgrade(move |socket| handle_ws_connection(socket, broadcaster, peer_ip))
         .into_response()
 }
 
@@ -376,7 +444,7 @@ pub async fn ws_handler(
 /// 1. Every `HEARTBEAT_INTERVAL` (30s), send a ping frame.
 /// 2. After sending the ping, wait up to `PONG_TIMEOUT` (10s) for a pong.
 /// 3. If no pong arrives within the timeout, disconnect the client.
-async fn handle_ws_connection(socket: WebSocket, broadcaster: Arc<EventBroadcaster>) {
+async fn handle_ws_connection(socket: WebSocket, broadcaster: Arc<EventBroadcaster>, peer_ip: IpAddr) {
     let (mut ws_sender, mut ws_receiver) = socket.split();
     let mut event_rx = broadcaster.subscribe();
     let mut filter: Option<HashSet<String>> = None;
@@ -516,10 +584,11 @@ async fn handle_ws_connection(socket: WebSocket, broadcaster: Arc<EventBroadcast
         }
     }
 
-    broadcaster.release_slot();
+    broadcaster.release_slot_for_ip(peer_ip);
     info!(
-        "WebSocket client disconnected (active: {})",
-        broadcaster.active_connections()
+        "WebSocket client disconnected (active: {}, ip: {})",
+        broadcaster.active_connections(),
+        peer_ip,
     );
 }
 
@@ -1004,5 +1073,107 @@ mod tests {
         let broadcaster = EventBroadcaster::new(64);
         assert_eq!(broadcaster.buffer_capacity, DEFAULT_EVENT_BUFFER_SIZE);
         assert_eq!(DEFAULT_EVENT_BUFFER_SIZE, 1000);
+    }
+
+    // -----------------------------------------------------------------------
+    // Per-IP connection limit tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_per_ip_limit_enforced() {
+        let broadcaster = EventBroadcaster::with_max_connections(64, 100);
+        // Default per-IP limit is 5
+        let ip = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));
+
+        for i in 0..5 {
+            assert!(
+                broadcaster.try_acquire_slot_for_ip(ip),
+                "slot {} should be acquired",
+                i
+            );
+        }
+        // 6th from same IP should fail
+        assert!(!broadcaster.try_acquire_slot_for_ip(ip));
+        assert_eq!(broadcaster.active_connections(), 5);
+        assert_eq!(broadcaster.connections_for_ip(ip), 5);
+    }
+
+    #[test]
+    fn test_per_ip_different_ips_independent() {
+        let broadcaster = EventBroadcaster::with_max_connections(64, 100);
+        let ip1 = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));
+        let ip2 = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2));
+
+        // Fill up ip1's quota
+        for _ in 0..5 {
+            assert!(broadcaster.try_acquire_slot_for_ip(ip1));
+        }
+        assert!(!broadcaster.try_acquire_slot_for_ip(ip1));
+
+        // ip2 should still be able to connect
+        for _ in 0..5 {
+            assert!(broadcaster.try_acquire_slot_for_ip(ip2));
+        }
+        assert!(!broadcaster.try_acquire_slot_for_ip(ip2));
+        assert_eq!(broadcaster.active_connections(), 10);
+    }
+
+    #[test]
+    fn test_per_ip_release_decrements() {
+        let broadcaster = EventBroadcaster::with_max_connections(64, 100);
+        let ip = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));
+
+        // Acquire all 5 slots
+        for _ in 0..5 {
+            broadcaster.try_acquire_slot_for_ip(ip);
+        }
+        assert_eq!(broadcaster.connections_for_ip(ip), 5);
+        assert!(!broadcaster.try_acquire_slot_for_ip(ip));
+
+        // Release one
+        broadcaster.release_slot_for_ip(ip);
+        assert_eq!(broadcaster.connections_for_ip(ip), 4);
+        assert_eq!(broadcaster.active_connections(), 4);
+
+        // Should be able to acquire again
+        assert!(broadcaster.try_acquire_slot_for_ip(ip));
+        assert_eq!(broadcaster.connections_for_ip(ip), 5);
+    }
+
+    #[test]
+    fn test_per_ip_global_limit_still_applies() {
+        // Global limit of 3, per-IP limit of 5
+        let broadcaster = EventBroadcaster::with_max_connections(64, 3);
+        let ip = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));
+
+        // Should hit global limit before per-IP limit
+        assert!(broadcaster.try_acquire_slot_for_ip(ip));
+        assert!(broadcaster.try_acquire_slot_for_ip(ip));
+        assert!(broadcaster.try_acquire_slot_for_ip(ip));
+        assert!(!broadcaster.try_acquire_slot_for_ip(ip)); // global limit hit
+        assert_eq!(broadcaster.connections_for_ip(ip), 3);
+    }
+
+    #[test]
+    fn test_per_ip_cleanup_on_full_release() {
+        let broadcaster = EventBroadcaster::with_max_connections(64, 100);
+        let ip = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));
+
+        broadcaster.try_acquire_slot_for_ip(ip);
+        assert_eq!(broadcaster.connections_for_ip(ip), 1);
+
+        broadcaster.release_slot_for_ip(ip);
+        assert_eq!(broadcaster.connections_for_ip(ip), 0);
+
+        // Entry should be cleaned up from the map
+        let map = broadcaster.per_ip_connections.lock().unwrap();
+        assert!(!map.contains_key(&ip));
+    }
+
+    #[test]
+    fn test_default_per_ip_limit() {
+        let broadcaster = EventBroadcaster::new(64);
+        assert_eq!(broadcaster.max_per_ip(), DEFAULT_MAX_WS_PER_IP);
+        assert_eq!(DEFAULT_MAX_WS_PER_IP, 5);
     }
 }
