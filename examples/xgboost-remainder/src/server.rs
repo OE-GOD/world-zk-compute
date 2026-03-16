@@ -12,6 +12,7 @@
 //! - **CORS**: Optional cross-origin support via `enable_cors` / `cors_origins`.
 //! - **Request timeout**: Per-request timeout on proof generation via `request_timeout_secs`.
 
+use crate::abi_encode::encode_pedersen_gens;
 use crate::circuit::CachedProver;
 use crate::model::{self, XgboostModel};
 use axum::{
@@ -142,6 +143,8 @@ struct AppState {
     rate_limiter: RateLimiter,
     /// Per-request timeout for proof generation (0 = no timeout).
     request_timeout: Duration,
+    /// Pre-computed hex-encoded Pedersen generators (same for all proofs from this model).
+    gens_hex: String,
 }
 
 /// Request body for the /prove endpoint.
@@ -162,6 +165,8 @@ pub struct ProveResponse {
     pub circuit_hash: String,
     /// Hex-encoded public inputs.
     pub public_inputs_hex: String,
+    /// Hex-encoded Pedersen generators for on-chain verification.
+    pub gens_hex: String,
     /// Proof size in bytes.
     pub proof_size_bytes: usize,
     /// Proving time in milliseconds.
@@ -318,6 +323,13 @@ pub async fn run_server_with_config(
         }
     }
 
+    // Pre-compute ABI-encoded Pedersen generators once (deterministic, same for all proofs)
+    let gens_hex = hex::encode(
+        encode_pedersen_gens(&prover.pedersen_committer)
+            .expect("Failed to encode Pedersen generators"),
+    );
+    println!("Pedersen generators encoded: {} bytes", gens_hex.len() / 2);
+
     let request_timeout = Duration::from_secs(config.request_timeout_secs);
     let rate_limiter = RateLimiter::new(config.rate_limit, config.rate_limit_burst);
     let state = Arc::new(AppState {
@@ -325,6 +337,7 @@ pub async fn run_server_with_config(
         api_key: config.api_key,
         rate_limiter,
         request_timeout,
+        gens_hex,
     });
 
     // POST routes are protected by auth middleware and rate limiting.
@@ -477,6 +490,7 @@ async fn prove_handler(
         proof_hex: hex::encode(&proof_bytes),
         circuit_hash: hex::encode(&circuit_hash),
         public_inputs_hex: hex::encode(&public_inputs),
+        gens_hex: state.gens_hex.clone(),
         proof_size_bytes: proof_bytes.len(),
         prove_time_ms: prove_time.as_millis() as u64,
     });
@@ -624,6 +638,7 @@ fn run_batch_proofs(
             proof_hex: hex::encode(&proof_bytes),
             circuit_hash: hex::encode(&circuit_hash),
             public_inputs_hex: hex::encode(&public_inputs),
+            gens_hex: state.gens_hex.clone(),
             proof_size_bytes: proof_bytes.len(),
             prove_time_ms: start.elapsed().as_millis() as u64,
         });
@@ -668,6 +683,7 @@ mod tests {
             proof_hex: "deadbeef".into(),
             circuit_hash: "abcd1234".into(),
             public_inputs_hex: "1234".into(),
+            gens_hex: "5678".into(),
             proof_size_bytes: 4,
             prove_time_ms: 100,
         };
@@ -684,6 +700,7 @@ mod tests {
                 proof_hex: "aa".into(),
                 circuit_hash: "bb".into(),
                 public_inputs_hex: "cc".into(),
+                gens_hex: "dd".into(),
                 proof_size_bytes: 1,
                 prove_time_ms: 50,
             }],
