@@ -39,6 +39,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use sqlx::Row;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 use tee_watcher::TEEEvent;
 
 // ---------------------------------------------------------------------------
@@ -101,18 +102,105 @@ pub struct PgStorage {
 }
 
 /// Configuration for the PostgreSQL connection pool.
+///
+/// All fields can be populated from environment variables via
+/// [`PgStorageConfig::from_env()`]:
+///
+/// | Field              | Env Var                    | Default |
+/// |--------------------|----------------------------|---------|
+/// | `max_connections`  | `DB_MAX_CONNECTIONS`       | 10      |
+/// | `min_connections`  | `DB_MIN_CONNECTIONS`       | 2       |
+/// | `acquire_timeout`  | `DB_ACQUIRE_TIMEOUT_SECS`  | 30 s    |
+/// | `max_lifetime`     | `DB_MAX_LIFETIME_SECS`     | 1800 s  |
+/// | `idle_timeout`     | `DB_IDLE_TIMEOUT_SECS`     | 600 s   |
 pub struct PgStorageConfig {
     /// Maximum number of connections in the pool (default: 10).
     pub max_connections: u32,
-    /// Minimum number of idle connections to maintain (default: 1).
+    /// Minimum number of idle connections to maintain (default: 2).
     pub min_connections: u32,
+    /// Maximum time to wait when acquiring a connection from the pool
+    /// (default: 30 seconds).
+    pub acquire_timeout: Duration,
+    /// Maximum lifetime of a connection before it is closed and replaced
+    /// (default: 1800 seconds / 30 minutes).
+    pub max_lifetime: Duration,
+    /// Maximum time a connection can sit idle before being closed
+    /// (default: 600 seconds / 10 minutes).
+    pub idle_timeout: Duration,
 }
 
 impl Default for PgStorageConfig {
     fn default() -> Self {
         Self {
             max_connections: 10,
-            min_connections: 1,
+            min_connections: 2,
+            acquire_timeout: Duration::from_secs(30),
+            max_lifetime: Duration::from_secs(1800),
+            idle_timeout: Duration::from_secs(600),
+        }
+    }
+}
+
+impl PgStorageConfig {
+    /// Read pool configuration from environment variables, falling back to
+    /// defaults for any variable that is unset or unparseable.
+    ///
+    /// Logs a warning when a variable is set but cannot be parsed.
+    pub fn from_env() -> Self {
+        let defaults = Self::default();
+        Self {
+            max_connections: Self::parse_env_u32(
+                "DB_MAX_CONNECTIONS",
+                defaults.max_connections,
+            ),
+            min_connections: Self::parse_env_u32(
+                "DB_MIN_CONNECTIONS",
+                defaults.min_connections,
+            ),
+            acquire_timeout: Duration::from_secs(Self::parse_env_u64(
+                "DB_ACQUIRE_TIMEOUT_SECS",
+                defaults.acquire_timeout.as_secs(),
+            )),
+            max_lifetime: Duration::from_secs(Self::parse_env_u64(
+                "DB_MAX_LIFETIME_SECS",
+                defaults.max_lifetime.as_secs(),
+            )),
+            idle_timeout: Duration::from_secs(Self::parse_env_u64(
+                "DB_IDLE_TIMEOUT_SECS",
+                defaults.idle_timeout.as_secs(),
+            )),
+        }
+    }
+
+    fn parse_env_u32(name: &str, default: u32) -> u32 {
+        match std::env::var(name) {
+            Ok(val) => match val.parse::<u32>() {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to parse {}={:?}: {} -- using default {}",
+                        name, val, e, default,
+                    );
+                    default
+                }
+            },
+            Err(_) => default,
+        }
+    }
+
+    fn parse_env_u64(name: &str, default: u64) -> u64 {
+        match std::env::var(name) {
+            Ok(val) => match val.parse::<u64>() {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to parse {}={:?}: {} -- using default {}",
+                        name, val, e, default,
+                    );
+                    default
+                }
+            },
+            Err(_) => default,
         }
     }
 }
@@ -137,9 +225,22 @@ impl PgStorage {
         database_url: &str,
         config: PgStorageConfig,
     ) -> anyhow::Result<Self> {
+        tracing::info!(
+            "PgStorage pool config: max_connections={}, min_connections={}, \
+             acquire_timeout={}s, max_lifetime={}s, idle_timeout={}s",
+            config.max_connections,
+            config.min_connections,
+            config.acquire_timeout.as_secs(),
+            config.max_lifetime.as_secs(),
+            config.idle_timeout.as_secs(),
+        );
+
         let pool = PgPoolOptions::new()
             .max_connections(config.max_connections)
             .min_connections(config.min_connections)
+            .acquire_timeout(config.acquire_timeout)
+            .max_lifetime(config.max_lifetime)
+            .idle_timeout(config.idle_timeout)
             .connect(database_url)
             .await?;
 
@@ -880,7 +981,10 @@ mod tests {
     fn test_default_config() {
         let config = PgStorageConfig::default();
         assert_eq!(config.max_connections, 10);
-        assert_eq!(config.min_connections, 1);
+        assert_eq!(config.min_connections, 2);
+        assert_eq!(config.acquire_timeout, Duration::from_secs(30));
+        assert_eq!(config.max_lifetime, Duration::from_secs(1800));
+        assert_eq!(config.idle_timeout, Duration::from_secs(600));
     }
 
     #[test]
@@ -888,9 +992,80 @@ mod tests {
         let config = PgStorageConfig {
             max_connections: 20,
             min_connections: 5,
+            acquire_timeout: Duration::from_secs(60),
+            max_lifetime: Duration::from_secs(3600),
+            idle_timeout: Duration::from_secs(300),
         };
         assert_eq!(config.max_connections, 20);
         assert_eq!(config.min_connections, 5);
+        assert_eq!(config.acquire_timeout, Duration::from_secs(60));
+        assert_eq!(config.max_lifetime, Duration::from_secs(3600));
+        assert_eq!(config.idle_timeout, Duration::from_secs(300));
+    }
+
+    /// All `from_env` tests in a single function to avoid env-var race
+    /// conditions when tests run in parallel.
+    #[test]
+    fn test_config_from_env() {
+        let env_vars = [
+            "DB_MAX_CONNECTIONS",
+            "DB_MIN_CONNECTIONS",
+            "DB_ACQUIRE_TIMEOUT_SECS",
+            "DB_MAX_LIFETIME_SECS",
+            "DB_IDLE_TIMEOUT_SECS",
+        ];
+
+        // --- defaults (all vars cleared) ---
+        for var in &env_vars {
+            std::env::remove_var(var);
+        }
+        let config = PgStorageConfig::from_env();
+        assert_eq!(config.max_connections, 10);
+        assert_eq!(config.min_connections, 2);
+        assert_eq!(config.acquire_timeout, Duration::from_secs(30));
+        assert_eq!(config.max_lifetime, Duration::from_secs(1800));
+        assert_eq!(config.idle_timeout, Duration::from_secs(600));
+
+        // --- full custom values ---
+        std::env::set_var("DB_MAX_CONNECTIONS", "25");
+        std::env::set_var("DB_MIN_CONNECTIONS", "5");
+        std::env::set_var("DB_ACQUIRE_TIMEOUT_SECS", "10");
+        std::env::set_var("DB_MAX_LIFETIME_SECS", "900");
+        std::env::set_var("DB_IDLE_TIMEOUT_SECS", "120");
+        let config = PgStorageConfig::from_env();
+        assert_eq!(config.max_connections, 25);
+        assert_eq!(config.min_connections, 5);
+        assert_eq!(config.acquire_timeout, Duration::from_secs(10));
+        assert_eq!(config.max_lifetime, Duration::from_secs(900));
+        assert_eq!(config.idle_timeout, Duration::from_secs(120));
+
+        // --- invalid values fall back to defaults ---
+        std::env::set_var("DB_MAX_CONNECTIONS", "not_a_number");
+        std::env::set_var("DB_ACQUIRE_TIMEOUT_SECS", "abc");
+        std::env::remove_var("DB_MIN_CONNECTIONS");
+        std::env::remove_var("DB_MAX_LIFETIME_SECS");
+        std::env::remove_var("DB_IDLE_TIMEOUT_SECS");
+        let config = PgStorageConfig::from_env();
+        assert_eq!(config.max_connections, 10);
+        assert_eq!(config.acquire_timeout, Duration::from_secs(30));
+        assert_eq!(config.min_connections, 2);
+
+        // --- partial override ---
+        for var in &env_vars {
+            std::env::remove_var(var);
+        }
+        std::env::set_var("DB_MAX_CONNECTIONS", "50");
+        std::env::set_var("DB_IDLE_TIMEOUT_SECS", "300");
+        let config = PgStorageConfig::from_env();
+        assert_eq!(config.max_connections, 50);
+        assert_eq!(config.min_connections, 2);
+        assert_eq!(config.acquire_timeout, Duration::from_secs(30));
+        assert_eq!(config.idle_timeout, Duration::from_secs(300));
+
+        // --- clean up ---
+        for var in &env_vars {
+            std::env::remove_var(var);
+        }
     }
 
     #[test]

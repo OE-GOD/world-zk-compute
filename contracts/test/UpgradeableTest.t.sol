@@ -711,29 +711,30 @@ contract UpgradeableTest is Test {
     // Storage Layout Safety Tests
     // ========================================================================
 
-    function test_storageLayout_registryAtSlot0() public view {
-        // registry is the first storage variable (slot 0)
-        bytes32 val = vm.load(address(engine), bytes32(uint256(0)));
+    function test_storageLayout_registryAtSlot1() public view {
+        // slot 0 is packed: _initialized(uint8) + _initializing(bool) + timelock(address)
+        // registry starts at slot 1
+        bytes32 val = vm.load(address(engine), bytes32(uint256(1)));
         assertEq(address(uint160(uint256(val))), engine.registry());
     }
 
-    function test_storageLayout_verifierAtSlot1() public view {
-        bytes32 val = vm.load(address(engine), bytes32(uint256(1)));
+    function test_storageLayout_verifierAtSlot2() public view {
+        bytes32 val = vm.load(address(engine), bytes32(uint256(2)));
         assertEq(address(uint160(uint256(val))), engine.verifier());
     }
 
-    function test_storageLayout_protocolFeeBpsAtSlot2() public view {
-        bytes32 val = vm.load(address(engine), bytes32(uint256(2)));
+    function test_storageLayout_protocolFeeBpsAtSlot3() public view {
+        bytes32 val = vm.load(address(engine), bytes32(uint256(3)));
         assertEq(uint256(val), engine.protocolFeeBps());
     }
 
-    function test_storageLayout_feeRecipientAtSlot3() public view {
-        bytes32 val = vm.load(address(engine), bytes32(uint256(3)));
+    function test_storageLayout_feeRecipientAtSlot4() public view {
+        bytes32 val = vm.load(address(engine), bytes32(uint256(4)));
         assertEq(address(uint160(uint256(val))), engine.feeRecipient());
     }
 
-    function test_storageLayout_nextRequestIdAtSlot4() public view {
-        bytes32 val = vm.load(address(engine), bytes32(uint256(4)));
+    function test_storageLayout_nextRequestIdAtSlot5() public view {
+        bytes32 val = vm.load(address(engine), bytes32(uint256(5)));
         assertEq(uint256(val), engine.nextRequestId());
     }
 

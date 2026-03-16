@@ -7,22 +7,9 @@
 //! Usage:
 //!   cargo run
 
-use alloy::primitives::{Address, Bytes, B256, U256, keccak256};
-use alloy::providers::ProviderBuilder;
-use alloy::signers::local::PrivateKeySigner;
-use alloy::sol;
-use anyhow::{Context, Result};
-use std::str::FromStr;
-
-sol! {
-    #[sol(rpc)]
-    contract TEEMLVerifier {
-        function submitResult(bytes32 modelHash, bytes32 inputHash, bytes32 result, bytes32 imageHash, bytes attestation) external payable;
-        function finalizeResult(bytes32 resultId) external;
-        function isResultValid(bytes32 resultId) external view returns (bool);
-        function proverStake() external view returns (uint256);
-    }
-}
+use alloy::primitives::{keccak256, B256, U256};
+use anyhow::Result;
+use world_zk_sdk::{Client, tee::TEEVerifier};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -33,61 +20,36 @@ async fn main() -> Result<()> {
         "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80".into()
     });
 
-    let contract_addr =
-        Address::from_str(&contract_addr).context("invalid contract address")?;
-    let signer: PrivateKeySigner = private_key.parse().context("invalid private key")?;
-    let sender = signer.address();
-
-    let provider = ProviderBuilder::new()
-        .wallet(alloy::network::EthereumWallet::from(signer))
-        .connect_http(rpc_url.parse()?);
-
+    // --- Create SDK client and TEE verifier ---
+    let client = Client::new(&rpc_url, &private_key, &contract_addr)?;
     println!("Connected to {rpc_url}");
-    println!("Sender: {sender}");
+    println!("Sender: {}", client.signer_address());
 
-    let contract = TEEMLVerifier::new(contract_addr, &provider);
+    let tee = TEEVerifier::new(client);
 
-    // --- Query stake ---
-    let stake: U256 = contract.proverStake().call().await.context("proverStake() failed")?;
-    println!("Required stake: {stake} wei");
+    // --- Submit a TEE result ---
+    let model_hash = B256::left_padding_from(&[1]);
+    let input_hash = B256::left_padding_from(&[2]);
+    let result_data = vec![0u8; 32]; // mock result bytes
+    let attestation = vec![0u8; 65]; // mock attestation
 
-    // --- Submit result ---
-    let mut model_bytes = [0u8; 32];
-    model_bytes[31] = 1;
-    let model_hash = B256::from(model_bytes);
-    let mut input_bytes = [0u8; 32];
-    input_bytes[31] = 2;
-    let input_hash = B256::from(input_bytes);
-    let mut result_bytes = [0u8; 32];
-    result_bytes[31] = 3;
-    let result = B256::from(result_bytes);
-    let mut image_bytes = [0u8; 32];
-    image_bytes[31] = 4;
-    let image_hash = B256::from(image_bytes);
-    let attestation = Bytes::from(vec![0u8; 65]);
-
-    let receipt = contract
-        .submitResult(model_hash, input_hash, result, image_hash, attestation)
-        .value(stake)
-        .send()
-        .await?
-        .get_receipt()
+    let tx_hash = tee
+        .submit_result(model_hash, input_hash, &result_data, &attestation, U256::ZERO)
         .await?;
-    println!("submitResult tx: {} (status={})", receipt.transaction_hash, receipt.status());
-
-    // Compute result ID
-    let mut buf = [0u8; 64];
-    buf[..32].copy_from_slice(model_hash.as_slice());
-    buf[32..].copy_from_slice(input_hash.as_slice());
-    let result_id = keccak256(buf);
-    println!("Result ID: {result_id}");
+    println!("submitResult tx: {tx_hash}");
 
     // --- Query result ---
-    let is_valid: bool = contract.isResultValid(result_id).call().await?;
+    // result_id = keccak256(model_hash ++ input_hash)
+    let mut preimage = [0u8; 64];
+    preimage[..32].copy_from_slice(model_hash.as_ref());
+    preimage[32..].copy_from_slice(input_hash.as_ref());
+    let result_id = keccak256(preimage);
+
+    let is_valid = tee.is_result_valid(result_id).await?;
     println!("Is valid (before finalize): {is_valid}");
 
     println!("\nResult submitted successfully!");
-    println!("To finalize, wait for the challenge window to pass, then call finalizeResult().");
+    println!("To finalize, wait for the challenge window to pass, then call tee.finalize().");
 
     Ok(())
 }

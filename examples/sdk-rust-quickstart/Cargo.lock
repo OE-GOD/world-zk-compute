@@ -4365,12 +4365,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "world-zk-sdk"
+version = "1.0.0"
+dependencies = [
+ "alloy",
+ "anyhow",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "worldzk-rust-quickstart"
 version = "0.1.0"
 dependencies = [
  "alloy",
  "anyhow",
  "tokio",
+ "world-zk-sdk",
 ]
 
 [[package]]

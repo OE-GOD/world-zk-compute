@@ -62,6 +62,12 @@ interface IProverRegistry {
     /// @notice Emitted when a slasher's authorization status changes
     event SlasherUpdated(address indexed slasher, bool authorized);
 
+    /// @notice Emitted when the minimum stake requirement is updated
+    event MinStakeUpdated(uint256 oldMinStake, uint256 newMinStake);
+
+    /// @notice Emitted when the slash basis points are updated
+    event SlashBasisPointsUpdated(uint256 oldBasisPoints, uint256 newBasisPoints);
+
     // ========================================================================
     // ERRORS
     // ========================================================================
@@ -86,6 +92,12 @@ interface IProverRegistry {
 
     /// @notice Thrown when attempting to withdraw with zero stake
     error NoStakeToWithdraw();
+
+    /// @notice Thrown when slash basis points exceed the 50% maximum
+    error SlashBasisPointsTooHigh();
+
+    /// @notice Thrown when requesting more top provers than MAX_TOP_PROVERS
+    error TooManyTopProversRequested();
 
     // ========================================================================
     // EXTERNAL FUNCTIONS

@@ -91,6 +91,52 @@ impl ProofManager {
         )
     }
 
+    /// Create a ProofManager with all config-driven parameters, including
+    /// an optional prover URL (avoids env-var reads for prover mode).
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_config(
+        precompute_bin: &str,
+        model_path: &str,
+        proofs_dir: &str,
+        max_retries: u32,
+        retry_delay_secs: u64,
+        prover_timeout_secs: u64,
+        prover_url: Option<&str>,
+    ) -> anyhow::Result<Self> {
+        let mode = match prover_url {
+            Some(url) if !url.is_empty() => ProverMode::Http {
+                url: url.to_string(),
+            },
+            _ => ProverMode::from_env(),
+        };
+
+        let http_client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(DEFAULT_PROVER_CONNECT_TIMEOUT_SECS))
+            .timeout(Duration::from_secs(prover_timeout_secs))
+            .build()
+            .map_err(|e| anyhow::anyhow!("Failed to build prover HTTP client: {}", e))?;
+
+        tracing::info!(
+            "ProofManager initialized: mode={:?}, max_retries={}, base_delay_ms={}, max_delay_ms={}, timeout={}s",
+            mode,
+            max_retries,
+            retry_delay_secs * 1000,
+            retry_delay_secs * 16 * 1000,
+            prover_timeout_secs,
+        );
+        Ok(Self {
+            precompute_bin: precompute_bin.to_string(),
+            model_path: model_path.to_string(),
+            proofs_dir: PathBuf::from(proofs_dir),
+            mode,
+            max_retries,
+            retry_delay_secs,
+            retry_base_delay_ms: retry_delay_secs * 1000,
+            retry_max_delay_ms: retry_delay_secs * 16 * 1000,
+            http_client,
+        })
+    }
+
     /// Create a ProofManager with explicit retry parameters (millisecond precision).
     #[allow(dead_code)]
     pub fn with_retry_config(

@@ -815,7 +815,8 @@ async fn main() -> anyhow::Result<()> {
             info!("  database_url:     {}...", redacted);
             #[cfg(feature = "postgres")]
             {
-                let pg = pg_storage::PgStorage::new(url).await?;
+                let pool_config = pg_storage::PgStorageConfig::from_env();
+                let pg = pg_storage::PgStorage::connect_with_config(url, pool_config).await?;
                 migrations::run_migrations_pg(pg.pool()).await?;
                 Arc::new(pg) as Arc<dyn Storage>
             }

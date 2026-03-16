@@ -27,6 +27,8 @@ contract ProverRegistryTest is Test {
     event ReputationUpdated(address indexed prover, uint256 oldRep, uint256 newRep);
     event RewardDistributed(address indexed prover, uint256 amount);
     event SlasherUpdated(address indexed slasher, bool authorized);
+    event MinStakeUpdated(uint256 oldMinStake, uint256 newMinStake);
+    event SlashBasisPointsUpdated(uint256 oldBasisPoints, uint256 newBasisPoints);
 
     ProverRegistry public registry;
     MockToken public token;
@@ -632,8 +634,22 @@ contract ProverRegistryTest is Test {
         assertEq(top.length, 0, "should return empty array when no provers");
     }
 
+    function testGetTopProversExceedsCap() public {
+        vm.expectRevert(ProverRegistry.TooManyTopProversRequested.selector);
+        registry.getTopProvers(51);
+    }
+
+    function testGetTopProversAtCap() public view {
+        // MAX_TOP_PROVERS (50) should not revert
+        address[] memory top = registry.getTopProvers(50);
+        assertEq(top.length, 0, "should return empty (no provers registered)");
+    }
+
     function testSetMinStake() public {
+        uint256 oldMin = registry.minStake();
         uint256 newMin = 200 ether;
+        vm.expectEmit(true, true, true, true);
+        emit MinStakeUpdated(oldMin, newMin);
         registry.setMinStake(newMin);
         assertEq(registry.minStake(), newMin);
     }
@@ -645,13 +661,16 @@ contract ProverRegistryTest is Test {
     }
 
     function testSetSlashBasisPoints() public {
+        uint256 oldBp = registry.slashBasisPoints();
+        vm.expectEmit(true, true, true, true);
+        emit SlashBasisPointsUpdated(oldBp, 2500);
         registry.setSlashBasisPoints(2500); // 25%
         assertEq(registry.slashBasisPoints(), 2500);
     }
 
     function testSetSlashBasisPointsMaxFiftyPercent() public {
         registry.setSlashBasisPoints(5000); // 50% should succeed
-        vm.expectRevert("Max 50%");
+        vm.expectRevert(ProverRegistry.SlashBasisPointsTooHigh.selector);
         registry.setSlashBasisPoints(5001);
     }
 

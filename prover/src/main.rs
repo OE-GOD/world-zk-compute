@@ -466,10 +466,11 @@ async fn run_prover(
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
             .map(|s| {
-                let bytes = hex::decode(s.trim_start_matches("0x")).expect("Invalid image ID hex");
-                B256::from_slice(&bytes)
+                let bytes = hex::decode(s.trim_start_matches("0x"))
+                    .map_err(|e| anyhow::anyhow!("Invalid image ID hex '{}': {}", s, e))?;
+                Ok::<B256, anyhow::Error>(B256::from_slice(&bytes))
             })
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?
     };
 
     if allowed_images.is_empty() {

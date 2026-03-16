@@ -28,6 +28,9 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
     /// @notice Maximum slash basis points allowed (50%)
     uint256 private constant MAX_SLASH_BASIS_POINTS = 5000;
 
+    /// @notice Maximum number of top provers that can be queried at once
+    uint256 public constant MAX_TOP_PROVERS = 50;
+
     // ============================================================
     // TYPES
     // ============================================================
@@ -111,12 +114,15 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
     event SlasherUpdated(address indexed slasher, bool authorized);
     event SelectionRequested(uint256 indexed requestId, address indexed requester, bytes32 commitment);
     event SelectionFulfilled(uint256 indexed requestId, address indexed prover, uint256 seed);
+    event MinStakeUpdated(uint256 oldMinStake, uint256 newMinStake);
+    event SlashBasisPointsUpdated(uint256 oldBasisPoints, uint256 newBasisPoints);
 
     // ============================================================
     // ERRORS
     // ============================================================
 
     error InsufficientStake();
+    error SlashBasisPointsTooHigh();
     error ProverNotRegistered();
     error ProverAlreadyRegistered();
     error ProverNotActive();
@@ -128,6 +134,7 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
     error RequestAlreadyFulfilled();
     error RequestNotFound();
     error NoActiveProvers();
+    error TooManyTopProversRequested();
 
     // ============================================================
     // CONSTRUCTOR
@@ -316,9 +323,10 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
 
         // Calculate total weight (stake * reputation)
         uint256 totalWeight = 0;
-        for (uint256 i = 0; i < count; i++) {
+        for (uint256 i = 0; i < count;) {
             Prover storage p = provers[activeProvers[i]];
             totalWeight += (p.stake * p.reputation) / 10000;
+            unchecked { ++i; }
         }
 
         if (totalWeight == 0) return activeProvers[seed % count];
@@ -327,12 +335,13 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
         uint256 random = uint256(keccak256(abi.encodePacked(seed))) % totalWeight;
         uint256 cumulative = 0;
 
-        for (uint256 i = 0; i < count; i++) {
+        for (uint256 i = 0; i < count;) {
             Prover storage p = provers[activeProvers[i]];
             cumulative += (p.stake * p.reputation) / 10000;
             if (random < cumulative) {
                 return activeProvers[i];
             }
+            unchecked { ++i; }
         }
 
         return activeProvers[count - 1];
@@ -381,6 +390,7 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
     /// @param n Number of provers to return
     /// @return Top prover addresses
     function getTopProvers(uint256 n) external view returns (address[] memory) {
+        if (n > MAX_TOP_PROVERS) revert TooManyTopProversRequested();
         uint256 count = activeProvers.length;
         if (n > count) n = count;
 
@@ -388,11 +398,11 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
         address[] memory result = new address[](n);
         bool[] memory used = new bool[](count);
 
-        for (uint256 i = 0; i < n; i++) {
+        for (uint256 i = 0; i < n;) {
             uint256 maxRep = 0;
             uint256 maxIdx = 0;
 
-            for (uint256 j = 0; j < count; j++) {
+            for (uint256 j = 0; j < count;) {
                 if (!used[j]) {
                     uint256 rep = provers[activeProvers[j]].reputation;
                     if (rep > maxRep) {
@@ -400,10 +410,12 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
                         maxIdx = j;
                     }
                 }
+                unchecked { ++j; }
             }
 
             result[i] = activeProvers[maxIdx];
             used[maxIdx] = true;
+            unchecked { ++i; }
         }
 
         return result;
@@ -461,14 +473,18 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
     /// @notice Update minimum stake requirement
     /// @param _minStake The new minimum stake amount in token units
     function setMinStake(uint256 _minStake) external onlyOwner {
+        uint256 oldMinStake = minStake;
         minStake = _minStake;
+        emit MinStakeUpdated(oldMinStake, _minStake);
     }
 
     /// @notice Update slash percentage
     /// @param _slashBasisPoints The new slash percentage in basis points (e.g., 500 = 5%, max 5000 = 50%)
     function setSlashBasisPoints(uint256 _slashBasisPoints) external onlyOwner {
-        require(_slashBasisPoints <= MAX_SLASH_BASIS_POINTS, "Max 50%");
+        if (_slashBasisPoints > MAX_SLASH_BASIS_POINTS) revert SlashBasisPointsTooHigh();
+        uint256 oldBasisPoints = slashBasisPoints;
         slashBasisPoints = _slashBasisPoints;
+        emit SlashBasisPointsUpdated(oldBasisPoints, _slashBasisPoints);
     }
 
     /// @notice Authorize/deauthorize a slasher
@@ -491,9 +507,10 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
 
         // Calculate total weight (stake * reputation)
         uint256 totalWeight = 0;
-        for (uint256 i = 0; i < count; i++) {
+        for (uint256 i = 0; i < count;) {
             Prover storage p = provers[activeProvers[i]];
             totalWeight += (p.stake * p.reputation) / 10000;
+            unchecked { ++i; }
         }
 
         if (totalWeight == 0) return activeProvers[seed % count];
@@ -501,12 +518,13 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
         uint256 random = uint256(keccak256(abi.encodePacked(seed))) % totalWeight;
         uint256 cumulative = 0;
 
-        for (uint256 i = 0; i < count; i++) {
+        for (uint256 i = 0; i < count;) {
             Prover storage p = provers[activeProvers[i]];
             cumulative += (p.stake * p.reputation) / 10000;
             if (random < cumulative) {
                 return activeProvers[i];
             }
+            unchecked { ++i; }
         }
 
         return activeProvers[count - 1];

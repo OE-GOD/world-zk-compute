@@ -356,7 +356,9 @@ impl FastProver {
                     self.prove_segmented(elf, input, num_segments).await
                 }
                 ProvingStrategy::Continuation => self.prove_continuation(elf, input).await,
-                ProvingStrategy::TooComplex => unreachable!(),
+                ProvingStrategy::TooComplex => {
+                    return Err(anyhow!("Program too complex for proving"));
+                }
             }
         })
         .await

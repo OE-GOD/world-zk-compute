@@ -1334,7 +1334,7 @@ mod tests {
                 metrics_port,
                 dry_run,
             } => {
-                assert_eq!(metrics_port, 8080);
+                assert_eq!(metrics_port, Some(8080));
                 assert!(dry_run);
             }
             _ => panic!("expected Watch command"),
