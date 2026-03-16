@@ -15,7 +15,7 @@
 #
 # Requires: cast, bc (or python3 as fallback)
 
-set -uo pipefail
+set -euo pipefail
 
 # =============================================================================
 # Defaults

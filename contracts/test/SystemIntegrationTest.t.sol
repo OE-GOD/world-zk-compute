@@ -224,11 +224,7 @@ contract SystemIntegrationTest is Test {
 
         // Create attestation
         bytes memory result = "prediction: 0.95";
-        bytes32 resultHash = keccak256(result);
-        bytes32 message = keccak256(abi.encodePacked(modelHash, inputHash, resultHash));
-        bytes32 ethSignedHash = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", message));
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(enclavePrivateKey, ethSignedHash);
-        bytes memory attestation = abi.encodePacked(r, s, v);
+        bytes memory attestation = _signTeeAttestation(modelHash, inputHash, result);
 
         // Submit result
         vm.prank(prover);
@@ -255,11 +251,7 @@ contract SystemIntegrationTest is Test {
         teeVerifier.registerEnclave(enclaveKey, bytes32(uint256(0xBEEF)));
 
         bytes memory result = "prediction: 0.95";
-        bytes32 resultHash = keccak256(result);
-        bytes32 message = keccak256(abi.encodePacked(modelHash, inputHash, resultHash));
-        bytes32 ethSignedHash = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", message));
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(enclavePrivateKey, ethSignedHash);
-        bytes memory attestation = abi.encodePacked(r, s, v);
+        bytes memory attestation = _signTeeAttestation(modelHash, inputHash, result);
 
         vm.prank(prover);
         bytes32 resultId = teeVerifier.submitResult{value: 0.1 ether}(modelHash, inputHash, result, attestation);
@@ -368,11 +360,7 @@ contract SystemIntegrationTest is Test {
 
         // Flow 2: TEE submission (same model, different path)
         bytes memory result = "prediction: 0.95";
-        bytes32 resultHash = keccak256(result);
-        bytes32 message = keccak256(abi.encodePacked(modelHash, inputHash, resultHash));
-        bytes32 ethSignedHash = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", message));
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(enclavePrivateKey, ethSignedHash);
-        bytes memory attestation = abi.encodePacked(r, s, v);
+        bytes memory attestation = _signTeeAttestation(modelHash, inputHash, result);
 
         vm.prank(prover);
         bytes32 resultId = teeVerifier.submitResult{value: 0.1 ether}(modelHash, inputHash, result, attestation);
@@ -439,11 +427,7 @@ contract SystemIntegrationTest is Test {
 
         // Submit a result with valid attestation
         bytes memory result = "result-1";
-        bytes32 resultHash = keccak256(result);
-        bytes32 message = keccak256(abi.encodePacked(modelHash, inputHash, resultHash));
-        bytes32 ethSignedHash = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", message));
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(enclavePrivateKey, ethSignedHash);
-        bytes memory attestation = abi.encodePacked(r, s, v);
+        bytes memory attestation = _signTeeAttestation(modelHash, inputHash, result);
 
         vm.prank(prover);
         teeVerifier.submitResult{value: 0.1 ether}(modelHash, inputHash, result, attestation);
@@ -453,11 +437,7 @@ contract SystemIntegrationTest is Test {
 
         // Try to submit with revoked enclave — should fail
         bytes memory result2 = "result-2";
-        bytes32 resultHash2 = keccak256(result2);
-        bytes32 message2 = keccak256(abi.encodePacked(modelHash, inputHash, resultHash2));
-        bytes32 ethSignedHash2 = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", message2));
-        (uint8 v2, bytes32 r2, bytes32 s2) = vm.sign(enclavePrivateKey, ethSignedHash2);
-        bytes memory attestation2 = abi.encodePacked(r2, s2, v2);
+        bytes memory attestation2 = _signTeeAttestation(modelHash, inputHash, result2);
 
         vm.prank(prover);
         vm.expectRevert("TEEMLVerifier: enclave revoked");
@@ -553,11 +533,7 @@ contract SystemIntegrationTest is Test {
         teeVerifier.registerEnclave(enclaveKey, bytes32(uint256(0xBEEF)));
 
         bytes memory result = "prediction: 0.95";
-        bytes32 resultHash = keccak256(result);
-        bytes32 message = keccak256(abi.encodePacked(modelHash, inputHash, resultHash));
-        bytes32 ethSignedHash = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", message));
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(enclavePrivateKey, ethSignedHash);
-        bytes memory attestation = abi.encodePacked(r, s, v);
+        bytes memory attestation = _signTeeAttestation(modelHash, inputHash, result);
 
         vm.prank(prover);
         bytes32 resultId = teeVerifier.submitResult{value: 0.1 ether}(modelHash, inputHash, result, attestation);
@@ -603,11 +579,7 @@ contract SystemIntegrationTest is Test {
         teeVerifier.registerEnclave(enclaveKey, bytes32(uint256(0xBEEF)));
 
         bytes memory result = "result";
-        bytes32 resultHash = keccak256(result);
-        bytes32 message = keccak256(abi.encodePacked(modelHash, inputHash, resultHash));
-        bytes32 ethSignedHash = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", message));
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(enclavePrivateKey, ethSignedHash);
-        bytes memory attestation = abi.encodePacked(r, s, v);
+        bytes memory attestation = _signTeeAttestation(modelHash, inputHash, result);
 
         // Insufficient stake with new requirement
         vm.prank(prover);
@@ -721,11 +693,7 @@ contract SystemIntegrationTest is Test {
         teeVerifier.registerEnclave(enclaveKey, bytes32(uint256(0xBEEF)));
 
         bytes memory result = "prediction: 0.95";
-        bytes32 resultHash = keccak256(result);
-        bytes32 message = keccak256(abi.encodePacked(modelHash, inputHash, resultHash));
-        bytes32 ethSignedHash = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", message));
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(enclavePrivateKey, ethSignedHash);
-        bytes memory attestation = abi.encodePacked(r, s, v);
+        bytes memory attestation = _signTeeAttestation(modelHash, inputHash, result);
 
         // Submit to TEE verifier
         vm.prank(prover);
@@ -899,6 +867,28 @@ contract SystemIntegrationTest is Test {
     // ========================================================================
     // 20. Fee recipient receives correct fees
     // ========================================================================
+
+    /// @dev Helper to create EIP-712 typed data signatures for TEEMLVerifier attestations
+    function _signTeeAttestation(bytes32 _modelHash, bytes32 _inputHash, bytes memory _result)
+        internal
+        view
+        returns (bytes memory attestation)
+    {
+        bytes32 resultHash = keccak256(_result);
+        bytes32 structHash = keccak256(abi.encode(teeVerifier.RESULT_TYPEHASH(), _modelHash, _inputHash, resultHash));
+        bytes32 domainSeparator = keccak256(
+            abi.encode(
+                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+                keccak256("TEEMLVerifier"),
+                keccak256("1"),
+                block.chainid,
+                address(teeVerifier)
+            )
+        );
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(enclavePrivateKey, digest);
+        attestation = abi.encodePacked(r, s, v);
+    }
 
     function test_protocolFeeDistribution() public {
         // Register program

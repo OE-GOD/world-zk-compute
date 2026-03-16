@@ -105,9 +105,7 @@ contract TEEMLVerifierTest is Test {
         returns (bytes memory attestation)
     {
         bytes32 resultHash = keccak256(_result);
-        bytes32 structHash = keccak256(
-            abi.encode(verifier.RESULT_TYPEHASH(), _modelHash, _inputHash, resultHash)
-        );
+        bytes32 structHash = keccak256(abi.encode(verifier.RESULT_TYPEHASH(), _modelHash, _inputHash, resultHash));
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", _domainSeparator(), structHash));
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(enclavePrivateKey, digest);
         attestation = abi.encodePacked(r, s, v);
@@ -150,9 +148,7 @@ contract TEEMLVerifierTest is Test {
     function test_submitResult_invalidSignature() public {
         uint256 wrongKey = 0xBAD;
         bytes32 resultHash = keccak256(resultData);
-        bytes32 structHash = keccak256(
-            abi.encode(verifier.RESULT_TYPEHASH(), modelHash, inputHash, resultHash)
-        );
+        bytes32 structHash = keccak256(abi.encode(verifier.RESULT_TYPEHASH(), modelHash, inputHash, resultHash));
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", _domainSeparator(), structHash));
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(wrongKey, digest);
         bytes memory attestation = abi.encodePacked(r, s, v);
@@ -164,9 +160,7 @@ contract TEEMLVerifierTest is Test {
     function test_submitResult_unregisteredEnclave() public {
         uint256 unknownKey = 0xDEAD;
         bytes32 resultHash = keccak256(resultData);
-        bytes32 structHash = keccak256(
-            abi.encode(verifier.RESULT_TYPEHASH(), modelHash, inputHash, resultHash)
-        );
+        bytes32 structHash = keccak256(abi.encode(verifier.RESULT_TYPEHASH(), modelHash, inputHash, resultHash));
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", _domainSeparator(), structHash));
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(unknownKey, digest);
         bytes memory attestation = abi.encodePacked(r, s, v);
@@ -402,9 +396,7 @@ contract TEEMLVerifierTest is Test {
 
     function test_attestation_ecrecover() public view {
         bytes32 resultHash = keccak256(resultData);
-        bytes32 structHash = keccak256(
-            abi.encode(verifier.RESULT_TYPEHASH(), modelHash, inputHash, resultHash)
-        );
+        bytes32 structHash = keccak256(abi.encode(verifier.RESULT_TYPEHASH(), modelHash, inputHash, resultHash));
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", _domainSeparator(), structHash));
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(enclavePrivateKey, digest);
 
@@ -977,5 +969,67 @@ contract TEEMLVerifierTest is Test {
         verifier.resolveDisputeByTimeout(resultId);
 
         assertTrue(verifier.disputeResolved(resultId));
+    }
+
+    // ─── Configurable Windows ─────────────────────────────────────────────
+
+    function test_setChallengeWindow_default() public view {
+        assertEq(verifier.challengeWindow(), 1 hours);
+    }
+
+    function test_setDisputeWindow_default() public view {
+        assertEq(verifier.disputeWindow(), 24 hours);
+    }
+
+    function test_setChallengeWindow_success() public {
+        verifier.setChallengeWindow(30 minutes);
+        assertEq(verifier.challengeWindow(), 30 minutes);
+    }
+
+    function test_setDisputeWindow_success() public {
+        verifier.setDisputeWindow(48 hours);
+        assertEq(verifier.disputeWindow(), 48 hours);
+    }
+
+    function test_setChallengeWindow_tooShort() public {
+        vm.expectRevert("TEEMLVerifier: window too short");
+        verifier.setChallengeWindow(9 minutes);
+    }
+
+    function test_setChallengeWindow_tooLong() public {
+        vm.expectRevert("TEEMLVerifier: window too long");
+        verifier.setChallengeWindow(8 days);
+    }
+
+    function test_setDisputeWindow_tooShort() public {
+        vm.expectRevert("TEEMLVerifier: window too short");
+        verifier.setDisputeWindow(59 minutes);
+    }
+
+    function test_setDisputeWindow_tooLong() public {
+        vm.expectRevert("TEEMLVerifier: window too long");
+        verifier.setDisputeWindow(31 days);
+    }
+
+    function test_setChallengeWindow_nonOwnerReverts() public {
+        vm.prank(address(0x9999));
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, address(0x9999)));
+        verifier.setChallengeWindow(30 minutes);
+    }
+
+    function test_setDisputeWindow_nonOwnerReverts() public {
+        vm.prank(address(0x9999));
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, address(0x9999)));
+        verifier.setDisputeWindow(48 hours);
+    }
+
+    function test_setChallengeWindow_affectsNewSubmissions() public {
+        verifier.setChallengeWindow(2 hours);
+
+        bytes memory attestation = _signAttestation(modelHash, inputHash, resultData);
+        bytes32 resultId = verifier.submitResult{value: DEFAULT_PROVER_STAKE}(modelHash, inputHash, resultData, attestation);
+
+        ITEEMLVerifier.MLResult memory r = verifier.getResult(resultId);
+        assertEq(r.challengeDeadline, block.timestamp + 2 hours);
     }
 }

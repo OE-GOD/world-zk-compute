@@ -9,7 +9,7 @@
 #
 # Requires: forge, cast, bc
 
-set -uo pipefail
+set -euo pipefail
 
 RPC_URL="http://127.0.0.1:8545"
 ETH_PRICE=3000

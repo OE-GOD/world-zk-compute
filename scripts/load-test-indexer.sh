@@ -15,7 +15,7 @@
 # Optional: hey (https://github.com/rakyll/hey) for better stats
 # ws-scale mode requires: python3 with websockets OR websocat
 
-set -uo pipefail
+set -euo pipefail
 
 URL="http://127.0.0.1:8081"
 CONCURRENCY=5

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Deploy RemainderVerifier + TEEMLVerifier + DAG circuit to Arbitrum Sepolia.
 #
 # Required env vars:

@@ -16,7 +16,7 @@
 #   1 -- error (result not found or RPC failure)
 # =============================================================================
 
-set -uo pipefail
+set -euo pipefail
 
 # ---------------------------------------------------------------------------
 # Color helpers (respects NO_COLOR)

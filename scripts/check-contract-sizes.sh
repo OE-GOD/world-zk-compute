@@ -3,7 +3,7 @@
 # Usage: ./scripts/check-contract-sizes.sh
 # Exit code 1 if any production contract exceeds the limit.
 
-set -uo pipefail
+set -euo pipefail
 
 LIMIT=24576
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

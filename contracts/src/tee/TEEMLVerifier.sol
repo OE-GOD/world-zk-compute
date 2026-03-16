@@ -91,10 +91,10 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
     address public remainderVerifier;
 
     /// @notice Duration of the challenge window after result submission
-    uint256 public constant CHALLENGE_WINDOW = 1 hours;
+    uint256 public challengeWindow = 1 hours;
 
     /// @notice Duration of the dispute window after a challenge is raised
-    uint256 public constant DISPUTE_WINDOW = 24 hours;
+    uint256 public disputeWindow = 24 hours;
 
     /// @notice Minimum ETH bond required to challenge a result
     uint256 public challengeBondAmount = 0.1 ether;
@@ -201,6 +201,26 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
         emit ConfigUpdated("proverStake", oldAmount, _amount);
     }
 
+    /// @notice Update the challenge window duration
+    /// @param _duration New challenge window in seconds (min 10 min, max 7 days)
+    function setChallengeWindow(uint256 _duration) external onlyOwner {
+        require(_duration >= 10 minutes, "TEEMLVerifier: window too short");
+        require(_duration <= 7 days, "TEEMLVerifier: window too long");
+        uint256 oldDuration = challengeWindow;
+        challengeWindow = _duration;
+        emit ConfigUpdated("challengeWindow", oldDuration, _duration);
+    }
+
+    /// @notice Update the dispute window duration
+    /// @param _duration New dispute window in seconds (min 1 hour, max 30 days)
+    function setDisputeWindow(uint256 _duration) external onlyOwner {
+        require(_duration >= 1 hours, "TEEMLVerifier: window too short");
+        require(_duration <= 30 days, "TEEMLVerifier: window too long");
+        uint256 oldDuration = disputeWindow;
+        disputeWindow = _duration;
+        emit ConfigUpdated("disputeWindow", oldDuration, _duration);
+    }
+
     /// @inheritdoc ITEEMLVerifier
     function pause() external onlyOwner {
         _pause();
@@ -215,7 +235,7 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
 
     /// @inheritdoc ITEEMLVerifier
     /// @dev Verifies the attestation signature against registered enclaves,
-    ///      then stores the result with a CHALLENGE_WINDOW deadline.
+    ///      then stores the result with a challengeWindow deadline.
     function submitResult(bytes32 modelHash, bytes32 inputHash, bytes calldata result, bytes calldata attestation)
         external
         payable
@@ -240,7 +260,7 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
             // forge-lint: disable-next-line(unsafe-typecast)
             submittedAt: uint40(block.timestamp),
             // forge-lint: disable-next-line(unsafe-typecast)
-            challengeDeadline: uint40(block.timestamp + CHALLENGE_WINDOW),
+            challengeDeadline: uint40(block.timestamp + challengeWindow),
             finalized: false,
             challenged: false,
             submitter: msg.sender,
@@ -260,7 +280,7 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
     // ─── Challenge ───────────────────────────────────────────────────────────
 
     /// @inheritdoc ITEEMLVerifier
-    /// @dev Sets up a DISPUTE_WINDOW deadline for ZK proof submission.
+    /// @dev Sets up a disputeWindow deadline for ZK proof submission.
     function challenge(bytes32 resultId) external payable whenNotPaused {
         PackedMLResult storage r = _results[resultId];
         require(r.submittedAt != 0, "TEEMLVerifier: result not found");
@@ -273,7 +293,7 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
         r.challenger = msg.sender;
         r.challengeBond = msg.value;
         // forge-lint: disable-next-line(unsafe-typecast)
-        r.disputeDeadline = uint40(block.timestamp + DISPUTE_WINDOW);
+        r.disputeDeadline = uint40(block.timestamp + disputeWindow);
 
         emit ResultChallenged(resultId, msg.sender);
     }

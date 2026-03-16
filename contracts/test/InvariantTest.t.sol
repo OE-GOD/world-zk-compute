@@ -73,9 +73,7 @@ contract TEEMLVerifierHandler is Test {
     function _signAttestation(bytes32 _inputHash) internal view returns (bytes memory attestation) {
         bytes32 resultHash = keccak256(resultData);
         // EIP-712 structured data signing (matches TEEMLVerifier.submitResult)
-        bytes32 structHash = keccak256(
-            abi.encode(verifier.RESULT_TYPEHASH(), modelHash, _inputHash, resultHash)
-        );
+        bytes32 structHash = keccak256(abi.encode(verifier.RESULT_TYPEHASH(), modelHash, _inputHash, resultHash));
         bytes32 domainSep = keccak256(
             abi.encode(
                 keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),

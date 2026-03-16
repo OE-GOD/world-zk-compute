@@ -344,10 +344,7 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
     function requestProverSelection(bytes32 commitment) external returns (uint256 requestId) {
         requestId = nextRequestId++;
         selectionRequests[requestId] = SelectionRequest({
-            commitment: commitment,
-            blockNumber: block.number,
-            requester: msg.sender,
-            fulfilled: false
+            commitment: commitment, blockNumber: block.number, requester: msg.sender, fulfilled: false
         });
         emit SelectionRequested(requestId, msg.sender, commitment);
     }

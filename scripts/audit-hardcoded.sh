@@ -14,7 +14,7 @@
 #   1 -- hardcoded addresses found in production service code
 # =============================================================================
 
-set -uo pipefail
+set -euo pipefail
 
 # ---------------------------------------------------------------------------
 # Color helpers (respects NO_COLOR)

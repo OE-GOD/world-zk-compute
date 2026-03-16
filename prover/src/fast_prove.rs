@@ -321,8 +321,17 @@ impl FastProver {
 
         if self.config.trace_caching {
             if let Some(trace) = self.trace_cache.read().await.get(&input_hash) {
-                info!("Cache hit! Reusing execution trace");
-                return self.prove_from_trace(trace).await;
+                match self.prove_from_trace(trace).await {
+                    Ok(result) => return Ok(result),
+                    Err(e) => {
+                        warn!(
+                            "Trace cache hit but prove_from_trace failed: {}. \
+                             Falling back to full re-execution + prove.",
+                            e
+                        );
+                        // Fall through to normal proving path below
+                    }
+                }
             }
         }
 
@@ -488,23 +497,16 @@ impl FastProver {
         Ok((result.seal, result.journal))
     }
 
-    /// Prove from cached trace
-    /// Note: Trace caching is a future optimization. Currently, we re-prove.
-    async fn prove_from_trace(&self, trace: &ExecutionTrace) -> Result<FastProofResult> {
-        warn!("prove_from_trace not yet implemented — returning empty proof, caller must fall back to full prove");
-
-        // TODO: Implement trace-based proving when RISC Zero supports it
-        // For now, we would need to re-execute and prove
-        // This is a placeholder for future optimization
-
-        Ok(FastProofResult {
-            proof: vec![], // Caller should fall back to full prove
-            journal: vec![],
-            cycles: trace.cycles,
-            strategy_used: ProvingStrategy::Direct,
-            proof_time: Duration::ZERO,
-            output_hash: B256::ZERO,
-        })
+    /// Prove from cached trace.
+    ///
+    /// Trace-based proving is a future optimization. RISC Zero does not yet
+    /// support generating a proof from a pre-recorded execution trace, so
+    /// this method returns an error. Callers should catch the error and fall
+    /// back to full re-execution + proving.
+    async fn prove_from_trace(&self, _trace: &ExecutionTrace) -> Result<FastProofResult> {
+        Err(anyhow!(
+            "trace-based proving not yet supported; falling back to full prove"
+        ))
     }
 }
 

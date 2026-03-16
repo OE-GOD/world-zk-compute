@@ -15,7 +15,7 @@
 # Requires: cast (Foundry), bc or python3
 # =============================================================================
 
-set -uo pipefail
+set -euo pipefail
 
 # ---------------------------------------------------------------------------
 # Color helpers (respects NO_COLOR)

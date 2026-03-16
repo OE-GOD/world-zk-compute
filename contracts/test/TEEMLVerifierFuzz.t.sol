@@ -33,7 +33,6 @@ contract TEEMLVerifierFuzzTest is Test {
 
     uint256 constant DEFAULT_PROVER_STAKE = 0.1 ether;
     uint256 constant DEFAULT_CHALLENGE_BOND = 0.1 ether;
-    uint256 constant CHALLENGE_WINDOW = 1 hours;
 
     // Allow test contract to receive ETH (submitter payouts)
     receive() external payable {}
@@ -71,9 +70,7 @@ contract TEEMLVerifierFuzzTest is Test {
         returns (bytes memory attestation)
     {
         bytes32 resultHash = keccak256(_result);
-        bytes32 structHash = keccak256(
-            abi.encode(verifier.RESULT_TYPEHASH(), _modelHash, _inputHash, resultHash)
-        );
+        bytes32 structHash = keccak256(abi.encode(verifier.RESULT_TYPEHASH(), _modelHash, _inputHash, resultHash));
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", _domainSeparator(), structHash));
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(enclavePrivateKey, digest);
         attestation = abi.encodePacked(r, s, v);
@@ -249,8 +246,8 @@ contract TEEMLVerifierFuzzTest is Test {
 
         bytes32 resultId = _submitDefault();
 
-        // challengeDeadline = block.timestamp + CHALLENGE_WINDOW
-        uint256 challengeDeadline = block.timestamp + CHALLENGE_WINDOW;
+        // challengeDeadline = block.timestamp + challengeWindow
+        uint256 challengeDeadline = block.timestamp + verifier.challengeWindow();
         vm.warp(challengeDeadline + delay);
 
         address challenger = address(0xC0FFEE);
@@ -270,9 +267,10 @@ contract TEEMLVerifierFuzzTest is Test {
         uint256 submitTime = block.timestamp;
         bytes32 resultId = _submitDefault();
 
-        // challengeDeadline = submitTime + CHALLENGE_WINDOW
-        // We want to stay strictly before the deadline, so bound to [0, CHALLENGE_WINDOW - 1].
-        elapsed = bound(elapsed, 0, CHALLENGE_WINDOW - 1);
+        // challengeDeadline = submitTime + challengeWindow
+        // We want to stay strictly before the deadline, so bound to [0, challengeWindow - 1].
+        uint256 cw = verifier.challengeWindow();
+        elapsed = bound(elapsed, 0, cw - 1);
         vm.warp(submitTime + elapsed);
 
         vm.expectRevert("TEEMLVerifier: window not passed");

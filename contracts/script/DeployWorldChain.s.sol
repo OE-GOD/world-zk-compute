@@ -200,11 +200,7 @@ contract DeployWorldChain is Script {
         result = abi.decode(raw, (bool[]));
     }
 
-    function _parseUint256Array(string memory json, string memory key)
-        private
-        pure
-        returns (uint256[] memory result)
-    {
+    function _parseUint256Array(string memory json, string memory key) private pure returns (uint256[] memory result) {
         bytes memory raw = vm.parseJson(json, key);
         bytes32[] memory parsed = abi.decode(raw, (bytes32[]));
         result = new uint256[](parsed.length);

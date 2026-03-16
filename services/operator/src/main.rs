@@ -282,7 +282,7 @@ async fn cmd_submit(
     let enclave_client = enclave::EnclaveClient::with_config_timeout(
         &config.enclave_url,
         config.enclave_timeout_secs,
-    );
+    )?;
 
     let health = enclave_client.health().await?;
     if !health {
@@ -335,7 +335,7 @@ async fn cmd_submit(
         config.max_proof_retries,
         config.proof_retry_delay_secs,
         config.prover_timeout_secs,
-    );
+    )?;
     let result_id = format!("0x{}", hex::encode(tx_hash));
     let features_owned = features_json.to_string();
     tokio::spawn(async move {
@@ -488,7 +488,7 @@ async fn cmd_watch(config: &Config, metrics_port: u16, dry_run: bool) -> anyhow:
         config.max_proof_retries,
         config.proof_retry_delay_secs,
         config.prover_timeout_secs,
-    ));
+    )?);
 
     // Initialize webhook notifier (None if WEBHOOK_URL is not set)
     let notifier = notifications::WebhookNotifier::from_optional(config.webhook_url.as_deref());
@@ -890,7 +890,7 @@ async fn cmd_register(
     let enclave_client = enclave::EnclaveClient::with_config_timeout(
         &config.enclave_url,
         config.enclave_timeout_secs,
-    );
+    )?;
 
     // 1. Get enclave address first (needed for nonce computation)
     let info = enclave_client.info().await?;

@@ -128,16 +128,25 @@ contract GasProfileTest is Test {
     // TEEMLVerifier helpers
     // ========================================================================
 
-    /// @dev Produce a valid ECDSA attestation signed by the test enclave key
+    /// @dev Produce a valid EIP-712 attestation signed by the test enclave key
     function _signAttestation(bytes32 _modelHash, bytes32 _inputHash, bytes memory _result)
         internal
         view
         returns (bytes memory attestation)
     {
         bytes32 resultHash = keccak256(_result);
-        bytes32 message = keccak256(abi.encodePacked(_modelHash, _inputHash, resultHash));
-        bytes32 ethSignedHash = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", message));
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(enclavePrivateKey, ethSignedHash);
+        bytes32 structHash = keccak256(abi.encode(teeVerifier.RESULT_TYPEHASH(), _modelHash, _inputHash, resultHash));
+        bytes32 domainSeparator = keccak256(
+            abi.encode(
+                keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),
+                keccak256("TEEMLVerifier"),
+                keccak256("1"),
+                block.chainid,
+                address(teeVerifier)
+            )
+        );
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(enclavePrivateKey, digest);
         attestation = abi.encodePacked(r, s, v);
     }
 

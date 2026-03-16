@@ -8,7 +8,7 @@
 # 4. Wait for proof
 # 5. Verify results
 
-set -e
+set -euo pipefail
 
 echo "=== World ZK Compute - Detection Demo ==="
 echo ""

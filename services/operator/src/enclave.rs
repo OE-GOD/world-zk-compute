@@ -51,7 +51,7 @@ struct HealthResponse {
 impl EnclaveClient {
     /// Create a new client using env var `ENCLAVE_TIMEOUT_SECS` or defaults.
     #[allow(dead_code)]
-    pub fn new(base_url: &str) -> Self {
+    pub fn new(base_url: &str) -> anyhow::Result<Self> {
         let timeout_secs = std::env::var("ENCLAVE_TIMEOUT_SECS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok());
@@ -66,7 +66,7 @@ impl EnclaveClient {
     ///
     /// This avoids redundant env-var reads when the caller already loaded
     /// the timeout value via `Config::from_env()`.
-    pub fn with_config_timeout(base_url: &str, request_timeout_secs: u64) -> Self {
+    pub fn with_config_timeout(base_url: &str, request_timeout_secs: u64) -> anyhow::Result<Self> {
         Self::with_timeouts(
             base_url,
             DEFAULT_ENCLAVE_CONNECT_TIMEOUT_SECS,
@@ -79,12 +79,12 @@ impl EnclaveClient {
         base_url: &str,
         connect_timeout_secs: u64,
         request_timeout_secs: u64,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(connect_timeout_secs))
             .timeout(Duration::from_secs(request_timeout_secs))
             .build()
-            .expect("failed to build reqwest client");
+            .map_err(|e| anyhow::anyhow!("Failed to build reqwest client: {}", e))?;
 
         tracing::debug!(
             connect_timeout_secs = connect_timeout_secs,
@@ -92,10 +92,10 @@ impl EnclaveClient {
             "EnclaveClient configured with timeouts"
         );
 
-        Self {
+        Ok(Self {
             client,
             base_url: base_url.trim_end_matches('/').to_string(),
-        }
+        })
     }
 
     /// Check if the enclave is healthy.
@@ -181,19 +181,19 @@ mod tests {
 
     #[test]
     fn test_enclave_client_new() {
-        let client = EnclaveClient::new("http://localhost:8080/");
+        let client = EnclaveClient::new("http://localhost:8080/").unwrap();
         assert_eq!(client.base_url, "http://localhost:8080");
     }
 
     #[test]
     fn test_enclave_client_with_timeouts() {
-        let client = EnclaveClient::with_timeouts("http://example.com", 5, 15);
+        let client = EnclaveClient::with_timeouts("http://example.com", 5, 15).unwrap();
         assert_eq!(client.base_url, "http://example.com");
     }
 
     #[test]
     fn test_enclave_client_with_timeouts_strips_trailing_slash() {
-        let client = EnclaveClient::with_timeouts("http://example.com/", 10, 30);
+        let client = EnclaveClient::with_timeouts("http://example.com/", 10, 30).unwrap();
         assert_eq!(client.base_url, "http://example.com");
     }
 
@@ -205,7 +205,7 @@ mod tests {
 
     #[test]
     fn test_enclave_client_with_config_timeout() {
-        let client = EnclaveClient::with_config_timeout("http://example.com/", 60);
+        let client = EnclaveClient::with_config_timeout("http://example.com/", 60).unwrap();
         assert_eq!(client.base_url, "http://example.com");
     }
 }

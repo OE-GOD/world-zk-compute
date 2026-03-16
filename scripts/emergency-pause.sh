@@ -31,7 +31,7 @@
 #   1 -- one or more operations failed, or user aborted
 # =============================================================================
 
-set -uo pipefail
+set -euo pipefail
 
 # ---------------------------------------------------------------------------
 # Color helpers (respects NO_COLOR)

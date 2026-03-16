@@ -410,7 +410,13 @@ fn parse_fields_from_map(
                 if k_str == key {
                     if let ciborium::Value::Integer(val) = v {
                         let n: i128 = (*val).into();
-                        return Ok(n as u64);
+                        let converted: u64 = n.try_into().map_err(|_| {
+                            AttestationError::CoseStructure(format!(
+                                "Field '{}' has out-of-range integer value: {}",
+                                key, n
+                            ))
+                        })?;
+                        return Ok(converted);
                     }
                 }
             }
@@ -1200,5 +1206,92 @@ mod tests {
         // Cross-signer should fail: root cert's key should NOT verify COSE signed by leaf
         let result = verify_cose_signature(&root_cert, &protected_bytes, &payload_bytes, &sig_raw);
         assert!(result.is_err(), "Wrong key should fail COSE verification");
+    }
+
+    // --- Malformed attestation parsing tests ---
+
+    #[test]
+    fn test_negative_timestamp_rejected() {
+        // Build an attestation with a negative timestamp value.
+        // This should be rejected gracefully rather than silently wrapping.
+        let mut payload_items: Vec<(ciborium::Value, ciborium::Value)> = Vec::new();
+
+        payload_items.push((
+            ciborium::Value::Text("module_id".to_string()),
+            ciborium::Value::Text("malformed".to_string()),
+        ));
+
+        // Negative timestamp -- malformed input
+        payload_items.push((
+            ciborium::Value::Text("timestamp".to_string()),
+            ciborium::Value::Integer(ciborium::value::Integer::from(-1i64)),
+        ));
+
+        let mock_pcr0 = vec![0u8; 48];
+        let pcrs = vec![(
+            ciborium::Value::Integer(0.into()),
+            ciborium::Value::Bytes(mock_pcr0),
+        )];
+        payload_items.push((
+            ciborium::Value::Text("pcrs".to_string()),
+            ciborium::Value::Map(pcrs),
+        ));
+
+        payload_items.push((
+            ciborium::Value::Text("public_key".to_string()),
+            ciborium::Value::Bytes(vec![0u8; 20]),
+        ));
+
+        let payload_value = ciborium::Value::Map(payload_items);
+        let mut payload_bytes = Vec::new();
+        ciborium::into_writer(&payload_value, &mut payload_bytes).unwrap();
+
+        let cose = ciborium::Value::Array(vec![
+            ciborium::Value::Bytes(vec![]),
+            ciborium::Value::Map(vec![]),
+            ciborium::Value::Bytes(payload_bytes),
+            ciborium::Value::Bytes(vec![0u8; 96]),
+        ]);
+        let mut doc_bytes = Vec::new();
+        ciborium::into_writer(&cose, &mut doc_bytes).unwrap();
+
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&doc_bytes);
+
+        let result = parse_attestation(&b64);
+        assert!(
+            result.is_err(),
+            "Negative timestamp should be rejected, but got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_truncated_cbor_rejected() {
+        // Completely malformed base64 that decodes to invalid CBOR.
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&[0xA1, 0x01, 0x02]);
+        let result = parse_attestation(&b64);
+        assert!(result.is_err(), "Truncated CBOR should be rejected");
+    }
+
+    #[test]
+    fn test_wrong_cose_array_length_rejected() {
+        // COSE_Sign1 should have 4 elements; provide only 3.
+        let cose = ciborium::Value::Array(vec![
+            ciborium::Value::Bytes(vec![]),
+            ciborium::Value::Map(vec![]),
+            ciborium::Value::Bytes(vec![]),
+        ]);
+        let mut doc_bytes = Vec::new();
+        ciborium::into_writer(&cose, &mut doc_bytes).unwrap();
+
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&doc_bytes);
+        let result = parse_attestation(&b64);
+        assert!(
+            result.is_err(),
+            "Wrong COSE_Sign1 array length should be rejected"
+        );
     }
 }

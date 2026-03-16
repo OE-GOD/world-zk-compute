@@ -4,7 +4,7 @@
 #
 # Runs bash -n (syntax check), shellcheck (if installed), and --help (if supported).
 
-set -uo pipefail
+set -euo pipefail
 
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
     head -5 "$0" | tail -4

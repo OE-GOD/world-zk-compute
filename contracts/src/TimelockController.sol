@@ -113,13 +113,8 @@ contract TimelockController {
 
         uint256 readyTimestamp = block.timestamp + delay;
 
-        _operations[id] = Operation({
-            target: target,
-            data: data,
-            readyTimestamp: readyTimestamp,
-            executed: false,
-            cancelled: false
-        });
+        _operations[id] =
+            Operation({target: target, data: data, readyTimestamp: readyTimestamp, executed: false, cancelled: false});
 
         emit OperationScheduled(id, target, data, delay, readyTimestamp);
     }

@@ -55,7 +55,7 @@ impl ProofManager {
         proofs_dir: &str,
         max_retries: u32,
         retry_delay_secs: u64,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         Self::with_retry_config(
             precompute_bin,
             model_path,
@@ -78,7 +78,7 @@ impl ProofManager {
         max_retries: u32,
         retry_delay_secs: u64,
         prover_timeout_secs: u64,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         Self::build_internal(
             precompute_bin,
             model_path,
@@ -101,7 +101,7 @@ impl ProofManager {
         retry_delay_secs: u64,
         retry_base_delay_ms: u64,
         retry_max_delay_ms: u64,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         let request_timeout = std::env::var("PROVER_TIMEOUT_SECS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
@@ -130,14 +130,14 @@ impl ProofManager {
         retry_base_delay_ms: u64,
         retry_max_delay_ms: u64,
         request_timeout_secs: u64,
-    ) -> Self {
+    ) -> anyhow::Result<Self> {
         let mode = ProverMode::from_env();
 
         let http_client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(DEFAULT_PROVER_CONNECT_TIMEOUT_SECS))
             .timeout(Duration::from_secs(request_timeout_secs))
             .build()
-            .expect("failed to build prover HTTP client");
+            .map_err(|e| anyhow::anyhow!("Failed to build prover HTTP client: {}", e))?;
 
         tracing::info!(
             "ProofManager initialized: mode={:?}, max_retries={}, base_delay_ms={}, max_delay_ms={}, timeout={}s",
@@ -147,7 +147,7 @@ impl ProofManager {
             retry_max_delay_ms,
             request_timeout_secs,
         );
-        Self {
+        Ok(Self {
             precompute_bin: precompute_bin.to_string(),
             model_path: model_path.to_string(),
             proofs_dir: PathBuf::from(proofs_dir),
@@ -157,7 +157,7 @@ impl ProofManager {
             retry_base_delay_ms,
             retry_max_delay_ms,
             http_client,
-        }
+        })
     }
 
     /// Compute the retry delay in milliseconds for a given attempt number.
@@ -515,7 +515,7 @@ mod tests {
         let _lock = ENV_MUTEX.lock().unwrap();
         std::env::remove_var("PROVER_URL");
         std::env::remove_var("PROVER_TIMEOUT_SECS");
-        let pm = ProofManager::new("precompute_proof", "./model.json", "/tmp/proofs", 3, 10);
+        let pm = ProofManager::new("precompute_proof", "./model.json", "/tmp/proofs", 3, 10).unwrap();
         assert_eq!(pm.precompute_bin, "precompute_proof");
         assert_eq!(pm.model_path, "./model.json");
         assert!(matches!(pm.mode, ProverMode::Subprocess));
@@ -528,7 +528,7 @@ mod tests {
         let _lock = ENV_MUTEX.lock().unwrap();
         std::env::remove_var("PROVER_URL");
         std::env::remove_var("PROVER_TIMEOUT_SECS");
-        let pm = ProofManager::new("x", "y", "/tmp/nonexistent-proof-dir-12345", 3, 10);
+        let pm = ProofManager::new("x", "y", "/tmp/nonexistent-proof-dir-12345", 3, 10).unwrap();
         assert!(!pm.has_proof("does-not-exist"));
     }
 
@@ -537,7 +537,7 @@ mod tests {
         let _lock = ENV_MUTEX.lock().unwrap();
         std::env::remove_var("PROVER_URL");
         std::env::remove_var("PROVER_TIMEOUT_SECS");
-        let pm = ProofManager::new("x", "y", "/tmp/nonexistent-proof-dir-12345", 3, 10);
+        let pm = ProofManager::new("x", "y", "/tmp/nonexistent-proof-dir-12345", 3, 10).unwrap();
         let result = pm.read_proof("does-not-exist").unwrap();
         assert!(result.is_none());
     }
@@ -574,7 +574,7 @@ mod tests {
         let _lock = ENV_MUTEX.lock().unwrap();
         std::env::set_var("PROVER_URL", "http://warm-prover:8080");
         std::env::remove_var("PROVER_TIMEOUT_SECS");
-        let pm = ProofManager::new("unused", "unused", "/tmp/proofs", 3, 10);
+        let pm = ProofManager::new("unused", "unused", "/tmp/proofs", 3, 10).unwrap();
         assert!(matches!(pm.mode, ProverMode::Http { .. }));
         std::env::remove_var("PROVER_URL");
     }
@@ -584,7 +584,7 @@ mod tests {
         let _lock = ENV_MUTEX.lock().unwrap();
         std::env::remove_var("PROVER_URL");
         std::env::remove_var("PROVER_TIMEOUT_SECS");
-        let pm = ProofManager::new("x", "y", "/tmp/test", 5, 15);
+        let pm = ProofManager::new("x", "y", "/tmp/test", 5, 15).unwrap();
         assert_eq!(pm.max_retries, 5);
         assert_eq!(pm.retry_delay_secs, 15);
     }
@@ -594,7 +594,7 @@ mod tests {
         let _lock = ENV_MUTEX.lock().unwrap();
         std::env::remove_var("PROVER_URL");
         std::env::remove_var("PROVER_TIMEOUT_SECS");
-        let pm = ProofManager::new("x", "y", "/tmp/test", 0, 10);
+        let pm = ProofManager::new("x", "y", "/tmp/test", 0, 10).unwrap();
         assert_eq!(pm.max_retries, 0);
         assert_eq!(pm.retry_delay_secs, 10);
     }
@@ -610,7 +610,7 @@ mod tests {
         let _lock = ENV_MUTEX.lock().unwrap();
         std::env::remove_var("PROVER_URL");
         std::env::set_var("PROVER_TIMEOUT_SECS", "600");
-        let _pm = ProofManager::new("x", "y", "/tmp/test", 0, 10);
+        let _pm = ProofManager::new("x", "y", "/tmp/test", 0, 10).unwrap();
         std::env::remove_var("PROVER_TIMEOUT_SECS");
     }
 
@@ -621,7 +621,7 @@ mod tests {
         let _lock = ENV_MUTEX.lock().unwrap();
         std::env::remove_var("PROVER_URL");
         std::env::remove_var("PROVER_TIMEOUT_SECS");
-        let pm = ProofManager::with_retry_config("x", "y", "/tmp/test", 5, 10, 2000, 60000);
+        let pm = ProofManager::with_retry_config("x", "y", "/tmp/test", 5, 10, 2000, 60000).unwrap();
         assert_eq!(pm.max_retries, 5);
         assert_eq!(pm.retry_delay_secs, 10);
         assert_eq!(pm.retry_base_delay_ms, 2000);
@@ -633,7 +633,7 @@ mod tests {
         let _lock = ENV_MUTEX.lock().unwrap();
         std::env::remove_var("PROVER_URL");
         std::env::remove_var("PROVER_TIMEOUT_SECS");
-        let pm = ProofManager::new("x", "y", "/tmp/test", 3, 10);
+        let pm = ProofManager::new("x", "y", "/tmp/test", 3, 10).unwrap();
         assert_eq!(pm.retry_base_delay_ms, 10000);
         assert_eq!(pm.retry_max_delay_ms, 160000);
     }
@@ -643,7 +643,7 @@ mod tests {
         let _lock = ENV_MUTEX.lock().unwrap();
         std::env::remove_var("PROVER_URL");
         std::env::remove_var("PROVER_TIMEOUT_SECS");
-        let pm = ProofManager::with_retry_config("x", "y", "/tmp/test", 3, 1, 1000, 30000);
+        let pm = ProofManager::with_retry_config("x", "y", "/tmp/test", 3, 1, 1000, 30000).unwrap();
         assert_eq!(pm.compute_retry_delay_ms(0), 0);
     }
 
@@ -652,7 +652,7 @@ mod tests {
         let _lock = ENV_MUTEX.lock().unwrap();
         std::env::remove_var("PROVER_URL");
         std::env::remove_var("PROVER_TIMEOUT_SECS");
-        let pm = ProofManager::with_retry_config("x", "y", "/tmp/test", 10, 1, 1000, 30000);
+        let pm = ProofManager::with_retry_config("x", "y", "/tmp/test", 10, 1, 1000, 30000).unwrap();
         assert_eq!(pm.compute_retry_delay_ms(1), 1000);
         assert_eq!(pm.compute_retry_delay_ms(2), 2000);
         assert_eq!(pm.compute_retry_delay_ms(3), 4000);
@@ -666,7 +666,7 @@ mod tests {
         let _lock = ENV_MUTEX.lock().unwrap();
         std::env::remove_var("PROVER_URL");
         std::env::remove_var("PROVER_TIMEOUT_SECS");
-        let pm = ProofManager::with_retry_config("x", "y", "/tmp/test", 10, 1, 5000, 10000);
+        let pm = ProofManager::with_retry_config("x", "y", "/tmp/test", 10, 1, 5000, 10000).unwrap();
         assert_eq!(pm.compute_retry_delay_ms(1), 5000);
         assert_eq!(pm.compute_retry_delay_ms(2), 10000);
         assert_eq!(pm.compute_retry_delay_ms(3), 10000);
@@ -678,7 +678,7 @@ mod tests {
         let _lock = ENV_MUTEX.lock().unwrap();
         std::env::remove_var("PROVER_URL");
         std::env::remove_var("PROVER_TIMEOUT_SECS");
-        let pm = ProofManager::with_retry_config("x", "y", "/tmp/test", 100, 1, 60000, 600000);
+        let pm = ProofManager::with_retry_config("x", "y", "/tmp/test", 100, 1, 60000, 600000).unwrap();
         assert_eq!(pm.compute_retry_delay_ms(21), 600000);
         assert_eq!(pm.compute_retry_delay_ms(100), 600000);
     }
@@ -710,7 +710,7 @@ mod tests {
         // Force subprocess mode so the constructor does not need the mock URL.
         std::env::remove_var("PROVER_URL");
         std::env::remove_var("PROVER_TIMEOUT_SECS");
-        ProofManager::new("x", "y", dir.path().to_str().unwrap(), 0, 1)
+        ProofManager::new("x", "y", dir.path().to_str().unwrap(), 0, 1).unwrap()
     }
 
     #[tokio::test]

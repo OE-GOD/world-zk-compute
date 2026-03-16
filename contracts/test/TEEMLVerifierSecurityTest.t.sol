@@ -103,9 +103,7 @@ contract TEEMLVerifierSecurityTest is Test {
 
     /// @dev Builds the EIP-712 digest for a TEEMLResult
     function _buildDigest(bytes32 _modelHash, bytes32 _inputHash, bytes32 resultHash) internal view returns (bytes32) {
-        bytes32 structHash = keccak256(
-            abi.encode(verifier.RESULT_TYPEHASH(), _modelHash, _inputHash, resultHash)
-        );
+        bytes32 structHash = keccak256(abi.encode(verifier.RESULT_TYPEHASH(), _modelHash, _inputHash, resultHash));
         return keccak256(abi.encodePacked("\x19\x01", _domainSeparator(), structHash));
     }
 
@@ -609,9 +607,7 @@ contract TEEMLVerifierSecurityTest is Test {
         // Create attestation for chain A
         bytes memory result = "cross-chain-test";
         bytes32 resultHash = keccak256(result);
-        bytes32 structHash = keccak256(
-            abi.encode(verifier.RESULT_TYPEHASH(), modelHash, inputHash, resultHash)
-        );
+        bytes32 structHash = keccak256(abi.encode(verifier.RESULT_TYPEHASH(), modelHash, inputHash, resultHash));
 
         // Domain separator for chain A
         bytes32 domainA = keccak256(
@@ -656,9 +652,7 @@ contract TEEMLVerifierSecurityTest is Test {
         // Create attestation targeting verifier (first contract)
         bytes memory result = "cross-contract-test";
         bytes32 resultHash = keccak256(result);
-        bytes32 structHash = keccak256(
-            abi.encode(verifier.RESULT_TYPEHASH(), modelHash, inputHash, resultHash)
-        );
+        bytes32 structHash = keccak256(abi.encode(verifier.RESULT_TYPEHASH(), modelHash, inputHash, resultHash));
         bytes32 domain1 = keccak256(
             abi.encode(
                 keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"),

@@ -14,7 +14,7 @@
 # Requires: curl, bc (standard on macOS/Linux)
 # Optional: hey (https://github.com/rakyll/hey) for better stats
 
-set -uo pipefail
+set -euo pipefail
 
 URL="http://127.0.0.1:3000"
 CONCURRENCY=5
