@@ -918,7 +918,7 @@ contract ProverReputationTest is Test {
     }
 
     function test_transferOwnership_rejectsZeroAddress() public {
-        vm.expectRevert("Invalid owner");
+        vm.expectRevert(ProverReputation.ZeroAddress.selector);
         rep.transferOwnership(address(0));
     }
 

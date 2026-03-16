@@ -342,6 +342,7 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
     error ExpectedPause();
     error ReentrancyGuardReentrantCall();
     error TransferFailed();
+    error FeeTooHigh();
 
     // ========================================================================
     // MODIFIERS
@@ -552,7 +553,7 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
     /// @notice Set protocol fee
     /// @dev Uses onlyTimelocked: if a timelock is set, only the timelock can call this.
     function setProtocolFee(uint256 _feeBps) external onlyTimelocked {
-        require(_feeBps <= MAX_FEE_BPS, "Fee too high");
+        if (_feeBps > MAX_FEE_BPS) revert FeeTooHigh();
         uint256 oldFeeBps = protocolFeeBps;
         protocolFeeBps = _feeBps;
         emit ProtocolFeeUpdated(oldFeeBps, _feeBps);

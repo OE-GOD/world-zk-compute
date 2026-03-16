@@ -1211,7 +1211,7 @@ contract TimelockControllerTest is Test {
         timelockCtl.schedule(id, address(engine), data, MIN_DELAY);
         vm.warp(block.timestamp + MIN_DELAY);
 
-        vm.expectRevert("Fee too high");
+        vm.expectRevert(UpgradeableExecutionEngine.FeeTooHigh.selector);
         timelockCtl.execute(id);
     }
 

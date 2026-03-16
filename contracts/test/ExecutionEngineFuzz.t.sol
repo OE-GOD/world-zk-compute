@@ -111,7 +111,7 @@ contract ExecutionEngineFuzzTest is Test {
     function testFuzz_protocolFee_bounds(uint256 feeBps) public {
         vm.prank(deployer);
         if (feeBps > 1000) {
-            vm.expectRevert("Fee too high");
+            vm.expectRevert(ExecutionEngine.FeeTooHigh.selector);
             engine.setProtocolFee(feeBps);
         } else {
             engine.setProtocolFee(feeBps);

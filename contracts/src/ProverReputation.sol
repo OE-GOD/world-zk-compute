@@ -142,6 +142,8 @@ contract ProverReputation {
     error TimestampOverflow();
     error InvalidTimestamp();
     error SlashCooldownActive();
+    /// @notice Thrown when a zero address is provided where a valid address is required
+    error ZeroAddress();
 
     // ========================================================================
     // MODIFIERS
@@ -421,7 +423,7 @@ contract ProverReputation {
 
     /// @notice Transfer ownership
     function transferOwnership(address newOwner) external onlyOwner {
-        require(newOwner != address(0), "Invalid owner");
+        if (newOwner == address(0)) revert ZeroAddress();
         address oldOwner = owner;
         owner = newOwner;
         emit OwnershipTransferred(oldOwner, newOwner);
