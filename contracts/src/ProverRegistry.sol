@@ -5,11 +5,12 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 
 /// @title ProverRegistry - Decentralized Prover Network
 /// @notice Manages prover registration, staking, reputation, and slashing
 /// @dev Provers stake tokens to participate, earn rewards, and can be slashed for misbehavior
-contract ProverRegistry is ReentrancyGuard, Ownable2Step {
+contract ProverRegistry is ReentrancyGuard, Ownable2Step, Pausable {
     using SafeERC20 for IERC20;
 
     // ============================================================
@@ -163,7 +164,7 @@ contract ProverRegistry is ReentrancyGuard, Ownable2Step {
     /// @notice Register as a prover with initial stake
     /// @param stake Amount to stake
     /// @param endpoint P2P endpoint for coordination (optional)
-    function register(uint256 stake, string calldata endpoint) external nonReentrant {
+    function register(uint256 stake, string calldata endpoint) external nonReentrant whenNotPaused {
         if (bytes(endpoint).length > MAX_URL_LENGTH) revert StringTooLong("endpoint", MAX_URL_LENGTH);
         if (provers[msg.sender].registeredAt != 0) revert ProverAlreadyRegistered();
         if (stake < minStake) revert InsufficientStake();
@@ -196,7 +197,7 @@ contract ProverRegistry is ReentrancyGuard, Ownable2Step {
 
     /// @notice Add more stake
     /// @param amount Amount to add
-    function addStake(uint256 amount) external nonReentrant {
+    function addStake(uint256 amount) external nonReentrant whenNotPaused {
         Prover storage prover = provers[msg.sender];
         if (prover.registeredAt == 0) revert ProverNotRegistered();
 
@@ -236,7 +237,7 @@ contract ProverRegistry is ReentrancyGuard, Ownable2Step {
     }
 
     /// @notice Deactivate (stop receiving jobs, can withdraw below minimum)
-    function deactivate() external {
+    function deactivate() external whenNotPaused {
         Prover storage prover = provers[msg.sender];
         if (prover.registeredAt == 0) revert ProverNotRegistered();
         if (!prover.active) revert ProverNotActive();
@@ -245,7 +246,7 @@ contract ProverRegistry is ReentrancyGuard, Ownable2Step {
     }
 
     /// @notice Reactivate (must have minimum stake)
-    function reactivate() external {
+    function reactivate() external whenNotPaused {
         Prover storage prover = provers[msg.sender];
         if (prover.registeredAt == 0) revert ProverNotRegistered();
         if (prover.active) return; // Already active
@@ -301,7 +302,7 @@ contract ProverRegistry is ReentrancyGuard, Ownable2Step {
     /// @notice Record successful proof and update reputation
     /// @param prover Prover address
     /// @param reward Reward amount earned
-    function recordSuccess(address prover, uint256 reward) external {
+    function recordSuccess(address prover, uint256 reward) external whenNotPaused {
         if (!slashers[msg.sender] && msg.sender != owner()) revert UnauthorizedSlasher();
 
         Prover storage p = provers[prover];
@@ -366,7 +367,7 @@ contract ProverRegistry is ReentrancyGuard, Ownable2Step {
     /// @notice Request a commit-reveal prover selection
     /// @param commitment keccak256(secret) where secret is a random bytes32 chosen by the requester
     /// @return requestId The ID of the selection request
-    function requestProverSelection(bytes32 commitment) external returns (uint256 requestId) {
+    function requestProverSelection(bytes32 commitment) external whenNotPaused returns (uint256 requestId) {
         requestId = nextRequestId++;
         selectionRequests[requestId] = SelectionRequest({
             commitment: commitment, blockNumber: block.number, requester: msg.sender, fulfilled: false
@@ -378,7 +379,7 @@ contract ProverRegistry is ReentrancyGuard, Ownable2Step {
     /// @param requestId The ID of the selection request from requestProverSelection
     /// @param secret The preimage of the commitment (keccak256(secret) must equal the stored commitment)
     /// @return prover The selected prover address
-    function fulfillProverSelection(uint256 requestId, bytes32 secret) external returns (address prover) {
+    function fulfillProverSelection(uint256 requestId, bytes32 secret) external whenNotPaused returns (address prover) {
         SelectionRequest storage req = selectionRequests[requestId];
         if (req.requester == address(0)) revert RequestNotFound();
         if (req.fulfilled) revert RequestAlreadyFulfilled();
@@ -531,6 +532,16 @@ contract ProverRegistry is ReentrancyGuard, Ownable2Step {
         uint256 oldBasisPoints = slashBasisPoints;
         slashBasisPoints = _slashBasisPoints;
         emit SlashBasisPointsUpdated(oldBasisPoints, _slashBasisPoints);
+    }
+
+    /// @notice Pause the contract (blocks register, addStake, deactivate, reactivate, recordSuccess, prover selection)
+    function pause() external onlyOwner {
+        _pause();
+    }
+
+    /// @notice Unpause the contract
+    function unpause() external onlyOwner {
+        _unpause();
     }
 
     /// @notice Authorize/deauthorize a slasher

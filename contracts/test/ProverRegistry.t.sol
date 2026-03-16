@@ -5,6 +5,7 @@ import "forge-std/Test.sol";
 import "../src/ProverRegistry.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 
 contract MockToken is ERC20 {
     constructor() ERC20("Mock", "MCK") {
@@ -1059,5 +1060,42 @@ contract ProverRegistryTest is Test {
         vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, randomUser));
         vm.prank(randomUser);
         registry.acceptOwnership();
+    }
+
+    // ========================================================================
+    // PAUSABLE TESTS
+    // ========================================================================
+
+    function test_pauseBlocksRegister() public {
+        // Owner pauses the contract
+        registry.pause();
+        assertTrue(registry.paused(), "contract should be paused");
+
+        // register() should revert with EnforcedPause
+        vm.prank(prover1);
+        vm.expectRevert(abi.encodeWithSelector(Pausable.EnforcedPause.selector));
+        registry.register(MIN_STAKE, "https://prover1.example.com");
+    }
+
+    function test_withdrawStakeWorksWhenPaused() public {
+        // Register a prover first, then deactivate so withdraw below min is allowed
+        uint256 initialStake = 500 ether;
+        _registerProver(prover1, initialStake, "ep");
+
+        vm.prank(prover1);
+        registry.deactivate();
+
+        // Now pause the contract
+        registry.pause();
+        assertTrue(registry.paused(), "contract should be paused");
+
+        // withdrawStake should still work (no whenNotPaused guard)
+        uint256 balBefore = token.balanceOf(prover1);
+
+        vm.prank(prover1);
+        registry.withdrawStake(initialStake);
+
+        assertEq(token.balanceOf(prover1), balBefore + initialStake, "tokens should be returned even when paused");
+        assertEq(registry.getProver(prover1).stake, 0, "stake should be zero after full withdrawal");
     }
 }

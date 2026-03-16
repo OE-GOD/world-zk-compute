@@ -158,7 +158,7 @@ contract ProgramRegistry is Ownable2Step, Pausable {
     /// @notice Update program URL (only program owner)
     /// @param imageId The image ID of the program to update
     /// @param newUrl The new URL where the program binary can be downloaded
-    function updateProgramUrl(bytes32 imageId, string calldata newUrl) external {
+    function updateProgramUrl(bytes32 imageId, string calldata newUrl) external whenNotPaused {
         if (bytes(newUrl).length > MAX_URL_LENGTH) revert StringTooLong("url", MAX_URL_LENGTH);
         Program storage program = programs[imageId];
         if (program.registeredAt == 0) revert ProgramNotFound();
@@ -196,7 +196,7 @@ contract ProgramRegistry is Ownable2Step, Pausable {
     /// @notice Update the verifier contract for a program (only program owner)
     /// @param imageId The program ID
     /// @param verifierContract New IProofVerifier address (must be a deployed contract, not EOA or address(0))
-    function updateVerifier(bytes32 imageId, address verifierContract) external {
+    function updateVerifier(bytes32 imageId, address verifierContract) external whenNotPaused {
         Program storage program = programs[imageId];
         if (program.registeredAt == 0) revert ProgramNotFound();
         if (program.owner != msg.sender) revert NotProgramOwner();

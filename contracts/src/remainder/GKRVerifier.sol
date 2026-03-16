@@ -85,7 +85,9 @@ library GKRVerifier {
         HyraxVerifier.PedersenGens memory gens,
         PoseidonSponge.Sponge memory sponge
     ) internal view returns (bool) {
-        if (proof.layerProofs.length != circuit.numLayers - 1) revert WrongNumberOfLayerProofs();
+        if (proof.layerProofs.length != circuit.numLayers - 1) {
+            revert WrongNumberOfLayerProofs();
+        }
 
         // Step 1: Squeeze output challenge — becomes claim_point for first layer
         uint256 outputChallenge = PoseidonSponge.squeeze(sponge) % FR_MODULUS;

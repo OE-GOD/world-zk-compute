@@ -559,7 +559,9 @@ contract MockExecutionEngineTest is Test {
         mock.claimExecution(requestId);
 
         vm.prank(prover);
-        vm.expectRevert(abi.encodeWithSelector(MockExecutionEngine.MockSubmitProofReverted.selector, "Mock: proof invalid"));
+        vm.expectRevert(
+            abi.encodeWithSelector(MockExecutionEngine.MockSubmitProofReverted.selector, "Mock: proof invalid")
+        );
         mock.submitProof(requestId, hex"deadbeef", hex"cafebabe");
 
         // Call count should NOT have incremented because the call reverted

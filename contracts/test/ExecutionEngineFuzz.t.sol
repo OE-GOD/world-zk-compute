@@ -179,8 +179,7 @@ contract ExecutionEngineFuzzTest is Test {
         elapsed = bound(elapsed, 0, 2 hours);
 
         vm.prank(requester);
-        uint256 requestId =
-            engine.requestExecution{value: tip}(imageId, inputDigest, inputUrl, address(0), 3600, 0);
+        uint256 requestId = engine.requestExecution{value: tip}(imageId, inputDigest, inputUrl, address(0), 3600, 0);
 
         // Advance time
         vm.warp(block.timestamp + elapsed);

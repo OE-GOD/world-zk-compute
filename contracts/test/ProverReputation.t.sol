@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 import "forge-std/Test.sol";
 import "../src/ProverReputation.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 
 contract ProverReputationTest is Test {
     // Re-declare events for expectEmit
@@ -1265,6 +1266,92 @@ contract ProverReputationTest is Test {
         string memory tooLong = string(longBytes);
         vm.expectRevert(abi.encodeWithSelector(ProverReputation.StringTooLong.selector, "reason", 256));
         rep.ban(prover1, tooLong);
+    }
+
+    // ========================================================================
+    // PAUSABLE (Pausable pattern)
+    // ========================================================================
+
+    function test_pauseBlocksRegister() public {
+        rep.pause();
+
+        vm.expectRevert(abi.encodeWithSelector(Pausable.EnforcedPause.selector));
+        vm.prank(prover1);
+        rep.register();
+    }
+
+    function test_pauseBlocksRecordSuccess() public {
+        _registerProver(prover1);
+        rep.pause();
+
+        vm.expectRevert(abi.encodeWithSelector(Pausable.EnforcedPause.selector));
+        vm.prank(reporter);
+        rep.recordSuccess(prover1, 1000, 0);
+    }
+
+    function test_pauseBlocksRecordFailure() public {
+        _registerProver(prover1);
+        rep.pause();
+
+        vm.expectRevert(abi.encodeWithSelector(Pausable.EnforcedPause.selector));
+        vm.prank(reporter);
+        rep.recordFailure(prover1, "fail");
+    }
+
+    function test_pauseBlocksRecordAbandon() public {
+        _registerProver(prover1);
+        rep.pause();
+
+        vm.expectRevert(abi.encodeWithSelector(Pausable.EnforcedPause.selector));
+        vm.prank(reporter);
+        rep.recordAbandon(prover1, 1);
+    }
+
+    function test_slashWorksWhenPaused() public {
+        _registerProver(prover1);
+        rep.pause();
+
+        // slash is an admin emergency action and should NOT be blocked by pause
+        rep.slash(prover1, "misbehavior", 2000);
+
+        ProverReputation.Reputation memory r = rep.getReputation(prover1);
+        assertTrue(r.isSlashed, "prover should be slashed even when paused");
+    }
+
+    function test_banWorksWhenPaused() public {
+        _registerProver(prover1);
+        rep.pause();
+
+        rep.ban(prover1, "bad actor");
+
+        ProverReputation.Reputation memory r = rep.getReputation(prover1);
+        assertTrue(r.isBanned, "prover should be banned even when paused");
+    }
+
+    function test_unpauseRestoresRegister() public {
+        rep.pause();
+        rep.unpause();
+
+        // register should work again after unpause
+        vm.prank(prover1);
+        rep.register();
+
+        ProverReputation.Reputation memory r = rep.getReputation(prover1);
+        assertTrue(r.isRegistered, "prover should be registered after unpause");
+    }
+
+    function test_pauseOnlyOwner() public {
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
+        vm.prank(stranger);
+        rep.pause();
+    }
+
+    function test_unpauseOnlyOwner() public {
+        rep.pause();
+
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
+        vm.prank(stranger);
+        rep.unpause();
     }
 
     // ========================================================================

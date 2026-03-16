@@ -2,12 +2,12 @@
 pragma solidity ^0.8.20;
 
 import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
-
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 
 /// @title ProverReputation
 /// @notice Tracks prover reliability and performance on-chain
 /// @dev Reputation affects job priority and can enable/disable features
-contract ProverReputation is Ownable2Step {
+contract ProverReputation is Ownable2Step, Pausable {
     // ========================================================================
     // TYPES
     // ========================================================================
@@ -170,7 +170,7 @@ contract ProverReputation is Ownable2Step {
     // ========================================================================
 
     /// @notice Register as a prover
-    function register() external {
+    function register() external whenNotPaused {
         if (reputations[msg.sender].isRegistered) revert AlreadyRegistered();
         _checkTimestamp();
 
@@ -209,6 +209,7 @@ contract ProverReputation is Ownable2Step {
         external
         onlyAuthorized
         notBanned(prover)
+        whenNotPaused
     {
         Reputation storage rep = reputations[prover];
         if (!rep.isRegistered) revert ProverNotRegistered();
@@ -250,7 +251,12 @@ contract ProverReputation is Ownable2Step {
     /// @notice Record failed job
     /// @param prover Prover address
     /// @param reason Failure reason
-    function recordFailure(address prover, string calldata reason) external onlyAuthorized notBanned(prover) {
+    function recordFailure(address prover, string calldata reason)
+        external
+        onlyAuthorized
+        notBanned(prover)
+        whenNotPaused
+    {
         if (bytes(reason).length > MAX_REASON_LENGTH) revert StringTooLong("reason", MAX_REASON_LENGTH);
         Reputation storage rep = reputations[prover];
         if (!rep.isRegistered) revert ProverNotRegistered();
@@ -273,7 +279,12 @@ contract ProverReputation is Ownable2Step {
     /// @notice Record abandoned job (claimed but never submitted)
     /// @param prover Prover address
     /// @param requestId Request that was abandoned
-    function recordAbandon(address prover, uint256 requestId) external onlyAuthorized notBanned(prover) {
+    function recordAbandon(address prover, uint256 requestId)
+        external
+        onlyAuthorized
+        notBanned(prover)
+        whenNotPaused
+    {
         Reputation storage rep = reputations[prover];
         if (!rep.isRegistered) revert ProverNotRegistered();
         _checkTimestamp();
@@ -444,6 +455,16 @@ contract ProverReputation is Ownable2Step {
     function revokeReporter(address reporter) external onlyOwner {
         authorizedReporters[reporter] = false;
         emit ReporterRevoked(reporter);
+    }
+
+    /// @notice Pause the contract (blocks register, recordSuccess, recordFailure, recordAbandon)
+    function pause() external onlyOwner {
+        _pause();
+    }
+
+    /// @notice Unpause the contract
+    function unpause() external onlyOwner {
+        _unpause();
     }
 
     /// @notice Set the cooldown period between slashes

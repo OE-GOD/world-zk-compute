@@ -197,8 +197,7 @@ library GKRHybridVerifier {
             // proof.layerProofs[0] = output layer = circuit.layerTypes[numLayers-1]
             uint8 layerType = circuit.layerTypes[circuit.numLayers - 1 - i];
 
-            if (
-                !_verifyLayerPODP(
+            if (!_verifyLayerPODP(
                     proof.layerProofs[i],
                     challenges.layers[i].rhos,
                     challenges.layers[i].gammas,
@@ -207,8 +206,7 @@ library GKRHybridVerifier {
                     outputs.zDotJStar[i],
                     layerType,
                     gens
-                )
-            ) revert LayerPODPFailed();
+                )) revert LayerPODPFailed();
 
             // PoP verification (if layer has product triples)
             if (proof.layerProofs[i].pops.length > 0) {
