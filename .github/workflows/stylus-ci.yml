@@ -53,6 +53,10 @@ jobs:
       - name: Run tests (native)
         run: cargo test --manifest-path contracts/stylus/gkr-verifier/Cargo.toml --no-default-features
 
+      - name: Run E2E integration test (release, ~10s)
+        run: cargo test --manifest-path contracts/stylus/gkr-verifier/Cargo.toml --no-default-features --release -- --ignored
+        timeout-minutes: 5
+
       - name: Build WASM
         run: cargo build --manifest-path contracts/stylus/gkr-verifier/Cargo.toml --release --target wasm32-unknown-unknown --lib
 
@@ -61,7 +65,8 @@ jobs:
           WASM=contracts/stylus/gkr-verifier/target/wasm32-unknown-unknown/release/gkr_verifier.wasm
           RAW_SIZE=$(stat -c%s "$WASM")
           echo "Raw WASM size: $RAW_SIZE bytes ($(echo "scale=1; $RAW_SIZE / 1024" | bc) KB)"
-          # Warn if raw size exceeds 128KB (brotli typically compresses ~2.5x)
+          # Fail if raw size exceeds 128KB (brotli typically compresses ~2.5x, 24KB Stylus limit)
           if [ "$RAW_SIZE" -gt 131072 ]; then
-            echo "::warning::WASM binary is large ($RAW_SIZE bytes). Brotli-compressed size may exceed 24KB Stylus limit."
+            echo "::error::WASM binary too large ($RAW_SIZE bytes). Brotli-compressed size will likely exceed 24KB Stylus limit."
+            exit 1
           fi

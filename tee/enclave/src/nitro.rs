@@ -338,12 +338,15 @@ mod tests {
     use alloy_primitives::address;
 
     #[test]
-    fn test_mock_attestation() {
+    fn test_mock_attestation() -> Result<(), Box<dyn std::error::Error>> {
         let addr = address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
         let model_hash = B256::ZERO;
 
-        let attestor = NitroAttestor::new(false, addr, model_hash).unwrap();
-        let doc = attestor.attestation_document().unwrap();
+        let attestor = NitroAttestor::new(false, addr, model_hash)
+            .map_err(|e| format!("failed to create attestor: {}", e))?;
+        let doc = attestor
+            .attestation_document()
+            .ok_or("attestation document is None")?;
 
         assert!(!doc.is_nitro);
         assert_eq!(doc.enclave_address, format!("{}", addr));
@@ -351,49 +354,52 @@ mod tests {
 
         // Verify we can decode the base64 document
         let decoded = base64::engine::general_purpose::STANDARD
-            .decode(&doc.document)
-            .unwrap();
+            .decode(&doc.document)?;
         assert!(!decoded.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn test_mock_attestation_cbor_structure() {
+    fn test_mock_attestation_cbor_structure() -> Result<(), Box<dyn std::error::Error>> {
         let addr = address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
         let model_hash = alloy_primitives::keccak256(b"test model");
 
-        let attestor = NitroAttestor::new(false, addr, model_hash).unwrap();
-        let doc = attestor.attestation_document().unwrap();
+        let attestor = NitroAttestor::new(false, addr, model_hash)
+            .map_err(|e| format!("failed to create attestor: {}", e))?;
+        let doc = attestor
+            .attestation_document()
+            .ok_or("attestation document is None")?;
 
         // Decode base64 -> CBOR -> verify COSE_Sign1 structure
         let decoded = base64::engine::general_purpose::STANDARD
-            .decode(&doc.document)
-            .unwrap();
-        let cose: serde_cbor::Value = serde_cbor::from_slice(&decoded).unwrap();
+            .decode(&doc.document)?;
+        let cose: serde_cbor::Value = serde_cbor::from_slice(&decoded)?;
 
         // COSE_Sign1 is a 4-element array
-        if let serde_cbor::Value::Array(items) = cose {
-            assert_eq!(items.len(), 4);
+        let items = match cose {
+            serde_cbor::Value::Array(items) => items,
+            other => return Err(format!("expected COSE_Sign1 array, got {:?}", other).into()),
+        };
+        assert_eq!(items.len(), 4);
 
-            // Parse payload (item 2)
-            if let serde_cbor::Value::Bytes(payload_bytes) = &items[2] {
-                let payload: std::collections::BTreeMap<String, serde_cbor::Value> =
-                    serde_cbor::from_slice(payload_bytes).unwrap();
+        // Parse payload (item 2)
+        let payload_bytes = match &items[2] {
+            serde_cbor::Value::Bytes(b) => b,
+            other => return Err(format!("expected bytes for payload, got {:?}", other).into()),
+        };
+        let payload: std::collections::BTreeMap<String, serde_cbor::Value> =
+            serde_cbor::from_slice(payload_bytes)?;
 
-                assert!(payload.contains_key("module_id"));
-                assert!(payload.contains_key("pcrs"));
-                assert!(payload.contains_key("public_key"));
-                assert!(payload.contains_key("user_data"));
-                assert!(payload.contains_key("timestamp"));
-            } else {
-                panic!("Expected bytes for payload");
-            }
-        } else {
-            panic!("Expected array for COSE_Sign1");
-        }
+        assert!(payload.contains_key("module_id"));
+        assert!(payload.contains_key("pcrs"));
+        assert!(payload.contains_key("public_key"));
+        assert!(payload.contains_key("user_data"));
+        assert!(payload.contains_key("timestamp"));
+        Ok(())
     }
 
     #[test]
-    fn test_nitro_enabled_without_feature_fails() {
+    fn test_nitro_enabled_without_feature_fails() -> Result<(), Box<dyn std::error::Error>> {
         let addr = address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
         let model_hash = B256::ZERO;
 
@@ -402,23 +408,35 @@ mod tests {
         {
             let result = NitroAttestor::new(true, addr, model_hash);
             assert!(result.is_err());
-            assert!(result
-                .unwrap_err()
-                .contains("not compiled with 'nitro' feature"));
+            let err_msg = result.err().ok_or("expected an error but got Ok")?;
+            assert!(
+                err_msg.contains("not compiled with 'nitro' feature"),
+                "unexpected error message: {}",
+                err_msg
+            );
         }
+        Ok(())
     }
 
     #[test]
-    fn test_refresh_mock_attestation() {
+    fn test_refresh_mock_attestation() -> Result<(), Box<dyn std::error::Error>> {
         let addr = address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
         let model_hash = B256::ZERO;
 
-        let mut attestor = NitroAttestor::new(false, addr, model_hash).unwrap();
-        let doc_before = attestor.attestation_document().unwrap().clone();
+        let mut attestor = NitroAttestor::new(false, addr, model_hash)
+            .map_err(|e| format!("failed to create attestor: {}", e))?;
+        let doc_before = attestor
+            .attestation_document()
+            .ok_or("attestation document is None")?
+            .clone();
 
         // Refresh without nonce
-        attestor.refresh(addr, model_hash, None).unwrap();
-        let doc_after = attestor.attestation_document().unwrap();
+        attestor
+            .refresh(addr, model_hash, None)
+            .map_err(|e| format!("failed to refresh: {}", e))?;
+        let doc_after = attestor
+            .attestation_document()
+            .ok_or("attestation document is None after refresh")?;
 
         // Both should be mock attestations
         assert!(!doc_after.is_nitro);
@@ -429,86 +447,100 @@ mod tests {
         // but both are valid attestation documents
         assert!(!doc_before.document.is_empty());
         assert!(!doc_after.document.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn test_refresh_with_nonce() {
+    fn test_refresh_with_nonce() -> Result<(), Box<dyn std::error::Error>> {
         let addr = address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
         let model_hash = B256::ZERO;
         let nonce = b"test-nonce-12345";
 
-        let mut attestor = NitroAttestor::new(false, addr, model_hash).unwrap();
+        let mut attestor = NitroAttestor::new(false, addr, model_hash)
+            .map_err(|e| format!("failed to create attestor: {}", e))?;
 
         // Refresh with a nonce
-        attestor.refresh(addr, model_hash, Some(nonce)).unwrap();
-        let doc = attestor.attestation_document().unwrap();
+        attestor
+            .refresh(addr, model_hash, Some(nonce))
+            .map_err(|e| format!("failed to refresh with nonce: {}", e))?;
+        let doc = attestor
+            .attestation_document()
+            .ok_or("attestation document is None")?;
 
         assert!(!doc.is_nitro);
 
         // Verify the nonce is embedded in the CBOR payload
         let decoded = base64::engine::general_purpose::STANDARD
-            .decode(&doc.document)
-            .unwrap();
-        let cose: serde_cbor::Value = serde_cbor::from_slice(&decoded).unwrap();
+            .decode(&doc.document)?;
+        let cose: serde_cbor::Value = serde_cbor::from_slice(&decoded)?;
 
-        if let serde_cbor::Value::Array(items) = cose {
-            if let serde_cbor::Value::Bytes(payload_bytes) = &items[2] {
-                let payload: std::collections::BTreeMap<String, serde_cbor::Value> =
-                    serde_cbor::from_slice(payload_bytes).unwrap();
+        let items = match cose {
+            serde_cbor::Value::Array(items) => items,
+            other => return Err(format!("expected COSE_Sign1 array, got {:?}", other).into()),
+        };
 
-                // nonce field should be the bytes we provided
-                match payload.get("nonce") {
-                    Some(serde_cbor::Value::Bytes(n)) => {
-                        assert_eq!(n, nonce);
-                    }
-                    other => panic!("Expected nonce bytes, got {:?}", other),
-                }
-            } else {
-                panic!("Expected bytes for payload");
+        let payload_bytes = match &items[2] {
+            serde_cbor::Value::Bytes(b) => b,
+            other => return Err(format!("expected bytes for payload, got {:?}", other).into()),
+        };
+
+        let payload: std::collections::BTreeMap<String, serde_cbor::Value> =
+            serde_cbor::from_slice(payload_bytes)?;
+
+        // nonce field should be the bytes we provided
+        match payload.get("nonce") {
+            Some(serde_cbor::Value::Bytes(n)) => {
+                assert_eq!(n, nonce);
             }
-        } else {
-            panic!("Expected array for COSE_Sign1");
+            other => return Err(format!("expected nonce bytes, got {:?}", other).into()),
         }
+        Ok(())
     }
 
     #[test]
-    fn test_mock_attestation_without_nonce_has_null() {
+    fn test_mock_attestation_without_nonce_has_null() -> Result<(), Box<dyn std::error::Error>> {
         let addr = address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
         let model_hash = B256::ZERO;
 
-        let attestor = NitroAttestor::new(false, addr, model_hash).unwrap();
-        let doc = attestor.attestation_document().unwrap();
+        let attestor = NitroAttestor::new(false, addr, model_hash)
+            .map_err(|e| format!("failed to create attestor: {}", e))?;
+        let doc = attestor
+            .attestation_document()
+            .ok_or("attestation document is None")?;
 
         // Verify the nonce is null when not provided
         let decoded = base64::engine::general_purpose::STANDARD
-            .decode(&doc.document)
-            .unwrap();
-        let cose: serde_cbor::Value = serde_cbor::from_slice(&decoded).unwrap();
+            .decode(&doc.document)?;
+        let cose: serde_cbor::Value = serde_cbor::from_slice(&decoded)?;
 
-        if let serde_cbor::Value::Array(items) = cose {
-            if let serde_cbor::Value::Bytes(payload_bytes) = &items[2] {
-                let payload: std::collections::BTreeMap<String, serde_cbor::Value> =
-                    serde_cbor::from_slice(payload_bytes).unwrap();
+        let items = match cose {
+            serde_cbor::Value::Array(items) => items,
+            other => return Err(format!("expected COSE_Sign1 array, got {:?}", other).into()),
+        };
 
-                match payload.get("nonce") {
-                    Some(serde_cbor::Value::Null) => {} // expected
-                    other => panic!("Expected nonce to be Null, got {:?}", other),
-                }
-            } else {
-                panic!("Expected bytes for payload");
-            }
-        } else {
-            panic!("Expected array for COSE_Sign1");
+        let payload_bytes = match &items[2] {
+            serde_cbor::Value::Bytes(b) => b,
+            other => return Err(format!("expected bytes for payload, got {:?}", other).into()),
+        };
+
+        let payload: std::collections::BTreeMap<String, serde_cbor::Value> =
+            serde_cbor::from_slice(payload_bytes)?;
+
+        match payload.get("nonce") {
+            Some(serde_cbor::Value::Null) => {} // expected
+            other => return Err(format!("expected nonce to be Null, got {:?}", other).into()),
         }
+        Ok(())
     }
 
     #[test]
-    fn test_refresh_nitro_enabled_without_feature_fails() {
+    fn test_refresh_nitro_enabled_without_feature_fails() -> Result<(), Box<dyn std::error::Error>> {
         let addr = address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
         let model_hash = B256::ZERO;
 
         // Start with mock (nitro_enabled=false)
-        let mut attestor = NitroAttestor::new(false, addr, model_hash).unwrap();
+        let mut attestor = NitroAttestor::new(false, addr, model_hash)
+            .map_err(|e| format!("failed to create attestor: {}", e))?;
 
         // Manually flip nitro_enabled to simulate a misconfiguration
         attestor.nitro_enabled = true;
@@ -517,9 +549,13 @@ mod tests {
         {
             let result = attestor.refresh(addr, model_hash, None);
             assert!(result.is_err());
-            assert!(result
-                .unwrap_err()
-                .contains("not compiled with 'nitro' feature"));
+            let err_msg = result.err().ok_or("expected an error but got Ok")?;
+            assert!(
+                err_msg.contains("not compiled with 'nitro' feature"),
+                "unexpected error message: {}",
+                err_msg
+            );
         }
+        Ok(())
     }
 }

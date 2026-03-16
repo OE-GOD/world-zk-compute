@@ -247,6 +247,7 @@ contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
             inputDigest: inputDigest,
             requester: msg.sender,
             createdAt: uint48(block.timestamp),
+            // forge-lint: disable-next-line(unsafe-typecast)
             expiresAt: uint48(block.timestamp + expiration),
             callbackContract: callbackContract,
             status: RequestStatus.Pending,
@@ -291,6 +292,7 @@ contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
             inputDigest: inputDigest,
             requester: msg.sender,
             createdAt: uint48(block.timestamp),
+            // forge-lint: disable-next-line(unsafe-typecast)
             expiresAt: uint48(block.timestamp + expiration),
             callbackContract: callbackContract,
             status: RequestStatus.Pending,
@@ -371,6 +373,7 @@ contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
         req.status = RequestStatus.Claimed;
         req.claimedBy = msg.sender;
         req.claimedAt = uint48(block.timestamp);
+        // forge-lint: disable-next-line(unsafe-typecast)
         req.claimDeadline = uint48(block.timestamp + CLAIM_WINDOW);
 
         emit ExecutionClaimed(requestId, msg.sender, req.claimDeadline);

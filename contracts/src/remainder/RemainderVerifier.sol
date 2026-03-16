@@ -148,6 +148,7 @@ contract RemainderVerifier is Ownable2Step, Pausable {
         // Check proof selector
         if (proof.length < 4) revert InvalidProofLength();
         bytes4 selector = bytes4(proof[:4]);
+        // forge-lint: disable-next-line(unsafe-typecast)
         if (selector != bytes4("REM1")) revert InvalidProofSelector();
 
         // Validate generators hash if configured
@@ -187,6 +188,7 @@ contract RemainderVerifier is Ownable2Step, Pausable {
         // Check proof selector
         if (proof.length < 4) revert InvalidProofLength();
         bytes4 selector = bytes4(proof[:4]);
+        // forge-lint: disable-next-line(unsafe-typecast)
         if (selector != bytes4("REM1")) revert InvalidProofSelector();
 
         // Validate generators hash if configured
@@ -319,6 +321,7 @@ contract RemainderVerifier is Ownable2Step, Pausable {
         // Check proof selector
         if (innerProof.length < 4) revert InvalidProofLength();
         bytes4 selector = bytes4(innerProof[:4]);
+        // forge-lint: disable-next-line(unsafe-typecast)
         if (selector != bytes4("REM1")) revert InvalidProofSelector();
 
         // Validate generators hash if configured
@@ -418,6 +421,7 @@ contract RemainderVerifier is Ownable2Step, Pausable {
         bytes memory buffer = new bytes(digits);
         while (value != 0) {
             digits--;
+            // forge-lint: disable-next-line(unsafe-typecast)
             buffer[digits] = bytes1(uint8(48 + value % 10));
             value /= 10;
         }
@@ -1067,6 +1071,7 @@ contract RemainderVerifier is Ownable2Step, Pausable {
         if (!config.active) revert CircuitNotActive();
 
         if (proof.length < 4) revert InvalidProofLength();
+        // forge-lint: disable-next-line(unsafe-typecast)
         if (bytes4(proof[:4]) != bytes4("REM1")) revert InvalidProofSelector();
 
         if (config.gensHash != bytes32(0) && gensData.length > 0) {
@@ -1174,6 +1179,7 @@ contract RemainderVerifier is Ownable2Step, Pausable {
         if (!config.active) revert CircuitNotActive();
 
         if (innerProof.length < 4) revert InvalidProofLength();
+        // forge-lint: disable-next-line(unsafe-typecast)
         if (bytes4(innerProof[:4]) != bytes4("REM1")) revert InvalidProofSelector();
 
         if (config.gensHash != bytes32(0) && gensData.length > 0) {
@@ -1324,6 +1330,7 @@ contract RemainderVerifier is Ownable2Step, Pausable {
         if (!config.active) revert CircuitNotActive();
 
         if (proof.length < 4) revert InvalidProofLength();
+        // forge-lint: disable-next-line(unsafe-typecast)
         if (bytes4(proof[:4]) != bytes4("REM1")) revert InvalidProofSelector();
 
         if (config.gensHash != bytes32(0) && gensData.length > 0) {
@@ -1690,6 +1697,7 @@ contract RemainderVerifier is Ownable2Step, Pausable {
         if (config.circuitHash == bytes32(0)) revert CircuitNotRegistered();
         if (!config.active) revert CircuitNotActive();
         if (proof.length < 4) revert InvalidProofLength();
+        // forge-lint: disable-next-line(unsafe-typecast)
         if (bytes4(proof[:4]) != bytes4("REM1")) revert InvalidProofSelector();
         if (config.gensHash != bytes32(0) && gensData.length > 0) {
             if (keccak256(gensData) != config.gensHash) revert InvalidGenerators();
@@ -1793,6 +1801,7 @@ contract RemainderVerifier is Ownable2Step, Pausable {
         require(session.nextBatchIdx < session.totalBatches, "Batch: all compute batches done, call finalize");
 
         if (proof.length < 4) revert InvalidProofLength();
+        // forge-lint: disable-next-line(unsafe-typecast)
         if (bytes4(proof[:4]) != bytes4("REM1")) revert InvalidProofSelector();
 
         uint256 endLayer = _executeContinueBatch(sessionId, session, proof, publicInputs, gensData);
@@ -1957,6 +1966,7 @@ contract RemainderVerifier is Ownable2Step, Pausable {
         require(session.nextBatchIdx >= session.totalBatches, "Batch: compute batches not done");
 
         if (proof.length < 4) revert InvalidProofLength();
+        // forge-lint: disable-next-line(unsafe-typecast)
         if (bytes4(proof[:4]) != bytes4("REM1")) revert InvalidProofSelector();
 
         uint256 groupsDone;

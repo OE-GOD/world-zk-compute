@@ -31,8 +31,6 @@ pub enum RegistryError {
     IoError(String),
     /// SHA-256 hash of the loaded bytes did not match the expected hash.
     HashMismatch { expected: String, computed: String },
-    /// Internal lock is poisoned (a previous holder panicked).
-    LockPoisoned,
 }
 
 impl std::fmt::Display for RegistryError {
@@ -58,9 +56,6 @@ impl std::fmt::Display for RegistryError {
                     "Model hash mismatch: expected {}, computed {}",
                     expected, computed
                 )
-            }
-            RegistryError::LockPoisoned => {
-                write!(f, "ModelRegistry internal lock is poisoned")
             }
         }
     }

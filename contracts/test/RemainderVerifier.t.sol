@@ -294,6 +294,7 @@ contract RemainderVerifierTest is Test {
     }
 
     function test_reject_unregistered_circuit() public {
+        // forge-lint: disable-next-line(unsafe-typecast)
         bytes memory proof = abi.encodePacked(bytes4("REM1"), bytes32(0));
         bytes memory pubInputs = abi.encodePacked(uint256(1));
         bytes32 fakeHash = keccak256("nonexistent");
@@ -303,6 +304,7 @@ contract RemainderVerifierTest is Test {
     }
 
     function test_reject_wrong_selector() public {
+        // forge-lint: disable-next-line(unsafe-typecast)
         bytes memory proof = abi.encodePacked(bytes4("FAKE"), bytes32(0));
         bytes memory pubInputs = abi.encodePacked(uint256(1));
 
@@ -371,6 +373,7 @@ contract RemainderVerifierTest is Test {
         vm.stopPrank();
 
         // Build a valid-looking proof (correct selector) but with WRONG generators data
+        // forge-lint: disable-next-line(unsafe-typecast)
         bytes memory proof = abi.encodePacked(bytes4("REM1"), bytes32(0));
         bytes memory pubInputs = abi.encodePacked(uint256(1));
         bytes memory wrongGens = abi.encodePacked(uint256(999), uint256(888));
@@ -384,6 +387,7 @@ contract RemainderVerifierTest is Test {
     ///         Should revert with CircuitNotRegistered.
     function test_verifyProof_unregisteredCircuit_reverts() public {
         bytes32 unregisteredHash = keccak256("never-registered");
+        // forge-lint: disable-next-line(unsafe-typecast)
         bytes memory proof = abi.encodePacked(bytes4("REM1"), bytes32(0));
         bytes memory pubInputs = abi.encodePacked(uint256(1));
 
@@ -399,6 +403,7 @@ contract RemainderVerifierTest is Test {
         verifier.deactivateCircuit(circuitHash);
 
         // Now attempt verification
+        // forge-lint: disable-next-line(unsafe-typecast)
         bytes memory proof = abi.encodePacked(bytes4("REM1"), bytes32(0));
         bytes memory pubInputs = abi.encodePacked(uint256(1));
 
@@ -717,9 +722,13 @@ contract RemainderVerifierNegativeTest is Test {
     ///         to even read the first 32-byte circuit hash field, so decodeProof must revert.
     function test_verify_selector_plus_one_byte_reverts() public {
         bytes memory tiny = new bytes(5);
+        // forge-lint: disable-next-line(unsafe-typecast)
         tiny[0] = bytes1("R");
+        // forge-lint: disable-next-line(unsafe-typecast)
         tiny[1] = bytes1("E");
+        // forge-lint: disable-next-line(unsafe-typecast)
         tiny[2] = bytes1("M");
+        // forge-lint: disable-next-line(unsafe-typecast)
         tiny[3] = bytes1("1");
         tiny[4] = bytes1(0x00);
 
@@ -834,9 +843,13 @@ contract RemainderVerifierNegativeTest is Test {
         //   numPubClaims: 0 (32 bytes)
         //   numInputProofs: 0 (32 bytes)
         bytes memory zeroProof = new bytes(4 + 7 * 32);
+        // forge-lint: disable-next-line(unsafe-typecast)
         zeroProof[0] = bytes1("R");
+        // forge-lint: disable-next-line(unsafe-typecast)
         zeroProof[1] = bytes1("E");
+        // forge-lint: disable-next-line(unsafe-typecast)
         zeroProof[2] = bytes1("M");
+        // forge-lint: disable-next-line(unsafe-typecast)
         zeroProof[3] = bytes1("1");
         // All remaining bytes are zero, which encodes:
         //   circuit_hash = 0x00...00
@@ -960,9 +973,13 @@ contract RemainderVerifierNegativeTest is Test {
     ///         completely empty, so any attempt to decode fields should revert.
     function test_verify_selector_only_reverts() public {
         bytes memory selectorOnly = new bytes(4);
+        // forge-lint: disable-next-line(unsafe-typecast)
         selectorOnly[0] = bytes1("R");
+        // forge-lint: disable-next-line(unsafe-typecast)
         selectorOnly[1] = bytes1("E");
+        // forge-lint: disable-next-line(unsafe-typecast)
         selectorOnly[2] = bytes1("M");
+        // forge-lint: disable-next-line(unsafe-typecast)
         selectorOnly[3] = bytes1("1");
 
         // The selector is valid but there is no proof body at all.
@@ -1111,9 +1128,13 @@ contract HyraxProofDecoderTest is Test {
     function test_proof_selector() public view {
         bytes memory proof = _loadProof();
         assertGt(proof.length, 4, "Proof should be > 4 bytes");
+        // forge-lint: disable-next-line(unsafe-typecast)
         assertEq(proof[0], bytes1("R"), "Selector byte 0");
+        // forge-lint: disable-next-line(unsafe-typecast)
         assertEq(proof[1], bytes1("E"), "Selector byte 1");
+        // forge-lint: disable-next-line(unsafe-typecast)
         assertEq(proof[2], bytes1("M"), "Selector byte 2");
+        // forge-lint: disable-next-line(unsafe-typecast)
         assertEq(proof[3], bytes1("1"), "Selector byte 3");
     }
 
@@ -1749,6 +1770,7 @@ contract E2EProofDecodeTest is Test {
         // Verify wrong generators are rejected
         bytes memory wrongGens =
             abi.encodePacked(uint256(1), uint256(1), uint256(2), uint256(1), uint256(2), uint256(1), uint256(2));
+        // forge-lint: disable-next-line(unsafe-typecast)
         bytes memory fakeProof = abi.encodePacked(bytes4("REM1"), bytes32(0));
 
         vm.expectRevert(RemainderVerifier.InvalidGenerators.selector);

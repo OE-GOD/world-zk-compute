@@ -133,15 +133,26 @@ jobs:
       - name: Build WASM
         run: cargo build --manifest-path contracts/stylus/gkr-verifier/Cargo.toml --release --target wasm32-unknown-unknown --lib
 
-      - name: Check WASM size
+      - name: Check WASM binary size (Stylus limit)
         run: |
           WASM=contracts/stylus/gkr-verifier/target/wasm32-unknown-unknown/release/gkr_verifier.wasm
           RAW_SIZE=$(stat -c%s "$WASM")
           echo "Raw WASM size: $RAW_SIZE bytes ($(echo "scale=1; $RAW_SIZE / 1024" | bc) KB)"
-          # Warn if raw size exceeds 128KB (brotli typically compresses ~2.5x)
-          if [ "$RAW_SIZE" -gt 131072 ]; then
-            echo "::warning::WASM binary is large ($RAW_SIZE bytes). Brotli-compressed size may exceed 24KB Stylus limit."
+
+          # Install brotli and measure compressed size
+          sudo apt-get install -y -qq brotli > /dev/null 2>&1
+          brotli -o "$WASM.br" "$WASM"
+          BROTLI_SIZE=$(stat -c%s "$WASM.br")
+          BROTLI_KB=$(echo "scale=1; $BROTLI_SIZE / 1024" | bc)
+          echo "Brotli-compressed size: $BROTLI_SIZE bytes ($BROTLI_KB KB)"
+
+          # Stylus contract size limit is 24KB after Brotli compression
+          STYLUS_LIMIT=24576
+          if [ "$BROTLI_SIZE" -gt "$STYLUS_LIMIT" ]; then
+            echo "::error::WASM binary exceeds Stylus 24KB limit: $BROTLI_SIZE bytes ($BROTLI_KB KB) > $STYLUS_LIMIT bytes (24 KB)"
+            exit 1
           fi
+          echo "WASM size OK: $BROTLI_KB KB (limit: 24 KB)"
 
   gnark:
     name: gnark Groth16 Wrapper Tests
@@ -163,40 +174,7 @@ jobs:
           cd examples/xgboost-remainder/gnark-wrapper
           go test -v -timeout 300s ./...
 
-  rust-sdk:
-    name: Rust SDK Tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ env.RUST_VERSION }}
-          components: clippy, rustfmt
-
-      - name: Cache Rust build
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            sdk/target
-          key: ${{ runner.os }}-cargo-sdk-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-sdk-
-
-      - name: Check formatting
-        run: cargo fmt --manifest-path sdk/Cargo.toml --check
-
-      - name: Run Clippy
-        run: cargo clippy --manifest-path sdk/Cargo.toml -- -D warnings
-
-      - name: Run tests
-        run: cargo test --manifest-path sdk/Cargo.toml
+  # NOTE: Rust SDK tests are handled by rust-ci.yml to avoid duplicate CI compute.
 
   typescript-sdk:
     name: TypeScript SDK Tests

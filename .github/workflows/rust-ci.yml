@@ -105,6 +105,12 @@ jobs:
       - name: Run tests
         run: cargo test --manifest-path services/operator/Cargo.toml
 
+      - name: Install Foundry (for watcher integration tests)
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Run watcher integration tests (requires Anvil + solc)
+        run: cargo test --manifest-path services/operator/Cargo.toml watcher_integration -- --ignored
+
   admin-cli:
     name: Admin CLI
     runs-on: ubuntu-latest
