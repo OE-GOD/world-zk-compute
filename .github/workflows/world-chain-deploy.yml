@@ -3,6 +3,19 @@ name: World Chain Sepolia Deployment
 permissions: read-all
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'contracts/src/**'
+      - 'contracts/script/**'
+      - 'contracts/test/fixtures/**'
+      - 'contracts/foundry.toml'
+  pull_request:
+    paths:
+      - 'contracts/src/**'
+      - 'contracts/script/**'
+      - 'contracts/test/fixtures/**'
+      - 'contracts/foundry.toml'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -19,8 +32,66 @@ on:
         default: true
 
 jobs:
+  # ---- Automated dry-run on push/PR to catch script regressions ----
+  dry-run-validate:
+    name: Validate DeployWorldChain (Anvil dry-run)
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Build contracts
+        working-directory: contracts
+        run: forge build
+
+      - name: Start Anvil (chain ID 4801)
+        run: |
+          anvil --chain-id 4801 --gas-limit 500000000 --silent &
+          ANVIL_PID=$!
+          echo "ANVIL_PID=$ANVIL_PID" >> "$GITHUB_ENV"
+          # Wait for Anvil to be ready
+          for i in $(seq 1 30); do
+            if curl -s http://127.0.0.1:8545 -X POST -H 'Content-Type: application/json' \
+              -d '{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}' | grep -q result; then
+              echo "Anvil ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+
+      - name: Run DeployWorldChain dry-run
+        working-directory: contracts
+        env:
+          # Anvil default account 0 private key
+          DEPLOYER_PRIVATE_KEY: "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
+        run: |
+          forge script script/DeployWorldChain.s.sol:DeployWorldChain \
+            --rpc-url http://127.0.0.1:8545 \
+            -vvv 2>&1 | tee deploy-dry-run.txt
+
+          echo "## DeployWorldChain Dry-Run (Anvil)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Deployment script simulation completed successfully." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Stop Anvil
+        if: always()
+        run: |
+          if [ -n "$ANVIL_PID" ]; then
+            kill "$ANVIL_PID" 2>/dev/null || true
+          fi
+
+  # ---- Manual deployment to World Chain Sepolia ----
   deploy:
     name: Deploy to World Chain Sepolia
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 30
 

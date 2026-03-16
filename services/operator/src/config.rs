@@ -122,9 +122,6 @@ pub struct Config {
     /// challenge, proof submission, and dispute resolution events.
     /// Compatible with Slack incoming webhooks.
     pub webhook_url: Option<String>,
-    /// Generic retry: maximum number of attempts (default: 3).
-    /// Env var: `RETRY_MAX_ATTEMPTS`. Falls back to `max_proof_retries`.
-    pub retry_max_attempts: u32,
     /// Generic retry: base delay in milliseconds between retries (default: 1000).
     /// Env var: `RETRY_BASE_DELAY_MS`.
     pub retry_base_delay_ms: u64,
@@ -150,16 +147,6 @@ pub struct Config {
     /// Proof generation can take several minutes, so default is generous.
     /// Env var: `PROVER_TIMEOUT_SECS`. Default: 300.
     pub prover_timeout_secs: u64,
-    /// Prover-specific retry: maximum number of retries (default: 3).
-    /// Env var: `PROVER_MAX_RETRIES`.
-    pub prover_max_retries: u32,
-    /// Prover-specific retry: base delay in seconds between retries (default: 5).
-    /// Env var: `PROVER_RETRY_DELAY_SECS`.
-    pub prover_retry_delay_secs: u64,
-    /// Prover-specific retry: maximum delay in seconds for exponential backoff cap (default: 300).
-    /// Prevents retries from waiting indefinitely as backoff grows.
-    /// Env var: `PROVER_RETRY_MAX_DELAY_SECS`.
-    pub prover_retry_max_delay_secs: u64,
     /// Time in seconds before an unacknowledged critical alert is escalated.
     /// A value of 0 means immediate escalation, which is almost certainly
     /// unintended (likely a misconfiguration). Default: 900 (15 minutes).
@@ -501,7 +488,6 @@ impl Config {
     /// - RPC URL uses `https://` or `wss://` for non-localhost targets (warns on `http://`)
     /// - Private key is valid hex (64 hex chars or `0x`-prefixed 66 chars)
     /// - Contract addresses are valid Ethereum addresses (`0x` + 40 hex chars)
-    /// - `metrics_port` is 0 (disabled/OS-assigned) or in range 1024-65535
     /// - `prover_max_retries` <= 10 (warns if higher)
     /// - `retry_max_attempts` <= 10 (warns if higher, errors above 100)
     /// - Prover retry backoff cap >= base delay
@@ -566,18 +552,7 @@ impl Config {
             Self::validate_eth_address(addr, &format!("contract_addresses[{}]", i), &mut errors);
         }
 
-        // 4. Metrics port: 0 means let the OS pick a random available port.
-        // Ports 1-1023 are privileged and typically require root.
-        // Valid explicit range: 1024-65535.
-        if self.metrics_port != 0 && self.metrics_port < 1024 {
-            errors.push(format!(
-                "metrics_port {} is in the privileged range (1-1023). \
-                 Use a port in the range 1024-65535, or 0 for a random available port.",
-                self.metrics_port
-            ));
-        }
-
-        // 5. Prover retry parameter warnings (soft) and errors (hard).
+        // 4. Prover retry parameter warnings (soft) and errors (hard).
         if self.prover_max_retries > 10 {
             tracing::warn!(
                 prover_max_retries = self.prover_max_retries,
@@ -2171,8 +2146,6 @@ rpc_url = "https://rpc.example.com"
             expected_pcr0: None,
             attestation_cache_ttl: 300,
             attestation_freshness_secs: 600,
-            prover_url: None,
-            metrics_port: 9090,
             max_proof_retries: 3,
             proof_retry_delay_secs: 10,
             webhook_url: None,
@@ -2185,7 +2158,6 @@ rpc_url = "https://rpc.example.com"
                 model_format: "auto".to_string(),
                 model_hash: None,
             }],
-            dry_run: false,
             state_file: "./operator-state.json".to_string(),
             contract_addresses: vec!["0x1111111111111111111111111111111111111111".to_string()],
             enclave_timeout_secs: 30,

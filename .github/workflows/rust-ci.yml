@@ -108,6 +108,12 @@ jobs:
       - name: Install Foundry (for watcher integration tests)
         uses: foundry-rs/foundry-toolchain@v1
 
+      - name: Install solc (for watcher integration tests)
+        run: |
+          pip3 install solc-select
+          solc-select install 0.8.20
+          solc-select use 0.8.20
+
       - name: Run watcher integration tests (requires Anvil + solc)
         run: cargo test --manifest-path services/operator/Cargo.toml watcher_integration -- --ignored
 
