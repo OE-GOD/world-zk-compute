@@ -41,8 +41,8 @@ impl Default for RetryPolicy {
             base_delay: Duration::from_secs(1),
             max_delay: Duration::from_secs(30),
             jitter: 0.2,
-            timeout: None,
-            total_timeout: None,
+            timeout: Some(Duration::from_secs(30)),
+            total_timeout: Some(Duration::from_secs(300)),
         }
     }
 }
@@ -367,8 +367,8 @@ mod tests {
         assert_eq!(p.base_delay, Duration::from_secs(1));
         assert_eq!(p.max_delay, Duration::from_secs(30));
         assert!((p.jitter - 0.2).abs() < f64::EPSILON);
-        assert!(p.timeout.is_none());
-        assert!(p.total_timeout.is_none());
+        assert_eq!(p.timeout, Some(Duration::from_secs(30)));
+        assert_eq!(p.total_timeout, Some(Duration::from_secs(300)));
     }
 
     #[test]
