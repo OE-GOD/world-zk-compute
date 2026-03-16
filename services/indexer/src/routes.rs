@@ -66,6 +66,13 @@ fn is_valid_hex(s: &str) -> bool {
     }
 }
 
+/// Looser hex-prefix check: starts with `0x` followed by at least one
+/// character. Used for fields like `model_hash` and `after_id` which may
+/// contain non-strict-hex identifiers (e.g. `0xmodelA`).
+fn has_hex_prefix(s: &str) -> bool {
+    s.starts_with("0x") && s.len() > 2
+}
+
 /// Validate a raw query string length. Must be called before the
 /// deserialized filter is inspected.
 fn validate_raw_query(raw: &Option<String>) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
@@ -138,7 +145,7 @@ fn validate_query_params(filter: &ResultFilter) -> Result<(), (StatusCode, Json<
                 "model_hash too long ({} chars); maximum is {MAX_STRING_LENGTH}",
                 model_hash.len()
             ));
-        } else if !is_valid_hex(model_hash) {
+        } else if !has_hex_prefix(model_hash) {
             violations.push(format!(
                 "model_hash must be a hex string starting with 0x, got '{model_hash}'"
             ));
@@ -191,9 +198,9 @@ fn validate_query_params(filter: &ResultFilter) -> Result<(), (StatusCode, Json<
                 "after_id too long ({} chars); maximum is {MAX_ID_LENGTH}",
                 after_id.len()
             ));
-        } else if !after_id.starts_with("0x") {
+        } else if !has_hex_prefix(after_id) {
             violations.push(format!(
-                "after_id must start with 0x, got '{after_id}'"
+                "after_id must be a hex string starting with 0x, got '{after_id}'"
             ));
         }
     }
@@ -1249,7 +1256,7 @@ mod tests {
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         let err: ErrorResponse = serde_json::from_slice(&body).unwrap();
         assert!(
-            err.error.contains("model_hash must start with 0x"),
+            err.error.contains("model_hash must be a hex string"),
             "expected prefix validation error, got: {}",
             err.error
         );
@@ -1283,7 +1290,7 @@ mod tests {
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         let err: ErrorResponse = serde_json::from_slice(&body).unwrap();
         assert!(
-            err.error.contains("after_id must start with 0x"),
+            err.error.contains("after_id must be a hex string"),
             "expected prefix validation error, got: {}",
             err.error
         );

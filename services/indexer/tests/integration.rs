@@ -745,10 +745,10 @@ mod db_correctness {
     }
 
     #[test]
-    fn list_results_default_limit_is_50() {
-        // If we insert more than 50, the default limit should cap it
+    fn list_results_default_limit_is_100() {
+        // If we insert more than 100, the default limit should cap it
         let s = make_storage();
-        for i in 0..60 {
+        for i in 0..110 {
             s.insert_result(&format!("r{:04}", i), "0xm", "0xi", "0xa", i as u64)
                 .unwrap();
         }
@@ -762,7 +762,7 @@ mod db_correctness {
                 ..Default::default()
             })
             .unwrap();
-        assert_eq!(results.len(), 50, "default limit should be 50");
+        assert_eq!(results.len(), 100, "default limit should be 100");
     }
 
     #[test]
