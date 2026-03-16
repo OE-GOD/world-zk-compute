@@ -125,10 +125,14 @@ contract DeployWorldChain is Script {
         // -- Optional: Ownership transfer -------------------------------------------------
         address adminAddr = vm.envOr("ADMIN_ADDRESS", address(0));
         if (adminAddr != address(0) && adminAddr != deployer) {
-            teeVerifier.transferOwnership(adminAddr);
             remainder.transferOwnership(adminAddr);
+            programRegistry.transferOwnership(adminAddr);
+            reputation.transferOwnership(adminAddr);
+            proverRegistry.transferOwnership(adminAddr);
+            engine.transferOwnership(adminAddr);
+            teeVerifier.transferOwnership(adminAddr);
             console.log("  Ownership transfer initiated to:", adminAddr);
-            console.log("  NOTE: New admin must call acceptOwnership() on each contract");
+            console.log("  NOTE: New admin must call acceptOwnership() on all 6 contracts");
         }
 
         vm.stopBroadcast();
