@@ -60,6 +60,16 @@ impl Config {
             );
         }
 
+        // Admin endpoints require ADMIN_API_KEY to be set
+        if std::env::var("ADMIN_API_KEY").map_or(true, |k| k.is_empty()) {
+            tracing::warn!(
+                "ADMIN_API_KEY is not set -- admin endpoints (/admin/reset) \
+                 will not be registered."
+            );
+        } else {
+            tracing::info!("Admin endpoints enabled (ADMIN_API_KEY is configured).");
+        }
+
         if !errors.is_empty() {
             for msg in &errors {
                 tracing::error!("{}", msg);

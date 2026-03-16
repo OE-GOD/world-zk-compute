@@ -3,8 +3,8 @@
 //!
 //! Run with: `cargo test --test operator_integration`
 
-use std::collections::{HashMap, HashSet};
-use tee_operator::store::OperatorState;
+use std::collections::HashMap;
+use tee_operator::store::{OperatorState, ProcessedEventTracker};
 
 // ─── Crash recovery: state file persistence ───────────────────────────
 
@@ -23,10 +23,10 @@ fn test_crash_recovery_state_file_roundtrip() {
             m
         },
         processed_event_ids: {
-            let mut s = HashSet::new();
-            s.insert("0xdeadbeef:0".to_string());
-            s.insert("0xdeadbeef:1".to_string());
-            s
+            let mut t = ProcessedEventTracker::new();
+            t.insert("0xdeadbeef:0".to_string());
+            t.insert("0xdeadbeef:1".to_string());
+            t
         },
     };
 

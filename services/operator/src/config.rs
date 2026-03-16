@@ -73,6 +73,18 @@ pub struct ConfigFile {
     /// which is almost certainly unintended.
     /// Env var: `ESCALATION_TIMEOUT_SECS`.
     pub escalation_timeout_secs: Option<u64>,
+    /// URL for a remote prover service (optional).
+    pub prover_url: Option<String>,
+    /// Port for the health/metrics HTTP server. Default: 9090.
+    pub metrics_port: Option<u16>,
+    /// Generic retry: maximum number of attempts. Default: same as max_proof_retries.
+    pub retry_max_attempts: Option<u32>,
+    /// Prover-specific retry: maximum number of retries. Default: 3.
+    pub prover_max_retries: Option<u32>,
+    /// Prover-specific retry: base delay in seconds between retries. Default: 5.
+    pub prover_retry_delay_secs: Option<u64>,
+    /// Prover-specific retry: maximum delay in seconds (backoff cap). Default: 300.
+    pub prover_retry_max_delay_secs: Option<u64>,
 }
 
 impl ConfigFile {
@@ -152,6 +164,30 @@ pub struct Config {
     /// unintended (likely a misconfiguration). Default: 900 (15 minutes).
     /// Env var: `ESCALATION_TIMEOUT_SECS`.
     pub escalation_timeout_secs: u64,
+    /// URL for a remote prover service (optional).
+    /// When set via config, provides a default for `ProverMode::Http`.
+    /// Env var: `PROVER_URL`.
+    pub prover_url: Option<String>,
+    /// Port for the health/metrics HTTP server.
+    /// Used as default when `--metrics-port` CLI flag is not provided.
+    /// Env var: `METRICS_PORT`. Default: 9090.
+    pub metrics_port: u16,
+    /// Dry-run mode: simulate the full flow without sending on-chain transactions.
+    /// Used as default when `--dry-run` CLI flag is not provided.
+    /// Env var: `DRY_RUN`. Default: false.
+    pub dry_run: bool,
+    /// Generic retry: maximum number of attempts.
+    /// Env var: `RETRY_MAX_ATTEMPTS`. Default: same as `max_proof_retries`.
+    pub retry_max_attempts: u32,
+    /// Prover-specific retry: maximum number of retries (default: 3).
+    /// Env var: `PROVER_MAX_RETRIES`.
+    pub prover_max_retries: u32,
+    /// Prover-specific retry: base delay in seconds between retries (default: 5).
+    /// Env var: `PROVER_RETRY_DELAY_SECS`.
+    pub prover_retry_delay_secs: u64,
+    /// Prover-specific retry: maximum delay in seconds for exponential backoff cap (default: 300).
+    /// Env var: `PROVER_RETRY_MAX_DELAY_SECS`.
+    pub prover_retry_max_delay_secs: u64,
 }
 
 impl Config {
@@ -360,6 +396,20 @@ impl Config {
             file_cfg.models
         };
 
+        let dry_run = std::env::var("DRY_RUN")
+            .ok()
+            .and_then(|v| v.parse::<bool>().ok())
+            .or(file_cfg.dry_run)
+            .unwrap_or(false);
+
+        let metrics_port = std::env::var("METRICS_PORT")
+            .ok()
+            .and_then(|v| v.parse::<u16>().ok())
+            .or(file_cfg.metrics_port)
+            .unwrap_or(9090);
+
+        let prover_url = std::env::var("PROVER_URL").ok().or(file_cfg.prover_url);
+
         let config = Self {
             rpc_url,
             private_key,
@@ -388,6 +438,9 @@ impl Config {
             prover_retry_delay_secs,
             prover_retry_max_delay_secs,
             escalation_timeout_secs,
+            dry_run,
+            metrics_port,
+            prover_url,
         };
 
         // Run validation during config loading so issues are caught early.
@@ -660,7 +713,7 @@ impl Config {
             }
         }
 
-        // Webhook URL scheme (if set)
+        // Webhook URL: scheme check + SSRF protection (if set)
         if let Some(ref url) = self.webhook_url {
             if !url.starts_with("http://") && !url.starts_with("https://") {
                 errors.push(format!(
@@ -668,6 +721,26 @@ impl Config {
                     url
                 ));
             }
+            if let Err(e) = crate::ssrf::validate_url_ssrf(url) {
+                errors.push(format!("webhook_url SSRF check failed: {}", e));
+            }
+        }
+
+        // Prover URL: SSRF protection (if set)
+        if let Some(ref url) = self.prover_url {
+            if let Err(e) = crate::ssrf::validate_url_ssrf(url) {
+                errors.push(format!("prover_url SSRF check failed: {}", e));
+            }
+        }
+
+        // Metrics port: 0 is valid (disabled / OS-assigned), but 1-1023 is
+        // the privileged port range and almost certainly unintended.
+        if self.metrics_port > 0 && self.metrics_port < 1024 {
+            errors.push(format!(
+                "metrics_port {} is in the privileged range (1-1023). \
+                 Use a port >= 1024, or 0 to disable.",
+                self.metrics_port
+            ));
         }
 
         // Escalation timeout: 0 means immediate escalation, which is almost
@@ -2166,6 +2239,9 @@ rpc_url = "https://rpc.example.com"
             prover_retry_delay_secs: 5,
             prover_retry_max_delay_secs: 300,
             escalation_timeout_secs: 900,
+            prover_url: None,
+            metrics_port: 9090,
+            dry_run: false,
         }
     }
 
@@ -2691,5 +2767,131 @@ rpc_url = "https://rpc.example.com"
         assert!(cf.prover_max_retries.is_none());
         assert!(cf.prover_retry_delay_secs.is_none());
         assert!(cf.prover_retry_max_delay_secs.is_none());
+    }
+
+    // ======================== SSRF protection tests ========================
+
+    #[test]
+    fn test_validate_prover_url_ssrf_blocks_private_ip() {
+        let mut config = make_valid_config();
+        config.prover_url = Some("http://10.0.0.1:8080/prove".to_string());
+        let errors = config.validate().unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.contains("prover_url") && e.contains("SSRF")),
+            "Expected SSRF error for prover_url, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_validate_prover_url_ssrf_blocks_localhost() {
+        let mut config = make_valid_config();
+        config.prover_url = Some("http://localhost:8080/prove".to_string());
+        let errors = config.validate().unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.contains("prover_url") && e.contains("SSRF")),
+            "Expected SSRF error for prover_url with localhost, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_validate_prover_url_ssrf_blocks_aws_metadata() {
+        let mut config = make_valid_config();
+        config.prover_url = Some("http://169.254.169.254/latest/meta-data/".to_string());
+        let errors = config.validate().unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.contains("prover_url") && e.contains("SSRF")),
+            "Expected SSRF error for AWS metadata endpoint, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_validate_prover_url_ssrf_blocks_ipv6_loopback() {
+        let mut config = make_valid_config();
+        config.prover_url = Some("http://[::1]:8080/prove".to_string());
+        let errors = config.validate().unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.contains("prover_url") && e.contains("SSRF")),
+            "Expected SSRF error for IPv6 loopback, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_validate_prover_url_ssrf_allows_public_host() {
+        let mut config = make_valid_config();
+        config.prover_url = Some("https://prover.example.com/prove".to_string());
+        // Should not produce any SSRF-related errors
+        assert!(
+            config.validate().is_ok(),
+            "Public prover URL should pass SSRF validation"
+        );
+    }
+
+    #[test]
+    fn test_validate_webhook_url_ssrf_blocks_private_ip() {
+        let mut config = make_valid_config();
+        config.webhook_url = Some("https://192.168.1.1/webhook".to_string());
+        let errors = config.validate().unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.contains("webhook_url") && e.contains("SSRF")),
+            "Expected SSRF error for webhook_url, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_validate_webhook_url_ssrf_blocks_internal_hostname() {
+        let mut config = make_valid_config();
+        config.webhook_url = Some("https://hooks.internal/notify".to_string());
+        let errors = config.validate().unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.contains("webhook_url") && e.contains("SSRF")),
+            "Expected SSRF error for .internal hostname, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_validate_webhook_url_ssrf_allows_public_slack() {
+        let mut config = make_valid_config();
+        config.webhook_url = Some("https://hooks.slack.com/services/T00/B00/XXXX".to_string());
+        assert!(
+            config.validate().is_ok(),
+            "Public Slack webhook URL should pass SSRF validation"
+        );
+    }
+
+    #[test]
+    fn test_validate_prover_url_none_passes() {
+        let mut config = make_valid_config();
+        config.prover_url = None;
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_prover_url_ssrf_blocks_172_16_x() {
+        let mut config = make_valid_config();
+        config.prover_url = Some("http://172.16.0.1:3000/prove".to_string());
+        let errors = config.validate().unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.contains("SSRF")),
+            "Expected SSRF error for 172.16.x, got: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_validate_prover_url_ssrf_blocks_dot_local() {
+        let mut config = make_valid_config();
+        config.prover_url = Some("http://myprover.local:8080/prove".to_string());
+        let errors = config.validate().unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.contains("SSRF")),
+            "Expected SSRF error for .local hostname, got: {:?}",
+            errors
+        );
     }
 }

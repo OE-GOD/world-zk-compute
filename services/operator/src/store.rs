@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
+
+/// Maximum number of processed event IDs to retain.  Once the tracker exceeds
+/// this limit, the oldest entries are evicted to keep memory bounded.
+pub const MAX_PROCESSED_IDS: usize = 10_000;
 
 /// A stored ZK proof ready for on-chain dispute resolution.
 #[derive(Debug, Serialize, Deserialize)]
@@ -51,6 +55,129 @@ impl ProofStore {
 }
 
 // ---------------------------------------------------------------------------
+// Bounded processed-event tracker (LRU-style eviction)
+// ---------------------------------------------------------------------------
+
+/// An insertion-ordered set of processed event IDs with bounded capacity.
+///
+/// Internally maintains a `HashSet` for O(1) membership checks and a `VecDeque`
+/// for insertion order so the oldest entries can be evicted when the set exceeds
+/// [`MAX_PROCESSED_IDS`].
+///
+/// **Serialization**: serialises as a JSON array of strings (the same wire
+/// format as a plain `HashSet<String>`), so existing state files remain
+/// backwards-compatible.  On deserialisation the insertion order is
+/// reconstructed from the array order, and excess entries beyond
+/// `MAX_PROCESSED_IDS` are silently dropped (keeping only the *last* N items
+/// from the array, which are assumed to be the most recent).
+#[derive(Clone, Debug)]
+pub struct ProcessedEventTracker {
+    set: HashSet<String>,
+    order: VecDeque<String>,
+}
+
+impl ProcessedEventTracker {
+    /// Create an empty tracker.
+    pub fn new() -> Self {
+        Self {
+            set: HashSet::new(),
+            order: VecDeque::new(),
+        }
+    }
+
+    /// Insert an event ID.  Returns `true` if it was newly inserted (not a
+    /// duplicate).  If the tracker exceeds [`MAX_PROCESSED_IDS`] after
+    /// insertion, the oldest entry is evicted.
+    pub fn insert(&mut self, id: String) -> bool {
+        if self.set.contains(&id) {
+            return false;
+        }
+        self.set.insert(id.clone());
+        self.order.push_back(id);
+        self.evict_excess();
+        true
+    }
+
+    /// Check whether `id` has been recorded.
+    pub fn contains(&self, id: &str) -> bool {
+        self.set.contains(id)
+    }
+
+    /// Number of tracked event IDs.
+    pub fn len(&self) -> usize {
+        self.set.len()
+    }
+
+    /// Whether the tracker is empty.
+    pub fn is_empty(&self) -> bool {
+        self.set.is_empty()
+    }
+
+    /// Evict oldest entries until the size is at most `MAX_PROCESSED_IDS`.
+    fn evict_excess(&mut self) {
+        while self.set.len() > MAX_PROCESSED_IDS {
+            if let Some(oldest) = self.order.pop_front() {
+                self.set.remove(&oldest);
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// Build a tracker from a raw set of IDs (used during deserialisation).
+    /// If the set exceeds `MAX_PROCESSED_IDS`, only the last N entries (by
+    /// array order) are retained.
+    fn from_vec(items: Vec<String>) -> Self {
+        let start = items.len().saturating_sub(MAX_PROCESSED_IDS);
+        let kept = &items[start..];
+        let set: HashSet<String> = kept.iter().cloned().collect();
+        let order: VecDeque<String> = kept.iter().cloned().collect();
+        Self { set, order }
+    }
+}
+
+impl Default for ProcessedEventTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PartialEq for ProcessedEventTracker {
+    fn eq(&self, other: &Self) -> bool {
+        self.set == other.set
+    }
+}
+
+impl Serialize for ProcessedEventTracker {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // Serialize as a JSON array in insertion order (same wire format as
+        // HashSet<String>).
+        use serde::ser::SerializeSeq;
+        let mut seq = serializer.serialize_seq(Some(self.order.len()))?;
+        for id in &self.order {
+            seq.serialize_element(id)?;
+        }
+        seq.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for ProcessedEventTracker {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let items: Vec<String> = Vec::deserialize(deserializer)?;
+        Ok(Self::from_vec(items))
+    }
+}
+
+/// Allow construction from an iterator of Strings (used in tests and by
+/// `into_iter().collect()`).
+impl FromIterator<String> for ProcessedEventTracker {
+    fn from_iter<I: IntoIterator<Item = String>>(iter: I) -> Self {
+        let items: Vec<String> = iter.into_iter().collect();
+        Self::from_vec(items)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Operator crash-recovery state
 // ---------------------------------------------------------------------------
 
@@ -69,11 +196,14 @@ pub struct OperatorState {
     #[serde(default)]
     pub active_disputes: HashMap<String, u64>,
 
-    /// Set of event IDs that have already been processed, used for
+    /// Bounded set of event IDs that have already been processed, used for
     /// deduplication after a restart.  Event IDs are formatted as
     /// `"<tx_hash>:<log_index>"` or similar unique identifiers.
+    ///
+    /// Capped at [`MAX_PROCESSED_IDS`] entries with LRU-style eviction of the
+    /// oldest IDs when the limit is exceeded.
     #[serde(default)]
-    pub processed_event_ids: HashSet<String>,
+    pub processed_event_ids: ProcessedEventTracker,
 }
 
 /// File-backed state store with atomic writes (write-to-tmp then rename).
@@ -251,6 +381,22 @@ mod tests {
         assert!(loaded.processed_event_ids.contains("0xdeadbeef:0"));
     }
 
+    #[test]
+    fn test_operator_state_serde_backwards_compat_with_hashset_json() {
+        // Older state files serialised processed_event_ids as a JSON array
+        // (from HashSet).  Verify we can still deserialise that format.
+        let json = r#"{
+            "last_polled_block": 100,
+            "active_disputes": {},
+            "processed_event_ids": ["a", "b", "c"]
+        }"#;
+        let state: OperatorState = serde_json::from_str(json).unwrap();
+        assert_eq!(state.processed_event_ids.len(), 3);
+        assert!(state.processed_event_ids.contains("a"));
+        assert!(state.processed_event_ids.contains("b"));
+        assert!(state.processed_event_ids.contains("c"));
+    }
+
     // ======================== StateStore tests ========================
 
     #[test]
@@ -332,7 +478,7 @@ mod tests {
         let state = OperatorState {
             last_polled_block: 100,
             active_disputes: HashMap::new(),
-            processed_event_ids: HashSet::new(),
+            processed_event_ids: ProcessedEventTracker::new(),
         };
 
         store.save(&state).unwrap();
@@ -359,7 +505,7 @@ mod tests {
         let state1 = OperatorState {
             last_polled_block: 100,
             active_disputes: HashMap::new(),
-            processed_event_ids: HashSet::new(),
+            processed_event_ids: ProcessedEventTracker::new(),
         };
         store.save(&state1).unwrap();
 
@@ -372,9 +518,9 @@ mod tests {
                 m
             },
             processed_event_ids: {
-                let mut s = HashSet::new();
-                s.insert("evt-1".to_string());
-                s
+                let mut t = ProcessedEventTracker::new();
+                t.insert("evt-1".to_string());
+                t
             },
         };
         store.save(&state2).unwrap();
@@ -395,7 +541,7 @@ mod tests {
         let state = OperatorState {
             last_polled_block: 50,
             active_disputes: HashMap::new(),
-            processed_event_ids: HashSet::new(),
+            processed_event_ids: ProcessedEventTracker::new(),
         };
         store.save(&state).unwrap();
 
@@ -412,7 +558,7 @@ mod tests {
         state.processed_event_ids.insert("tx1:0".to_string());
         state.processed_event_ids.insert("tx1:0".to_string());
 
-        // HashSet deduplicates
+        // Tracker deduplicates
         assert_eq!(state.processed_event_ids.len(), 1);
 
         // Different IDs are distinct
@@ -423,6 +569,89 @@ mod tests {
         // contains() works for dedup checking
         assert!(state.processed_event_ids.contains("tx1:0"));
         assert!(!state.processed_event_ids.contains("tx3:0"));
+    }
+
+    // ======================== ProcessedEventTracker tests ========================
+
+    #[test]
+    fn test_tracker_eviction_at_capacity() {
+        let mut tracker = ProcessedEventTracker::new();
+        // Insert MAX_PROCESSED_IDS + 100 entries
+        for i in 0..MAX_PROCESSED_IDS + 100 {
+            tracker.insert(format!("evt-{}", i));
+        }
+        // Should be capped at MAX_PROCESSED_IDS
+        assert_eq!(tracker.len(), MAX_PROCESSED_IDS);
+        // Oldest 100 entries should have been evicted
+        assert!(
+            !tracker.contains("evt-0"),
+            "evt-0 should have been evicted"
+        );
+        assert!(
+            !tracker.contains("evt-99"),
+            "evt-99 should have been evicted"
+        );
+        // The entry right at the boundary should still be present
+        assert!(
+            tracker.contains(&format!("evt-{}", 100)),
+            "evt-100 should still be present"
+        );
+        // Most recent entry should be present
+        assert!(tracker.contains(&format!("evt-{}", MAX_PROCESSED_IDS + 99)));
+    }
+
+    #[test]
+    fn test_tracker_duplicate_insert_no_eviction() {
+        let mut tracker = ProcessedEventTracker::new();
+        tracker.insert("a".to_string());
+        tracker.insert("b".to_string());
+
+        // Duplicate insert should return false and not grow the tracker
+        assert!(!tracker.insert("a".to_string()));
+        assert_eq!(tracker.len(), 2);
+    }
+
+    #[test]
+    fn test_tracker_serde_roundtrip() {
+        let mut tracker = ProcessedEventTracker::new();
+        tracker.insert("first".to_string());
+        tracker.insert("second".to_string());
+        tracker.insert("third".to_string());
+
+        let json = serde_json::to_string(&tracker).unwrap();
+        let loaded: ProcessedEventTracker = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(loaded.len(), 3);
+        assert!(loaded.contains("first"));
+        assert!(loaded.contains("second"));
+        assert!(loaded.contains("third"));
+    }
+
+    #[test]
+    fn test_tracker_deser_truncates_excess() {
+        // Simulate a state file with more than MAX_PROCESSED_IDS entries
+        let items: Vec<String> = (0..MAX_PROCESSED_IDS + 500)
+            .map(|i| format!("evt-{}", i))
+            .collect();
+        let json = serde_json::to_string(&items).unwrap();
+        let tracker: ProcessedEventTracker = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(tracker.len(), MAX_PROCESSED_IDS);
+        // The first 500 entries (oldest) should have been dropped
+        assert!(!tracker.contains("evt-0"));
+        assert!(!tracker.contains("evt-499"));
+        // Entry at index 500 should be present (it is the first kept entry)
+        assert!(tracker.contains("evt-500"));
+    }
+
+    #[test]
+    fn test_tracker_from_iterator() {
+        let tracker: ProcessedEventTracker =
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+                .into_iter()
+                .collect();
+        assert_eq!(tracker.len(), 3);
+        assert!(tracker.contains("a"));
     }
 
     #[test]

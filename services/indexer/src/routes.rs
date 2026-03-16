@@ -518,11 +518,16 @@ pub fn build_app(
     };
 
     // Versioned API routes under /api/v1
-    let v1 = Router::new()
+    let mut v1 = Router::new()
         .route("/results", get(handle_list_results))
         .route("/results/:id", get(handle_get_result))
-        .route("/stats", get(handle_stats))
-        .route("/admin/reset", post(handle_admin_reset));
+        .route("/stats", get(handle_stats));
+
+    // Only register admin routes when ADMIN_API_KEY is configured
+    let admin_key_set = std::env::var("ADMIN_API_KEY").map_or(false, |k| !k.is_empty());
+    if admin_key_set {
+        v1 = v1.route("/admin/reset", post(handle_admin_reset));
+    }
 
     // WebSocket route uses its own state type
     let ws_routes = Router::new()
@@ -1433,7 +1438,7 @@ mod tests {
     /// since env vars are process-global.
     #[tokio::test]
     async fn test_admin_reset_auth_scenarios() {
-        // --- Scenario 1: no header at all → 401 ---
+        // --- Scenario 1: no ADMIN_API_KEY → route not registered → 404 ---
         std::env::remove_var("ADMIN_API_KEY");
         let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
 
@@ -1443,15 +1448,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let resp = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-
-        let body = resp.into_body().collect().await.unwrap().to_bytes();
-        let err: ErrorResponse = serde_json::from_slice(&body).unwrap();
-        assert!(
-            err.error.contains("missing or invalid"),
-            "expected auth error, got: {}",
-            err.error
-        );
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
         // --- Scenario 2: wrong key → 401 ---
         std::env::set_var("ADMIN_API_KEY", "correct-secret-key");
@@ -1484,7 +1481,7 @@ mod tests {
         assert_eq!(json["status"], "ok");
         assert_eq!(json["message"], "Lock state reset");
 
-        // --- Scenario 4: env var unset → 401 ---
+        // --- Scenario 4: env var unset → route not registered → 404 ---
         std::env::remove_var("ADMIN_API_KEY");
         let app = build_app(test_storage(), test_broadcaster(), test_rate_limit_config());
 
@@ -1495,7 +1492,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
     // -----------------------------------------------------------------------

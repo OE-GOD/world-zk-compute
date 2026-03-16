@@ -65,11 +65,13 @@ enum Commands {
     },
     /// Watch chain events and auto-resolve disputes
     Watch {
-        /// Port for the health/metrics HTTP server
-        #[arg(long, default_value = "9090")]
-        metrics_port: u16,
+        /// Port for the health/metrics HTTP server.
+        /// Overrides the `METRICS_PORT` env var / config file value when provided.
+        #[arg(long)]
+        metrics_port: Option<u16>,
         /// Dry-run mode: monitor events and log what would happen, but do not
         /// submit any on-chain transactions.
+        /// When set to true, overrides the `DRY_RUN` env var / config file value.
         #[arg(long, default_value = "false")]
         dry_run: bool,
     },
@@ -78,9 +80,10 @@ enum Commands {
         /// Feature vector as JSON array
         #[arg(long)]
         features: String,
-        /// Port for the health/metrics HTTP server
-        #[arg(long, default_value = "9090")]
-        metrics_port: u16,
+        /// Port for the health/metrics HTTP server.
+        /// Overrides the `METRICS_PORT` env var / config file value when provided.
+        #[arg(long)]
+        metrics_port: Option<u16>,
         /// Name of the model to use (from [[models]] config). Defaults to first model.
         #[arg(long)]
         model: Option<String>,
@@ -139,7 +142,9 @@ async fn main() -> anyhow::Result<()> {
                 }
                 std::process::exit(1);
             }
-            cmd_watch(&config, metrics_port, dry_run).await
+            let port = metrics_port.unwrap_or(config.metrics_port);
+            let dry = dry_run || config.dry_run;
+            cmd_watch(&config, port, dry).await
         }
         Commands::Run {
             features,
@@ -152,8 +157,9 @@ async fn main() -> anyhow::Result<()> {
                 }
                 std::process::exit(1);
             }
+            let port = metrics_port.unwrap_or(config.metrics_port);
             let selected = config.get_model(model.as_deref())?;
-            cmd_run(&config, &features, metrics_port, selected).await
+            cmd_run(&config, &features, port, selected).await
         }
         Commands::Register {
             expected_pcr0,
@@ -328,13 +334,14 @@ async fn cmd_submit(
     );
 
     // 4. Trigger proof pre-computation (best-effort, uses warm prover if PROVER_URL is set)
-    let proof_mgr = ProofManager::with_config_timeout(
+    let proof_mgr = ProofManager::with_config(
         &config.precompute_bin,
         &model.path,
         &config.proofs_dir,
         config.max_proof_retries,
         config.proof_retry_delay_secs,
         config.prover_timeout_secs,
+        config.prover_url.as_deref(),
     )?;
     let result_id = format!("0x{}", hex::encode(tx_hash));
     let features_owned = features_json.to_string();
@@ -481,13 +488,14 @@ async fn cmd_watch(config: &Config, metrics_port: u16, dry_run: bool) -> anyhow:
         &config.tee_verifier_address,
         dry_run,
     )?);
-    let proof_mgr = Arc::new(ProofManager::with_config_timeout(
+    let proof_mgr = Arc::new(ProofManager::with_config(
         &config.precompute_bin,
         &config.model_path,
         &config.proofs_dir,
         config.max_proof_retries,
         config.proof_retry_delay_secs,
         config.prover_timeout_secs,
+        config.prover_url.as_deref(),
     )?);
 
     // Initialize webhook notifier (None if WEBHOOK_URL is not set)
