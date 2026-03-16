@@ -87,6 +87,10 @@ contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
     uint256 private constant DEFAULT_PROTOCOL_FEE_BPS = 250;
     /// @notice Maximum protocol fee in basis points (10%)
     uint256 private constant MAX_FEE_BPS = 1000;
+    /// @notice Maximum allowed expiration duration (30 days)
+    uint256 public constant MAX_EXPIRATION = 30 days;
+    /// @notice Minimum allowed expiration duration (1 minute)
+    uint256 public constant MIN_EXPIRATION = 1 minutes;
 
     // ========================================================================
     // STATE
@@ -153,6 +157,8 @@ contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
     event ProtocolFeeUpdated(uint256 oldFeeBps, uint256 newFeeBps);
     /// @notice Emitted when the fee recipient address is changed
     event FeeRecipientUpdated(address indexed oldRecipient, address indexed newRecipient);
+    /// @notice Emitted when a prover's missed claim deadline is reported via reportBadProof
+    event BadProofReported(uint256 indexed requestId, address indexed prover, address indexed reporter);
 
     // ========================================================================
     // ERRORS
@@ -192,6 +198,18 @@ contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
     error ExpirationInPast();
     /// @notice Thrown when a zero address is provided where a valid address is required
     error ZeroAddress();
+    /// @notice Thrown when the computed expiration exceeds uint48 max
+    error ExpirationOverflow();
+    /// @notice Thrown when the expiration exceeds MAX_EXPIRATION (30 days)
+    error ExpirationTooLong();
+    /// @notice Thrown when the expiration is below MIN_EXPIRATION (1 minute)
+    error ExpirationTooShort();
+    /// @notice Thrown when the protocol fee exceeds the maximum allowed
+    error FeeTooHigh();
+    /// @notice Thrown when reportBadProof is called before the claim deadline has passed
+    error ClaimDeadlineNotPassed();
+    /// @notice Thrown when no reputation contract is configured (required for reportBadProof)
+    error ReputationNotConfigured();
 
     // ========================================================================
     // CONSTRUCTOR
@@ -237,9 +255,12 @@ contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
         if (!registry.isProgramActive(imageId)) revert ProgramNotActive();
 
         uint256 expiration = expirationSeconds > 0 ? expirationSeconds : DEFAULT_EXPIRATION;
+        if (expiration > MAX_EXPIRATION) revert ExpirationTooLong();
+        if (expiration < MIN_EXPIRATION) revert ExpirationTooShort();
         if (block.timestamp + expiration <= block.timestamp) revert ExpirationInPast();
 
         requestId = nextRequestId++;
+        if (block.timestamp + expiration > type(uint48).max) revert ExpirationOverflow();
 
         requests[requestId] = ExecutionRequest({
             id: requestId,
@@ -282,9 +303,12 @@ contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
         if (!registry.isProgramActive(imageId)) revert ProgramNotActive();
 
         uint256 expiration = expirationSeconds > 0 ? expirationSeconds : DEFAULT_EXPIRATION;
+        if (expiration > MAX_EXPIRATION) revert ExpirationTooLong();
+        if (expiration < MIN_EXPIRATION) revert ExpirationTooShort();
         if (block.timestamp + expiration <= block.timestamp) revert ExpirationInPast();
 
         requestId = nextRequestId++;
+        if (block.timestamp + expiration > type(uint48).max) revert ExpirationOverflow();
 
         requests[requestId] = ExecutionRequest({
             id: requestId,
@@ -459,6 +483,36 @@ contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
     }
 
     // ========================================================================
+    // BAD PROOF REPORTING
+    // ========================================================================
+
+    /// @notice Report a prover who claimed a request but failed to submit a valid proof by the deadline
+    /// @dev Anyone can call this function to record a reputation failure for the prover.
+    ///      After the claim deadline passes without a valid proof, any watcher can call
+    ///      reportBadProof to record the failure and reset the request to Pending.
+    /// @param requestId The request whose prover missed the deadline
+    function reportBadProof(uint256 requestId) external nonReentrant {
+        ExecutionRequest storage req = requests[requestId];
+        if (req.id == 0) revert RequestNotFound();
+        if (req.status != RequestStatus.Claimed) revert RequestNotClaimed();
+        if (block.timestamp <= req.claimDeadline) revert ClaimDeadlineNotPassed();
+        if (address(reputation) == address(0)) revert ReputationNotConfigured();
+
+        address failedProver = req.claimedBy;
+
+        // Record failure in reputation system (wrapped in try/catch for safety)
+        try reputation.recordFailure(failedProver, "missed claim deadline") {} catch {}
+
+        // Reset request to Pending so it can be reclaimed
+        req.status = RequestStatus.Pending;
+        req.claimedBy = address(0);
+        req.claimedAt = 0;
+        req.claimDeadline = 0;
+
+        emit BadProofReported(requestId, failedProver, msg.sender);
+    }
+
+    // ========================================================================
     // VIEW FUNCTIONS
     // ========================================================================
 
@@ -599,7 +653,7 @@ contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
     ///      Capped at 1000 bps (10%) to prevent excessive extraction.
     /// @param _feeBps New fee in basis points (100 = 1%, max 1000 = 10%)
     function setProtocolFee(uint256 _feeBps) external onlyOwner {
-        require(_feeBps <= MAX_FEE_BPS, "Fee too high"); // Max 10%
+        if (_feeBps > MAX_FEE_BPS) revert FeeTooHigh();
         uint256 oldFeeBps = protocolFeeBps;
         protocolFeeBps = _feeBps;
         emit ProtocolFeeUpdated(oldFeeBps, _feeBps);

@@ -5,6 +5,7 @@ import "forge-std/Test.sol";
 import "../src/ExecutionEngine.sol";
 import "../src/ProgramRegistry.sol";
 import "../src/MockRiscZeroVerifier.sol";
+import "../src/ProverReputation.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 
@@ -779,7 +780,7 @@ contract ExecutionEngineTest is Test {
 
     function testSetProtocolFeeTooHighReverts() public {
         vm.prank(deployer);
-        vm.expectRevert("Fee too high");
+        vm.expectRevert(ExecutionEngine.FeeTooHigh.selector);
         engine.setProtocolFee(1001);
     }
 
@@ -1363,5 +1364,250 @@ contract ExecutionEngineTest is Test {
         // Proof should still complete
         ExecutionEngine.ExecutionRequest memory req = engine.getRequest(requestId);
         assertEq(uint256(req.status), uint256(ExecutionEngine.RequestStatus.Completed));
+    }
+
+
+    // ========================================================================
+    // T398: EXPIRATION BOUNDS TESTS
+    // ========================================================================
+
+    /// @notice T398: expiration > 30 days should revert with ExpirationTooLong (5-param overload)
+    function testRequestExecutionExpirationTooLong() public {
+        uint256 tooLong = 30 days + 1;
+        vm.prank(requester);
+        vm.expectRevert(ExecutionEngine.ExpirationTooLong.selector);
+        engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), tooLong);
+    }
+
+    /// @notice T398: expiration > 30 days should revert with ExpirationTooLong (6-param overload)
+    function testRequestExecutionExpirationTooLong6Param() public {
+        uint256 tooLong = 30 days + 1;
+        vm.prank(requester);
+        vm.expectRevert(ExecutionEngine.ExpirationTooLong.selector);
+        engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), tooLong, 0);
+    }
+
+    /// @notice T398: expiration < 1 minute should revert with ExpirationTooShort (5-param overload)
+    function testRequestExecutionExpirationTooShort() public {
+        uint256 tooShort = 30; // 30 seconds, below MIN_EXPIRATION of 60 seconds
+        vm.prank(requester);
+        vm.expectRevert(ExecutionEngine.ExpirationTooShort.selector);
+        engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), tooShort);
+    }
+
+    /// @notice T398: expiration < 1 minute should revert with ExpirationTooShort (6-param overload)
+    function testRequestExecutionExpirationTooShort6Param() public {
+        uint256 tooShort = 30; // 30 seconds, below MIN_EXPIRATION of 60 seconds
+        vm.prank(requester);
+        vm.expectRevert(ExecutionEngine.ExpirationTooShort.selector);
+        engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), tooShort, 1);
+    }
+
+    /// @notice T398: expiration exactly at 30 days should succeed
+    function testRequestExecutionExpirationAtMax() public {
+        uint256 exactly30Days = 30 days;
+        vm.prank(requester);
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), exactly30Days);
+        assertGt(requestId, 0, "Request should be created with exactly 30 days expiration");
+
+        ExecutionEngine.ExecutionRequest memory req = engine.getRequest(requestId);
+        assertEq(req.expiresAt, uint48(block.timestamp + exactly30Days), "expiresAt should match");
+    }
+
+    /// @notice T398: expiration exactly at 1 minute should succeed
+    function testRequestExecutionExpirationAtMin() public {
+        uint256 exactly1Min = 1 minutes;
+        vm.prank(requester);
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), exactly1Min);
+        assertGt(requestId, 0, "Request should be created with exactly 1 minute expiration");
+
+        ExecutionEngine.ExecutionRequest memory req = engine.getRequest(requestId);
+        assertEq(req.expiresAt, uint48(block.timestamp + exactly1Min), "expiresAt should match");
+    }
+
+    // ========================================================================
+    // REPORT BAD PROOF TESTS
+    // ========================================================================
+
+    event BadProofReported(uint256 indexed requestId, address indexed prover, address indexed reporter);
+
+    /// @notice Helper: set up reputation contract and authorize engine as reporter
+    function _setupReputation() internal returns (ProverReputation) {
+        vm.startPrank(deployer);
+        ProverReputation rep = new ProverReputation();
+        rep.authorizeReporter(address(engine));
+        engine.setReputation(address(rep));
+        vm.stopPrank();
+        return rep;
+    }
+
+    /// @notice Helper: create a claimed request and advance past claim deadline
+    function _createExpiredClaim() internal returns (uint256 requestId) {
+        vm.prank(requester);
+        requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+
+        vm.prank(prover);
+        engine.claimExecution(requestId);
+
+        // Advance past claim deadline (CLAIM_WINDOW = 10 minutes)
+        vm.warp(block.timestamp + 11 minutes);
+    }
+
+    function test_reportBadProof_recordsFailureAndResetsToPending() public {
+        ProverReputation rep = _setupReputation();
+
+        // Register the prover in reputation system
+        vm.prank(prover);
+        rep.register();
+
+        uint256 requestId = _createExpiredClaim();
+
+        // Anyone can report
+        address reporter = address(0xBEEF);
+        vm.prank(reporter);
+        engine.reportBadProof(requestId);
+
+        // Request should be reset to Pending
+        ExecutionEngine.ExecutionRequest memory req = engine.getRequest(requestId);
+        assertEq(uint256(req.status), uint256(ExecutionEngine.RequestStatus.Pending));
+        assertEq(req.claimedBy, address(0));
+        assertEq(req.claimedAt, 0);
+        assertEq(req.claimDeadline, 0);
+
+        // Reputation should show failure
+        ProverReputation.Reputation memory proverRep = rep.getReputation(prover);
+        assertEq(proverRep.failedJobs, 1);
+        assertEq(proverRep.totalJobs, 1);
+    }
+
+    function test_reportBadProof_emitsEvent() public {
+        ProverReputation rep = _setupReputation();
+        vm.prank(prover);
+        rep.register();
+
+        uint256 requestId = _createExpiredClaim();
+
+        address reporter = address(0xBEEF);
+        vm.prank(reporter);
+        vm.expectEmit(true, true, true, true, address(engine));
+        emit BadProofReported(requestId, prover, reporter);
+        engine.reportBadProof(requestId);
+    }
+
+    function test_reportBadProof_revertsIfRequestNotFound() public {
+        _setupReputation();
+
+        vm.expectRevert(ExecutionEngine.RequestNotFound.selector);
+        engine.reportBadProof(999);
+    }
+
+    function test_reportBadProof_revertsIfNotClaimed() public {
+        _setupReputation();
+
+        vm.prank(requester);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+
+        vm.expectRevert(ExecutionEngine.RequestNotClaimed.selector);
+        engine.reportBadProof(requestId);
+    }
+
+    function test_reportBadProof_revertsIfDeadlineNotPassed() public {
+        _setupReputation();
+
+        vm.prank(requester);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+
+        vm.prank(prover);
+        engine.claimExecution(requestId);
+
+        // Do NOT advance past deadline
+        vm.expectRevert(ExecutionEngine.ClaimDeadlineNotPassed.selector);
+        engine.reportBadProof(requestId);
+    }
+
+    function test_reportBadProof_revertsIfNoReputationContract() public {
+        // Do NOT set up reputation
+        vm.prank(requester);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+
+        vm.prank(prover);
+        engine.claimExecution(requestId);
+
+        vm.warp(block.timestamp + 11 minutes);
+
+        vm.expectRevert(ExecutionEngine.ReputationNotConfigured.selector);
+        engine.reportBadProof(requestId);
+    }
+
+    function test_reportBadProof_requestCanBeReclaimedAfterReport() public {
+        ProverReputation rep = _setupReputation();
+        vm.prank(prover);
+        rep.register();
+
+        uint256 requestId = _createExpiredClaim();
+
+        // Report bad proof
+        engine.reportBadProof(requestId);
+
+        // Request is now Pending -- a new prover can claim it
+        address newProver = address(0xCAFE);
+        vm.prank(newProver);
+        engine.claimExecution(requestId);
+
+        ExecutionEngine.ExecutionRequest memory req = engine.getRequest(requestId);
+        assertEq(uint256(req.status), uint256(ExecutionEngine.RequestStatus.Claimed));
+        assertEq(req.claimedBy, newProver);
+    }
+
+    function test_reportBadProof_cannotReportTwice() public {
+        ProverReputation rep = _setupReputation();
+        vm.prank(prover);
+        rep.register();
+
+        uint256 requestId = _createExpiredClaim();
+
+        // First report succeeds
+        engine.reportBadProof(requestId);
+
+        // Second report fails because request is now Pending, not Claimed
+        vm.expectRevert(ExecutionEngine.RequestNotClaimed.selector);
+        engine.reportBadProof(requestId);
+    }
+
+    function test_reportBadProof_worksEvenIfProverNotRegisteredInReputation() public {
+        _setupReputation();
+        // Prover is NOT registered in the reputation system
+        // recordFailure will revert inside try/catch, but reportBadProof should still succeed
+
+        uint256 requestId = _createExpiredClaim();
+
+        // Should succeed (try/catch swallows the reputation revert)
+        engine.reportBadProof(requestId);
+
+        // Request should be reset to Pending
+        ExecutionEngine.ExecutionRequest memory req = engine.getRequest(requestId);
+        assertEq(uint256(req.status), uint256(ExecutionEngine.RequestStatus.Pending));
+    }
+
+    function test_reportBadProof_revertsIfRequestCompleted() public {
+        ProverReputation rep = _setupReputation();
+        vm.prank(prover);
+        rep.register();
+
+        vm.prank(requester);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, inputDigest, inputUrl, address(0), 3600);
+
+        vm.prank(prover);
+        engine.claimExecution(requestId);
+
+        // Submit valid proof
+        vm.prank(prover);
+        engine.submitProof(requestId, hex"deadbeef", hex"cafebabe");
+
+        // Cannot report a completed request
+        vm.expectRevert(ExecutionEngine.RequestNotClaimed.selector);
+        engine.reportBadProof(requestId);
     }
 }
