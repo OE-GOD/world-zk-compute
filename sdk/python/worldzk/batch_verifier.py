@@ -35,10 +35,13 @@ Example usage::
 
 from __future__ import annotations
 
+import logging
 import math
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
+
+logger = logging.getLogger(__name__)
 
 from eth_account import Account
 from eth_account.signers.local import LocalAccount
@@ -691,7 +694,7 @@ class BatchVerifier:
                     estimated = self._w3.eth.estimate_gas(tx)
                     tx["gas"] = int(estimated * 1.1)
                 except Exception:
-                    pass  # Fall back to configured gas limit
+                    logger.debug("Gas estimation failed, using configured limit", exc_info=True)
 
                 signed = self._account.sign_transaction(tx)
                 tx_hash = self._w3.eth.send_raw_transaction(signed.raw_transaction)

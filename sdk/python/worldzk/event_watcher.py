@@ -33,10 +33,13 @@ Example usage::
 from __future__ import annotations
 
 import enum
+import logging
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Type, Union
+
+logger = logging.getLogger(__name__)
 
 from web3 import Web3
 
@@ -501,8 +504,10 @@ class TEEEventWatcher:
                         callback(event)
                     current_block = next_block
                 except Exception:
-                    # Swallow transient RPC errors; the next poll will retry.
-                    pass
+                    logger.warning(
+                        "Transient RPC error during event polling; will retry next cycle",
+                        exc_info=True,
+                    )
 
                 self._stop_event.wait(timeout=poll_interval)
 

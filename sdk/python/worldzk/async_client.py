@@ -28,8 +28,11 @@ Example usage::
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from typing import Any, Callable, List, Optional, Sequence, Union
+
+logger = logging.getLogger(__name__)
 
 from eth_account import Account
 from eth_account.signers.local import LocalAccount
@@ -299,7 +302,7 @@ class AsyncTEEVerifier:
             estimated = await self._w3.eth.estimate_gas(tx)
             tx["gas"] = int(estimated * 1.1)
         except Exception:
-            pass
+            logger.debug("Gas estimation failed, using configured limit", exc_info=True)
         signed = self._account.sign_transaction(tx)
         tx_hash = await self._w3.eth.send_raw_transaction(signed.raw_transaction)
         return await self._w3.eth.wait_for_transaction_receipt(tx_hash)
@@ -446,7 +449,10 @@ class AsyncEventWatcher:
                 except asyncio.CancelledError:
                     return
                 except Exception:
-                    pass
+                    logger.warning(
+                        "Transient RPC error during async event polling; will retry next cycle",
+                        exc_info=True,
+                    )
                 try:
                     await asyncio.sleep(poll_interval)
                 except asyncio.CancelledError:

@@ -34,9 +34,12 @@ Example usage::
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any, List, Optional
+
+logger = logging.getLogger(__name__)
 
 from eth_account import Account
 from eth_account.signers.local import LocalAccount
@@ -660,7 +663,7 @@ class ExecutionEngineClient:
             estimated = self._w3.eth.estimate_gas(tx)
             tx["gas"] = int(estimated * 1.1)
         except Exception:
-            pass
+            logger.debug("Gas estimation failed, using configured limit", exc_info=True)
         signed = account.sign_transaction(tx)
         tx_hash = self._w3.eth.send_raw_transaction(signed.raw_transaction)
         return self._w3.eth.wait_for_transaction_receipt(tx_hash)
