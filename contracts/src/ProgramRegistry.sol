@@ -55,7 +55,7 @@ contract ProgramRegistry is Ownable2Step, Pausable {
 
     event VerifierUpdated(bytes32 indexed programId, address oldVerifier, address newVerifier);
 
-    event ProgramUrlForceUpdated(bytes32 indexed imageId, string newUrl);
+    event ProgramUrlForceUpdated(bytes32 indexed imageId, string newUrl, address admin);
 
     // ========================================================================
     // CONSTANTS
@@ -237,7 +237,10 @@ contract ProgramRegistry is Ownable2Step, Pausable {
         emit ProgramUnverified(imageId);
     }
 
-    /// @notice Force-update a program URL (admin override for compromised registrant keys)
+    /// @notice Emergency: force-update a program URL when the registrant's key is compromised.
+    /// @dev This is an admin-only override. Use only when the program owner's private key has been
+    ///      compromised and the attacker could call updateProgramUrl to point to a malicious binary.
+    ///      Under normal circumstances, the program owner should use updateProgramUrl instead.
     /// @param imageId The image ID of the program to update
     /// @param newUrl The new URL to set
     function adminForceUpdateUrl(bytes32 imageId, string calldata newUrl) external onlyOwner {
@@ -247,7 +250,7 @@ contract ProgramRegistry is Ownable2Step, Pausable {
 
         program.programUrl = newUrl;
 
-        emit ProgramUrlForceUpdated(imageId, newUrl);
+        emit ProgramUrlForceUpdated(imageId, newUrl, msg.sender);
     }
 
     // ========================================================================

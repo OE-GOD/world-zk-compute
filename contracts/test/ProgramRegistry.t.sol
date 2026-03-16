@@ -776,6 +776,62 @@ contract ProgramRegistryTest is Test {
         assertEq(bytes(p.programUrl).length, 512);
     }
 
+    // ========================================================================
+    // ADMIN FORCE UPDATE URL TESTS (T423)
+    // ========================================================================
+
+    event ProgramUrlForceUpdated(bytes32 indexed imageId, string newUrl, address admin);
+
+    function testAdminForceUpdateUrl() public {
+        vm.prank(owner);
+        registry.registerProgram(imageId, name, programUrl, bytes32(0));
+
+        string memory newUrl = "https://safe-mirror.com/test.elf";
+
+        vm.prank(admin);
+        registry.adminForceUpdateUrl(imageId, newUrl);
+
+        ProgramRegistry.Program memory program = registry.getProgram(imageId);
+        assertEq(program.programUrl, newUrl);
+    }
+
+    function testAdminForceUpdateUrlNotAdmin() public {
+        vm.prank(owner);
+        registry.registerProgram(imageId, name, programUrl, bytes32(0));
+
+        vm.prank(other);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, other));
+        registry.adminForceUpdateUrl(imageId, "https://attacker.com");
+    }
+
+    function testAdminForceUpdateUrlEmitsEvent() public {
+        vm.prank(owner);
+        registry.registerProgram(imageId, name, programUrl, bytes32(0));
+
+        string memory newUrl = "https://safe-mirror.com/test.elf";
+
+        vm.prank(admin);
+        vm.expectEmit(true, false, false, true);
+        emit ProgramUrlForceUpdated(imageId, newUrl, admin);
+        registry.adminForceUpdateUrl(imageId, newUrl);
+    }
+
+    function testAdminForceUpdateUrlNotFound() public {
+        vm.prank(admin);
+        vm.expectRevert(ProgramRegistry.ProgramNotFound.selector);
+        registry.adminForceUpdateUrl(imageId, "https://example.com");
+    }
+
+    function testAdminForceUpdateUrlProgramOwnerCannotCall() public {
+        // Even the program owner (who is not admin) cannot call adminForceUpdateUrl
+        vm.prank(owner);
+        registry.registerProgram(imageId, name, programUrl, bytes32(0));
+
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, owner));
+        registry.adminForceUpdateUrl(imageId, "https://owner-attempt.com");
+    }
+
     function testAdminForceUpdateUrlTooLong() public {
         vm.prank(owner);
         registry.registerProgram(imageId, name, programUrl, bytes32(0));
