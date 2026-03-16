@@ -1005,4 +1005,28 @@ contract ProverRegistryTest is Test {
         registry.register(MIN_STAKE, tooLong);
         vm.stopPrank();
     }
+
+    function testSlashReasonAtBoundary() public {
+        _registerProver(prover1, 500 ether, "ep");
+        bytes memory longBytes = new bytes(256);
+        for (uint256 i = 0; i < 256; i++) {
+            longBytes[i] = "A";
+        }
+        string memory maxReason = string(longBytes);
+        // Owner can slash -- 256 bytes should succeed
+        registry.slash(prover1, maxReason);
+        ProverRegistry.Prover memory p = registry.getProver(prover1);
+        assertEq(p.proofsFailed, 1);
+    }
+
+    function testSlashReasonTooLong() public {
+        _registerProver(prover1, 500 ether, "ep");
+        bytes memory longBytes = new bytes(257);
+        for (uint256 i = 0; i < 257; i++) {
+            longBytes[i] = "A";
+        }
+        string memory tooLong = string(longBytes);
+        vm.expectRevert(abi.encodeWithSelector(ProverRegistry.StringTooLong.selector, "reason", 256));
+        registry.slash(prover1, tooLong);
+    }
 }

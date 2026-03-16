@@ -775,6 +775,35 @@ contract ProgramRegistryTest is Test {
         ProgramRegistry.Program memory p = registry.getProgram(imageId);
         assertEq(bytes(p.programUrl).length, 512);
     }
+
+    function testAdminForceUpdateUrlTooLong() public {
+        vm.prank(owner);
+        registry.registerProgram(imageId, name, programUrl, bytes32(0));
+
+        bytes memory longBytes = new bytes(513);
+        for (uint256 i = 0; i < 513; i++) {
+            longBytes[i] = "A";
+        }
+        string memory tooLong = string(longBytes);
+        vm.prank(admin);
+        vm.expectRevert(abi.encodeWithSelector(ProgramRegistry.StringTooLong.selector, "url", 512));
+        registry.adminForceUpdateUrl(imageId, tooLong);
+    }
+
+    function testAdminForceUpdateUrlAtBoundary() public {
+        vm.prank(owner);
+        registry.registerProgram(imageId, name, programUrl, bytes32(0));
+
+        bytes memory longBytes = new bytes(512);
+        for (uint256 i = 0; i < 512; i++) {
+            longBytes[i] = "A";
+        }
+        string memory maxUrl = string(longBytes);
+        vm.prank(admin);
+        registry.adminForceUpdateUrl(imageId, maxUrl);
+        ProgramRegistry.Program memory p = registry.getProgram(imageId);
+        assertEq(bytes(p.programUrl).length, 512);
+    }
 }
 
 /// @dev Minimal contract used as a valid verifier address in tests
