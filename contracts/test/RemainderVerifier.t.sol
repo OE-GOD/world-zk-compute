@@ -5136,9 +5136,7 @@ contract DAGProofVerifiedEventTest is Test {
         vm.expectEmit(true, false, false, true);
         emit DAGProofVerified(circuitHash, true, "groth16");
 
-        verifier.verifyDAGWithGroth16(
-            innerProof, circuitHash, publicInputsAbi, gensHex, groth16Proof, groth16Outputs
-        );
+        verifier.verifyDAGWithGroth16(innerProof, circuitHash, publicInputsAbi, gensHex, groth16Proof, groth16Outputs);
     }
 
     // -- Test: verifyDAGProofStylus emits DAGProofVerified with method "stylus" --
@@ -5314,12 +5312,7 @@ contract ReentrancyGuardTest is Test {
     /// @notice Reentrancy into startDAGBatchVerify reverts with ReentrancyGuardReentrantCall
     function test_reentrancy_start_reverts() public {
         verifier.setReentryParams(
-            ReentrantRemainderVerifier.ReentryTarget.Start,
-            proofHex,
-            circuitHash,
-            publicInputsHex,
-            gensHex,
-            bytes32(0)
+            ReentrantRemainderVerifier.ReentryTarget.Start, proofHex, circuitHash, publicInputsHex, gensHex, bytes32(0)
         );
 
         vm.expectRevert(ReentrancyGuard.ReentrancyGuardReentrantCall.selector);
@@ -5380,12 +5373,7 @@ contract ReentrancyGuardTest is Test {
         }
 
         verifier.setReentryParams(
-            ReentrantRemainderVerifier.ReentryTarget.Cleanup,
-            proofHex,
-            circuitHash,
-            publicInputsHex,
-            gensHex,
-            sessionId
+            ReentrantRemainderVerifier.ReentryTarget.Cleanup, proofHex, circuitHash, publicInputsHex, gensHex, sessionId
         );
 
         vm.expectRevert(ReentrancyGuard.ReentrancyGuardReentrantCall.selector);

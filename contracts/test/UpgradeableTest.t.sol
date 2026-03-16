@@ -126,11 +126,7 @@ contract UpgradeableTest is Test {
         engine = UpgradeableExecutionEngine(payable(address(proxy)));
 
         // Mock registry.isProgramActive() to return true for any imageId
-        vm.mockCall(
-            registry,
-            abi.encodeWithSignature("isProgramActive(bytes32)"),
-            abi.encode(true)
-        );
+        vm.mockCall(registry, abi.encodeWithSignature("isProgramActive(bytes32)"), abi.encode(true));
     }
 
     // ========================================================================

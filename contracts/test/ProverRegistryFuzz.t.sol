@@ -167,14 +167,10 @@ contract ProverRegistryFuzzTest is Test {
         ProverRegistry.Prover memory p = fuzzRegistry.getProver(prover);
         assertEq(p.stake, expectedRemaining, "stake after slash should match expected");
         assertEq(
-            fuzzRegistry.totalStaked(),
-            totalStakedBefore - expectedSlash,
-            "totalStaked should decrease by slash amount"
+            fuzzRegistry.totalStaked(), totalStakedBefore - expectedSlash, "totalStaked should decrease by slash amount"
         );
         assertEq(
-            token.balanceOf(deployer),
-            deployerBalBefore + expectedSlash,
-            "slashed funds should go to owner/treasury"
+            token.balanceOf(deployer), deployerBalBefore + expectedSlash, "slashed funds should go to owner/treasury"
         );
 
         // If remaining stake < minStake, prover should be deactivated

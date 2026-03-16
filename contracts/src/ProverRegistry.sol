@@ -4,12 +4,12 @@ pragma solidity ^0.8.20;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 
 /// @title ProverRegistry - Decentralized Prover Network
 /// @notice Manages prover registration, staking, reputation, and slashing
 /// @dev Provers stake tokens to participate, earn rewards, and can be slashed for misbehavior
-contract ProverRegistry is ReentrancyGuard, Ownable {
+contract ProverRegistry is ReentrancyGuard, Ownable2Step {
     using SafeERC20 for IERC20;
 
     // ============================================================
@@ -338,7 +338,9 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
         for (uint256 i = 0; i < count;) {
             Prover storage p = provers[activeProvers[i]];
             totalWeight += (p.stake * p.reputation) / 10000;
-            unchecked { ++i; }
+            unchecked {
+                ++i;
+            }
         }
 
         if (totalWeight == 0) return activeProvers[seed % count];
@@ -353,7 +355,9 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
             if (random < cumulative) {
                 return activeProvers[i];
             }
-            unchecked { ++i; }
+            unchecked {
+                ++i;
+            }
         }
 
         return activeProvers[count - 1];
@@ -422,12 +426,16 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
                         maxIdx = j;
                     }
                 }
-                unchecked { ++j; }
+                unchecked {
+                    ++j;
+                }
             }
 
             result[i] = activeProvers[maxIdx];
             used[maxIdx] = true;
-            unchecked { ++i; }
+            unchecked {
+                ++i;
+            }
         }
 
         return result;
@@ -548,7 +556,9 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
         for (uint256 i = 0; i < count;) {
             Prover storage p = provers[activeProvers[i]];
             totalWeight += (p.stake * p.reputation) / 10000;
-            unchecked { ++i; }
+            unchecked {
+                ++i;
+            }
         }
 
         if (totalWeight == 0) return activeProvers[seed % count];
@@ -562,7 +572,9 @@ contract ProverRegistry is ReentrancyGuard, Ownable {
             if (random < cumulative) {
                 return activeProvers[i];
             }
-            unchecked { ++i; }
+            unchecked {
+                ++i;
+            }
         }
 
         return activeProvers[count - 1];

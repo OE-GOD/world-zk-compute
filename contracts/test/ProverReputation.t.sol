@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
 import "../src/ProverReputation.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 contract ProverReputationTest is Test {
     // Re-declare events for expectEmit
@@ -300,7 +301,7 @@ contract ProverReputationTest is Test {
     function test_accessControl_slash_nonOwnerReverts() public {
         _registerProver(prover1);
 
-        vm.expectRevert(ProverReputation.NotOwner.selector);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
         vm.prank(stranger);
         rep.slash(prover1, "cheat", 1000);
     }
@@ -308,7 +309,7 @@ contract ProverReputationTest is Test {
     function test_accessControl_ban_nonOwnerReverts() public {
         _registerProver(prover1);
 
-        vm.expectRevert(ProverReputation.NotOwner.selector);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
         vm.prank(stranger);
         rep.ban(prover1, "bad actor");
     }
@@ -317,7 +318,7 @@ contract ProverReputationTest is Test {
         _registerProver(prover1);
         rep.ban(prover1, "bad");
 
-        vm.expectRevert(ProverReputation.NotOwner.selector);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
         vm.prank(stranger);
         rep.unban(prover1);
     }
@@ -358,13 +359,13 @@ contract ProverReputationTest is Test {
     }
 
     function test_authorizeReporter_onlyOwner() public {
-        vm.expectRevert(ProverReputation.NotOwner.selector);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
         vm.prank(stranger);
         rep.authorizeReporter(stranger);
     }
 
     function test_revokeReporter_onlyOwner() public {
-        vm.expectRevert(ProverReputation.NotOwner.selector);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
         vm.prank(stranger);
         rep.revokeReporter(reporter);
     }
@@ -908,22 +909,35 @@ contract ProverReputationTest is Test {
         rep.revokeReporter(reporter);
     }
 
-    function test_transferOwnership() public {
+    function test_transferOwnership_twoStep() public {
         address newOwner = address(0xABCD);
+        // Step 1: Current owner initiates transfer (sets pendingOwner)
         rep.transferOwnership(newOwner);
-        assertEq(rep.owner(), newOwner, "ownership transferred");
+        assertEq(rep.owner(), owner, "owner unchanged until accepted");
+        assertEq(rep.pendingOwner(), newOwner, "pendingOwner should be set");
 
-        vm.expectRevert(ProverReputation.NotOwner.selector);
+        // Step 2: New owner accepts
+        vm.prank(newOwner);
+        rep.acceptOwnership();
+        assertEq(rep.owner(), newOwner, "ownership transferred after acceptance");
+
+        // Old owner can no longer call onlyOwner functions
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, address(this)));
         rep.authorizeReporter(stranger);
     }
 
-    function test_transferOwnership_rejectsZeroAddress() public {
-        vm.expectRevert(ProverReputation.ZeroAddress.selector);
-        rep.transferOwnership(address(0));
+    function test_acceptOwnership_wrongCallerReverts() public {
+        address newOwner = address(0xABCD);
+        rep.transferOwnership(newOwner);
+
+        // Stranger (not the pending owner) cannot accept
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
+        vm.prank(stranger);
+        rep.acceptOwnership();
     }
 
     function test_transferOwnership_nonOwnerReverts() public {
-        vm.expectRevert(ProverReputation.NotOwner.selector);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
         vm.prank(stranger);
         rep.transferOwnership(stranger);
     }
@@ -1180,7 +1194,7 @@ contract ProverReputationTest is Test {
     }
 
     function test_setSlashCooldown_onlyOwner() public {
-        vm.expectRevert(ProverReputation.NotOwner.selector);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, stranger));
         vm.prank(stranger);
         rep.setSlashCooldown(2 hours);
     }

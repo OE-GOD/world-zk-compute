@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity ^0.8.20;
 
+import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
+
+
 /// @title ProverReputation
 /// @notice Tracks prover reliability and performance on-chain
 /// @dev Reputation affects job priority and can enable/disable features
-contract ProverReputation {
+contract ProverReputation is Ownable2Step {
     // ========================================================================
     // TYPES
     // ========================================================================
@@ -102,9 +105,6 @@ contract ProverReputation {
     /// @notice Authorized reporters (execution engine, etc.)
     mapping(address => bool) public authorizedReporters;
 
-    /// @notice Contract owner
-    address public owner;
-
     /// @notice Total registered provers
     uint256 public totalProvers;
 
@@ -129,13 +129,11 @@ contract ProverReputation {
     event ReporterAuthorized(address indexed reporter);
     event ReporterRevoked(address indexed reporter);
     event SlashCooldownUpdated(uint256 oldCooldown, uint256 newCooldown);
-    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
     // ========================================================================
     // ERRORS
     // ========================================================================
 
-    error NotOwner();
     error NotAuthorized();
     error ProverNotRegistered();
     error ProverIsBanned();
@@ -145,21 +143,14 @@ contract ProverReputation {
     error TimestampOverflow();
     error InvalidTimestamp();
     error SlashCooldownActive();
-    /// @notice Thrown when a zero address is provided where a valid address is required
-    error ZeroAddress();
     error StringTooLong(string field, uint256 maxLength);
 
     // ========================================================================
     // MODIFIERS
     // ========================================================================
 
-    modifier onlyOwner() {
-        if (msg.sender != owner) revert NotOwner();
-        _;
-    }
-
     modifier onlyAuthorized() {
-        if (!authorizedReporters[msg.sender] && msg.sender != owner) revert NotAuthorized();
+        if (!authorizedReporters[msg.sender] && msg.sender != owner()) revert NotAuthorized();
         _;
     }
 
@@ -172,9 +163,7 @@ contract ProverReputation {
     // CONSTRUCTOR
     // ========================================================================
 
-    constructor() {
-        owner = msg.sender;
-    }
+    constructor() Ownable(msg.sender) {}
 
     // ========================================================================
     // PROVER REGISTRATION
@@ -459,14 +448,6 @@ contract ProverReputation {
     function revokeReporter(address reporter) external onlyOwner {
         authorizedReporters[reporter] = false;
         emit ReporterRevoked(reporter);
-    }
-
-    /// @notice Transfer ownership
-    function transferOwnership(address newOwner) external onlyOwner {
-        if (newOwner == address(0)) revert ZeroAddress();
-        address oldOwner = owner;
-        owner = newOwner;
-        emit OwnershipTransferred(oldOwner, newOwner);
     }
 
     /// @notice Set the cooldown period between slashes

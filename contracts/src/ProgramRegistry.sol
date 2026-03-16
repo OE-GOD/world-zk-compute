@@ -313,11 +313,7 @@ contract ProgramRegistry is Ownable2Step, Pausable {
     /// @param offset The starting index
     /// @param limit The maximum number of items to return
     /// @return Array of image IDs in the requested page range
-    function getOwnerPrograms(address owner, uint256 offset, uint256 limit)
-        external
-        view
-        returns (bytes32[] memory)
-    {
+    function getOwnerPrograms(address owner, uint256 offset, uint256 limit) external view returns (bytes32[] memory) {
         bytes32[] storage programs = ownerPrograms[owner];
         uint256 total = programs.length;
         if (offset >= total) {

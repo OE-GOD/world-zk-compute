@@ -1027,7 +1027,8 @@ contract TEEMLVerifierTest is Test {
         verifier.setChallengeWindow(2 hours);
 
         bytes memory attestation = _signAttestation(modelHash, inputHash, resultData);
-        bytes32 resultId = verifier.submitResult{value: DEFAULT_PROVER_STAKE}(modelHash, inputHash, resultData, attestation);
+        bytes32 resultId =
+            verifier.submitResult{value: DEFAULT_PROVER_STAKE}(modelHash, inputHash, resultData, attestation);
 
         ITEEMLVerifier.MLResult memory r = verifier.getResult(resultId);
         assertEq(r.challengeDeadline, block.timestamp + 2 hours);

@@ -811,7 +811,8 @@ contract ProverReputationHandler is Test {
 
     /// @notice Register a new prover.
     function registerProver(uint256 seed) external {
-        address prover = address(uint160(uint256(keccak256(abi.encodePacked("repProver", seed, ghost_totalRegistered)))));
+        address prover =
+            address(uint160(uint256(keccak256(abi.encodePacked("repProver", seed, ghost_totalRegistered)))));
         if (isRegistered[prover] || prover == address(0)) return;
 
         vm.prank(prover);
@@ -1039,9 +1040,7 @@ contract ProverReputationInvariantTest is Test {
     /// @notice INVARIANT: totalProvers in contract matches actual registrations.
     function invariant_reputation_totalProvers_matches() public view {
         assertEq(
-            rep.totalProvers(),
-            handler.ghost_totalRegistered(),
-            "totalProvers must match handler's registration count"
+            rep.totalProvers(), handler.ghost_totalRegistered(), "totalProvers must match handler's registration count"
         );
     }
 
