@@ -234,12 +234,17 @@ fn rate_limit_response(info: &RateLimitInfo) -> Response<Body> {
         "retry_after_seconds": info.reset_secs,
     });
 
+    let body_str = serde_json::to_string(&body).unwrap_or_else(|_| {
+        r#"{"error":"Too many requests. Please retry later."}"#.to_string()
+    });
     let mut resp = Response::builder()
         .status(StatusCode::TOO_MANY_REQUESTS)
         .header("content-type", "application/json")
         .header("retry-after", info.reset_secs.to_string())
-        .body(Body::from(serde_json::to_string(&body).unwrap()))
-        .unwrap();
+        .body(Body::from(body_str))
+        .unwrap_or_else(|_| {
+            Response::new(Body::from("Too many requests"))
+        });
     set_rate_limit_headers(&mut resp, info);
     resp
 }

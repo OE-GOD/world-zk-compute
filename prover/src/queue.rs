@@ -59,7 +59,7 @@ impl QueuedJob {
     pub fn score(&self) -> JobScore {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
 
         // Time until expiration (0 if expired)
@@ -181,7 +181,7 @@ impl JobQueue {
         // Check expiration
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs();
         if job.expires_at <= now {
             debug!("Job {} already expired", job.request_id);
@@ -227,7 +227,7 @@ impl JobQueue {
             // Check if still valid (not expired)
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or_default()
                 .as_secs();
 
             if scored.job.expires_at > now {

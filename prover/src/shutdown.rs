@@ -115,8 +115,13 @@ pub async fn install_signal_handlers(controller: Arc<ShutdownController>) {
 
         // Handle SIGINT (Ctrl+C)
         tokio::spawn(async move {
-            let mut sigint =
-                signal(SignalKind::interrupt()).expect("Failed to install SIGINT handler");
+            let mut sigint = match signal(SignalKind::interrupt()) {
+                Ok(s) => s,
+                Err(e) => {
+                    error!("Failed to install SIGINT handler: {}", e);
+                    return;
+                }
+            };
             sigint.recv().await;
             info!("Received SIGINT, initiating graceful shutdown...");
             controller_int.shutdown();
@@ -124,8 +129,13 @@ pub async fn install_signal_handlers(controller: Arc<ShutdownController>) {
 
         // Handle SIGTERM
         tokio::spawn(async move {
-            let mut sigterm =
-                signal(SignalKind::terminate()).expect("Failed to install SIGTERM handler");
+            let mut sigterm = match signal(SignalKind::terminate()) {
+                Ok(s) => s,
+                Err(e) => {
+                    error!("Failed to install SIGTERM handler: {}", e);
+                    return;
+                }
+            };
             sigterm.recv().await;
             info!("Received SIGTERM, initiating graceful shutdown...");
             controller_term.shutdown();
@@ -136,9 +146,10 @@ pub async fn install_signal_handlers(controller: Arc<ShutdownController>) {
     {
         let controller_ctrl_c = controller.clone();
         tokio::spawn(async move {
-            tokio::signal::ctrl_c()
-                .await
-                .expect("Failed to install Ctrl+C handler");
+            if let Err(e) = tokio::signal::ctrl_c().await {
+                error!("Failed to install Ctrl+C handler: {}", e);
+                return;
+            }
             info!("Received Ctrl+C, initiating graceful shutdown...");
             controller_ctrl_c.shutdown();
         });

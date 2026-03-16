@@ -146,7 +146,7 @@ impl OptimizedProcessor {
         let program_cache = Arc::new(ProgramCache::new(cache_dir, cache_size_mb)?);
 
         // Initialize IPFS client
-        let ipfs_client = Arc::new(IpfsClient::new(IpfsConfig::default()));
+        let ipfs_client = Arc::new(IpfsClient::new(IpfsConfig::default())?);
 
         // Initialize multi-VM router
         let multi_vm = Arc::new(MultiVmProver::new(proving_mode.clone()));
@@ -1110,7 +1110,7 @@ async fn fetch_program_from_registry(
 async fn download_program_elf(url: &str) -> anyhow::Result<Vec<u8>> {
     if url.starts_with("ipfs://") || url.contains("/ipfs/") {
         // Use IPFS client with multi-gateway fallback
-        let ipfs_client = IpfsClient::new(IpfsConfig::default());
+        let ipfs_client = IpfsClient::new(IpfsConfig::default())?;
         ipfs_client.fetch(url).await
     } else if url.starts_with("http://") || url.starts_with("https://") {
         // HTTP(S) download with retry

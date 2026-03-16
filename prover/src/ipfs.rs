@@ -5,7 +5,7 @@
 //! ## Usage
 //!
 //! ```rust
-//! let client = IpfsClient::new(IpfsConfig::default());
+//! let client = IpfsClient::new(IpfsConfig::default())?;
 //! let data = client.fetch("QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG").await?;
 //! ```
 //!
@@ -62,14 +62,14 @@ pub struct IpfsClient {
 
 impl IpfsClient {
     /// Create a new IPFS client
-    pub fn new(config: IpfsConfig) -> Self {
+    pub fn new(config: IpfsConfig) -> Result<Self> {
         let http = Client::builder()
             .timeout(config.timeout)
             .pool_max_idle_per_host(4)
             .build()
-            .expect("Failed to create HTTP client");
+            .map_err(|e| anyhow::anyhow!("Failed to create IPFS HTTP client: {}", e))?;
 
-        Self { http, config }
+        Ok(Self { http, config })
     }
 
     /// Fetch content by CID

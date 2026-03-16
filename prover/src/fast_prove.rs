@@ -357,7 +357,7 @@ impl FastProver {
                 }
                 ProvingStrategy::Continuation => self.prove_continuation(elf, input).await,
                 ProvingStrategy::TooComplex => {
-                    return Err(anyhow!("Program too complex for proving"));
+                    Err(anyhow!("Program too complex for proving"))
                 }
             }
         })

@@ -1055,13 +1055,15 @@ async fn handle_challenge(
             let mut meta = HashMap::new();
             meta.insert("result_id".to_string(), rid_hex);
             meta.insert("tx".to_string(), format!("{}", tx));
-            let _ = alert_manager.send_alert(
+            if let Err(e) = alert_manager.send_alert(
                 AlertSeverity::Info,
                 "dispute_resolved",
                 "operator",
                 "Dispute resolved successfully",
                 meta,
-            );
+            ) {
+                tracing::warn!("Failed to send dispute_resolved alert: {}", e);
+            }
         }
         Err(e) => {
             chain_cb.record_failure();
@@ -1071,13 +1073,15 @@ async fn handle_challenge(
             let mut meta = HashMap::new();
             meta.insert("result_id".to_string(), rid_hex);
             meta.insert("error".to_string(), format!("{}", e));
-            let _ = alert_manager.send_alert(
+            if let Err(e) = alert_manager.send_alert(
                 AlertSeverity::Critical,
                 "dispute_failed",
                 "operator",
                 &format!("Dispute resolution failed: {}", e),
                 meta,
-            );
+            ) {
+                tracing::warn!("Failed to send dispute_failed alert: {}", e);
+            }
         }
     }
 }

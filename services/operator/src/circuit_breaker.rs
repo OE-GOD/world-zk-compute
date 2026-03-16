@@ -110,7 +110,10 @@ impl CircuitBreaker {
 
     /// Get the current state of the circuit breaker.
     pub fn state(&self) -> State {
-        let mut inner = self.inner.lock().expect("circuit breaker mutex poisoned");
+        let mut inner = self.inner.lock().unwrap_or_else(|e| {
+            tracing::warn!("Circuit breaker mutex was poisoned, recovering: {}", e);
+            e.into_inner()
+        });
         self.maybe_transition_to_half_open(&mut inner);
         inner.state
     }
@@ -123,7 +126,10 @@ impl CircuitBreaker {
     /// If the breaker is Open and the recovery timeout has elapsed, transitions
     /// to HalfOpen and allows the request.
     pub fn allow_request(&self) -> Result<(), CircuitBreakerError> {
-        let mut inner = self.inner.lock().expect("circuit breaker mutex poisoned");
+        let mut inner = self.inner.lock().unwrap_or_else(|e| {
+            tracing::warn!("Circuit breaker mutex was poisoned, recovering: {}", e);
+            e.into_inner()
+        });
         self.maybe_transition_to_half_open(&mut inner);
 
         match inner.state {
@@ -157,7 +163,10 @@ impl CircuitBreaker {
 
     /// Record a successful call.
     pub fn record_success(&self) {
-        let mut inner = self.inner.lock().expect("circuit breaker mutex poisoned");
+        let mut inner = self.inner.lock().unwrap_or_else(|e| {
+            tracing::warn!("Circuit breaker mutex was poisoned, recovering: {}", e);
+            e.into_inner()
+        });
         inner.consecutive_failures = 0;
 
         match inner.state {
@@ -182,7 +191,10 @@ impl CircuitBreaker {
 
     /// Record a failed call.
     pub fn record_failure(&self) {
-        let mut inner = self.inner.lock().expect("circuit breaker mutex poisoned");
+        let mut inner = self.inner.lock().unwrap_or_else(|e| {
+            tracing::warn!("Circuit breaker mutex was poisoned, recovering: {}", e);
+            e.into_inner()
+        });
         inner.consecutive_successes = 0;
         inner.consecutive_failures += 1;
 
@@ -215,7 +227,10 @@ impl CircuitBreaker {
 
     /// Return the current number of consecutive failures.
     pub fn consecutive_failures(&self) -> u32 {
-        let inner = self.inner.lock().expect("circuit breaker mutex poisoned");
+        let inner = self.inner.lock().unwrap_or_else(|e| {
+            tracing::warn!("Circuit breaker mutex was poisoned, recovering: {}", e);
+            e.into_inner()
+        });
         inner.consecutive_failures
     }
 
@@ -227,7 +242,10 @@ impl CircuitBreaker {
 
     /// Returns a snapshot of current circuit breaker metrics.
     pub fn metrics(&self) -> CircuitBreakerMetrics {
-        let mut inner = self.inner.lock().expect("circuit breaker mutex poisoned");
+        let mut inner = self.inner.lock().unwrap_or_else(|e| {
+            tracing::warn!("Circuit breaker mutex was poisoned, recovering: {}", e);
+            e.into_inner()
+        });
         self.maybe_transition_to_half_open(&mut inner);
         CircuitBreakerMetrics {
             state: inner.state,

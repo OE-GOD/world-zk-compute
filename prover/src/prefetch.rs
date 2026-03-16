@@ -340,7 +340,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_prefetch_stats() {
-        let ipfs = Arc::new(IpfsClient::new(IpfsConfig::default()));
+        let ipfs = Arc::new(IpfsClient::new(IpfsConfig::default()).unwrap());
         let prefetcher = InputPrefetcher::new(ipfs, PrefetchConfig::default());
 
         let stats = prefetcher.stats().await;
