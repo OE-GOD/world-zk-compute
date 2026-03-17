@@ -20,9 +20,11 @@ fail_on_revert = false
 [rpc_endpoints]
 sepolia = "https://rpc.sepolia.org"
 world_sepolia = "${WORLD_SEPOLIA_RPC_URL}"
+world_mainnet = "${WORLD_CHAIN_RPC_URL}"
 arb_sepolia = "https://sepolia-rollup.arbitrum.io/rpc"
 
 [etherscan]
 sepolia = { key = "${ETHERSCAN_API_KEY}" }
-world_sepolia = { key = "${ETHERSCAN_API_KEY}" }
+world_sepolia = { key = "${WORLDSCAN_API_KEY}" }
+world_mainnet = { key = "${WORLDSCAN_API_KEY}" }
 arb_sepolia = { key = "${ARBISCAN_API_KEY}", url = "https://api-sepolia.arbiscan.io/api" }
