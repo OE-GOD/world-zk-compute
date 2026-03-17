@@ -119,7 +119,14 @@ contract DeployFullStack is Script {
         proverRegistry.setSlasher(address(engine), true);
         console.log("  Engine -> ProverRegistry: slasher authorized");
 
-        // ── 8. Optional: Register TEE enclave ──────────────────────────────────
+        // ── 8. Optional: Configure Stylus verifier routing ─────────────────────
+        address stylusVerifier = vm.envOr("STYLUS_VERIFIER", address(0));
+        if (stylusVerifier != address(0)) {
+            teeVerifier.setUseStylusVerifier(true);
+            console.log("  Stylus verifier enabled: ", stylusVerifier);
+        }
+
+        // ── 9. Optional: Register TEE enclave ──────────────────────────────────
         address enclaveKey = vm.envOr("ENCLAVE_KEY", address(0));
         if (enclaveKey != address(0)) {
             bytes32 imageHash = vm.envOr("ENCLAVE_IMAGE_HASH", bytes32(0));

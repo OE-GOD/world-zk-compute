@@ -78,6 +78,7 @@ impl ChainClient {
     /// Resolve a dispute by submitting a ZK proof.
     ///
     /// In dry-run mode, logs the call parameters and returns `B256::ZERO`.
+    #[allow(dead_code)]
     pub async fn resolve_dispute(
         &self,
         result_id: B256,
@@ -101,6 +102,36 @@ impl ChainClient {
         }
         self.tee_verifier
             .resolve_dispute(result_id, proof, circuit_hash, public_inputs, gens_data)
+            .await
+    }
+
+    /// Resolve a dispute by submitting a ZK proof, returning the transaction
+    /// hash and the gas used from the receipt.
+    ///
+    /// In dry-run mode, logs the call parameters and returns `(B256::ZERO, 0)`.
+    pub async fn resolve_dispute_with_gas(
+        &self,
+        result_id: B256,
+        proof: &[u8],
+        circuit_hash: B256,
+        public_inputs: &[u8],
+        gens_data: &[u8],
+    ) -> anyhow::Result<(B256, u64)> {
+        if self.dry_run {
+            tracing::info!(
+                dry_run = true,
+                action = "resolve_dispute",
+                result_id = %result_id,
+                circuit_hash = %circuit_hash,
+                proof_len = proof.len(),
+                public_inputs_len = public_inputs.len(),
+                gens_data_len = gens_data.len(),
+                "[DRY RUN] Would resolve dispute on-chain"
+            );
+            return Ok((B256::ZERO, 0));
+        }
+        self.tee_verifier
+            .resolve_dispute_with_gas(result_id, proof, circuit_hash, public_inputs, gens_data)
             .await
     }
 
@@ -430,6 +461,41 @@ mod tests {
             .await
             .expect("dry-run should handle large byte slices");
         assert_eq!(tx, B256::ZERO);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Dry-run mode: resolve_dispute_with_gas
+    // ---------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_dry_run_resolve_dispute_with_gas_returns_zero_hash_and_zero_gas() {
+        let client = make_dry_run_client();
+        let (tx, gas) = client
+            .resolve_dispute_with_gas(B256::ZERO, b"proof", B256::ZERO, b"pub_inputs", b"gens")
+            .await
+            .expect("dry-run resolve_dispute_with_gas should succeed");
+        assert_eq!(tx, B256::ZERO);
+        assert_eq!(gas, 0);
+    }
+
+    #[tokio::test]
+    async fn test_dry_run_resolve_dispute_with_gas_large_data() {
+        let client = make_dry_run_client();
+        let big_proof = vec![0xFFu8; 10_000];
+        let big_pub = vec![0x11u8; 5_000];
+        let big_gens = vec![0x22u8; 3_000];
+        let (tx, gas) = client
+            .resolve_dispute_with_gas(
+                B256::from([1u8; 32]),
+                &big_proof,
+                B256::from([2u8; 32]),
+                &big_pub,
+                &big_gens,
+            )
+            .await
+            .expect("dry-run should handle large byte slices");
+        assert_eq!(tx, B256::ZERO);
+        assert_eq!(gas, 0);
     }
 
     // ---------------------------------------------------------------------------

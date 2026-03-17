@@ -1023,7 +1023,7 @@ async fn handle_challenge(
     let resolve_result = match proof_mgr.read_proof(&rid_hex) {
         Ok(Some(proof)) => {
             tracing::info!("Found pre-computed proof for {}", rid_hex);
-            resolve_with_proof(chain, result_id, &proof).await
+            resolve_with_proof(chain, result_id, &proof, metrics).await
         }
         Ok(None) => {
             tracing::warn!(
@@ -1033,7 +1033,7 @@ async fn handle_challenge(
             match proof_mgr.wait_for_proof(&rid_hex, 60).await {
                 Ok(true) => {
                     if let Ok(Some(proof)) = proof_mgr.read_proof(&rid_hex) {
-                        resolve_with_proof(chain, result_id, &proof).await
+                        resolve_with_proof(chain, result_id, &proof, metrics).await
                     } else {
                         Err(anyhow::anyhow!("Proof disappeared after wait"))
                     }
@@ -1094,10 +1094,18 @@ async fn handle_challenge(
     }
 }
 
+/// Gas threshold for classifying dispute resolution paths.
+/// Disputes that use less than this amount of gas are classified as using the
+/// Stylus (WASM) verification path; those above 200M gas are classified as
+/// using the Solidity verification path.
+const STYLUS_GAS_THRESHOLD: u64 = 30_000_000;
+const SOLIDITY_GAS_THRESHOLD: u64 = 200_000_000;
+
 async fn resolve_with_proof(
     chain: &chain::ChainClient,
     result_id: B256,
     proof: &store::StoredProof,
+    metrics: &metrics::MetricsState,
 ) -> anyhow::Result<B256> {
     let proof_bytes = hex_to_bytes(&proof.proof_hex)?;
     let circuit_hash = hex_to_b256(&proof.circuit_hash)?;
@@ -1110,15 +1118,41 @@ async fn resolve_with_proof(
         proof_bytes.len(),
     );
 
-    chain
-        .resolve_dispute(
+    let (tx_hash, gas_used) = chain
+        .resolve_dispute_with_gas(
             result_id,
             &proof_bytes,
             circuit_hash,
             &public_inputs,
             &gens_data,
         )
-        .await
+        .await?;
+
+    // Classify the verification path based on gas consumption.
+    // Stylus (WASM) verification uses significantly less gas than the
+    // on-chain Solidity verifier, so we can infer which path was taken.
+    let verifier_path = if gas_used < STYLUS_GAS_THRESHOLD {
+        "stylus"
+    } else if gas_used > SOLIDITY_GAS_THRESHOLD {
+        "solidity"
+    } else {
+        "unknown"
+    };
+
+    tracing::info!(
+        gas_used,
+        verifier_path,
+        result_id = %result_id,
+        "Dispute resolved"
+    );
+
+    match verifier_path {
+        "stylus" => metrics.record_stylus_dispute_resolved(),
+        "solidity" => metrics.record_solidity_dispute_resolved(),
+        _ => {}
+    }
+
+    Ok(tx_hash)
 }
 
 async fn auto_finalize(

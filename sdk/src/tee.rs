@@ -149,6 +149,39 @@ impl TEEVerifier {
         Ok(receipt.transaction_hash)
     }
 
+    /// Resolve a dispute by submitting a ZK proof, returning both the
+    /// transaction hash and the gas used from the receipt.
+    ///
+    /// This is useful for classifying dispute resolution paths (e.g. Stylus
+    /// vs Solidity) based on gas consumption.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(result_id = %result_id)))]
+    pub async fn resolve_dispute_with_gas(
+        &self,
+        result_id: B256,
+        proof: &[u8],
+        circuit_hash: B256,
+        pub_inputs: &[u8],
+        gens: &[u8],
+    ) -> anyhow::Result<(B256, u64)> {
+        let provider = self.build_provider();
+        let contract = TEEMLVerifier::new(self.client.contract_address(), provider);
+
+        let receipt = contract
+            .resolveDispute(
+                result_id,
+                Bytes::copy_from_slice(proof),
+                circuit_hash,
+                Bytes::copy_from_slice(pub_inputs),
+                Bytes::copy_from_slice(gens),
+            )
+            .send()
+            .await?
+            .get_receipt()
+            .await?;
+
+        Ok((receipt.transaction_hash, receipt.gas_used))
+    }
+
     /// Resolve a dispute by timeout (challenger wins if prover didn't submit proof).
     #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(result_id = %result_id)))]
     pub async fn resolve_dispute_by_timeout(&self, result_id: B256) -> anyhow::Result<B256> {

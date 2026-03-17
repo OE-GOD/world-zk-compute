@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 import "forge-std/Script.sol";
 import "../src/remainder/RemainderVerifier.sol";
 import "../src/remainder/GKRDAGVerifier.sol";
+import "../src/tee/TEEMLVerifier.sol";
 
 /// @title StylusSepoliaDeploy
 /// @notice Deploy RemainderVerifier, register DAG circuit, and set Stylus verifier
@@ -42,6 +43,15 @@ contract StylusSepoliaDeploy is Script {
 
         verifier.setDAGStylusVerifier(fix.circuitHash, stylusVerifierAddr);
         console.log("Stylus verifier set");
+
+        // Optionally configure TEEMLVerifier to use Stylus routing
+        address teeAddr = vm.envOr("TEE_VERIFIER", address(0));
+        if (teeAddr != address(0)) {
+            TEEMLVerifier teeVerifier = TEEMLVerifier(payable(teeAddr));
+            teeVerifier.setUseStylusVerifier(true);
+            console.log("TEEMLVerifier Stylus routing enabled:", teeAddr);
+        }
+
         vm.stopBroadcast();
 
         // NOTE: Verification is NOT broadcast here because it uses ~200M+ gas,

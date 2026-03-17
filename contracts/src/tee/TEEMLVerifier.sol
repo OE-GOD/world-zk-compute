@@ -117,6 +117,9 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
     /// @notice Number of deadline extensions used for a given result ID
     mapping(bytes32 => uint256) public disputeExtensions;
 
+    /// @notice Whether dispute resolution routes through the Stylus (WASM) verifier
+    bool public useStylusVerifier;
+
     /// @notice Duration added per extension request
     uint256 public constant EXTENSION_PERIOD = 30 minutes;
 
@@ -222,6 +225,12 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
     }
 
     /// @inheritdoc ITEEMLVerifier
+    function setUseStylusVerifier(bool _enabled) external onlyOwner {
+        useStylusVerifier = _enabled;
+        emit StylusVerifierToggled(_enabled);
+    }
+
+    /// @inheritdoc ITEEMLVerifier
     function pause() external onlyOwner {
         _pause();
     }
@@ -302,8 +311,11 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
     // ─── Dispute Resolution ──────────────────────────────────────────────────
 
     /// @inheritdoc ITEEMLVerifier
-    /// @dev Calls RemainderVerifier.verifyDAGProof() via call. Requires >254M gas
-    ///      (supported on Arbitrum in a single tx). If proof is valid, prover wins.
+    /// @dev Routes to either Stylus (WASM) or Solidity verification based on useStylusVerifier.
+    ///      Stylus path: verifyDAGProofStylus(bytes,bytes32,bytes,bytes) — ~5-25M gas (single tx).
+    ///      Solidity path: verifyDAGProof(bytes,bytes32,bytes,bytes) — >254M gas (Arbitrum single tx).
+    ///      Uses call (not staticcall) so RemainderVerifier can emit events.
+    ///      Reentrancy is prevented by the nonReentrant modifier.
     function resolveDispute(
         bytes32 resultId,
         bytes calldata proof,
@@ -316,15 +328,18 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
         if (disputeResolved[resultId]) revert AlreadyResolved();
         if (remainderVerifier == address(0)) revert NoVerifierSet();
 
-        // Call the existing single-tx DAG proof verification
-        // This requires >254M gas (supported on Arbitrum in a single tx)
-        // Uses call instead of staticcall so RemainderVerifier can emit events.
-        // Reentrancy is prevented by the nonReentrant modifier on this function.
-        (bool success, bytes memory returnData) = remainderVerifier.call(
-            abi.encodeWithSignature(
+        bytes memory callData;
+        if (useStylusVerifier) {
+            callData = abi.encodeWithSignature(
+                "verifyDAGProofStylus(bytes,bytes32,bytes,bytes)", proof, circuitHash, publicInputs, gensData
+            );
+        } else {
+            callData = abi.encodeWithSignature(
                 "verifyDAGProof(bytes,bytes32,bytes,bytes)", proof, circuitHash, publicInputs, gensData
-            )
-        );
+            );
+        }
+
+        (bool success, bytes memory returnData) = remainderVerifier.call(callData);
 
         bool proofValid = false;
         if (success && returnData.length >= 32) {

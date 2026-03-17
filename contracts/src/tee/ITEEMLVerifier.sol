@@ -141,6 +141,10 @@ interface ITEEMLVerifier {
     /// @param newDeadline The new dispute deadline timestamp
     event DisputeExtended(bytes32 indexed resultId, uint256 newDeadline);
 
+    /// @notice Emitted when the Stylus verifier routing toggle changes
+    /// @param enabled True if disputes now route through the Stylus (WASM) verifier
+    event StylusVerifierToggled(bool enabled);
+
     /// @notice Register a new TEE enclave. Only callable by the contract owner.
     /// @param enclaveKey The enclave's ECDSA signing key address
     /// @param enclaveImageHash Hash of the enclave image (e.g., AWS Nitro PCR0)
@@ -208,6 +212,16 @@ interface ITEEMLVerifier {
     ///         can call this, and only once per dispute (MAX_EXTENSIONS = 1).
     /// @param resultId The disputed result to extend
     function extendDisputeWindow(bytes32 resultId) external;
+
+    /// @notice Toggle Stylus (WASM) verifier routing for dispute resolution. Owner only.
+    /// @dev When enabled, resolveDispute() calls verifyDAGProofStylus() (~5-25M gas)
+    ///      instead of verifyDAGProof() (>254M gas). Only relevant on Arbitrum.
+    /// @param _enabled True to route disputes through the Stylus verifier
+    function setUseStylusVerifier(bool _enabled) external;
+
+    /// @notice Whether dispute resolution routes through the Stylus (WASM) verifier
+    /// @return True if the Stylus path is active
+    function useStylusVerifier() external view returns (bool);
 
     /// @notice Finalize an unchallenged result after the challenge window has passed.
     ///         Returns the prover stake to the submitter.

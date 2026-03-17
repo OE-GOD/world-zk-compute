@@ -32,6 +32,8 @@ pub struct MetricsState {
     pub total_errors: AtomicU64,
     pub active_disputes: AtomicU64,
     pub last_block_polled: AtomicU64,
+    pub stylus_disputes_resolved: AtomicU64,
+    pub solidity_disputes_resolved: AtomicU64,
     pub webhook_failures: AtomicU64,
     pub start_time: Instant,
     /// Set to `true` during graceful shutdown so health endpoints report unhealthy.
@@ -55,6 +57,8 @@ impl MetricsState {
             total_errors: AtomicU64::new(0),
             active_disputes: AtomicU64::new(0),
             last_block_polled: AtomicU64::new(0),
+            stylus_disputes_resolved: AtomicU64::new(0),
+            solidity_disputes_resolved: AtomicU64::new(0),
             webhook_failures: AtomicU64::new(0),
             start_time: Instant::now(),
             shutting_down: AtomicBool::new(false),
@@ -89,6 +93,16 @@ impl MetricsState {
     /// Record a failed dispute (proof submission failed or timed out).
     pub fn record_dispute_failed(&self) {
         self.total_disputes_failed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a dispute resolved via the Stylus verification path.
+    pub fn record_stylus_dispute_resolved(&self) {
+        self.stylus_disputes_resolved.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a dispute resolved via the Solidity verification path.
+    pub fn record_solidity_dispute_resolved(&self) {
+        self.solidity_disputes_resolved.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record a finalization.
@@ -133,6 +147,8 @@ impl MetricsState {
         let errors = self.total_errors.load(Ordering::Relaxed);
         let active = self.active_disputes.load(Ordering::Relaxed);
         let last_block = self.last_block_polled.load(Ordering::Relaxed);
+        let stylus_resolved = self.stylus_disputes_resolved.load(Ordering::Relaxed);
+        let solidity_resolved = self.solidity_disputes_resolved.load(Ordering::Relaxed);
         let webhook_failures = self.webhook_failures.load(Ordering::Relaxed);
 
         format!(
@@ -149,6 +165,12 @@ operator_disputes_resolved {disputes_resolved}\n\
 # HELP operator_disputes_failed Total disputes that failed to resolve\n\
 # TYPE operator_disputes_failed counter\n\
 operator_disputes_failed {disputes_failed}\n\
+# HELP operator_stylus_disputes_resolved Disputes resolved via Stylus verification path\n\
+# TYPE operator_stylus_disputes_resolved counter\n\
+operator_stylus_disputes_resolved {stylus_resolved}\n\
+# HELP operator_solidity_disputes_resolved Disputes resolved via Solidity verification path\n\
+# TYPE operator_solidity_disputes_resolved counter\n\
+operator_solidity_disputes_resolved {solidity_resolved}\n\
 # HELP operator_errors_total Total errors encountered\n\
 # TYPE operator_errors_total counter\n\
 operator_errors_total {errors}\n\
@@ -192,6 +214,8 @@ struct MetricsJsonResponse {
     total_challenges: u64,
     total_disputes_resolved: u64,
     total_disputes_failed: u64,
+    stylus_disputes_resolved: u64,
+    solidity_disputes_resolved: u64,
     total_finalizations: u64,
     total_errors: u64,
     active_disputes: u64,
@@ -259,6 +283,8 @@ async fn json_metrics_handler(State(state): State<Arc<MetricsState>>) -> Json<Me
         total_challenges: state.total_challenges.load(Ordering::Relaxed),
         total_disputes_resolved: state.total_disputes_resolved.load(Ordering::Relaxed),
         total_disputes_failed: state.total_disputes_failed.load(Ordering::Relaxed),
+        stylus_disputes_resolved: state.stylus_disputes_resolved.load(Ordering::Relaxed),
+        solidity_disputes_resolved: state.solidity_disputes_resolved.load(Ordering::Relaxed),
         total_finalizations: state.total_finalizations.load(Ordering::Relaxed),
         total_errors: state.total_errors.load(Ordering::Relaxed),
         active_disputes: state.active_disputes.load(Ordering::Relaxed),
@@ -328,6 +354,8 @@ mod tests {
         assert_eq!(state.total_challenges.load(Ordering::Relaxed), 0);
         assert_eq!(state.total_disputes_resolved.load(Ordering::Relaxed), 0);
         assert_eq!(state.total_disputes_failed.load(Ordering::Relaxed), 0);
+        assert_eq!(state.stylus_disputes_resolved.load(Ordering::Relaxed), 0);
+        assert_eq!(state.solidity_disputes_resolved.load(Ordering::Relaxed), 0);
         assert_eq!(state.total_finalizations.load(Ordering::Relaxed), 0);
         assert_eq!(state.total_errors.load(Ordering::Relaxed), 0);
         assert_eq!(state.active_disputes.load(Ordering::Relaxed), 0);
@@ -410,6 +438,8 @@ mod tests {
         assert_eq!(state.total_submissions.load(Ordering::Relaxed), 0);
         assert_eq!(state.total_challenges.load(Ordering::Relaxed), 0);
         assert_eq!(state.total_disputes_failed.load(Ordering::Relaxed), 0);
+        assert_eq!(state.stylus_disputes_resolved.load(Ordering::Relaxed), 0);
+        assert_eq!(state.solidity_disputes_resolved.load(Ordering::Relaxed), 0);
         assert_eq!(state.total_errors.load(Ordering::Relaxed), 0);
         assert_eq!(state.active_disputes.load(Ordering::Relaxed), 0);
         assert_eq!(state.webhook_failures.load(Ordering::Relaxed), 0);
@@ -423,6 +453,9 @@ mod tests {
         state.record_challenge();
         state.record_dispute_resolved();
         state.record_dispute_failed();
+        state.record_stylus_dispute_resolved();
+        state.record_stylus_dispute_resolved();
+        state.record_solidity_dispute_resolved();
         state.record_finalization();
         state.record_finalization();
         state.record_finalization();
@@ -435,6 +468,8 @@ mod tests {
         assert_eq!(state.total_challenges.load(Ordering::Relaxed), 1);
         assert_eq!(state.total_disputes_resolved.load(Ordering::Relaxed), 1);
         assert_eq!(state.total_disputes_failed.load(Ordering::Relaxed), 1);
+        assert_eq!(state.stylus_disputes_resolved.load(Ordering::Relaxed), 2);
+        assert_eq!(state.solidity_disputes_resolved.load(Ordering::Relaxed), 1);
         assert_eq!(state.total_finalizations.load(Ordering::Relaxed), 3);
         assert_eq!(state.total_errors.load(Ordering::Relaxed), 2);
         assert_eq!(state.active_disputes.load(Ordering::Relaxed), 3);
@@ -455,6 +490,8 @@ mod tests {
         state.total_challenges.store(2, Ordering::Relaxed);
         state.total_disputes_resolved.store(1, Ordering::Relaxed);
         state.total_disputes_failed.store(3, Ordering::Relaxed);
+        state.stylus_disputes_resolved.store(6, Ordering::Relaxed);
+        state.solidity_disputes_resolved.store(9, Ordering::Relaxed);
         state.total_finalizations.store(4, Ordering::Relaxed);
         state.total_errors.store(7, Ordering::Relaxed);
         state.active_disputes.store(2, Ordering::Relaxed);
@@ -535,6 +572,24 @@ mod tests {
         );
 
         assert!(
+            body.contains("# TYPE operator_stylus_disputes_resolved counter"),
+            "Missing TYPE for stylus_disputes_resolved"
+        );
+        assert!(
+            body.contains("operator_stylus_disputes_resolved 6"),
+            "Wrong value for stylus_disputes_resolved"
+        );
+
+        assert!(
+            body.contains("# TYPE operator_solidity_disputes_resolved counter"),
+            "Missing TYPE for solidity_disputes_resolved"
+        );
+        assert!(
+            body.contains("operator_solidity_disputes_resolved 9"),
+            "Wrong value for solidity_disputes_resolved"
+        );
+
+        assert!(
             body.contains("# TYPE operator_errors_total counter"),
             "Missing TYPE for errors_total"
         );
@@ -579,6 +634,8 @@ mod tests {
         state.total_challenges.store(2, Ordering::Relaxed);
         state.total_disputes_resolved.store(1, Ordering::Relaxed);
         state.total_disputes_failed.store(3, Ordering::Relaxed);
+        state.stylus_disputes_resolved.store(8, Ordering::Relaxed);
+        state.solidity_disputes_resolved.store(11, Ordering::Relaxed);
         state.total_finalizations.store(4, Ordering::Relaxed);
         state.total_errors.store(7, Ordering::Relaxed);
         state.active_disputes.store(2, Ordering::Relaxed);
@@ -605,6 +662,8 @@ mod tests {
         assert_eq!(body["total_challenges"], 2);
         assert_eq!(body["total_disputes_resolved"], 1);
         assert_eq!(body["total_disputes_failed"], 3);
+        assert_eq!(body["stylus_disputes_resolved"], 8);
+        assert_eq!(body["solidity_disputes_resolved"], 11);
         assert_eq!(body["total_finalizations"], 4);
         assert_eq!(body["total_errors"], 7);
         assert_eq!(body["active_disputes"], 2);
@@ -619,6 +678,8 @@ mod tests {
         state.total_submissions.store(10, Ordering::Relaxed);
         state.total_disputes_resolved.store(3, Ordering::Relaxed);
         state.total_disputes_failed.store(1, Ordering::Relaxed);
+        state.stylus_disputes_resolved.store(7, Ordering::Relaxed);
+        state.solidity_disputes_resolved.store(12, Ordering::Relaxed);
         state.total_errors.store(2, Ordering::Relaxed);
         state.total_finalizations.store(8, Ordering::Relaxed);
         state.active_disputes.store(4, Ordering::Relaxed);
@@ -650,6 +711,18 @@ mod tests {
             .contains(&"# HELP operator_disputes_failed Total disputes that failed to resolve"));
         assert!(lines.contains(&"# TYPE operator_disputes_failed counter"));
         assert!(lines.contains(&"operator_disputes_failed 1"));
+
+        assert!(lines.contains(
+            &"# HELP operator_stylus_disputes_resolved Disputes resolved via Stylus verification path"
+        ));
+        assert!(lines.contains(&"# TYPE operator_stylus_disputes_resolved counter"));
+        assert!(lines.contains(&"operator_stylus_disputes_resolved 7"));
+
+        assert!(lines.contains(
+            &"# HELP operator_solidity_disputes_resolved Disputes resolved via Solidity verification path"
+        ));
+        assert!(lines.contains(&"# TYPE operator_solidity_disputes_resolved counter"));
+        assert!(lines.contains(&"operator_solidity_disputes_resolved 12"));
 
         assert!(lines.contains(&"# HELP operator_errors_total Total errors encountered"));
         assert!(lines.contains(&"# TYPE operator_errors_total counter"));
@@ -697,6 +770,8 @@ mod tests {
         assert!(output.contains("operator_proofs_submitted 0"));
         assert!(output.contains("operator_disputes_resolved 0"));
         assert!(output.contains("operator_disputes_failed 0"));
+        assert!(output.contains("operator_stylus_disputes_resolved 0"));
+        assert!(output.contains("operator_solidity_disputes_resolved 0"));
         assert!(output.contains("operator_errors_total 0"));
         assert!(output.contains("operator_finalizations_total 0"));
         assert!(output.contains("webhook_failures_total 0"));
