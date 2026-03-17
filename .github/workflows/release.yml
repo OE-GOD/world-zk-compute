@@ -63,6 +63,8 @@ jobs:
         include:
           - image: operator
             dockerfile: services/operator/Dockerfile
+          - image: indexer
+            dockerfile: services/indexer/Dockerfile
           - image: enclave
             dockerfile: tee/enclave/Dockerfile
           - image: admin-cli
@@ -139,6 +141,7 @@ jobs:
 
             ```bash
             docker pull ghcr.io/${{ github.repository }}/operator:${{ steps.version.outputs.tag }}
+            docker pull ghcr.io/${{ github.repository }}/indexer:${{ steps.version.outputs.tag }}
             docker pull ghcr.io/${{ github.repository }}/enclave:${{ steps.version.outputs.tag }}
             docker pull ghcr.io/${{ github.repository }}/admin-cli:${{ steps.version.outputs.tag }}
             ```

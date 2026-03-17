@@ -49,9 +49,10 @@ RUN if [ -n "$FEATURES" ]; then \
 # Runtime stage
 FROM debian:bookworm-slim
 
-# Install runtime dependencies
+# Install runtime dependencies (curl needed for HEALTHCHECK)
 RUN apt-get update && apt-get install -y \
     ca-certificates \
+    curl \
     libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
