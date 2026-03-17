@@ -547,7 +547,11 @@ class TEEVerifier:
             logger.debug("Gas estimation failed, using configured limit", exc_info=True)
         signed = self._account.sign_transaction(tx)
         tx_hash = self._w3.eth.send_raw_transaction(signed.raw_transaction)
-        return self._w3.eth.wait_for_transaction_receipt(tx_hash)
+        receipt = self._w3.eth.wait_for_transaction_receipt(tx_hash)
+        if receipt.get("status") == 0:
+            tx_hex = self._tx_hash_hex(receipt)
+            raise RuntimeError(f"Transaction reverted: {tx_hex}")
+        return receipt
 
     @staticmethod
     def _tx_hash_hex(receipt: Any) -> str:

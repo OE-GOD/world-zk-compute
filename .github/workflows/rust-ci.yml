@@ -15,6 +15,7 @@ on:
       - 'prover/**'
       - 'tests/chaos/**'
       - 'examples/xgboost-remainder/**'
+      - 'private-input-server/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
   pull_request:
@@ -28,6 +29,7 @@ on:
       - 'prover/**'
       - 'tests/chaos/**'
       - 'examples/xgboost-remainder/**'
+      - 'private-input-server/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
   workflow_dispatch:
@@ -293,6 +295,41 @@ jobs:
 
       - name: Run tests
         run: cargo test --manifest-path tee/enclave/Cargo.toml
+
+  private-input-server:
+    name: Private Input Server
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy, rustfmt
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            private-input-server/target
+          key: ${{ runner.os }}-cargo-pis-${{ hashFiles('private-input-server/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-pis-
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path private-input-server/Cargo.toml --check
+
+      - name: Run Clippy
+        run: cargo clippy --manifest-path private-input-server/Cargo.toml -- -D warnings
+
+      - name: Run tests
+        run: cargo test --manifest-path private-input-server/Cargo.toml
 
   prover:
     name: Prover

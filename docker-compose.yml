@@ -166,6 +166,9 @@ services:
     environment:
       PORT: "3001"
       RUST_LOG: "info"
+      RPC_URL: "http://anvil:8545"
+      ENGINE_ADDRESS: "0x0000000000000000000000000000000000000000"
+      SKIP_CHAIN_VERIFICATION: "true"
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:3001/health || exit 1"]
       interval: 5s

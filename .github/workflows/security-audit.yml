@@ -48,6 +48,9 @@ jobs:
       - name: Audit examples/xgboost-remainder/ (excluded from workspace)
         run: cargo audit --file examples/xgboost-remainder/Cargo.lock --deny warnings
 
+      - name: Audit private-input-server (excluded from workspace)
+        run: cargo audit --file private-input-server/Cargo.lock --deny warnings
+
   python-audit:
     name: Python Dependency Audit
     runs-on: ubuntu-latest

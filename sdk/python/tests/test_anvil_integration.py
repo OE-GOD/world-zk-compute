@@ -93,29 +93,62 @@ _ENCLAVES_ABI = [
 
 
 def _sign_attestation(
-    model_hash: bytes, input_hash: bytes, result_data: bytes
+    model_hash: bytes,
+    input_hash: bytes,
+    result_data: bytes,
+    contract_address: str,
+    chain_id: int = 31337,
 ) -> bytes:
-    """Produce an eth_sign-style attestation matching the contract logic.
+    """Produce an EIP-712 typed-data attestation matching the contract logic.
 
     The contract computes::
 
-        keccak256(abi.encodePacked(
-            "\\x19Ethereum Signed Message:\\n32",
-            keccak256(abi.encodePacked(modelHash, inputHash, keccak256(result)))
-        ))
+        structHash = keccak256(abi.encode(RESULT_TYPEHASH, modelHash, inputHash, resultHash))
+        digest = keccak256("\\x19\\x01" || DOMAIN_SEPARATOR || structHash)
 
-    and recovers the signer via ECDSA.  We replicate this with
-    ``eth_account.messages.encode_defunct``.
+    where DOMAIN_SEPARATOR uses EIP712Domain(name="TEEMLVerifier", version="1",
+    chainId, verifyingContract).  We replicate this with
+    ``eth_account.Account.sign_typed_data``.
     """
     from eth_account import Account
-    from eth_account.messages import encode_defunct
 
     result_hash = Web3.keccak(result_data)
-    message_bytes = Web3.keccak(model_hash + input_hash + result_hash)
 
-    signed = Account.sign_message(
-        encode_defunct(primitive=message_bytes),
+    domain_data = {
+        "name": "TEEMLVerifier",
+        "version": "1",
+        "chainId": chain_id,
+        "verifyingContract": Web3.to_checksum_address(contract_address),
+    }
+
+    message_data = {
+        "modelHash": model_hash,
+        "inputHash": input_hash,
+        "resultHash": result_hash,
+    }
+
+    full_message = {
+        "types": {
+            "EIP712Domain": [
+                {"name": "name", "type": "string"},
+                {"name": "version", "type": "string"},
+                {"name": "chainId", "type": "uint256"},
+                {"name": "verifyingContract", "type": "address"},
+            ],
+            "TEEMLResult": [
+                {"name": "modelHash", "type": "bytes32"},
+                {"name": "inputHash", "type": "bytes32"},
+                {"name": "resultHash", "type": "bytes32"},
+            ],
+        },
+        "primaryType": "TEEMLResult",
+        "domain": domain_data,
+        "message": message_data,
+    }
+
+    signed = Account.sign_typed_data(
         private_key=ENCLAVE_KEY,
+        full_message=full_message,
     )
     return signed.signature
 
@@ -536,7 +569,9 @@ class TestSubmitResult:
         input_hash = b"\x02" * 32
         result_data = b"\xde\xad\xbe\xef"
 
-        attestation = _sign_attestation(model_hash, input_hash, result_data)
+        attestation = _sign_attestation(
+            model_hash, input_hash, result_data, deployer_verifier.address,
+        )
 
         returned = deployer_verifier.submit_result(
             model_hash=model_hash,
@@ -557,7 +592,9 @@ class TestSubmitResult:
         input_hash = b"\x04" * 32
         result_data = b"\xca\xfe\xba\xbe"
 
-        attestation = _sign_attestation(model_hash, input_hash, result_data)
+        attestation = _sign_attestation(
+            model_hash, input_hash, result_data, deployer_verifier.address,
+        )
 
         returned = deployer_verifier.submit_result(
             model_hash=model_hash,
@@ -591,7 +628,9 @@ class TestSubmitResult:
         model_hash = b"\x05" * 32
         input_hash = b"\x06" * 32
         result_data = b"\x00"
-        attestation = _sign_attestation(model_hash, input_hash, result_data)
+        attestation = _sign_attestation(
+            model_hash, input_hash, result_data, contract_address,
+        )
 
         contract = _raw_contract(w3, contract_address)
         with pytest.raises((ContractLogicError, Exception)):
@@ -612,7 +651,9 @@ class TestSubmitResult:
         input_hash = b"\x08" * 32
         result_data = b"\xff"
 
-        attestation = _sign_attestation(model_hash, input_hash, result_data)
+        attestation = _sign_attestation(
+            model_hash, input_hash, result_data, deployer_verifier.address,
+        )
         returned = deployer_verifier.submit_result(
             model_hash=model_hash,
             input_hash=input_hash,
@@ -644,7 +685,9 @@ class TestChallengeFlow:
         input_hash = b"\x11" * 32
         result_data = b"\xaa\xbb"
 
-        attestation = _sign_attestation(model_hash, input_hash, result_data)
+        attestation = _sign_attestation(
+            model_hash, input_hash, result_data, deployer_verifier.address,
+        )
         returned = deployer_verifier.submit_result(
             model_hash=model_hash,
             input_hash=input_hash,
@@ -674,7 +717,9 @@ class TestChallengeFlow:
         input_hash = b"\x15" * 32
         result_data = b"\xee\xff"
 
-        attestation = _sign_attestation(model_hash, input_hash, result_data)
+        attestation = _sign_attestation(
+            model_hash, input_hash, result_data, deployer_verifier.address,
+        )
         returned = deployer_verifier.submit_result(
             model_hash=model_hash,
             input_hash=input_hash,
@@ -714,7 +759,9 @@ class TestFinalizeFlow:
         input_hash = b"\x21" * 32
         result_data = b"\x01\x02\x03"
 
-        attestation = _sign_attestation(model_hash, input_hash, result_data)
+        attestation = _sign_attestation(
+            model_hash, input_hash, result_data, deployer_verifier.address,
+        )
         returned = deployer_verifier.submit_result(
             model_hash=model_hash,
             input_hash=input_hash,
@@ -743,7 +790,9 @@ class TestFinalizeFlow:
         input_hash = b"\x23" * 32
         result_data = b"\x04\x05\x06"
 
-        attestation = _sign_attestation(model_hash, input_hash, result_data)
+        attestation = _sign_attestation(
+            model_hash, input_hash, result_data, deployer_verifier.address,
+        )
         returned = deployer_verifier.submit_result(
             model_hash=model_hash,
             input_hash=input_hash,
@@ -774,7 +823,9 @@ class TestFinalizeFlow:
         input_hash = b"\x25" * 32
         result_data = b"\x07\x08\x09"
 
-        attestation = _sign_attestation(model_hash, input_hash, result_data)
+        attestation = _sign_attestation(
+            model_hash, input_hash, result_data, deployer_verifier.address,
+        )
         returned = deployer_verifier.submit_result(
             model_hash=model_hash,
             input_hash=input_hash,
@@ -811,7 +862,9 @@ class TestDisputeTimeout:
         input_hash = b"\x31" * 32
         result_data = b"\xab\xcd"
 
-        attestation = _sign_attestation(model_hash, input_hash, result_data)
+        attestation = _sign_attestation(
+            model_hash, input_hash, result_data, deployer_verifier.address,
+        )
         returned = deployer_verifier.submit_result(
             model_hash=model_hash,
             input_hash=input_hash,
@@ -847,7 +900,9 @@ class TestDisputeTimeout:
         input_hash = b"\x33" * 32
         result_data = b"\xef\x01"
 
-        attestation = _sign_attestation(model_hash, input_hash, result_data)
+        attestation = _sign_attestation(
+            model_hash, input_hash, result_data, deployer_verifier.address,
+        )
         returned = deployer_verifier.submit_result(
             model_hash=model_hash,
             input_hash=input_hash,
@@ -923,7 +978,9 @@ class TestEventWatcherIntegration:
         input_hash = b"\x41" * 32
         result_data = b"\xfa\xce"
 
-        attestation = _sign_attestation(model_hash, input_hash, result_data)
+        attestation = _sign_attestation(
+            model_hash, input_hash, result_data, deployer_verifier.address,
+        )
         deployer_verifier.submit_result(
             model_hash=model_hash,
             input_hash=input_hash,
@@ -959,7 +1016,9 @@ class TestEventWatcherIntegration:
         input_hash = b"\x43" * 32
         result_data = b"\x12\x34"
 
-        attestation = _sign_attestation(model_hash, input_hash, result_data)
+        attestation = _sign_attestation(
+            model_hash, input_hash, result_data, deployer_verifier.address,
+        )
         returned = deployer_verifier.submit_result(
             model_hash=model_hash,
             input_hash=input_hash,
