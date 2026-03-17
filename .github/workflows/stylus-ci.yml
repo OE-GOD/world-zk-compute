@@ -15,12 +15,14 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_VERSION: "1.92.0"
+  ARB_SEPOLIA_RPC: https://sepolia-rollup.arbitrum.io/rpc
+  STYLUS_BROTLI_LIMIT: 24576  # 24KB exact Stylus deployment limit
 
 jobs:
   stylus:
     name: Stylus GKR Verifier
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -32,6 +34,9 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
           components: clippy, rustfmt
           targets: wasm32-unknown-unknown
+
+      - name: Install binaryen and brotli
+        run: sudo apt-get update && sudo apt-get install -y binaryen brotli
 
       - name: Cache Rust build
         uses: actions/cache@v4
@@ -60,13 +65,36 @@ jobs:
       - name: Build WASM
         run: cargo build --manifest-path contracts/stylus/gkr-verifier/Cargo.toml --release --target wasm32-unknown-unknown --lib
 
-      - name: Check WASM size
+      - name: Optimize WASM with wasm-opt
         run: |
-          WASM=contracts/stylus/gkr-verifier/target/wasm32-unknown-unknown/release/gkr_verifier.wasm
-          RAW_SIZE=$(stat -c%s "$WASM")
-          echo "Raw WASM size: $RAW_SIZE bytes ($(echo "scale=1; $RAW_SIZE / 1024" | bc) KB)"
-          # Fail if raw size exceeds 128KB (brotli typically compresses ~2.5x, 24KB Stylus limit)
-          if [ "$RAW_SIZE" -gt 131072 ]; then
-            echo "::error::WASM binary too large ($RAW_SIZE bytes). Brotli-compressed size will likely exceed 24KB Stylus limit."
+          WASM_DIR=contracts/stylus/gkr-verifier/target/wasm32-unknown-unknown/release
+          wasm-opt "$WASM_DIR/gkr_verifier.wasm" -o "$WASM_DIR/gkr_verifier_opt.wasm" \
+            --enable-bulk-memory -O3 --zero-filled-memory
+
+      - name: Check WASM sizes (raw + Brotli)
+        run: |
+          WASM_DIR=contracts/stylus/gkr-verifier/target/wasm32-unknown-unknown/release
+          RAW_SIZE=$(stat -c%s "$WASM_DIR/gkr_verifier.wasm")
+          OPT_SIZE=$(stat -c%s "$WASM_DIR/gkr_verifier_opt.wasm")
+          BROTLI_RAW=$(brotli --best --stdout "$WASM_DIR/gkr_verifier.wasm" | wc -c)
+          BROTLI_OPT=$(brotli --best --stdout "$WASM_DIR/gkr_verifier_opt.wasm" | wc -c)
+
+          echo "=== WASM Size Report ==="
+          echo "Raw:             $RAW_SIZE bytes ($(echo "scale=1; $RAW_SIZE / 1024" | bc) KB)"
+          echo "Optimized:       $OPT_SIZE bytes ($(echo "scale=1; $OPT_SIZE / 1024" | bc) KB)"
+          echo "Raw Brotli:      $BROTLI_RAW bytes ($(echo "scale=1; $BROTLI_RAW / 1024" | bc) KB)"
+          echo "Optimized Brotli: $BROTLI_OPT bytes ($(echo "scale=1; $BROTLI_OPT / 1024" | bc) KB)"
+          echo "Stylus limit:    $STYLUS_BROTLI_LIMIT bytes (24.0 KB)"
+
+          if [ "$BROTLI_OPT" -gt "$STYLUS_BROTLI_LIMIT" ]; then
+            echo "::error::Optimized Brotli size ($BROTLI_OPT bytes) exceeds Stylus 24KB limit ($STYLUS_BROTLI_LIMIT bytes)"
             exit 1
           fi
+          echo "Brotli size OK ($BROTLI_OPT <= $STYLUS_BROTLI_LIMIT)"
+
+      - name: Install cargo-stylus
+        run: cargo install cargo-stylus --locked
+
+      - name: Run cargo stylus check
+        working-directory: contracts/stylus/gkr-verifier
+        run: cargo stylus check --endpoint ${{ env.ARB_SEPOLIA_RPC }}

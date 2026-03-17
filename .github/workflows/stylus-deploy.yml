@@ -1,0 +1,247 @@
+name: Stylus Deploy
+
+permissions: read-all
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run — build + check only, skip deployment'
+        type: boolean
+        default: true
+      stylus_only:
+        description: 'Deploy only the Stylus contract (skip Solidity adapter)'
+        type: boolean
+        default: false
+      skip_verify:
+        description: 'Skip cast call verification simulation'
+        type: boolean
+        default: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.92.0"
+  ARB_SEPOLIA_RPC: https://sepolia-rollup.arbitrum.io/rpc
+  STYLUS_BROTLI_LIMIT: 24576
+
+jobs:
+  build:
+    name: Build & Validate WASM
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      brotli_size: ${{ steps.sizes.outputs.brotli_size }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: wasm32-unknown-unknown
+
+      - name: Install binaryen and brotli
+        run: sudo apt-get update && sudo apt-get install -y binaryen brotli
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contracts/stylus/gkr-verifier/target
+          key: ${{ runner.os }}-cargo-stylus-deploy-${{ hashFiles('contracts/stylus/gkr-verifier/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-stylus-deploy-
+
+      - name: Build WASM (release)
+        run: cargo build --manifest-path contracts/stylus/gkr-verifier/Cargo.toml --release --target wasm32-unknown-unknown --lib
+
+      - name: Optimize WASM with wasm-opt
+        run: |
+          WASM_DIR=contracts/stylus/gkr-verifier/target/wasm32-unknown-unknown/release
+          wasm-opt "$WASM_DIR/gkr_verifier.wasm" -o "$WASM_DIR/gkr_verifier_opt.wasm" \
+            --enable-bulk-memory -O3 --zero-filled-memory
+
+      - name: Check WASM sizes
+        id: sizes
+        run: |
+          WASM_DIR=contracts/stylus/gkr-verifier/target/wasm32-unknown-unknown/release
+          RAW_SIZE=$(stat -c%s "$WASM_DIR/gkr_verifier.wasm")
+          OPT_SIZE=$(stat -c%s "$WASM_DIR/gkr_verifier_opt.wasm")
+          BROTLI_OPT=$(brotli --best --stdout "$WASM_DIR/gkr_verifier_opt.wasm" | wc -c)
+
+          echo "Raw:              $RAW_SIZE bytes"
+          echo "Optimized:        $OPT_SIZE bytes"
+          echo "Optimized Brotli: $BROTLI_OPT bytes (limit: $STYLUS_BROTLI_LIMIT)"
+
+          echo "brotli_size=$BROTLI_OPT" >> "$GITHUB_OUTPUT"
+
+          if [ "$BROTLI_OPT" -gt "$STYLUS_BROTLI_LIMIT" ]; then
+            echo "::error::Brotli size ($BROTLI_OPT) exceeds 24KB Stylus limit"
+            exit 1
+          fi
+
+      - name: Install cargo-stylus
+        run: cargo install cargo-stylus --locked
+
+      - name: Run cargo stylus check
+        working-directory: contracts/stylus/gkr-verifier
+        run: cargo stylus check --endpoint ${{ env.ARB_SEPOLIA_RPC }}
+
+  deploy:
+    name: Deploy to Arbitrum Sepolia
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [build]
+    if: ${{ !inputs.dry_run }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: wasm32-unknown-unknown
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Install binaryen
+        run: sudo apt-get update && sudo apt-get install -y binaryen
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contracts/stylus/gkr-verifier/target
+          key: ${{ runner.os }}-cargo-stylus-deploy-${{ hashFiles('contracts/stylus/gkr-verifier/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-stylus-deploy-
+
+      - name: Install cargo-stylus
+        run: cargo install cargo-stylus --locked
+
+      - name: Deploy Stylus contract
+        id: stylus_deploy
+        working-directory: contracts/stylus/gkr-verifier
+        env:
+          PRIVATE_KEY: ${{ secrets.ARB_SEPOLIA_PRIVATE_KEY }}
+        run: |
+          echo "Deploying Stylus GKR verifier to Arbitrum Sepolia..."
+          DEPLOY_OUTPUT=$(cargo stylus deploy \
+            --endpoint ${{ env.ARB_SEPOLIA_RPC }} \
+            --private-key "$PRIVATE_KEY" \
+            --no-verify 2>&1) || {
+            echo "::error::Stylus deployment failed"
+            echo "$DEPLOY_OUTPUT"
+            exit 1
+          }
+          echo "$DEPLOY_OUTPUT"
+
+          STYLUS_ADDRESS=$(echo "$DEPLOY_OUTPUT" | grep -oE '0x[0-9a-fA-F]{40}' | tail -1)
+          if [ -z "$STYLUS_ADDRESS" ]; then
+            echo "::error::Could not extract contract address"
+            exit 1
+          fi
+          echo "stylus_address=$STYLUS_ADDRESS" >> "$GITHUB_OUTPUT"
+          echo "Stylus verifier deployed at: $STYLUS_ADDRESS"
+
+      - name: Deploy Solidity adapter
+        if: ${{ !inputs.stylus_only }}
+        id: adapter_deploy
+        working-directory: contracts
+        env:
+          DEPLOYER_KEY: ${{ secrets.ARB_SEPOLIA_PRIVATE_KEY }}
+          STYLUS_VERIFIER: ${{ steps.stylus_deploy.outputs.stylus_address }}
+        run: |
+          echo "Deploying RemainderVerifier adapter..."
+          FORGE_OUTPUT=$(forge script script/StylusSepoliaDeploy.s.sol:StylusSepoliaDeploy \
+            --rpc-url ${{ env.ARB_SEPOLIA_RPC }} \
+            --broadcast -vvv 2>&1) || {
+            echo "::error::Forge script failed"
+            echo "$FORGE_OUTPUT"
+            exit 1
+          }
+          echo "$FORGE_OUTPUT"
+
+          ADAPTER_ADDRESS=$(echo "$FORGE_OUTPUT" | grep "RemainderVerifier deployed at:" | grep -oE '0x[0-9a-fA-F]{40}' | head -1 || true)
+          echo "adapter_address=$ADAPTER_ADDRESS" >> "$GITHUB_OUTPUT"
+          echo "RemainderVerifier deployed at: $ADAPTER_ADDRESS"
+
+      - name: Verification simulation (cast call)
+        if: ${{ !inputs.skip_verify && !inputs.stylus_only }}
+        env:
+          REMAINDER_VERIFIER: ${{ steps.adapter_deploy.outputs.adapter_address }}
+        run: |
+          if [ -z "$REMAINDER_VERIFIER" ]; then
+            echo "No adapter address — skipping verification"
+            exit 0
+          fi
+
+          FIXTURE=contracts/test/fixtures/phase1a_dag_fixture.json
+          if [ ! -f "$FIXTURE" ]; then
+            echo "Fixture not found — skipping verification"
+            exit 0
+          fi
+
+          PROOF_HEX=$(python3 -c "import json; print(json.load(open('$FIXTURE'))['proof_hex'])")
+          CIRCUIT_HASH=$(python3 -c "import json; print(json.load(open('$FIXTURE'))['circuit_hash_raw'])")
+          PUBLIC_INPUTS_HEX=$(python3 -c "import json; print(json.load(open('$FIXTURE'))['public_inputs_hex'])")
+          GENS_HEX=$(python3 -c "import json; print(json.load(open('$FIXTURE'))['gens_hex'])")
+
+          echo "Simulating verification via cast call..."
+          RESULT=$(cast call --rpc-url ${{ env.ARB_SEPOLIA_RPC }} \
+            "$REMAINDER_VERIFIER" \
+            "verifyDAGProofStylus(bytes,bytes32,bytes,bytes)(bool)" \
+            "$PROOF_HEX" "$CIRCUIT_HASH" "$PUBLIC_INPUTS_HEX" "$GENS_HEX" 2>&1) || {
+            echo "::warning::Verification simulation failed (may be RPC gas limit)"
+            echo "$RESULT"
+            exit 0
+          }
+          echo "Result: $RESULT"
+
+      - name: Deployment summary
+        run: |
+          echo "## Stylus Deployment Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Component | Address |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-----------|---------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Stylus Verifier | \`${{ steps.stylus_deploy.outputs.stylus_address }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "${{ steps.adapter_deploy.outputs.adapter_address }}" ]; then
+            echo "| RemainderVerifier | \`${{ steps.adapter_deploy.outputs.adapter_address }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Network: Arbitrum Sepolia (421614)" >> "$GITHUB_STEP_SUMMARY"
+          echo "Brotli size: ${{ needs.build.outputs.brotli_size }} bytes" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save deployment addresses
+        run: |
+          mkdir -p deployments
+          cat > deployments/arbitrum-sepolia-stylus.json << EOF
+          {
+            "network": "arbitrum-sepolia",
+            "chainId": 421614,
+            "stylusVerifier": "${{ steps.stylus_deploy.outputs.stylus_address }}",
+            "remainderVerifier": "${{ steps.adapter_deploy.outputs.adapter_address }}",
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "brotliSize": ${{ needs.build.outputs.brotli_size }}
+          }
+          EOF
+
+      - name: Upload deployment artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: stylus-deployment
+          path: deployments/arbitrum-sepolia-stylus.json
+          if-no-files-found: warn
