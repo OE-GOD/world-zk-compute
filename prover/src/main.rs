@@ -1094,3 +1094,163 @@ fn mask_url(url: &str) -> String {
         url.to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========== format_wei_as_eth ==========
+
+    #[test]
+    fn test_format_wei_as_eth_zero() {
+        assert_eq!(format_wei_as_eth(U256::ZERO), "0.000000");
+    }
+
+    #[test]
+    fn test_format_wei_as_eth_one_eth() {
+        let one_eth = U256::from(1_000_000_000_000_000_000u64);
+        assert_eq!(format_wei_as_eth(one_eth), "1.000000");
+    }
+
+    #[test]
+    fn test_format_wei_as_eth_fractional() {
+        // 0.5 ETH = 500_000_000_000_000_000 wei
+        let half_eth = U256::from(500_000_000_000_000_000u64);
+        assert_eq!(format_wei_as_eth(half_eth), "0.500000");
+    }
+
+    #[test]
+    fn test_format_wei_as_eth_small_tip() {
+        // 0.0001 ETH = 100_000_000_000_000 wei
+        let small_tip = U256::from(100_000_000_000_000u64);
+        assert_eq!(format_wei_as_eth(small_tip), "0.000100");
+    }
+
+    #[test]
+    fn test_format_wei_as_eth_large_value() {
+        // 100 ETH
+        let hundred_eth = U256::from(100u64) * U256::from(1_000_000_000_000_000_000u64);
+        assert_eq!(format_wei_as_eth(hundred_eth), "100.000000");
+    }
+
+    #[test]
+    fn test_format_wei_as_eth_one_wei() {
+        // 1 wei should show as 0.000000 (below 6 decimal precision)
+        assert_eq!(format_wei_as_eth(U256::from(1u64)), "0.000000");
+    }
+
+    #[test]
+    fn test_format_wei_as_eth_mixed() {
+        // 1.123456 ETH = 1_123_456_000_000_000_000 wei
+        let val = U256::from(1_123_456_000_000_000_000u64);
+        assert_eq!(format_wei_as_eth(val), "1.123456");
+    }
+
+    // ========== format_timestamp ==========
+
+    #[test]
+    fn test_format_timestamp_zero() {
+        assert_eq!(format_timestamp(0), "N/A");
+    }
+
+    #[test]
+    fn test_format_timestamp_unix_epoch() {
+        // 1 second past epoch
+        let result = format_timestamp(1);
+        assert_eq!(result, "1970-01-01 00:00:01 UTC");
+    }
+
+    #[test]
+    fn test_format_timestamp_known_date() {
+        // 2024-01-01 00:00:00 UTC = 1704067200
+        let result = format_timestamp(1704067200);
+        assert_eq!(result, "2024-01-01 00:00:00 UTC");
+    }
+
+    #[test]
+    fn test_format_timestamp_contains_utc() {
+        let result = format_timestamp(1_000_000);
+        assert!(result.contains("UTC"));
+    }
+
+    // ========== mask_url ==========
+
+    #[test]
+    fn test_mask_url_with_api_key() {
+        let url = "https://worldchain-mainnet.g.alchemy.com/v2/abc123secret";
+        let masked = mask_url(url);
+        assert_eq!(
+            masked,
+            "https://worldchain-mainnet.g.alchemy.com/v2/[MASKED]"
+        );
+        assert!(!masked.contains("abc123secret"));
+    }
+
+    #[test]
+    fn test_mask_url_without_v2() {
+        let url = "https://rpc.example.com/rpc";
+        let masked = mask_url(url);
+        assert_eq!(masked, url);
+    }
+
+    #[test]
+    fn test_mask_url_empty() {
+        assert_eq!(mask_url(""), "");
+    }
+
+    #[test]
+    fn test_mask_url_v2_at_end() {
+        let url = "https://example.com/v2/";
+        let masked = mask_url(url);
+        assert_eq!(masked, "https://example.com/v2/[MASKED]");
+    }
+
+    #[test]
+    fn test_mask_url_multiple_v2_masks_first() {
+        let url = "https://example.com/v2/key/v2/extra";
+        let masked = mask_url(url);
+        // Should mask from the first /v2/ onward
+        assert_eq!(masked, "https://example.com/v2/[MASKED]");
+    }
+
+    // ========== num_cpus ==========
+
+    #[test]
+    fn test_num_cpus_returns_positive() {
+        assert!(num_cpus() >= 1);
+    }
+
+    // ========== validate_inputs (integration with Validator) ==========
+
+    #[test]
+    fn test_validate_inputs_valid_address() {
+        let result = validate_inputs(
+            Some("0x1234567890abcdef1234567890abcdef12345678".to_string()),
+            None,
+            None,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_inputs_invalid_address() {
+        // Should not error (prints error message but returns Ok)
+        let result = validate_inputs(Some("not-an-address".to_string()), None, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_inputs_valid_image_id() {
+        let valid_id =
+            "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef".to_string();
+        let result = validate_inputs(None, Some(valid_id), None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_inputs_none_all() {
+        // No inputs provided -- just prints usage
+        let result = validate_inputs(None, None, None);
+        assert!(result.is_ok());
+    }
+}

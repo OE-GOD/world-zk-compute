@@ -87,3 +87,134 @@ impl Default for ProverConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper to create a B256 from a byte value (fills first byte, rest zeros).
+    fn b256_from_byte(b: u8) -> B256 {
+        let mut bytes = [0u8; 32];
+        bytes[0] = b;
+        B256::from(bytes)
+    }
+
+    // ========== is_image_allowed ==========
+
+    #[test]
+    fn test_is_image_allowed_empty_allowlist_accepts_all() {
+        let config = ProverConfig::default();
+        assert!(config.allowed_image_ids.is_empty());
+
+        // Any image ID should be accepted
+        assert!(config.is_image_allowed(&b256_from_byte(0xAA)));
+        assert!(config.is_image_allowed(&b256_from_byte(0xBB)));
+        assert!(config.is_image_allowed(&B256::ZERO));
+    }
+
+    #[test]
+    fn test_is_image_allowed_specific_allowlist_accepts_listed() {
+        let allowed = b256_from_byte(0x42);
+        let config = ProverConfig {
+            allowed_image_ids: vec![allowed],
+            ..Default::default()
+        };
+
+        assert!(config.is_image_allowed(&allowed));
+    }
+
+    #[test]
+    fn test_is_image_allowed_specific_allowlist_rejects_unlisted() {
+        let allowed = b256_from_byte(0x42);
+        let not_allowed = b256_from_byte(0x99);
+        let config = ProverConfig {
+            allowed_image_ids: vec![allowed],
+            ..Default::default()
+        };
+
+        assert!(!config.is_image_allowed(&not_allowed));
+    }
+
+    #[test]
+    fn test_is_image_allowed_multiple_ids() {
+        let id1 = b256_from_byte(0x01);
+        let id2 = b256_from_byte(0x02);
+        let id3 = b256_from_byte(0x03);
+        let config = ProverConfig {
+            allowed_image_ids: vec![id1, id2],
+            ..Default::default()
+        };
+
+        assert!(config.is_image_allowed(&id1));
+        assert!(config.is_image_allowed(&id2));
+        assert!(!config.is_image_allowed(&id3));
+    }
+
+    // ========== is_tip_acceptable ==========
+
+    #[test]
+    fn test_is_tip_acceptable_at_minimum() {
+        let config = ProverConfig::default();
+        // Default min_tip_wei is 100_000_000_000_000 (0.0001 ETH)
+        assert!(config.is_tip_acceptable(U256::from(100_000_000_000_000u64)));
+    }
+
+    #[test]
+    fn test_is_tip_acceptable_above_minimum() {
+        let config = ProverConfig::default();
+        assert!(config.is_tip_acceptable(U256::from(200_000_000_000_000u64)));
+    }
+
+    #[test]
+    fn test_is_tip_acceptable_below_minimum() {
+        let config = ProverConfig::default();
+        assert!(!config.is_tip_acceptable(U256::from(99_999_999_999_999u64)));
+    }
+
+    #[test]
+    fn test_is_tip_acceptable_zero() {
+        let config = ProverConfig::default();
+        assert!(!config.is_tip_acceptable(U256::ZERO));
+    }
+
+    #[test]
+    fn test_is_tip_acceptable_custom_minimum() {
+        let config = ProverConfig {
+            min_tip_wei: U256::from(1_000_000_000_000_000_000u64), // 1 ETH
+            ..Default::default()
+        };
+
+        assert!(!config.is_tip_acceptable(U256::from(999_999_999_999_999_999u64)));
+        assert!(config.is_tip_acceptable(U256::from(1_000_000_000_000_000_000u64)));
+        assert!(config.is_tip_acceptable(U256::from(2_000_000_000_000_000_000u64)));
+    }
+
+    #[test]
+    fn test_is_tip_acceptable_zero_minimum_accepts_all() {
+        let config = ProverConfig {
+            min_tip_wei: U256::ZERO,
+            ..Default::default()
+        };
+
+        assert!(config.is_tip_acceptable(U256::ZERO));
+        assert!(config.is_tip_acceptable(U256::from(1u64)));
+    }
+
+    // ========== Default values ==========
+
+    #[test]
+    fn test_default_config_values() {
+        let config = ProverConfig::default();
+
+        assert_eq!(config.engine_address, Address::ZERO);
+        assert!(config.registry_address.is_none());
+        assert_eq!(config.min_tip_wei, U256::from(100_000_000_000_000u64));
+        assert!(config.allowed_image_ids.is_empty());
+        assert_eq!(config.poll_interval_secs, 5);
+        assert_eq!(config.min_profit_margin, 0.2);
+        assert!(!config.skip_profitability_check);
+        assert!(!config.use_snark);
+        assert_eq!(config.max_gpu_concurrent, 0);
+        assert_eq!(config.max_cpu_concurrent, 0);
+    }
+}

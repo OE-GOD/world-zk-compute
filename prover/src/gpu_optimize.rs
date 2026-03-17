@@ -212,3 +212,155 @@ fn extract_seal_local(receipt: &Receipt) -> Result<Vec<u8>> {
     let seal = bincode::serialize(&receipt.inner)?;
     Ok(seal)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========== GpuBackend::is_gpu ==========
+
+    #[test]
+    fn test_cpu_is_not_gpu() {
+        assert!(!GpuBackend::Cpu.is_gpu());
+    }
+
+    #[test]
+    fn test_cuda_is_gpu() {
+        assert!(GpuBackend::Cuda.is_gpu());
+    }
+
+    #[test]
+    fn test_metal_is_gpu() {
+        assert!(GpuBackend::Metal.is_gpu());
+    }
+
+    // ========== GpuBackend::name ==========
+
+    #[test]
+    fn test_cpu_name() {
+        assert_eq!(GpuBackend::Cpu.name(), "CPU");
+    }
+
+    #[test]
+    fn test_cuda_name() {
+        assert_eq!(GpuBackend::Cuda.name(), "CUDA");
+    }
+
+    #[test]
+    fn test_metal_name() {
+        assert_eq!(GpuBackend::Metal.name(), "Metal");
+    }
+
+    // ========== Display ==========
+
+    #[test]
+    fn test_display_cpu() {
+        assert_eq!(format!("{}", GpuBackend::Cpu), "CPU");
+    }
+
+    #[test]
+    fn test_display_cuda() {
+        assert_eq!(format!("{}", GpuBackend::Cuda), "CUDA");
+    }
+
+    #[test]
+    fn test_display_metal() {
+        assert_eq!(format!("{}", GpuBackend::Metal), "Metal");
+    }
+
+    // ========== PartialEq ==========
+
+    #[test]
+    fn test_equality() {
+        assert_eq!(GpuBackend::Cpu, GpuBackend::Cpu);
+        assert_eq!(GpuBackend::Cuda, GpuBackend::Cuda);
+        assert_eq!(GpuBackend::Metal, GpuBackend::Metal);
+    }
+
+    #[test]
+    fn test_inequality() {
+        assert_ne!(GpuBackend::Cpu, GpuBackend::Cuda);
+        assert_ne!(GpuBackend::Cpu, GpuBackend::Metal);
+        assert_ne!(GpuBackend::Cuda, GpuBackend::Metal);
+    }
+
+    // ========== Clone / Copy ==========
+
+    #[test]
+    fn test_clone_and_copy() {
+        let backend = GpuBackend::Cuda;
+        let cloned = backend;
+        let copied = backend;
+        assert_eq!(backend, cloned);
+        assert_eq!(backend, copied);
+    }
+
+    // ========== Debug ==========
+
+    #[test]
+    fn test_debug_output() {
+        let debug_str = format!("{:?}", GpuBackend::Cpu);
+        assert_eq!(debug_str, "Cpu");
+
+        let debug_str = format!("{:?}", GpuBackend::Cuda);
+        assert_eq!(debug_str, "Cuda");
+
+        let debug_str = format!("{:?}", GpuBackend::Metal);
+        assert_eq!(debug_str, "Metal");
+    }
+
+    // ========== detect() with env var override ==========
+
+    #[test]
+    fn test_detect_cpu_override() {
+        // Set the env var to "cpu" to force CPU detection.
+        // Note: this test may interact with other parallel tests using the same env var,
+        // but the "cpu" path always returns Cpu regardless of compile features.
+        let _guard = EnvVarGuard::set("RISC0_GPU_BACKEND", "cpu");
+        let backend = GpuBackend::detect();
+        assert_eq!(backend, GpuBackend::Cpu);
+    }
+
+    #[test]
+    fn test_detect_unknown_falls_back_to_cpu() {
+        let _guard = EnvVarGuard::set("RISC0_GPU_BACKEND", "quantum");
+        let backend = GpuBackend::detect();
+        // Without cuda/metal features compiled in, unknown values fall back to CPU
+        assert_eq!(backend, GpuBackend::Cpu);
+    }
+
+    // ========== LocalGpuProver construction ==========
+
+    #[test]
+    fn test_local_gpu_prover_with_backend() {
+        let prover = LocalGpuProver::with_backend(GpuBackend::Cpu);
+        assert_eq!(prover.backend, GpuBackend::Cpu);
+        assert!(prover.gpu_device_id.is_none());
+    }
+
+    /// RAII guard that sets an env var and restores its previous value on drop.
+    struct EnvVarGuard {
+        key: String,
+        prev: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &str, value: &str) -> Self {
+            let prev = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self {
+                key: key.to_string(),
+                prev,
+            }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(v) => std::env::set_var(&self.key, v),
+                None => std::env::remove_var(&self.key),
+            }
+        }
+    }
+}
