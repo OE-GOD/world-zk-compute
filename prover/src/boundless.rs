@@ -207,7 +207,6 @@ impl BoundlessProver {
         );
         Ok((seal, journal))
     }
-
 }
 
 #[cfg(test)]

@@ -248,9 +248,7 @@ mod tests {
     #[tokio::test]
     async fn test_prove_returns_error() {
         let backend = RemainderBackend::new().unwrap();
-        let result = backend
-            .prove(&sample_circuit_desc(), &sample_input())
-            .await;
+        let result = backend.prove(&sample_circuit_desc(), &sample_input()).await;
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         // Should mention either the feature gate or the missing prover

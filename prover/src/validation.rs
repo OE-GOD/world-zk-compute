@@ -760,9 +760,7 @@ mod tests {
         assert!(is_private_ip(&"::1".parse().unwrap()));
 
         assert!(!is_private_ip(&"8.8.8.8".parse().unwrap()));
-        assert!(!is_private_ip(
-            &"2001:4860:4860::8888".parse().unwrap()
-        ));
+        assert!(!is_private_ip(&"2001:4860:4860::8888".parse().unwrap()));
     }
 
     #[test]
@@ -778,10 +776,16 @@ mod tests {
 
     #[test]
     fn test_extract_host() {
-        assert_eq!(extract_host("https://example.com/path"), Some("example.com"));
+        assert_eq!(
+            extract_host("https://example.com/path"),
+            Some("example.com")
+        );
         assert_eq!(extract_host("https://10.0.0.1:8080/path"), Some("10.0.0.1"));
         assert_eq!(extract_host("https://[::1]:443/path"), Some("::1"));
-        assert_eq!(extract_host("https://user:pass@example.com/path"), Some("example.com"));
+        assert_eq!(
+            extract_host("https://user:pass@example.com/path"),
+            Some("example.com")
+        );
         assert_eq!(extract_host("ipfs://QmHash/path"), Some("QmHash"));
     }
 

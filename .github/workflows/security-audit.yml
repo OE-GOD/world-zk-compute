@@ -96,3 +96,42 @@ jobs:
 
       - name: Run npm audit
         run: cd sdk/typescript && npm audit --audit-level=high
+
+  rust-outdated:
+    name: Rust Dependency Freshness
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Install cargo-outdated
+        run: cargo install cargo-outdated --locked
+
+      - name: Check workspace dependencies
+        run: |
+          echo "## Workspace Dependencies" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cargo outdated --workspace --root-deps-only 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check prover dependencies
+        run: |
+          echo "## Prover Dependencies" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cargo outdated --manifest-path prover/Cargo.toml --root-deps-only 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check xgboost-remainder dependencies
+        run: |
+          echo "## XGBoost Remainder Dependencies" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cargo outdated --manifest-path examples/xgboost-remainder/Cargo.toml --root-deps-only 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"

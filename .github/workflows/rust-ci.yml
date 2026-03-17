@@ -12,6 +12,7 @@ on:
       - 'services/indexer/**'
       - 'crates/**'
       - 'tee/enclave/**'
+      - 'prover/**'
       - 'tests/chaos/**'
       - 'examples/xgboost-remainder/**'
       - 'Cargo.toml'
@@ -24,6 +25,7 @@ on:
       - 'services/indexer/**'
       - 'crates/**'
       - 'tee/enclave/**'
+      - 'prover/**'
       - 'tests/chaos/**'
       - 'examples/xgboost-remainder/**'
       - 'Cargo.toml'
@@ -291,6 +293,41 @@ jobs:
 
       - name: Run tests
         run: cargo test --manifest-path tee/enclave/Cargo.toml
+
+  prover:
+    name: Prover
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy, rustfmt
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            prover/target
+          key: ${{ runner.os }}-cargo-prover-${{ hashFiles('prover/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-prover-
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path prover/Cargo.toml --check
+
+      - name: Run Clippy
+        run: cargo clippy --manifest-path prover/Cargo.toml -- -D warnings
+
+      - name: Run tests
+        run: cargo test --manifest-path prover/Cargo.toml
 
   xgboost-remainder:
     name: XGBoost Remainder

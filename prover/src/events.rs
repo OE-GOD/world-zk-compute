@@ -186,9 +186,7 @@ impl EventSubscriber {
     /// Multiplies the current delay by 1.5 and caps at `max_delay`.
     /// Extracted as a standalone pure function for testability.
     fn next_reconnect_delay(current: Duration, max_delay: Duration) -> Duration {
-        Duration::from_secs_f64(
-            (current.as_secs_f64() * 1.5).min(max_delay.as_secs_f64()),
-        )
+        Duration::from_secs_f64((current.as_secs_f64() * 1.5).min(max_delay.as_secs_f64()))
     }
 
     /// Check whether a job event passes the image filter.
@@ -321,7 +319,10 @@ mod tests {
     #[test]
     fn test_image_accepted_empty_list_accepts_all() {
         let allowed: Vec<B256> = vec![];
-        assert!(EventSubscriber::is_image_accepted(&allowed, &b256_from_byte(0xAA)));
+        assert!(EventSubscriber::is_image_accepted(
+            &allowed,
+            &b256_from_byte(0xAA)
+        ));
         assert!(EventSubscriber::is_image_accepted(&allowed, &B256::ZERO));
     }
 
@@ -374,7 +375,10 @@ mod tests {
     #[test]
     fn test_tip_sufficient_zero_minimum() {
         assert!(EventSubscriber::is_tip_sufficient(U256::ZERO, U256::ZERO));
-        assert!(EventSubscriber::is_tip_sufficient(U256::from(1u64), U256::ZERO));
+        assert!(EventSubscriber::is_tip_sufficient(
+            U256::from(1u64),
+            U256::ZERO
+        ));
     }
 
     // ========== NewJobEvent struct construction ==========

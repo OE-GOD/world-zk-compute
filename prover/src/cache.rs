@@ -83,7 +83,10 @@ impl ProgramCache {
     fn try_add_to_memory(&self, image_id: &B256, elf: &[u8]) {
         let elf_size = elf.len();
 
-        let mut current = self.current_memory_bytes.write().unwrap_or_else(|e| e.into_inner());
+        let mut current = self
+            .current_memory_bytes
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
         if *current + elf_size <= self.max_memory_bytes {
             let mut cache = self.memory_cache.write().unwrap_or_else(|e| e.into_inner());
             if !cache.contains_key(image_id) {
@@ -99,7 +102,6 @@ impl ProgramCache {
         self.cache_dir
             .join(format!("{}.elf", hex::encode(image_id)))
     }
-
 }
 
 #[cfg(test)]

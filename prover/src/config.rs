@@ -64,7 +64,6 @@ impl ProverConfig {
     pub fn is_tip_acceptable(&self, tip: U256) -> bool {
         tip >= self.min_tip_wei
     }
-
 }
 
 impl Default for ProverConfig {

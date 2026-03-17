@@ -58,8 +58,9 @@ pub fn build_auth_message(request_id: u64, prover_address: &Address, timestamp: 
 ///
 /// Rejects non-HTTP(S) schemes and URLs pointing to private/loopback IPs.
 pub fn validate_url(url: &str) -> anyhow::Result<()> {
-    let parsed: reqwest::Url =
-        url.parse().map_err(|e| anyhow::anyhow!("invalid URL: {e}"))?;
+    let parsed: reqwest::Url = url
+        .parse()
+        .map_err(|e| anyhow::anyhow!("invalid URL: {e}"))?;
 
     match parsed.scheme() {
         "https" | "http" => {}

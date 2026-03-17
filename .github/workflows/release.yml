@@ -49,6 +49,9 @@ jobs:
           cargo test --manifest-path tee/enclave/Cargo.toml
           cargo test --manifest-path services/admin-cli/Cargo.toml
           cargo test --manifest-path services/indexer/Cargo.toml
+          cargo test --manifest-path prover/Cargo.toml
+          cargo test -p watcher
+          cargo test -p world-zk-events
 
       - name: Run contract tests
         run: cd contracts && forge test -vv
@@ -66,9 +69,11 @@ jobs:
           - image: indexer
             dockerfile: services/indexer/Dockerfile
           - image: enclave
-            dockerfile: tee/enclave/Dockerfile
+            dockerfile: tee/Dockerfile
           - image: admin-cli
             dockerfile: services/admin-cli/Dockerfile
+          - image: prover
+            dockerfile: prover/Dockerfile
     steps:
       - uses: actions/checkout@v4
 
@@ -144,6 +149,7 @@ jobs:
             docker pull ghcr.io/${{ github.repository }}/indexer:${{ steps.version.outputs.tag }}
             docker pull ghcr.io/${{ github.repository }}/enclave:${{ steps.version.outputs.tag }}
             docker pull ghcr.io/${{ github.repository }}/admin-cli:${{ steps.version.outputs.tag }}
+            docker pull ghcr.io/${{ github.repository }}/prover:${{ steps.version.outputs.tag }}
             ```
 
             ## Changes
