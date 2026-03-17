@@ -31,6 +31,28 @@ pub const SEPOLIA: NetworkConfig = NetworkConfig {
     tee_only: true,
 };
 
+/// World Chain Sepolia testnet (chainId 4801).
+pub const WORLD_CHAIN_SEPOLIA: NetworkConfig = NetworkConfig {
+    name: "World Chain Sepolia",
+    chain_id: 4801,
+    verifier_router_address: "0x0000000000000000000000000000000000000000",
+    tee_verifier_address: "0x0000000000000000000000000000000000000000",
+    execution_engine_address: "0x0000000000000000000000000000000000000000",
+    explorer_url: "https://sepolia.worldscan.org",
+    tee_only: false,
+};
+
+/// World Chain mainnet (chainId 480).
+pub const WORLD_CHAIN_MAINNET: NetworkConfig = NetworkConfig {
+    name: "World Chain",
+    chain_id: 480,
+    verifier_router_address: "0x0000000000000000000000000000000000000000",
+    tee_verifier_address: "0x0000000000000000000000000000000000000000",
+    execution_engine_address: "0x0000000000000000000000000000000000000000",
+    explorer_url: "https://worldscan.org",
+    tee_only: false,
+};
+
 /// Local Anvil development network.
 pub const ANVIL: NetworkConfig = NetworkConfig {
     name: "Anvil (Local)",
@@ -41,3 +63,39 @@ pub const ANVIL: NetworkConfig = NetworkConfig {
     explorer_url: "",
     tee_only: false,
 };
+
+/// All known networks.
+pub const ALL_NETWORKS: &[&NetworkConfig] = &[
+    &SEPOLIA,
+    &WORLD_CHAIN_SEPOLIA,
+    &WORLD_CHAIN_MAINNET,
+    &ANVIL,
+];
+
+/// Look up a network configuration by chain ID.
+pub fn from_chain_id(chain_id: u64) -> Option<&'static NetworkConfig> {
+    ALL_NETWORKS.iter().copied().find(|n| n.chain_id == chain_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_from_chain_id_known() {
+        assert_eq!(from_chain_id(11155111).unwrap().name, "Ethereum Sepolia");
+        assert_eq!(from_chain_id(4801).unwrap().name, "World Chain Sepolia");
+        assert_eq!(from_chain_id(480).unwrap().name, "World Chain");
+        assert_eq!(from_chain_id(31337).unwrap().name, "Anvil (Local)");
+    }
+
+    #[test]
+    fn test_from_chain_id_unknown() {
+        assert!(from_chain_id(999999).is_none());
+    }
+
+    #[test]
+    fn test_all_networks_count() {
+        assert_eq!(ALL_NETWORKS.len(), 4);
+    }
+}
