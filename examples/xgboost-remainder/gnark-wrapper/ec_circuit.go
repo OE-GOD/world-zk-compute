@@ -188,7 +188,8 @@ func (c *ECBatchCircuit) Define(api frontend.API) error {
 		}
 
 		// RHS = rhsP1 + rhsP2
-		rhsAdd := curve.Add(rhsP1, rhsP2)
+		// Use AddUnified to handle the edge case where rhsP1 == rhsP2
+		rhsAdd := curve.AddUnified(rhsP1, rhsP2)
 
 		// Assert LHS == RHS
 		curve.AssertIsEqual(lhsAdd, rhsAdd)
@@ -197,8 +198,8 @@ func (c *ECBatchCircuit) Define(api frontend.API) error {
 	return nil
 }
 
-// MakeTestECAssignment creates a valid test assignment with N ec_mul (1*G=G)
-// and M ec_add (G+G=2G) operations using the BN254 generator point.
+// MakeTestECAssignment creates a valid test assignment with N ec_mul and M ec_add
+// operations using distinct BN254 G1 points to avoid degenerate cases.
 func MakeTestECAssignment(numMul, numAdd int) *ECBatchCircuit {
 	config := ECCircuitConfig{NumMulOps: numMul, NumAddOps: numAdd}
 	assignment := AllocateECCircuit(config)
@@ -211,21 +212,32 @@ func MakeTestECAssignment(numMul, numAdd int) *ECBatchCircuit {
 	// BN254 generator point G1
 	_, _, g1, _ := bn254.Generators()
 
-	// ec_mul: 1 * G = G (trivial scalar multiplication)
-	one := big.NewInt(1)
+	// ec_mul: scalar_i * base_i = result_i
+	// Use different base points and scalars to avoid degenerate cases in jointScalarMul
 	for i := 0; i < numMul; i++ {
-		assignment.MulBasePoints[i] = newG1PointAssignment(g1)
-		assignment.MulScalars[i] = one
-		assignment.MulResults[i] = newG1PointAssignment(g1) // 1*G = G
+		baseMul := big.NewInt(int64(2*i + 3)) // distinct base multipliers: 3, 5, 7, ...
+		s := big.NewInt(int64(i + 2))          // scalars: 2, 3, 4, ...
+		var base, result bn254.G1Affine
+		base.ScalarMultiplication(&g1, baseMul)
+		var combinedScalar big.Int
+		combinedScalar.Mul(baseMul, s)
+		result.ScalarMultiplication(&g1, &combinedScalar)
+		assignment.MulBasePoints[i] = newG1PointAssignment(base)
+		assignment.MulScalars[i] = s
+		assignment.MulResults[i] = newG1PointAssignment(result)
 	}
 
-	// ec_add: G + G = 2G
-	var twoG bn254.G1Affine
-	twoG.Add(&g1, &g1)
+	// ec_add: p1_j + p2_j = result_j, using distinct points for each
 	for j := 0; j < numAdd; j++ {
-		assignment.AddP1s[j] = newG1PointAssignment(g1)
-		assignment.AddP2s[j] = newG1PointAssignment(g1)
-		assignment.AddResults[j] = newG1PointAssignment(twoG)
+		s1 := big.NewInt(int64(2*j + 3))
+		s2 := big.NewInt(int64(2*j + 5))
+		var p1, p2, result bn254.G1Affine
+		p1.ScalarMultiplication(&g1, s1)
+		p2.ScalarMultiplication(&g1, s2)
+		result.Add(&p1, &p2)
+		assignment.AddP1s[j] = newG1PointAssignment(p1)
+		assignment.AddP2s[j] = newG1PointAssignment(p2)
+		assignment.AddResults[j] = newG1PointAssignment(result)
 	}
 
 	return assignment
