@@ -44,13 +44,11 @@ contract StylusSepoliaDeploy is Script {
         verifier.setDAGStylusVerifier(fix.circuitHash, stylusVerifierAddr);
         console.log("Stylus verifier set");
 
-        // Optionally configure TEEMLVerifier to use Stylus routing
-        address teeAddr = vm.envOr("TEE_VERIFIER", address(0));
-        if (teeAddr != address(0)) {
-            TEEMLVerifier teeVerifier = TEEMLVerifier(payable(teeAddr));
-            teeVerifier.setUseStylusVerifier(true);
-            console.log("TEEMLVerifier Stylus routing enabled:", teeAddr);
-        }
+        // Deploy TEEMLVerifier pointing to RemainderVerifier with Stylus enabled
+        TEEMLVerifier teeVerifier = new TEEMLVerifier(vm.addr(deployerKey), address(verifier));
+        teeVerifier.setUseStylusVerifier(true);
+        console.log("TEEMLVerifier deployed at:", address(teeVerifier));
+        console.log("  Stylus routing: enabled");
 
         vm.stopBroadcast();
 
@@ -62,6 +60,7 @@ contract StylusSepoliaDeploy is Script {
         console.log("=== DEPLOYMENT COMPLETE ===");
         console.log("RemainderVerifier:", address(verifier));
         console.log("StylusVerifier:", stylusVerifierAddr);
+        console.log("TEEMLVerifier:", address(teeVerifier));
     }
 
     function _loadFixture() private view returns (Fixture memory fix) {

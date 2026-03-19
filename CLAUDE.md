@@ -17,11 +17,14 @@ When multiple Claude Code sessions are running on this project, they coordinate 
 
 | Instead of... | Use... |
 |---|---|
+| `forge build` | `.claude/scripts/forge-build.sh` |
 | `forge test` | `.claude/scripts/forge-test.sh` |
 | `forge fmt` | `.claude/scripts/forge-fmt.sh` |
 | `cargo test` | `.claude/scripts/cargo-test.sh` |
+| Edit tasks.json | `.claude/scripts/task-edit.sh <command>` |
+| Read tasks.json | `.claude/scripts/task-summary.sh [agent-id]` |
 
-These wrappers handle locking (forge) and per-agent build isolation (cargo) automatically.
+These wrappers handle locking (forge), per-agent build isolation (cargo), and atomic JSON writes (task-edit) automatically.
 
 ### Build Isolation (MANDATORY)
 
@@ -41,8 +44,15 @@ Agents MUST ONLY modify files listed in their task's `files` array. To edit a fi
 
 After EVERY file edit, verify compilation before proceeding:
 - **Rust files**: Run `cargo check --workspace` (or `cargo check -p <crate>`)
-- **Solidity files**: Run `cd contracts && forge build`
+- **Solidity files**: Run `.claude/scripts/forge-build.sh` (NOT raw `cd contracts && forge build`)
 - If compilation fails, **fix it immediately** before touching any other file
+
+### Re-read After Edits (MANDATORY)
+
+Linters and formatters (`forge fmt`, `cargo fmt`, `rustfmt`) rewrite files. After running any formatter:
+1. **Re-read the file** before making further edits — your cached version is stale
+2. **Never assume** the file still matches what you wrote — the formatter may have changed whitespace, line breaks, or import ordering
+3. This prevents "old_string not found" errors that waste turns
 
 ### Domain Enforcement
 
@@ -92,7 +102,45 @@ Check if you're allowed to edit a file: `.claude/scripts/check-domain.sh <role> 
 
 ### Task Archival
 
-When `tasks.json` exceeds 100KB, run `.claude/scripts/archive-tasks.sh` to move completed phases to `.claude/agent-state/archive/`. The `agents.sh plan` command does this automatically.
+When `tasks.json` exceeds 100KB, run `.claude/scripts/archive-tasks.sh` to move completed phases to `.claude/agent-state/archive/`. The `agents.sh plan` command and `task-summary.sh` do this automatically.
+
+### Subagent Workflow
+
+Subagents cannot `source` shell scripts (no persistent shell state). Use these patterns instead:
+
+```bash
+# Instead of: source .claude/scripts/agent-init.sh builder-a
+# Use:
+eval $(.claude/scripts/agent-init.sh --env builder-a)
+
+# Or set vars inline:
+AGENT_ID=builder-a PROJECT_ROOT=$(pwd) CARGO_TARGET_DIR=$(pwd)/target/agent-builder-a .claude/scripts/cargo-test.sh -p my-crate
+```
+
+All wrapper scripts (`forge-build.sh`, `forge-test.sh`, `cargo-test.sh`, `task-edit.sh`) work without sourcing — they only need `PROJECT_ROOT` and `AGENT_ID` env vars.
+
+### Agent Signals
+
+Agents can notify each other about completed work:
+
+- **On task completion**: `task-edit.sh done-task` automatically writes a signal file
+- **On file release**: `task-edit.sh release-file` automatically writes a signal file
+- **Check signals**: `.claude/scripts/check-signals.sh` — lists all pending notifications
+- **Wait for file**: `.claude/scripts/check-signals.sh --wait <path> [timeout]`
+- **Wait for task**: `.claude/scripts/check-signals.sh --wait-task <id> [timeout]`
+
+Signal files live in `.claude/agent-state/signals/` and accumulate until cleared.
+
+### Commit Coordination
+
+Only ONE agent (the orchestrator) should run `git commit`. All other agents signal readiness:
+
+1. **Background agent finishes work**: `.claude/scripts/commit-ready.sh signal <agent> <task> "<msg>"`
+2. **Orchestrator checks**: `.claude/scripts/commit-ready.sh list`
+3. **Orchestrator commits**: `git add` + `git commit` (only the orchestrator does this)
+4. **Orchestrator clears**: `.claude/scripts/commit-ready.sh clear <task>`
+
+This prevents merge conflicts from concurrent commits.
 
 ## Project Structure
 

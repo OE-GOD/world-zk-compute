@@ -60,6 +60,7 @@ contract DeployToken {
 ///     REMAINDER_VERIFIER    — existing RemainderVerifier address (default: 0x0 = skip)
 ///     ENCLAVE_KEY           — TEE enclave key to register (optional)
 ///     ENCLAVE_IMAGE_HASH    — TEE enclave image hash (optional, requires ENCLAVE_KEY)
+///     STYLUS_VERIFIER       — set to any non-zero address to enable Stylus dispute resolution
 contract DeployFullStack is Script {
     function run() external {
         uint256 deployerKey = vm.envUint("PRIVATE_KEY");
