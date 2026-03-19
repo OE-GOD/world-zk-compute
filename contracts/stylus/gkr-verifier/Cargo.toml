@@ -24,6 +24,7 @@ hex = "0.4.3"
 default = ["stylus"]
 stylus = ["dep:stylus-sdk", "dep:alloy-primitives", "dep:alloy-sol-types", "dep:ruint"]
 export-abi = ["stylus", "stylus-sdk/export-abi"]
+hybrid = []
 
 [lib]
 crate-type = ["lib", "cdylib"]

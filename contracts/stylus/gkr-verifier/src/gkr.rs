@@ -334,6 +334,176 @@ fn verify_products(
     true
 }
 
+// ============================================================
+// Hybrid Verification (transcript replay, Fr-only, no EC)
+// ============================================================
+
+/// Collects Fr-domain outputs from hybrid compute layer verification.
+#[cfg(any(feature = "hybrid", not(target_arch = "wasm32")))]
+pub struct FrOutputCollector {
+    /// Per-layer RLC beta scalar: the weighted multi-linear extension evaluation.
+    pub rlc_betas: Vec<U256>,
+    /// Per-layer z_dot_j_star: inner product from committed sumcheck PODP.
+    pub z_dot_j_stars: Vec<U256>,
+}
+
+/// Hybrid compute layer verification: transcript replay + Fr outputs.
+///
+/// Performs the same absorb/squeeze as `verify_compute_layers` but skips EC operations.
+/// Returns (VerifyContext, FrOutputCollector).
+#[cfg(any(feature = "hybrid", not(target_arch = "wasm32")))]
+pub fn verify_compute_layers_hybrid(
+    proof: &GKRProof,
+    desc: &DAGCircuitDescription,
+    _gens: &PedersenGens,
+    sponge: &mut PoseidonSponge,
+) -> (VerifyContext, FrOutputCollector) {
+    let mut ctx = VerifyContext {
+        all_bindings: Vec::with_capacity(desc.num_compute_layers),
+        output_challenges: Vec::new(),
+        output_eval: G1Point::INFINITY,
+    };
+    let mut collector = FrOutputCollector {
+        rlc_betas: Vec::with_capacity(desc.num_compute_layers),
+        z_dot_j_stars: Vec::with_capacity(desc.num_compute_layers),
+    };
+
+    // Output layer: squeeze numVars challenges (same as full)
+    let num_vars = proof.layer_proofs[0].sumcheck_proof.messages.len();
+    ctx.output_challenges = Vec::with_capacity(num_vars);
+    for _ in 0..num_vars {
+        ctx.output_challenges.push(Fr::from_fq(&sponge.squeeze()).0);
+    }
+    ctx.output_eval = proof.output_claim_commitments[0];
+    sponge.absorb_u256(&ctx.output_eval.x);
+    sponge.absorb_u256(&ctx.output_eval.y);
+
+    // Process each compute layer (hybrid)
+    for i in 0..desc.num_compute_layers {
+        let (bindings, rlc_beta, z_dot_j_star) =
+            process_one_layer_hybrid(i, proof, desc, &ctx, sponge);
+        ctx.all_bindings.push(bindings);
+        collector.rlc_betas.push(rlc_beta);
+        collector.z_dot_j_stars.push(z_dot_j_star);
+    }
+
+    (ctx, collector)
+}
+
+/// Hybrid single compute layer: transcript replay + Fr outputs.
+#[cfg(any(feature = "hybrid", not(target_arch = "wasm32")))]
+fn process_one_layer_hybrid(
+    layer_idx: usize,
+    proof: &GKRProof,
+    desc: &DAGCircuitDescription,
+    ctx: &VerifyContext,
+    sponge: &mut PoseidonSponge,
+) -> (Vec<U256>, U256, U256) {
+    // Count claims for this layer (same as full)
+    let mut num_claims = count_claims_for(layer_idx, desc);
+    if layer_idx == 0 {
+        num_claims += 1;
+    }
+
+    // Squeeze RLC coefficients (same as full)
+    let mut rlc_coeffs = Vec::with_capacity(num_claims);
+    for _ in 0..num_claims {
+        rlc_coeffs.push(Fr::from_fq(&sponge.squeeze()).0);
+    }
+
+    // Absorb messages and derive bindings (same as full)
+    let lp = &proof.layer_proofs[layer_idx];
+    let bindings = absorb_messages_and_derive_bindings(&lp.sumcheck_proof.messages, sponge);
+
+    // Absorb post-sumcheck commitments (same as full)
+    absorb_commitments(&lp.commitments, sponge);
+
+    // Compute RLC beta only (Fr-domain, skip rlcEval EC point)
+    let rlc_beta = compute_rlc_beta_only(layer_idx, desc, ctx, &bindings, &rlc_coeffs);
+
+    // Skip oracle eval computation (pure EC)
+
+    // Hybrid committed sumcheck: transcript replay + z_dot_j_star
+    let degree = if desc.layer_types[layer_idx] == 1 {
+        3
+    } else {
+        2
+    };
+    let z_dot_j_star =
+        sumcheck::verify_hybrid(&lp.sumcheck_proof, degree, &bindings, sponge);
+
+    // Hybrid PoP: transcript replay only (skip EC equation checks)
+    verify_products_hybrid(lp, sponge);
+
+    (bindings, rlc_beta, z_dot_j_star)
+}
+
+/// Compute rlcBeta scalar only (no EC point computation).
+#[cfg(any(feature = "hybrid", not(target_arch = "wasm32")))]
+fn compute_rlc_beta_only(
+    layer_idx: usize,
+    desc: &DAGCircuitDescription,
+    ctx: &VerifyContext,
+    bindings: &[U256],
+    rlc_coeffs: &[U256],
+) -> U256 {
+    let mut rlc_beta = Fr::ZERO;
+    let mut coeff_idx: usize = 0;
+
+    // Output claim contribution (targets layer 0)
+    if layer_idx == 0 {
+        let beta = compute_beta(bindings, &ctx.output_challenges);
+        rlc_beta = Fr::new(beta).mul(&Fr::new(rlc_coeffs[0]));
+        coeff_idx = 1;
+    }
+
+    // Claims from earlier layers' atoms
+    for j in 0..layer_idx {
+        let atom_start = desc.atom_offsets[j];
+        let atom_end = desc.atom_offsets[j + 1];
+        for a in atom_start..atom_end {
+            if desc.atom_target_layers[a] != layer_idx {
+                continue;
+            }
+            let atom_point = resolve_point(a, &ctx.all_bindings[j], desc);
+            let beta = compute_beta(bindings, &atom_point);
+            rlc_beta = rlc_beta.add(&Fr::new(beta).mul(&Fr::new(rlc_coeffs[coeff_idx])));
+            coeff_idx += 1;
+        }
+    }
+
+    rlc_beta.0
+}
+
+/// Hybrid PoP verification: replay transcript absorb/squeeze, skip EC equation checks.
+#[cfg(any(feature = "hybrid", not(target_arch = "wasm32")))]
+fn verify_products_hybrid(
+    layer_proof: &CommittedLayerProof,
+    sponge: &mut PoseidonSponge,
+) {
+    for pop in &layer_proof.pops {
+        // Absorb alpha, beta, delta (same as full)
+        sponge.absorb_u256(&pop.alpha.x);
+        sponge.absorb_u256(&pop.alpha.y);
+        sponge.absorb_u256(&pop.beta.x);
+        sponge.absorb_u256(&pop.beta.y);
+        sponge.absorb_u256(&pop.delta.x);
+        sponge.absorb_u256(&pop.delta.y);
+
+        // Squeeze challenge (same as full)
+        let _c = Fr::from_fq(&sponge.squeeze()).0;
+
+        // Absorb z1..z5 (same as full)
+        sponge.absorb_u256(&pop.z1);
+        sponge.absorb_u256(&pop.z2);
+        sponge.absorb_u256(&pop.z3);
+        sponge.absorb_u256(&pop.z4);
+        sponge.absorb_u256(&pop.z5);
+
+        // Skip EC equation checks
+    }
+}
+
 /// Count atoms targeting a specific layer.
 pub fn count_claims_for(target_layer: usize, desc: &DAGCircuitDescription) -> usize {
     desc.atom_target_layers

@@ -8,6 +8,7 @@ import {GKRHybridVerifier} from "./GKRHybridVerifier.sol";
 import {GKRDAGVerifier} from "./GKRDAGVerifier.sol";
 import {GKRDAGHybridVerifier} from "./GKRDAGHybridVerifier.sol";
 import {DAGBatchVerifier} from "./DAGBatchVerifier.sol";
+import {HybridStylusGroth16Verifier} from "./HybridStylusGroth16Verifier.sol";
 import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
@@ -80,6 +81,15 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
     /// @notice Per-DAG-circuit Stylus verifier addresses
     mapping(bytes32 => address) public dagCircuitStylusVerifiers;
 
+    /// @notice Per-DAG-circuit EC Groth16 verifier addresses (for hybrid Stylus+Groth16 path)
+    mapping(bytes32 => address) public dagECGroth16Verifiers;
+
+    /// @notice Per-DAG-circuit EC Groth16 function selectors
+    mapping(bytes32 => bytes4) internal dagECGroth16Selectors;
+
+    /// @notice Per-DAG-circuit EC Groth16 expected input counts
+    mapping(bytes32 => uint256) public dagECGroth16InputCounts;
+
     // ========================================================================
     // EVENTS
     // ========================================================================
@@ -92,6 +102,7 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
     event CircuitGroth16VerifierUpdated(bytes32 indexed circuitHash, address indexed verifier, uint256 inputCount);
     event DAGCircuitGroth16VerifierUpdated(bytes32 indexed circuitHash, address indexed verifier, uint256 inputCount);
     event DAGStylusVerifierUpdated(bytes32 indexed circuitHash, address indexed stylusVerifier);
+    event DAGECGroth16VerifierUpdated(bytes32 indexed circuitHash, address indexed verifier, uint256 inputCount);
     event DAGCircuitDeactivated(bytes32 indexed circuitHash);
     event DAGCircuitReactivated(bytes32 indexed circuitHash);
     event DAGProofVerified(bytes32 indexed circuitHash, bool valid, string method);
@@ -152,6 +163,9 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
 
     // --- Stylus errors ---
     error StylusVerifierNotConfigured();
+
+    // --- Hybrid Stylus+Groth16 errors ---
+    error DAGECGroth16VerifierNotSet();
 
     // --- Batch verification errors ---
     error BatchSessionNotFound();
@@ -1476,6 +1490,101 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
         }
 
         return abi.decode(result, (bool));
+    }
+
+    // ========================================================================
+    // HYBRID STYLUS + GROTH16 DAG VERIFICATION
+    // ========================================================================
+
+    /// @notice Set a per-DAG-circuit EC Groth16 verifier for the hybrid Stylus+Groth16 path
+    function setDAGECGroth16Verifier(bytes32 circuitHash, address verifier, uint256 groth16InputCount)
+        external
+        onlyOwner
+    {
+        if (dagCircuits[circuitHash].circuitHash == bytes32(0)) revert DAGCircuitNotRegistered();
+        if (verifier == address(0)) revert ZeroAddress();
+        dagECGroth16Verifiers[circuitHash] = verifier;
+        dagECGroth16Selectors[circuitHash] = _computeGroth16Selector(groth16InputCount);
+        dagECGroth16InputCounts[circuitHash] = groth16InputCount;
+        emit DAGECGroth16VerifierUpdated(circuitHash, verifier, groth16InputCount);
+    }
+
+    /// @notice Verify a DAG proof via hybrid Stylus+Groth16 path
+    /// @param proof Proof blob (starts with "REM1" selector)
+    /// @param circuitHash SHA-256 of circuit description
+    /// @param publicInputs Public input values
+    /// @param gensData Pedersen generators
+    /// @param ecGroth16Proof The 8-element Groth16 proof (A, B, C points)
+    /// @return valid Whether the proof is valid
+    function verifyDAGProofStylusGroth16(
+        bytes calldata proof,
+        bytes32 circuitHash,
+        bytes calldata publicInputs,
+        bytes calldata gensData,
+        uint256[8] calldata ecGroth16Proof
+    ) external whenNotPaused nonReentrant returns (bool valid) {
+        {
+            DAGCircuitConfig storage config = dagCircuits[circuitHash];
+            if (config.circuitHash == bytes32(0)) revert CircuitNotRegistered();
+            if (!config.active) revert CircuitNotActive();
+            if (proof.length < 4) revert InvalidProofLength();
+            // forge-lint: disable-next-line(unsafe-typecast)
+            if (bytes4(proof[:4]) != bytes4("REM1")) revert InvalidProofSelector();
+            if (config.gensHash != bytes32(0) && gensData.length > 0) {
+                if (keccak256(gensData) != config.gensHash) revert InvalidGenerators();
+            }
+        }
+
+        valid = _execHybridStylusGroth16(circuitHash, proof, publicInputs, gensData, ecGroth16Proof);
+        _emitDAGProofVerified(circuitHash, "stylus-groth16");
+    }
+
+    /// @dev Execute hybrid Stylus+Groth16 verification.
+    ///      Calls library sub-functions directly in two steps to keep stack shallow.
+    function _execHybridStylusGroth16(
+        bytes32 circuitHash,
+        bytes calldata proof,
+        bytes calldata publicInputs,
+        bytes calldata gensData,
+        uint256[8] calldata ecGroth16Proof
+    ) private view returns (bool) {
+        // Step 1: Stylus call (transcript replay + Fr arithmetic)
+        (bool stylusOk, bytes32 digest, bytes memory frOutputs) =
+            _hybridStylusStep(circuitHash, proof, publicInputs, gensData);
+        if (!stylusOk) return false;
+
+        // Step 2: Groth16 call (EC checks)
+        _hybridGroth16Step(circuitHash, digest, frOutputs, ecGroth16Proof);
+        return true;
+    }
+
+    /// @dev Step 1 of hybrid: call Stylus verifier
+    function _hybridStylusStep(
+        bytes32 circuitHash,
+        bytes calldata proof,
+        bytes calldata publicInputs,
+        bytes calldata gensData
+    ) private view returns (bool, bytes32, bytes memory) {
+        address stylusAddr = dagCircuitStylusVerifiers[circuitHash];
+        if (stylusAddr == address(0)) revert StylusVerifierNotConfigured();
+        bytes memory descData = _encodeFlatCircuitDesc(dagCircuits[circuitHash].description);
+        return HybridStylusGroth16Verifier.callStylusHybrid(stylusAddr, proof, publicInputs, gensData, descData);
+    }
+
+    /// @dev Step 2 of hybrid: build Groth16 inputs and verify
+    function _hybridGroth16Step(
+        bytes32 circuitHash,
+        bytes32 digest,
+        bytes memory frOutputs,
+        uint256[8] calldata ecGroth16Proof
+    ) private view {
+        address ecAddr = dagECGroth16Verifiers[circuitHash];
+        if (ecAddr == address(0)) revert DAGECGroth16VerifierNotSet();
+        uint256 ecCount = dagECGroth16InputCounts[circuitHash];
+        uint256[] memory inputs =
+            HybridStylusGroth16Verifier.buildGroth16Inputs(digest, circuitHash, frOutputs, ecCount);
+        bytes4 sel = HybridStylusGroth16Verifier.computeGroth16Selector(ecCount);
+        HybridStylusGroth16Verifier.callGroth16Verifier(ecAddr, sel, ecGroth16Proof, inputs);
     }
 
     /// @dev Encode DAGCircuitDescription into flat binary format matching gen_calldata.rs

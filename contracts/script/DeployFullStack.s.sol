@@ -61,6 +61,8 @@ contract DeployToken {
 ///     ENCLAVE_KEY           — TEE enclave key to register (optional)
 ///     ENCLAVE_IMAGE_HASH    — TEE enclave image hash (optional, requires ENCLAVE_KEY)
 ///     STYLUS_VERIFIER       — set to any non-zero address to enable Stylus dispute resolution
+///     EC_GROTH16_VERIFIER   — EC Groth16 verifier address for hybrid Stylus+Groth16 (optional)
+///     EC_GROTH16_INPUT_COUNT — number of Groth16 public inputs (default: 3, requires EC_GROTH16_VERIFIER)
 contract DeployFullStack is Script {
     function run() external {
         uint256 deployerKey = vm.envUint("PRIVATE_KEY");
@@ -127,6 +129,13 @@ contract DeployFullStack is Script {
             console.log("  Stylus verifier enabled: ", stylusVerifier);
         }
 
+        // ── 8b. Optional: Enable hybrid Stylus+Groth16 mode ─────────────────────
+        address ecGroth16 = vm.envOr("EC_GROTH16_VERIFIER", address(0));
+        if (stylusVerifier != address(0) && ecGroth16 != address(0)) {
+            teeVerifier.setUseStylusGroth16(true);
+            console.log("  Hybrid Stylus+Groth16 enabled");
+        }
+
         // ── 9. Optional: Register TEE enclave ──────────────────────────────────
         address enclaveKey = vm.envOr("ENCLAVE_KEY", address(0));
         if (enclaveKey != address(0)) {
@@ -149,6 +158,11 @@ contract DeployFullStack is Script {
         console.log("  ProverRegistry:      ", address(proverRegistry));
         console.log("  ExecutionEngine:     ", address(engine));
         console.log("  TEEMLVerifier:       ", address(teeVerifier));
+        console.log("");
+        console.log("Dispute Verification Modes:");
+        console.log("  1. Solidity (direct GKR):  ~254M gas, 15 txs via DAGBatchVerifier");
+        console.log("  2. Stylus WASM (full):     ~207M gas, 1 tx (exceeds 30M block limit)");
+        console.log("  3. Hybrid Stylus+Groth16:  ~3-6M gas, 1 tx (within 30M block limit)");
         console.log("");
         console.log("Next steps:");
         console.log(

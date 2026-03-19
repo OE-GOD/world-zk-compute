@@ -54,6 +54,81 @@ pub fn verify(
     verify_podp_with_transcript(&proof.podp, &alpha, &dot_product, &j_star, gens, sponge)
 }
 
+/// Hybrid sumcheck verification: replay transcript + compute Fr scalar z_dot_j_star.
+///
+/// Performs the same transcript operations as `verify()`:
+/// - Squeezes rho challenges (n+1) and gamma challenges (n)
+/// - Absorbs PODP commit_d, commit_d_dot_a, squeezes challenge, absorbs z_vector, z_delta, z_beta
+///
+/// Skips all EC operations (MSM for alpha, dot_product computation, PODP verification).
+/// Instead, computes and returns z_dot_j_star = inner_product(z_vector, j_star).
+#[cfg(any(feature = "hybrid", not(target_arch = "wasm32")))]
+pub fn verify_hybrid(
+    proof: &CommittedSumcheckProof,
+    degree: usize,
+    bindings: &[U256],
+    sponge: &mut PoseidonSponge,
+) -> U256 {
+    let n = proof.messages.len();
+    verify!(bindings.len() == n, "bindings length mismatch");
+
+    // Step 1: Squeeze rho challenges (n+1) -- same as full verifier
+    let mut rhos = Vec::with_capacity(n + 1);
+    for _ in 0..=n {
+        rhos.push(Fr::from_fq(&sponge.squeeze()).0);
+    }
+
+    // Step 2: Squeeze gamma challenges (n) -- same as full verifier
+    let mut gammas = Vec::with_capacity(n);
+    for _ in 0..n {
+        gammas.push(Fr::from_fq(&sponge.squeeze()).0);
+    }
+
+    // Step 3: Skip MSM for alpha (pure EC)
+
+    // Step 4: Compute j_star vector (Fr only)
+    let j_star = compute_j_star(&rhos, &gammas, bindings, degree, n);
+
+    // Step 5: Skip dot_product computation (pure EC)
+
+    // Step 6: Replay PODP transcript and compute z_dot_j_star
+    let z_dot_j_star = verify_podp_hybrid(&proof.podp, &j_star, sponge);
+
+    z_dot_j_star
+}
+
+/// Replay PODP transcript operations and compute z_dot_j_star = inner_product(z_vector, j_star).
+///
+/// Performs the same transcript absorb/squeeze as `verify_podp_with_transcript`,
+/// but skips EC verification equations. Returns the Fr scalar z_dot_j_star.
+#[cfg(any(feature = "hybrid", not(target_arch = "wasm32")))]
+fn verify_podp_hybrid(
+    podp: &PODPProof,
+    a_vector: &[U256],
+    sponge: &mut PoseidonSponge,
+) -> U256 {
+    // Absorb commit_d and commit_d_dot_a (same as full verifier)
+    sponge.absorb_u256(&podp.commit_d.x);
+    sponge.absorb_u256(&podp.commit_d.y);
+    sponge.absorb_u256(&podp.commit_d_dot_a.x);
+    sponge.absorb_u256(&podp.commit_d_dot_a.y);
+
+    // Squeeze challenge (same as full verifier)
+    let _challenge = Fr::from_fq(&sponge.squeeze()).0;
+
+    // Absorb z_vector (same as full verifier)
+    for z in &podp.z_vector {
+        sponge.absorb_u256(z);
+    }
+
+    // Absorb z_delta, z_beta (same as full verifier)
+    sponge.absorb_u256(&podp.z_delta);
+    sponge.absorb_u256(&podp.z_beta);
+
+    // Compute z_dot_j_star = inner_product(z_vector, j_star)
+    crate::ec::inner_product(&podp.z_vector, a_vector).0
+}
+
 /// Compute the j_star vector for PODP verification.
 /// j_star[i*(degree+1) + d] = gamma_inv[i] * (rhos[i] * coeff[d] - rhos[i+1] * bindings[i]^d)
 /// where coeff[d] = 2 if d==0, else 1

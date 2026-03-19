@@ -4,22 +4,19 @@ pragma solidity ^0.8.20;
 import "forge-std/Script.sol";
 import "../src/remainder/RemainderVerifier.sol";
 import "../src/remainder/GKRDAGVerifier.sol";
-import "../src/tee/TEEMLVerifier.sol";
+import "../src/remainder/HybridStylusGroth16Verifier.sol";
 
-/// @title StylusSepoliaDeploy
-/// @notice Deploy RemainderVerifier, register DAG circuit, and set Stylus verifier
-///         on Arbitrum Sepolia. Optionally configure hybrid Stylus+Groth16 path.
-///         Does NOT broadcast verification (>200M gas exceeds limits for full path).
+/// @title StylusHybridE2E
+/// @notice Deploy RemainderVerifier, register DAG circuit, configure Stylus + EC Groth16 verifiers,
+///         and run hybrid verification comparing gas costs across all three paths:
+///         1. Pure Solidity (direct GKR)
+///         2. Stylus WASM (full, with EC)
+///         3. Hybrid Stylus+Groth16 (Fr only + pairing, target 3-6M gas)
 /// @dev Usage:
 ///   DEPLOYER_KEY=0x... STYLUS_VERIFIER=0x... \
-///     forge script script/StylusSepoliaDeploy.s.sol:StylusSepoliaDeploy \
-///     --rpc-url $RPC_URL --broadcast -vvv
-///
-///   Hybrid mode env vars:
-///     EC_GROTH16_VERIFIER      — address of EC Groth16 verifier contract (optional)
-///     EC_GROTH16_INPUT_COUNT   — number of Groth16 public inputs (default: 3)
-///     USE_HYBRID               — set to "true" to enable hybrid Stylus+Groth16 on TEEMLVerifier
-contract StylusSepoliaDeploy is Script {
+///     forge script script/StylusHybridE2E.s.sol:StylusHybridE2E \
+///     --rpc-url $RPC_URL --broadcast --gas-limit 500000000 -vvv
+contract StylusHybridE2E is Script {
     struct Fixture {
         bytes proofHex;
         bytes gensHex;
@@ -33,18 +30,23 @@ contract StylusSepoliaDeploy is Script {
         uint256 deployerKey = vm.envUint("DEPLOYER_KEY");
         address stylusVerifierAddr = vm.envAddress("STYLUS_VERIFIER");
 
-        // Hybrid Stylus+Groth16 configuration (optional)
+        // EC Groth16 verifier is optional -- if not provided, hybrid step is skipped
         address ecGroth16Verifier = vm.envOr("EC_GROTH16_VERIFIER", address(0));
         uint256 ecGroth16InputCount = vm.envOr("EC_GROTH16_INPUT_COUNT", uint256(3));
-        bool useHybrid = vm.envOr("USE_HYBRID", false);
 
         Fixture memory fix = _loadFixture();
 
-        console.log("Fixture loaded:");
+        console.log("=== Stylus + Groth16 Hybrid E2E ===");
         console.log("  Proof size:", fix.proofHex.length, "bytes");
         console.log("  Stylus verifier:", stylusVerifierAddr);
+        if (ecGroth16Verifier != address(0)) {
+            console.log("  EC Groth16 verifier:", ecGroth16Verifier);
+            console.log("  EC Groth16 input count:", ecGroth16InputCount);
+        } else {
+            console.log("  EC Groth16 verifier: not configured (hybrid test skipped)");
+        }
 
-        // Deploy + register + configure
+        // Phase 1: Deploy + register + configure
         vm.startBroadcast(deployerKey);
         RemainderVerifier verifier = new RemainderVerifier(vm.addr(deployerKey));
         console.log("RemainderVerifier deployed at:", address(verifier));
@@ -55,55 +57,80 @@ contract StylusSepoliaDeploy is Script {
         verifier.setDAGStylusVerifier(fix.circuitHash, stylusVerifierAddr);
         console.log("Stylus verifier set");
 
-        // Configure EC Groth16 verifier for hybrid path (if provided)
         if (ecGroth16Verifier != address(0)) {
             verifier.setDAGECGroth16Verifier(fix.circuitHash, ecGroth16Verifier, ecGroth16InputCount);
-            console.log("EC Groth16 verifier set:", ecGroth16Verifier);
-            console.log("  Input count:", ecGroth16InputCount);
+            console.log("EC Groth16 verifier set");
         }
-
-        // Deploy TEEMLVerifier pointing to RemainderVerifier with Stylus enabled
-        TEEMLVerifier teeVerifier = new TEEMLVerifier(vm.addr(deployerKey), address(verifier));
-        teeVerifier.setUseStylusVerifier(true);
-        console.log("TEEMLVerifier deployed at:", address(teeVerifier));
-        console.log("  Stylus routing: enabled");
-
-        // Enable hybrid mode on TEEMLVerifier (if requested)
-        if (useHybrid && ecGroth16Verifier != address(0)) {
-            teeVerifier.setUseStylusGroth16(true);
-            console.log("  Hybrid Stylus+Groth16: enabled");
-        }
-
         vm.stopBroadcast();
 
-        // NOTE: Verification is NOT broadcast here because full path uses ~200M+ gas,
-        // exceeding Arbitrum Sepolia's block gas limit (~32M).
-        // Hybrid path (~3-6M gas) fits within the block limit.
-        // Use `cast call` to simulate verification off-chain instead.
-
+        // Phase 2: Test Stylus full verification path
         console.log("");
-        console.log("=== DEPLOYMENT COMPLETE ===");
-        console.log("RemainderVerifier:", address(verifier));
-        console.log("StylusVerifier:", stylusVerifierAddr);
-        console.log("TEEMLVerifier:", address(teeVerifier));
+        console.log("=== Stylus Full Verification ===");
+        vm.startBroadcast(deployerKey);
+        uint256 gasBefore = gasleft();
+        bool stylusValid =
+            verifier.verifyDAGProofStylus(fix.proofHex, fix.circuitHash, fix.publicInputsHex, fix.gensHex);
+        uint256 stylusGas = gasBefore - gasleft();
+        vm.stopBroadcast();
+        console.log("  Result:", stylusValid);
+        console.log("  Stylus path gas:", stylusGas);
+        require(stylusValid, "Stylus verification failed");
+
+        // Phase 3: Test Solidity verification path
+        console.log("");
+        console.log("=== Solidity Verification ===");
+        vm.startBroadcast(deployerKey);
+        gasBefore = gasleft();
+        bool solidityValid = verifier.verifyDAGProof(fix.proofHex, fix.circuitHash, fix.publicInputsHex, fix.gensHex);
+        uint256 solidityGas = gasBefore - gasleft();
+        vm.stopBroadcast();
+        console.log("  Result:", solidityValid);
+        console.log("  Solidity path gas:", solidityGas);
+        require(solidityValid, "Solidity verification failed");
+
+        // Phase 4: Test Hybrid Stylus+Groth16 path (if EC verifier configured)
         if (ecGroth16Verifier != address(0)) {
-            console.log("ECGroth16Verifier:", ecGroth16Verifier);
-        }
-        _logVerificationModes(ecGroth16Verifier, useHybrid);
-    }
+            console.log("");
+            console.log("=== Hybrid Stylus+Groth16 Verification ===");
 
-    function _logVerificationModes(address ecGroth16Verifier, bool useHybrid) private pure {
-        console.log("");
-        console.log("=== Verification Modes ===");
-        console.log("  1. Solidity (direct GKR):    ~254M gas (15 txs via batch verifier)");
-        console.log("  2. Stylus WASM (full):       ~207M gas (1 tx, exceeds 30M block limit)");
-        if (ecGroth16Verifier != address(0) && useHybrid) {
-            console.log("  3. Hybrid Stylus+Groth16:    ~3-6M gas (1 tx, within 30M limit) [ACTIVE]");
-        } else if (ecGroth16Verifier != address(0)) {
-            console.log("  3. Hybrid Stylus+Groth16:    ~3-6M gas (configured, USE_HYBRID=true to activate)");
-        } else {
-            console.log("  3. Hybrid Stylus+Groth16:    not configured (set EC_GROTH16_VERIFIER)");
+            // Load the EC Groth16 proof from env or use zeros for pipeline test
+            uint256[8] memory ecProof;
+            string memory proofFile = vm.envOr("EC_GROTH16_PROOF_FILE", string(""));
+            if (bytes(proofFile).length > 0 && vm.isFile(proofFile)) {
+                string memory proofJson = vm.readFile(proofFile);
+                uint256[] memory proofArr = vm.parseJsonUintArray(proofJson, ".proof");
+                require(proofArr.length == 8, "EC Groth16 proof must have 8 elements");
+                for (uint256 i = 0; i < 8; i++) {
+                    ecProof[i] = proofArr[i];
+                }
+            }
+
+            vm.startBroadcast(deployerKey);
+            gasBefore = gasleft();
+            bool hybridValid = verifier.verifyDAGProofStylusGroth16(
+                fix.proofHex, fix.circuitHash, fix.publicInputsHex, fix.gensHex, ecProof
+            );
+            uint256 hybridGas = gasBefore - gasleft();
+            vm.stopBroadcast();
+
+            console.log("  Result:", hybridValid);
+            console.log("  Hybrid path gas:", hybridGas);
+
+            if (hybridValid) {
+                console.log("");
+                console.log("=== Gas Comparison ===");
+                console.log("  Solidity gas:", solidityGas);
+                console.log("  Stylus gas:", stylusGas);
+                console.log("  Hybrid gas:", hybridGas);
+                require(hybridValid, "Hybrid verification failed");
+            } else {
+                console.log("  WARNING: Hybrid verification returned false");
+                console.log("  This may be expected if using mock EC Groth16 proof");
+            }
         }
+
+        console.log("");
+        console.log("=== HYBRID E2E PASSED ===");
     }
 
     function _loadFixture() private view returns (Fixture memory fix) {

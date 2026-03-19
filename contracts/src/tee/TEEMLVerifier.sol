@@ -120,6 +120,9 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
     /// @notice Whether dispute resolution routes through the Stylus (WASM) verifier
     bool public useStylusVerifier;
 
+    /// @notice Whether the hybrid Stylus+Groth16 dispute path is enabled
+    bool public useStylusGroth16;
+
     /// @notice Duration added per extension request
     uint256 public constant EXTENSION_PERIOD = 30 minutes;
 
@@ -231,6 +234,12 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
     }
 
     /// @inheritdoc ITEEMLVerifier
+    function setUseStylusGroth16(bool _enabled) external onlyOwner {
+        useStylusGroth16 = _enabled;
+        emit StylusGroth16Toggled(_enabled);
+    }
+
+    /// @inheritdoc ITEEMLVerifier
     function pause() external onlyOwner {
         _pause();
     }
@@ -338,6 +347,41 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
                 "verifyDAGProof(bytes,bytes32,bytes,bytes)", proof, circuitHash, publicInputs, gensData
             );
         }
+
+        (bool success, bytes memory returnData) = remainderVerifier.call(callData);
+
+        bool proofValid = false;
+        if (success && returnData.length >= 32) {
+            proofValid = abi.decode(returnData, (bool));
+        }
+
+        _settleDispute(resultId, r, proofValid);
+    }
+
+    /// @inheritdoc ITEEMLVerifier
+    function resolveDisputeHybrid(
+        bytes32 resultId,
+        bytes calldata proof,
+        bytes32 circuitHash,
+        bytes calldata publicInputs,
+        bytes calldata gensData,
+        uint256[8] calldata ecGroth16Proof
+    ) external nonReentrant {
+        if (!useStylusGroth16) revert HybridNotEnabled();
+
+        PackedMLResult storage r = _results[resultId];
+        if (!r.challenged) revert NotChallenged();
+        if (disputeResolved[resultId]) revert AlreadyResolved();
+        if (remainderVerifier == address(0)) revert NoVerifierSet();
+
+        bytes memory callData = abi.encodeWithSignature(
+            "verifyDAGProofStylusGroth16(bytes,bytes32,bytes,bytes,uint256[8])",
+            proof,
+            circuitHash,
+            publicInputs,
+            gensData,
+            ecGroth16Proof
+        );
 
         (bool success, bytes memory returnData) = remainderVerifier.call(callData);
 

@@ -15,7 +15,7 @@ members = [
 exclude = [
     "prover",
     "private-input-server",
-    "examples/*",
+    "examples/xgboost-remainder",
     "tests/e2e",
     "contracts/lib/risc0-ethereum",
     "contracts/stylus/gkr-verifier",

@@ -34,6 +34,7 @@ interface ITEEMLVerifier {
     error ResultIsChallenged();
     error StakeReturnFailed();
     error PayoutFailed();
+    error HybridNotEnabled();
 
     /// @notice Information about a registered TEE enclave
     /// @param registered Whether this enclave has been registered
@@ -145,6 +146,10 @@ interface ITEEMLVerifier {
     /// @param enabled True if disputes now route through the Stylus (WASM) verifier
     event StylusVerifierToggled(bool enabled);
 
+    /// @notice Emitted when the Stylus+Groth16 hybrid routing toggle changes
+    /// @param enabled True if disputes can use the hybrid Stylus+Groth16 path
+    event StylusGroth16Toggled(bool enabled);
+
     /// @notice Register a new TEE enclave. Only callable by the contract owner.
     /// @param enclaveKey The enclave's ECDSA signing key address
     /// @param enclaveImageHash Hash of the enclave image (e.g., AWS Nitro PCR0)
@@ -237,4 +242,32 @@ interface ITEEMLVerifier {
     /// @param resultId The result to check
     /// @return True if the result is valid
     function isResultValid(bytes32 resultId) external view returns (bool);
+
+    /// @notice Whether dispute resolution can use the Stylus+Groth16 hybrid path
+    /// @return True if the hybrid path is enabled
+    function useStylusGroth16() external view returns (bool);
+
+    /// @notice Toggle Stylus+Groth16 hybrid verification for dispute resolution. Owner only.
+    /// @dev When enabled, resolveDisputeHybrid() can be called to use the hybrid path
+    ///      (~3-6M gas) combining Stylus WASM transcript replay with Groth16 EC checks.
+    /// @param _enabled True to enable the hybrid Stylus+Groth16 path
+    function setUseStylusGroth16(bool _enabled) external;
+
+    /// @notice Resolve a dispute using the hybrid Stylus+Groth16 verification path.
+    /// @dev Requires useStylusGroth16 to be enabled. Calls RemainderVerifier.verifyDAGProofStylusGroth16()
+    ///      which combines Stylus WASM (transcript replay, ~2-5M gas) + Groth16 (EC checks, ~230K gas).
+    /// @param resultId The disputed result
+    /// @param proof The ZK proof bytes
+    /// @param circuitHash Hash identifying the verification circuit
+    /// @param publicInputs Public inputs for the ZK proof
+    /// @param gensData Generator data for the ZK proof verification
+    /// @param ecGroth16Proof The 8-element Groth16 proof (A, B, C points)
+    function resolveDisputeHybrid(
+        bytes32 resultId,
+        bytes calldata proof,
+        bytes32 circuitHash,
+        bytes calldata publicInputs,
+        bytes calldata gensData,
+        uint256[8] calldata ecGroth16Proof
+    ) external;
 }

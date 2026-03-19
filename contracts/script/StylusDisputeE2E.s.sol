@@ -15,8 +15,7 @@ import "../src/tee/TEEMLVerifier.sol";
 ///     --rpc-url $RPC_URL --broadcast --gas-limit 500000000 -vvv
 contract StylusDisputeE2E is Script {
     // EIP-712 constants (must match TEEMLVerifier)
-    bytes32 constant RESULT_TYPEHASH =
-        keccak256("TEEMLResult(bytes32 modelHash,bytes32 inputHash,bytes32 resultHash)");
+    bytes32 constant RESULT_TYPEHASH = keccak256("TEEMLResult(bytes32 modelHash,bytes32 inputHash,bytes32 resultHash)");
     bytes32 constant EIP712_DOMAIN_TYPEHASH =
         keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
     bytes32 constant NAME_HASH = keccak256("TEEMLVerifier");
@@ -195,11 +194,7 @@ contract StylusDisputeE2E is Script {
         result = abi.decode(raw, (bool[]));
     }
 
-    function _parseUint256Array(string memory json, string memory key)
-        private
-        pure
-        returns (uint256[] memory result)
-    {
+    function _parseUint256Array(string memory json, string memory key) private pure returns (uint256[] memory result) {
         bytes memory raw = vm.parseJson(json, key);
         bytes32[] memory parsed = abi.decode(raw, (bytes32[]));
         result = new uint256[](parsed.length);

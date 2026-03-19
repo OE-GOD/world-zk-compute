@@ -265,6 +265,204 @@ fn absorb_podp(podp: &PODPProof, sponge: &mut PoseidonSponge) -> U256 {
 }
 
 // ============================================================
+// Hybrid Input Layer Verification (transcript replay, Fr-only)
+// ============================================================
+
+/// Fr-domain outputs from hybrid input layer verification.
+#[cfg(any(feature = "hybrid", not(target_arch = "wasm32")))]
+pub struct InputFrOutputs {
+    /// Flattened L-tensor values (all groups concatenated).
+    pub l_tensor_flat: Vec<U256>,
+    /// Per-group z_dot_r = inner_product(z_vector, r_tensor).
+    pub z_dot_rs: Vec<U256>,
+    /// Per-public-claim MLE evaluation result.
+    pub mle_evals: Vec<U256>,
+}
+
+/// Hybrid input layer verification: transcript replay + Fr outputs, no EC ops.
+#[cfg(any(feature = "hybrid", not(target_arch = "wasm32")))]
+pub fn verify_input_layers_hybrid(
+    proof: &GKRProof,
+    desc: &DAGCircuitDescription,
+    _gens: &PedersenGens,
+    ctx: &VerifyContext,
+    sponge: &mut PoseidonSponge,
+    public_inputs: &[U256],
+    dag_input_proofs: &[DAGInputLayerProof],
+    _public_value_claims: &[PublicValueClaim],
+) -> InputFrOutputs {
+    let mut outputs = InputFrOutputs {
+        l_tensor_flat: Vec::new(),
+        z_dot_rs: Vec::new(),
+        mle_evals: Vec::new(),
+    };
+
+    let mut dag_input_idx: usize = 0;
+    let mut pub_claim_idx: usize = 0;
+
+    for input_idx in 0..desc.num_input_layers {
+        let target_layer = desc.num_compute_layers + input_idx;
+
+        // Collect claim points for this input layer
+        let num_claims = count_claims_for(target_layer, desc);
+        let mut claim_points: Vec<Vec<U256>> = Vec::with_capacity(num_claims);
+
+        for j in 0..desc.num_compute_layers {
+            let atom_start = desc.atom_offsets[j];
+            let atom_end = desc.atom_offsets[j + 1];
+            for a in atom_start..atom_end {
+                if desc.atom_target_layers[a] == target_layer {
+                    claim_points.push(resolve_point(a, &ctx.all_bindings[j], desc));
+                }
+            }
+        }
+
+        if desc.input_is_committed[input_idx] {
+            verify_committed_input_batch_eval_hybrid(
+                &dag_input_proofs[dag_input_idx],
+                &claim_points,
+                sponge,
+                &mut outputs,
+            );
+            dag_input_idx += 1;
+        } else {
+            pub_claim_idx = verify_public_input_claims_hybrid(
+                proof,
+                desc,
+                ctx,
+                &claim_points,
+                target_layer,
+                pub_claim_idx,
+                public_inputs,
+                &mut outputs,
+            );
+        }
+    }
+
+    outputs
+}
+
+/// Hybrid public input claim verification: computes MLE evals without EC checks.
+#[cfg(any(feature = "hybrid", not(target_arch = "wasm32")))]
+fn verify_public_input_claims_hybrid(
+    _proof: &GKRProof,
+    desc: &DAGCircuitDescription,
+    _ctx: &VerifyContext,
+    claim_points: &[Vec<U256>],
+    target_layer: usize,
+    pub_claim_start_idx: usize,
+    public_inputs: &[U256],
+    outputs: &mut InputFrOutputs,
+) -> usize {
+    let mut next_pub_claim_idx = pub_claim_start_idx;
+    let mut c_idx: usize = 0;
+
+    for j in 0..desc.num_compute_layers {
+        let atom_start = desc.atom_offsets[j];
+        let atom_end = desc.atom_offsets[j + 1];
+        for a in atom_start..atom_end {
+            if desc.atom_target_layers[a] != target_layer {
+                continue;
+            }
+
+            // Compute MLE eval (Fr only, no Pedersen opening check)
+            let mle_val = evaluate_mle_from_data(public_inputs, &claim_points[c_idx]);
+            outputs.mle_evals.push(mle_val);
+
+            next_pub_claim_idx += 1;
+            c_idx += 1;
+        }
+    }
+
+    next_pub_claim_idx
+}
+
+/// Hybrid committed input batch eval: transcript replay + Fr outputs.
+#[cfg(any(feature = "hybrid", not(target_arch = "wasm32")))]
+fn verify_committed_input_batch_eval_hybrid(
+    dag_proof: &DAGInputLayerProof,
+    claim_points: &[Vec<U256>],
+    sponge: &mut PoseidonSponge,
+    outputs: &mut InputFrOutputs,
+) {
+    let num_rows = dag_proof.commitment_rows.len();
+    let n = claim_points[0].len();
+    let l_half_len = log2(if num_rows > 0 { num_rows } else { 1 });
+    let log_n_cols = n - l_half_len;
+
+    // Step 1: Sort claims lexicographically
+    let sorted_indices = sort_claim_indices(claim_points);
+
+    // Step 2: Group by R-half
+    let groups = group_claims_by_r_half(claim_points, &sorted_indices, log_n_cols);
+
+    // Step 3: Verify each group (hybrid)
+    for g in 0..groups.len() {
+        verify_one_eval_group_hybrid(
+            dag_proof,
+            claim_points,
+            l_half_len,
+            log_n_cols,
+            g,
+            &groups[g],
+            sponge,
+            outputs,
+        );
+    }
+}
+
+/// Hybrid single eval group: transcript replay + Fr outputs.
+#[cfg(any(feature = "hybrid", not(target_arch = "wasm32")))]
+fn verify_one_eval_group_hybrid(
+    dag_proof: &DAGInputLayerProof,
+    claim_points: &[Vec<U256>],
+    l_half_len: usize,
+    log_n_cols: usize,
+    group_idx: usize,
+    group_claim_indices: &[usize],
+    sponge: &mut PoseidonSponge,
+    outputs: &mut InputFrOutputs,
+) {
+    let group_size = group_claim_indices.len();
+
+    // Squeeze RLC coefficients (same as full)
+    let mut rlc_coeffs = Vec::with_capacity(group_size);
+    for _ in 0..group_size {
+        rlc_coeffs.push(Fr::from_fq(&sponge.squeeze()).0);
+    }
+
+    // Extract group's claim points
+    let group_points: Vec<&Vec<U256>> = group_claim_indices
+        .iter()
+        .map(|&idx| &claim_points[idx])
+        .collect();
+
+    // Compute L tensor (Fr only)
+    let l_coeffs = compute_rlc_tensor(&group_points, l_half_len, &rlc_coeffs);
+    outputs.l_tensor_flat.extend_from_slice(&l_coeffs);
+
+    // Compute R tensor (Fr only)
+    let mut r_vars = Vec::with_capacity(log_n_cols);
+    for j in 0..log_n_cols {
+        r_vars.push(group_points[0][l_half_len + j]);
+    }
+    let r_coeffs = initialize_tensor(&r_vars);
+
+    // Absorb comEval (same as full)
+    sponge.absorb_u256(&dag_proof.com_evals[group_idx].x);
+    sponge.absorb_u256(&dag_proof.com_evals[group_idx].y);
+
+    // Absorb PODP data and squeeze challenge (same as full)
+    let _podp_challenge = absorb_podp(&dag_proof.podps[group_idx], sponge);
+
+    // Compute z_dot_r = inner_product(z_vector, r_coeffs)
+    let z_dot_r = crate::ec::inner_product(&dag_proof.podps[group_idx].z_vector, &r_coeffs);
+    outputs.z_dot_rs.push(z_dot_r.0);
+
+    // Skip EC equation checks (MSM, PODP verification)
+}
+
+// ============================================================
 // Tensor Products
 // ============================================================
 

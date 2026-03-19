@@ -257,7 +257,9 @@ contract ProverReputation is Ownable2Step, Pausable {
         notBanned(prover)
         whenNotPaused
     {
-        if (bytes(reason).length > MAX_REASON_LENGTH) revert StringTooLong("reason", MAX_REASON_LENGTH);
+        if (bytes(reason).length > MAX_REASON_LENGTH) {
+            revert StringTooLong("reason", MAX_REASON_LENGTH);
+        }
         Reputation storage rep = reputations[prover];
         if (!rep.isRegistered) revert ProverNotRegistered();
         _checkTimestamp();
@@ -279,12 +281,7 @@ contract ProverReputation is Ownable2Step, Pausable {
     /// @notice Record abandoned job (claimed but never submitted)
     /// @param prover Prover address
     /// @param requestId Request that was abandoned
-    function recordAbandon(address prover, uint256 requestId)
-        external
-        onlyAuthorized
-        notBanned(prover)
-        whenNotPaused
-    {
+    function recordAbandon(address prover, uint256 requestId) external onlyAuthorized notBanned(prover) whenNotPaused {
         Reputation storage rep = reputations[prover];
         if (!rep.isRegistered) revert ProverNotRegistered();
         _checkTimestamp();
