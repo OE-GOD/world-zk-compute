@@ -14,6 +14,20 @@ import (
 type G1Point = sw_emulated.AffinePoint[emulated.BN254Fp]
 
 // ECCircuitConfig specifies the sizes of EC operation arrays at compile time.
+//
+// Measured R1CS constraint counts (gnark v0.11.0, BN254):
+//
+//	1 mul:              192,631
+//	2 mul:              232,930    (+40K for 2nd point in MSM)
+//	5 mul:              589,335    (~99K per additional mul)
+//	10 mul:             998,522    (~82K per additional mul)
+//	1 add:              284,255    (3 MSMs of 1 point + AddUnified)
+//	5 add:              846,380    (~140K per additional add)
+//	10 add:           1,455,070    (~122K per additional add)
+//	5 mul + 5 add:    1,369,947
+//
+// XGBoost full circuit estimate: ~2213 mul + ~1649 add ≈ 300-400M constraints
+// → will need chunked proving + recursion (each chunk ≤ 50M constraints)
 type ECCircuitConfig struct {
 	NumMulOps int // number of ec_mul operations to batch-verify
 	NumAddOps int // number of ec_add operations to batch-verify
