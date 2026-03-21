@@ -394,6 +394,60 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
     }
 
     /// @inheritdoc ITEEMLVerifier
+    function resolveDisputeHybridChunked(
+        bytes32 resultId,
+        bytes calldata proof,
+        bytes32 circuitHash,
+        bytes calldata publicInputs,
+        bytes calldata gensData,
+        uint256[][] calldata ecGroth16Proofs,
+        uint256 totalChunks,
+        uint256 opsDigest
+    ) external nonReentrant {
+        if (!useStylusGroth16) revert HybridNotEnabled();
+
+        PackedMLResult storage r = _results[resultId];
+        if (!r.challenged) revert NotChallenged();
+        if (disputeResolved[resultId]) revert AlreadyResolved();
+        if (remainderVerifier == address(0)) revert NoVerifierSet();
+
+        bool proofValid = _callChunkedHybridVerifier(
+            proof, circuitHash, publicInputs, gensData, ecGroth16Proofs, totalChunks, opsDigest
+        );
+
+        _settleDispute(resultId, r, proofValid);
+    }
+
+    /// @dev Call RemainderVerifier.verifyDAGProofStylusGroth16Chunked and decode result
+    function _callChunkedHybridVerifier(
+        bytes calldata proof,
+        bytes32 circuitHash,
+        bytes calldata publicInputs,
+        bytes calldata gensData,
+        uint256[][] calldata ecGroth16Proofs,
+        uint256 totalChunks,
+        uint256 opsDigest
+    ) private returns (bool) {
+        bytes memory callData = abi.encodeWithSignature(
+            "verifyDAGProofStylusGroth16Chunked(bytes,bytes32,bytes,bytes,uint256[][],uint256,uint256)",
+            proof,
+            circuitHash,
+            publicInputs,
+            gensData,
+            ecGroth16Proofs,
+            totalChunks,
+            opsDigest
+        );
+
+        (bool success, bytes memory returnData) = remainderVerifier.call(callData);
+
+        if (success && returnData.length >= 32) {
+            return abi.decode(returnData, (bool));
+        }
+        return false;
+    }
+
+    /// @inheritdoc ITEEMLVerifier
     function resolveDisputeByTimeout(bytes32 resultId) external nonReentrant {
         PackedMLResult storage r = _results[resultId];
         if (!r.challenged) revert NotChallenged();

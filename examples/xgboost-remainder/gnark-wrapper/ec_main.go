@@ -160,16 +160,13 @@ func nativeToG1Point(p bn254.G1Affine) G1Point {
 }
 
 // buildECAssignment creates a circuit assignment from decomposed EC operations.
+// The batch challenge is computed in-circuit via MiMC hash — no external input needed.
 func buildECAssignment(config ECCircuitConfig, muls []flatMulOp, adds []flatAddOp, w *ECWitnessJSON) *ECBatchCircuit {
 	assignment := AllocateECCircuit(config)
 
 	assignment.TranscriptDigest = parseBigInt(w.TranscriptDigest)
 	assignment.CircuitHashLo = parseBigInt(w.CircuitHash[0])
 	assignment.CircuitHashHi = parseBigInt(w.CircuitHash[1])
-
-	// Compute batch challenge from hashing all operation data
-	// For now, use a deterministic challenge derived from transcript digest
-	assignment.BatchChallenge = parseBigInt(w.TranscriptDigest)
 
 	for i := 0; i < config.NumMulOps; i++ {
 		assignment.MulBasePoints[i] = muls[i].basePoint
@@ -316,6 +313,164 @@ func cmdECProveJSON() {
 	fmt.Println(string(out))
 	fmt.Fprintf(os.Stderr, "EC JSON fixture written (%d proof points, %d public inputs, %d constraints)\n",
 		len(proofPoints), len(pubInputs), ccs.GetNbConstraints())
+}
+
+// ChunkedECWitnessJSON is the JSON format for a single chunk of EC operations.
+type ChunkedECWitnessJSON struct {
+	TranscriptDigest string    `json:"transcriptDigest"`
+	CircuitHash      [2]string `json:"circuitHash"`
+	OpsDigest        string    `json:"opsDigest"`
+	ChunkIndex       int       `json:"chunkIndex"`
+	TotalChunks      int       `json:"totalChunks"`
+	MulOps           []ECOp    `json:"mulOps"`
+	AddOps           []ECOp    `json:"addOps"`
+}
+
+// cmdECChunkedProveJSON generates a Groth16 proof for a single chunk of EC operations.
+func cmdECChunkedProveJSON() {
+	data, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error reading stdin: %v\n", err)
+		os.Exit(1)
+	}
+
+	var w ChunkedECWitnessJSON
+	if err := json.Unmarshal(data, &w); err != nil {
+		fmt.Fprintf(os.Stderr, "error parsing chunked EC witness JSON: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Fprintf(os.Stderr, "Chunked EC witness: chunk %d/%d, %d mul ops, %d add ops\n",
+		w.ChunkIndex, w.TotalChunks, len(w.MulOps), len(w.AddOps))
+
+	// Parse mul ops
+	numMul := len(w.MulOps)
+	numAdd := len(w.AddOps)
+
+	config := ChunkedECConfig{NumMulOps: numMul, NumAddOps: numAdd}
+	assignment := AllocateChunkedECCircuit(config)
+
+	assignment.TranscriptDigest = parseBigInt(w.TranscriptDigest)
+	assignment.CircuitHashLo = parseBigInt(w.CircuitHash[0])
+	assignment.CircuitHashHi = parseBigInt(w.CircuitHash[1])
+	assignment.OpsDigest = parseBigInt(w.OpsDigest)
+	assignment.ChunkIndex = big.NewInt(int64(w.ChunkIndex))
+	assignment.TotalChunks = big.NewInt(int64(w.TotalChunks))
+
+	for i, op := range w.MulOps {
+		assignment.MulBasePoints[i] = parseECPoint(op.Point)
+		assignment.MulScalars[i] = parseBigInt(op.Scalar)
+		assignment.MulResults[i] = parseECPoint(op.Result)
+	}
+
+	for j, op := range w.AddOps {
+		assignment.AddP1s[j] = parseECPoint(op.Point1)
+		assignment.AddP2s[j] = parseECPoint(op.Point2)
+		assignment.AddResults[j] = parseECPoint(op.Result)
+	}
+
+	// Redirect stdout to stderr during gnark compilation
+	origStdout := os.Stdout
+	os.Stdout = os.Stderr
+
+	// Compile
+	fmt.Fprintf(os.Stderr, "Compiling chunked EC circuit (chunk %d: %d mul, %d add)...\n",
+		w.ChunkIndex, numMul, numAdd)
+	circuit := AllocateChunkedECCircuit(config)
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, circuit)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "compile error: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Fprintf(os.Stderr, "Chunked EC circuit compiled: %d R1CS constraints\n", ccs.GetNbConstraints())
+
+	// Setup
+	fmt.Fprintln(os.Stderr, "Running inline Groth16 setup...")
+	pk, vk, err := groth16.Setup(ccs)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "setup error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Export Solidity verifier
+	solFileName := fmt.Sprintf("ChunkedECGroth16Verifier_chunk%d.sol", w.ChunkIndex)
+	solFile, solErr := os.Create(solFileName)
+	if solErr == nil {
+		if exportErr := vk.ExportSolidity(solFile); exportErr == nil {
+			fmt.Fprintf(os.Stderr, "Solidity verifier exported to %s\n", solFileName)
+		}
+		solFile.Close()
+	}
+
+	// Create witness
+	fmt.Fprintln(os.Stderr, "Creating witness...")
+	witness, err := frontend.NewWitness(assignment, ecc.BN254.ScalarField())
+
+	// Restore stdout
+	os.Stdout = origStdout
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error creating witness: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Prove
+	fmt.Fprintln(os.Stderr, "Generating Groth16 proof...")
+	proof, err := groth16.Prove(ccs, pk, witness)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "prove error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Verify
+	fmt.Fprintln(os.Stderr, "Verifying proof locally...")
+	publicWitness, _ := witness.Public()
+	if err := groth16.Verify(proof, vk, publicWitness); err != nil {
+		fmt.Fprintf(os.Stderr, "verification failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Fprintln(os.Stderr, "Proof verified locally!")
+
+	// Extract proof points
+	var proofBuf bytes.Buffer
+	proof.WriteTo(&proofBuf)
+	proofBn254 := proof.(*groth16bn254.Proof)
+
+	proofPoints := make([]string, 8)
+	proofPoints[0] = ecFpToHex(&proofBn254.Ar.X)
+	proofPoints[1] = ecFpToHex(&proofBn254.Ar.Y)
+	proofPoints[2] = ecFpToHex(&proofBn254.Bs.X.A1)
+	proofPoints[3] = ecFpToHex(&proofBn254.Bs.X.A0)
+	proofPoints[4] = ecFpToHex(&proofBn254.Bs.Y.A1)
+	proofPoints[5] = ecFpToHex(&proofBn254.Bs.Y.A0)
+	proofPoints[6] = ecFpToHex(&proofBn254.Krs.X)
+	proofPoints[7] = ecFpToHex(&proofBn254.Krs.Y)
+
+	// Build public inputs: transcriptDigest, circuitHashLo, circuitHashHi, opsDigest, chunkIndex, totalChunks
+	pubInputs := []string{
+		w.TranscriptDigest,
+		w.CircuitHash[0],
+		w.CircuitHash[1],
+		w.OpsDigest,
+		fmt.Sprintf("0x%x", w.ChunkIndex),
+		fmt.Sprintf("0x%x", w.TotalChunks),
+	}
+
+	fixture := map[string]interface{}{
+		"proof":         proofPoints,
+		"public_inputs": pubInputs,
+		"stats": map[string]interface{}{
+			"chunk_index":      w.ChunkIndex,
+			"total_chunks":     w.TotalChunks,
+			"num_mul_ops":      numMul,
+			"num_add_ops":      numAdd,
+			"r1cs_constraints": ccs.GetNbConstraints(),
+		},
+	}
+
+	out, _ := json.MarshalIndent(fixture, "", "  ")
+	fmt.Println(string(out))
+	fmt.Fprintf(os.Stderr, "Chunked EC JSON fixture written (chunk %d/%d, %d proof points, %d public inputs, %d constraints)\n",
+		w.ChunkIndex, w.TotalChunks, len(proofPoints), len(pubInputs), ccs.GetNbConstraints())
 }
 
 // cmdECInfo shows EC circuit statistics from witness JSON on stdin.

@@ -14,6 +14,10 @@
 //! Usage:
 //!   cargo run --release --bin gen_ec_groth16_witness
 //!   cargo run --release --bin gen_ec_groth16_witness -- --trees 3 --depth 4 --features 4
+//!
+//! Chunked output (for multi-tx EC verification):
+//!   cargo run --release --bin gen_ec_groth16_witness -- --output-dir ./ec_chunks --chunk-size 500
+//!   This writes chunk_0.json, chunk_1.json, ..., and summary.json into the output directory.
 
 use anyhow::Result;
 use ff::PrimeField;
@@ -37,8 +41,10 @@ use shared_types::{
     perform_function_under_prover_config, perform_function_under_verifier_config, Bn256Point, Fq,
     Fr,
 };
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::ops::Neg;
+use std::path::PathBuf;
 
 
 // ============================================================================
@@ -120,6 +126,210 @@ fn parse_arg_usize(name: &str, default: usize) -> usize {
                 .unwrap_or_else(|_| panic!("invalid {} value", name))
         })
         .unwrap_or(default)
+}
+
+// ============================================================================
+// Chunking and digest utilities
+// ============================================================================
+
+/// Split EC operations into chunks of at most `chunk_size` operations.
+/// Each operation is a serde_json::Value with a "type" field ("mul", "add", or "msm").
+fn chunk_operations(ops: &[serde_json::Value], chunk_size: usize) -> Vec<Vec<serde_json::Value>> {
+    if chunk_size == 0 {
+        return vec![ops.to_vec()];
+    }
+    ops.chunks(chunk_size).map(|c| c.to_vec()).collect()
+}
+
+/// Compute a SHA-256 digest over all EC operation data.
+///
+/// Serializes all mul and add operations in order:
+///   - mul ops: point.x, point.y, scalar, result.x, result.y
+///   - add ops: point1.x, point1.y, point2.x, point2.y, result.x, result.y
+///   - msm ops: for each point (x,y), each scalar, then result (x,y)
+///
+/// Returns hex string "0x...".
+///
+/// TODO: Switch to MiMC to match gnark circuit. SHA-256 used as placeholder
+/// because the Poseidon sponge lives in the Stylus crate and MiMC is not
+/// yet available in this crate's dependency tree.
+fn compute_ops_digest(ops: &[serde_json::Value]) -> String {
+    let mut hasher = Sha256::new();
+
+    for op in ops {
+        let op_type = op["type"].as_str().unwrap_or("");
+        match op_type {
+            "mul" => {
+                feed_hex_to_hasher(&mut hasher, op["point"]["x"].as_str().unwrap_or("0x0"));
+                feed_hex_to_hasher(&mut hasher, op["point"]["y"].as_str().unwrap_or("0x0"));
+                feed_hex_to_hasher(&mut hasher, op["scalar"].as_str().unwrap_or("0x0"));
+                feed_hex_to_hasher(&mut hasher, op["result"]["x"].as_str().unwrap_or("0x0"));
+                feed_hex_to_hasher(&mut hasher, op["result"]["y"].as_str().unwrap_or("0x0"));
+            }
+            "add" => {
+                feed_hex_to_hasher(&mut hasher, op["point1"]["x"].as_str().unwrap_or("0x0"));
+                feed_hex_to_hasher(&mut hasher, op["point1"]["y"].as_str().unwrap_or("0x0"));
+                feed_hex_to_hasher(&mut hasher, op["point2"]["x"].as_str().unwrap_or("0x0"));
+                feed_hex_to_hasher(&mut hasher, op["point2"]["y"].as_str().unwrap_or("0x0"));
+                feed_hex_to_hasher(&mut hasher, op["result"]["x"].as_str().unwrap_or("0x0"));
+                feed_hex_to_hasher(&mut hasher, op["result"]["y"].as_str().unwrap_or("0x0"));
+            }
+            "msm" => {
+                if let Some(points) = op["points"].as_array() {
+                    for pt in points {
+                        feed_hex_to_hasher(&mut hasher, pt["x"].as_str().unwrap_or("0x0"));
+                        feed_hex_to_hasher(&mut hasher, pt["y"].as_str().unwrap_or("0x0"));
+                    }
+                }
+                if let Some(scalars) = op["scalars"].as_array() {
+                    for s in scalars {
+                        feed_hex_to_hasher(&mut hasher, s.as_str().unwrap_or("0x0"));
+                    }
+                }
+                feed_hex_to_hasher(&mut hasher, op["result"]["x"].as_str().unwrap_or("0x0"));
+                feed_hex_to_hasher(&mut hasher, op["result"]["y"].as_str().unwrap_or("0x0"));
+            }
+            _ => {}
+        }
+    }
+
+    let hash = hasher.finalize();
+    format!("0x{}", hex::encode(hash))
+}
+
+/// Decode a "0x..." hex string and feed the raw bytes into a SHA-256 hasher.
+fn feed_hex_to_hasher(hasher: &mut Sha256, hex_str: &str) {
+    let stripped = hex_str.strip_prefix("0x").unwrap_or(hex_str);
+    if let Ok(bytes) = hex::decode(stripped) {
+        hasher.update(&bytes);
+    }
+}
+
+/// Count mul and add operations in a slice of EC operation JSON values.
+fn count_ops(ops: &[serde_json::Value]) -> (usize, usize, usize) {
+    let mut num_mul = 0usize;
+    let mut num_add = 0usize;
+    let mut num_msm = 0usize;
+    for op in ops {
+        match op["type"].as_str().unwrap_or("") {
+            "mul" => num_mul += 1,
+            "add" => num_add += 1,
+            "msm" => num_msm += 1,
+            _ => {}
+        }
+    }
+    (num_mul, num_add, num_msm)
+}
+
+/// Separate operations into mul-only and add-only lists for the per-chunk format.
+fn split_mul_add(ops: &[serde_json::Value]) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
+    let mut mul_ops = Vec::new();
+    let mut add_ops = Vec::new();
+    for op in ops {
+        match op["type"].as_str().unwrap_or("") {
+            "mul" => {
+                mul_ops.push(json!({
+                    "point": op["point"].clone(),
+                    "scalar": op["scalar"].clone(),
+                    "result": op["result"].clone(),
+                }));
+            }
+            "add" => {
+                add_ops.push(json!({
+                    "point1": op["point1"].clone(),
+                    "point2": op["point2"].clone(),
+                    "result": op["result"].clone(),
+                }));
+            }
+            "msm" => {
+                // Expand MSM into individual mul + add operations for the chunk format.
+                // An MSM of N points is N muls followed by N-1 adds.
+                // However, since the gnark circuit may handle MSMs natively,
+                // we keep them as mul ops with the MSM metadata.
+                if let Some(points) = op["points"].as_array() {
+                    if let Some(scalars) = op["scalars"].as_array() {
+                        for (pt, s) in points.iter().zip(scalars.iter()) {
+                            mul_ops.push(json!({
+                                "point": pt.clone(),
+                                "scalar": s.clone(),
+                                "result": op["result"].clone(),  // MSM result for reference
+                            }));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    (mul_ops, add_ops)
+}
+
+/// Write chunked output files to the given directory.
+fn write_chunked_output(
+    output_dir: &PathBuf,
+    ops: &[serde_json::Value],
+    chunk_size: usize,
+    transcript_digest: &str,
+    circuit_hash: &[String; 2],
+) -> Result<()> {
+    std::fs::create_dir_all(output_dir)?;
+
+    let ops_digest = compute_ops_digest(ops);
+    let chunks = chunk_operations(ops, chunk_size);
+    let total_chunks = chunks.len();
+
+    let mut chunk_summaries = Vec::new();
+
+    for (i, chunk) in chunks.iter().enumerate() {
+        let (mul_ops, add_ops) = split_mul_add(chunk);
+        let (num_mul, num_add, num_msm) = count_ops(chunk);
+
+        let chunk_json = json!({
+            "chunkIndex": i,
+            "totalChunks": total_chunks,
+            "opsDigest": &ops_digest,
+            "transcriptDigest": transcript_digest,
+            "circuitHash": circuit_hash,
+            "mulOps": mul_ops,
+            "addOps": add_ops,
+            "stats": {
+                "numMul": num_mul,
+                "numAdd": num_add,
+                "numMsm": num_msm,
+            }
+        });
+
+        let chunk_filename = format!("chunk_{}.json", i);
+        let chunk_path = output_dir.join(&chunk_filename);
+        let file = std::fs::File::create(&chunk_path)?;
+        serde_json::to_writer_pretty(file, &chunk_json)?;
+        eprintln!("  Wrote {} ({} ops)", chunk_path.display(), chunk.len());
+
+        chunk_summaries.push(json!({
+            "index": i,
+            "file": chunk_filename,
+            "numMul": num_mul,
+            "numAdd": num_add,
+            "numMsm": num_msm,
+        }));
+    }
+
+    // Write summary.json
+    let summary = json!({
+        "totalChunks": total_chunks,
+        "totalOps": ops.len(),
+        "opsDigest": &ops_digest,
+        "transcriptDigest": transcript_digest,
+        "circuitHash": circuit_hash,
+        "chunks": chunk_summaries,
+    });
+
+    let summary_path = output_dir.join("summary.json");
+    let file = std::fs::File::create(&summary_path)?;
+    serde_json::to_writer_pretty(file, &summary)?;
+    eprintln!("  Wrote {}", summary_path.display());
+
+    Ok(())
 }
 
 // ============================================================================
@@ -465,11 +675,21 @@ fn main() -> Result<()> {
     let num_trees = parse_arg_usize("--trees", 4);
     let depth = parse_arg_usize("--depth", 2);
     let num_features = parse_arg_usize("--features", 5);
+    let chunk_size = parse_arg_usize("--chunk-size", 500);
+    let output_dir: Option<PathBuf> = parse_arg("--output-dir").map(PathBuf::from);
+    let _ops_digest_algo = parse_arg("--ops-digest-algo").unwrap_or_else(|| "sha256".to_string());
 
     eprintln!(
         "EC witness extractor: trees={}, depth={}, features={}",
         num_trees, depth, num_features
     );
+    if let Some(ref dir) = output_dir {
+        eprintln!(
+            "  Chunked output: dir={}, chunk_size={}",
+            dir.display(),
+            chunk_size
+        );
+    }
 
     // ================================================================
     // Build XGBoost circuit and generate proof
@@ -1281,35 +1501,85 @@ fn main() -> Result<()> {
     // Build JSON output
     // ================================================================
 
-    let output = json!({
-        "transcriptDigest": fr_to_hex(&transcript_digest),
-        "circuitHash": [fr_to_hex(&circuit_hash_0_fr), fr_to_hex(&circuit_hash_1_fr)],
-        "ecOperations": ec.ops,
-        "frOutputs": {
-            "rlcBetas": rlc_betas.iter().map(fr_to_hex).collect::<Vec<_>>(),
-            "zDotJStars": z_dot_jstars.iter().map(fr_to_hex).collect::<Vec<_>>(),
-            "lTensorFlat": l_tensor_flat.iter().map(fr_to_hex).collect::<Vec<_>>(),
-            "lTensorOffsets": l_tensor_offsets,
-            "zDotRs": z_dot_rs.iter().map(fr_to_hex).collect::<Vec<_>>(),
-            "mleEvals": mle_evals.iter().map(fr_to_hex).collect::<Vec<_>>(),
-        },
-        "generatorPoints": {
-            "messageGens": gen_points,
-            "scalarGen": point_to_json(&scalar_gen),
-            "blindingGen": point_to_json(&blinding_gen),
-        },
-        "stats": {
-            "totalEcMul": ec.total_ec_mul,
-            "totalEcAdd": ec.total_ec_add,
-            "totalMsm": ec.total_msm,
-            "totalMsmPoints": ec.total_msm_points,
-            "numComputeLayers": num_compute,
-            "numInputGroups": input_group_extracts.len(),
-            "numPublicClaims": public_claim_points.len(),
-        },
-    });
+    let transcript_digest_hex = fr_to_hex(&transcript_digest);
+    let circuit_hash_hex = [fr_to_hex(&circuit_hash_0_fr), fr_to_hex(&circuit_hash_1_fr)];
 
-    println!("{}", serde_json::to_string_pretty(&output)?);
+    if let Some(ref dir) = output_dir {
+        // ---- Chunked output mode ----
+        eprintln!("Writing chunked output to {}...", dir.display());
+        write_chunked_output(
+            dir,
+            &ec.ops,
+            chunk_size,
+            &transcript_digest_hex,
+            &circuit_hash_hex,
+        )?;
+
+        // Also write the Fr outputs and generator points alongside the chunks
+        // so the downstream pipeline has everything in one place.
+        let meta = json!({
+            "transcriptDigest": &transcript_digest_hex,
+            "circuitHash": &circuit_hash_hex,
+            "opsDigest": compute_ops_digest(&ec.ops),
+            "frOutputs": {
+                "rlcBetas": rlc_betas.iter().map(fr_to_hex).collect::<Vec<_>>(),
+                "zDotJStars": z_dot_jstars.iter().map(fr_to_hex).collect::<Vec<_>>(),
+                "lTensorFlat": l_tensor_flat.iter().map(fr_to_hex).collect::<Vec<_>>(),
+                "lTensorOffsets": l_tensor_offsets,
+                "zDotRs": z_dot_rs.iter().map(fr_to_hex).collect::<Vec<_>>(),
+                "mleEvals": mle_evals.iter().map(fr_to_hex).collect::<Vec<_>>(),
+            },
+            "generatorPoints": {
+                "messageGens": gen_points,
+                "scalarGen": point_to_json(&scalar_gen),
+                "blindingGen": point_to_json(&blinding_gen),
+            },
+            "stats": {
+                "totalEcMul": ec.total_ec_mul,
+                "totalEcAdd": ec.total_ec_add,
+                "totalMsm": ec.total_msm,
+                "totalMsmPoints": ec.total_msm_points,
+                "numComputeLayers": num_compute,
+                "numInputGroups": input_group_extracts.len(),
+                "numPublicClaims": public_claim_points.len(),
+            },
+        });
+        let meta_path = dir.join("metadata.json");
+        let file = std::fs::File::create(&meta_path)?;
+        serde_json::to_writer_pretty(file, &meta)?;
+        eprintln!("  Wrote {}", meta_path.display());
+    } else {
+        // ---- Single JSON to stdout (backward-compatible) ----
+        let output = json!({
+            "transcriptDigest": &transcript_digest_hex,
+            "circuitHash": &circuit_hash_hex,
+            "ecOperations": ec.ops,
+            "frOutputs": {
+                "rlcBetas": rlc_betas.iter().map(fr_to_hex).collect::<Vec<_>>(),
+                "zDotJStars": z_dot_jstars.iter().map(fr_to_hex).collect::<Vec<_>>(),
+                "lTensorFlat": l_tensor_flat.iter().map(fr_to_hex).collect::<Vec<_>>(),
+                "lTensorOffsets": l_tensor_offsets,
+                "zDotRs": z_dot_rs.iter().map(fr_to_hex).collect::<Vec<_>>(),
+                "mleEvals": mle_evals.iter().map(fr_to_hex).collect::<Vec<_>>(),
+            },
+            "generatorPoints": {
+                "messageGens": gen_points,
+                "scalarGen": point_to_json(&scalar_gen),
+                "blindingGen": point_to_json(&blinding_gen),
+            },
+            "stats": {
+                "totalEcMul": ec.total_ec_mul,
+                "totalEcAdd": ec.total_ec_add,
+                "totalMsm": ec.total_msm,
+                "totalMsmPoints": ec.total_msm_points,
+                "numComputeLayers": num_compute,
+                "numInputGroups": input_group_extracts.len(),
+                "numPublicClaims": public_claim_points.len(),
+            },
+        });
+
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    }
 
     Ok(())
 }
@@ -1744,5 +2014,191 @@ mod tests {
         let j = point_to_json(&p);
         assert!(j["x"].is_string());
         assert!(j["y"].is_string());
+    }
+
+    #[test]
+    fn test_chunk_operations_basic() {
+        let ops: Vec<serde_json::Value> = (0..10)
+            .map(|i| {
+                json!({
+                    "type": if i % 2 == 0 { "mul" } else { "add" },
+                    "index": i,
+                })
+            })
+            .collect();
+
+        // Chunk size 3 -> 4 chunks (3, 3, 3, 1)
+        let chunks = chunk_operations(&ops, 3);
+        assert_eq!(chunks.len(), 4);
+        assert_eq!(chunks[0].len(), 3);
+        assert_eq!(chunks[1].len(), 3);
+        assert_eq!(chunks[2].len(), 3);
+        assert_eq!(chunks[3].len(), 1);
+
+        // Chunk size 10 -> 1 chunk
+        let chunks = chunk_operations(&ops, 10);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].len(), 10);
+
+        // Chunk size 0 -> single chunk (all ops)
+        let chunks = chunk_operations(&ops, 0);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].len(), 10);
+    }
+
+    #[test]
+    fn test_chunk_operations_empty() {
+        let ops: Vec<serde_json::Value> = Vec::new();
+        let chunks = chunk_operations(&ops, 5);
+        assert_eq!(chunks.len(), 0);
+    }
+
+    #[test]
+    fn test_ops_digest_deterministic() {
+        let ops = vec![
+            json!({
+                "type": "mul",
+                "point": {"x": "0xabcd", "y": "0x1234"},
+                "scalar": "0xff",
+                "result": {"x": "0x5678", "y": "0x9abc"},
+            }),
+            json!({
+                "type": "add",
+                "point1": {"x": "0x1111", "y": "0x2222"},
+                "point2": {"x": "0x3333", "y": "0x4444"},
+                "result": {"x": "0x5555", "y": "0x6666"},
+            }),
+        ];
+
+        let d1 = compute_ops_digest(&ops);
+        let d2 = compute_ops_digest(&ops);
+        assert_eq!(d1, d2, "digest must be deterministic");
+        assert!(d1.starts_with("0x"), "digest must be hex-prefixed");
+        assert_eq!(d1.len(), 2 + 64, "SHA-256 digest is 32 bytes = 64 hex chars");
+    }
+
+    #[test]
+    fn test_ops_digest_changes_with_data() {
+        let ops_a = vec![json!({
+            "type": "mul",
+            "point": {"x": "0x01", "y": "0x02"},
+            "scalar": "0x03",
+            "result": {"x": "0x04", "y": "0x05"},
+        })];
+        let ops_b = vec![json!({
+            "type": "mul",
+            "point": {"x": "0x01", "y": "0x02"},
+            "scalar": "0x99",
+            "result": {"x": "0x04", "y": "0x05"},
+        })];
+
+        let da = compute_ops_digest(&ops_a);
+        let db = compute_ops_digest(&ops_b);
+        assert_ne!(da, db, "different data must produce different digests");
+    }
+
+    #[test]
+    fn test_count_ops() {
+        let ops = vec![
+            json!({"type": "mul"}),
+            json!({"type": "add"}),
+            json!({"type": "mul"}),
+            json!({"type": "msm"}),
+            json!({"type": "add"}),
+            json!({"type": "add"}),
+        ];
+        let (m, a, msm) = count_ops(&ops);
+        assert_eq!(m, 2);
+        assert_eq!(a, 3);
+        assert_eq!(msm, 1);
+    }
+
+    #[test]
+    fn test_split_mul_add() {
+        let ops = vec![
+            json!({
+                "type": "mul",
+                "point": {"x": "0x1", "y": "0x2"},
+                "scalar": "0x3",
+                "result": {"x": "0x4", "y": "0x5"},
+            }),
+            json!({
+                "type": "add",
+                "point1": {"x": "0xa", "y": "0xb"},
+                "point2": {"x": "0xc", "y": "0xd"},
+                "result": {"x": "0xe", "y": "0xf"},
+            }),
+        ];
+        let (mul_ops, add_ops) = split_mul_add(&ops);
+        assert_eq!(mul_ops.len(), 1);
+        assert_eq!(add_ops.len(), 1);
+        // mul op should not have "type" field
+        assert!(mul_ops[0].get("type").is_none());
+        assert!(mul_ops[0].get("point").is_some());
+        assert!(mul_ops[0].get("scalar").is_some());
+        assert!(mul_ops[0].get("result").is_some());
+        // add op should not have "type" field
+        assert!(add_ops[0].get("type").is_none());
+        assert!(add_ops[0].get("point1").is_some());
+        assert!(add_ops[0].get("point2").is_some());
+        assert!(add_ops[0].get("result").is_some());
+    }
+
+    #[test]
+    fn test_write_chunked_output() {
+        let tmp = std::env::temp_dir().join("ec_chunk_test");
+        let _ = std::fs::remove_dir_all(&tmp); // clean up from prior runs
+
+        let ops: Vec<serde_json::Value> = (0..7)
+            .map(|i| {
+                if i % 2 == 0 {
+                    json!({
+                        "type": "mul",
+                        "point": {"x": format!("0x{:064x}", i), "y": format!("0x{:064x}", i+1)},
+                        "scalar": format!("0x{:064x}", i+2),
+                        "result": {"x": format!("0x{:064x}", i+3), "y": format!("0x{:064x}", i+4)},
+                    })
+                } else {
+                    json!({
+                        "type": "add",
+                        "point1": {"x": format!("0x{:064x}", i), "y": format!("0x{:064x}", i+1)},
+                        "point2": {"x": format!("0x{:064x}", i+2), "y": format!("0x{:064x}", i+3)},
+                        "result": {"x": format!("0x{:064x}", i+4), "y": format!("0x{:064x}", i+5)},
+                    })
+                }
+            })
+            .collect();
+
+        let circuit_hash = [
+            "0x0000000000000000000000000000000000000000000000000000000000000001".to_string(),
+            "0x0000000000000000000000000000000000000000000000000000000000000002".to_string(),
+        ];
+
+        write_chunked_output(&tmp, &ops, 3, "0xdeadbeef", &circuit_hash).unwrap();
+
+        // Verify files exist
+        assert!(tmp.join("chunk_0.json").exists());
+        assert!(tmp.join("chunk_1.json").exists());
+        assert!(tmp.join("chunk_2.json").exists());
+        assert!(tmp.join("summary.json").exists());
+
+        // Read and validate summary
+        let summary_str = std::fs::read_to_string(tmp.join("summary.json")).unwrap();
+        let summary: serde_json::Value = serde_json::from_str(&summary_str).unwrap();
+        assert_eq!(summary["totalChunks"], 3);
+        assert_eq!(summary["totalOps"], 7);
+        assert!(summary["opsDigest"].as_str().unwrap().starts_with("0x"));
+        assert_eq!(summary["transcriptDigest"], "0xdeadbeef");
+
+        // Read and validate chunk_0
+        let chunk_str = std::fs::read_to_string(tmp.join("chunk_0.json")).unwrap();
+        let chunk: serde_json::Value = serde_json::from_str(&chunk_str).unwrap();
+        assert_eq!(chunk["chunkIndex"], 0);
+        assert_eq!(chunk["totalChunks"], 3);
+        assert!(chunk["mulOps"].is_array());
+        assert!(chunk["addOps"].is_array());
+
+        // Clean up
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

@@ -1587,6 +1587,84 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
         HybridStylusGroth16Verifier.callGroth16Verifier(ecAddr, sel, ecGroth16Proof, inputs);
     }
 
+    /// @notice Verify a DAG proof via hybrid Stylus + chunked Groth16 path
+    /// @param proof Proof blob (starts with "REM1" selector)
+    /// @param circuitHash SHA-256 of circuit description
+    /// @param publicInputs Public input values
+    /// @param gensData Pedersen generators
+    /// @param ecGroth16Proofs Array of 8-element Groth16 proofs (one per chunk)
+    /// @param totalChunks Total number of chunks
+    /// @param opsDigest Operations digest binding all chunks together
+    /// @return valid Whether the proof is valid
+    function verifyDAGProofStylusGroth16Chunked(
+        bytes calldata proof,
+        bytes32 circuitHash,
+        bytes calldata publicInputs,
+        bytes calldata gensData,
+        uint256[][] calldata ecGroth16Proofs,
+        uint256 totalChunks,
+        uint256 opsDigest
+    ) external whenNotPaused nonReentrant returns (bool valid) {
+        {
+            DAGCircuitConfig storage config = dagCircuits[circuitHash];
+            if (config.circuitHash == bytes32(0)) revert CircuitNotRegistered();
+            if (!config.active) revert CircuitNotActive();
+            if (proof.length < 4) revert InvalidProofLength();
+            // forge-lint: disable-next-line(unsafe-typecast)
+            if (bytes4(proof[:4]) != bytes4("REM1")) revert InvalidProofSelector();
+            if (config.gensHash != bytes32(0) && gensData.length > 0) {
+                if (keccak256(gensData) != config.gensHash) revert InvalidGenerators();
+            }
+        }
+
+        valid = _execHybridStylusGroth16Chunked(
+            circuitHash, proof, publicInputs, gensData, ecGroth16Proofs, totalChunks, opsDigest
+        );
+        _emitDAGProofVerified(circuitHash, "stylus-groth16-chunked");
+    }
+
+    /// @dev Execute hybrid Stylus + chunked Groth16 verification.
+    function _execHybridStylusGroth16Chunked(
+        bytes32 circuitHash,
+        bytes calldata proof,
+        bytes calldata publicInputs,
+        bytes calldata gensData,
+        uint256[][] calldata ecGroth16Proofs,
+        uint256 totalChunks,
+        uint256 opsDigest
+    ) private view returns (bool) {
+        // Step 1: Stylus call (transcript replay + Fr arithmetic)
+        (bool stylusOk, bytes32 digest,) = _hybridStylusStep(circuitHash, proof, publicInputs, gensData);
+        if (!stylusOk) return false;
+
+        // Step 2: Verify all Groth16 chunks
+        _hybridGroth16ChunkedStep(circuitHash, digest, ecGroth16Proofs, totalChunks, opsDigest);
+        return true;
+    }
+
+    /// @dev Step 2 of chunked hybrid: verify all Groth16 chunks
+    function _hybridGroth16ChunkedStep(
+        bytes32 circuitHash,
+        bytes32 digest,
+        uint256[][] calldata ecGroth16Proofs,
+        uint256 totalChunks,
+        uint256 opsDigest
+    ) private view {
+        address ecAddr = dagECGroth16Verifiers[circuitHash];
+        if (ecAddr == address(0)) revert DAGECGroth16VerifierNotSet();
+        uint256 ecCount = dagECGroth16InputCounts[circuitHash];
+
+        // Convert calldata array to memory for library call
+        uint256[][] memory proofsMemory = new uint256[][](ecGroth16Proofs.length);
+        for (uint256 i = 0; i < ecGroth16Proofs.length; i++) {
+            proofsMemory[i] = ecGroth16Proofs[i];
+        }
+
+        HybridStylusGroth16Verifier.verifyAllChunks(
+            ecAddr, ecCount, digest, circuitHash, proofsMemory, totalChunks, opsDigest
+        );
+    }
+
     /// @dev Encode DAGCircuitDescription into flat binary format matching gen_calldata.rs
     /// Format: numComputeLayers(32B) + numInputLayers(32B) + 11 length-prefixed arrays
     /// Each array: count(32B) + count elements(32B each)

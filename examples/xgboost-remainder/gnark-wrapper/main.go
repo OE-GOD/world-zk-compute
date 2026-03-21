@@ -42,6 +42,8 @@ func main() {
 		cmdDAGInfo()
 	case "prove-ec-json":
 		cmdECProveJSON()
+	case "prove-ec-chunked-json":
+		cmdECChunkedProveJSON()
 	case "ec-info":
 		cmdECInfo()
 	case "export-solidity":
@@ -64,8 +66,9 @@ func printUsage() {
 	fmt.Println("  prove-json      Like prove, but output JSON fixture for Solidity tests")
 	fmt.Println("  prove-dag-json  Generate Groth16 proof for DAG circuit from witness JSON (stdin)")
 	fmt.Println("  dag-info        Show DAG circuit info from witness JSON (stdin)")
-	fmt.Println("  prove-ec-json   Generate Groth16 proof for EC batch circuit (stdin)")
-	fmt.Println("  ec-info         Show EC circuit info from witness JSON (stdin)")
+	fmt.Println("  prove-ec-json          Generate Groth16 proof for EC batch circuit (stdin)")
+	fmt.Println("  prove-ec-chunked-json  Generate Groth16 proof for a single EC chunk (stdin)")
+	fmt.Println("  ec-info                Show EC circuit info from witness JSON (stdin)")
 	fmt.Println("  export-solidity Export Solidity verifier contract")
 	fmt.Println("  info            Show circuit info (constraints, etc.)")
 	fmt.Println()

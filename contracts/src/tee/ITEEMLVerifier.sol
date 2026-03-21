@@ -270,4 +270,25 @@ interface ITEEMLVerifier {
         bytes calldata gensData,
         uint256[8] calldata ecGroth16Proof
     ) external;
+
+    /// @notice Resolve a dispute using chunked hybrid Stylus+Groth16 verification.
+    /// @dev For large circuits that require multiple Groth16 proof chunks.
+    /// @param resultId The disputed result
+    /// @param proof The ZK proof bytes
+    /// @param circuitHash Hash identifying the verification circuit
+    /// @param publicInputs Public inputs for the ZK proof
+    /// @param gensData Generator data for the ZK proof verification
+    /// @param ecGroth16Proofs Array of 8-element Groth16 proofs (one per chunk)
+    /// @param totalChunks Total number of chunks
+    /// @param opsDigest Operations digest binding all chunks together
+    function resolveDisputeHybridChunked(
+        bytes32 resultId,
+        bytes calldata proof,
+        bytes32 circuitHash,
+        bytes calldata publicInputs,
+        bytes calldata gensData,
+        uint256[][] calldata ecGroth16Proofs,
+        uint256 totalChunks,
+        uint256 opsDigest
+    ) external;
 }

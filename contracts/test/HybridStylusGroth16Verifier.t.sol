@@ -81,6 +81,19 @@ contract MockHybridRemainderVerifier {
         lastCalled = "hybrid";
         return nextResult;
     }
+
+    function verifyDAGProofStylusGroth16Chunked(
+        bytes calldata,
+        bytes32,
+        bytes calldata,
+        bytes calldata,
+        uint256[][] calldata,
+        uint256,
+        uint256
+    ) external returns (bool) {
+        lastCalled = "hybrid-chunked";
+        return nextResult;
+    }
 }
 
 /// @dev Wrapper to expose library internal functions for testing.
@@ -163,6 +176,65 @@ contract HybridVerifierHarness {
             stylusVerifier, proof, publicInputs, gensData, circuitDescData
         );
     }
+
+    function buildChunkedGroth16Inputs(
+        bytes32 transcriptDigest,
+        bytes32 circuitHash,
+        uint256 chunkIndex,
+        uint256 totalChunks,
+        uint256 opsDigest,
+        uint256 expectedCount
+    ) external pure returns (uint256[] memory) {
+        return HybridStylusGroth16Verifier.buildChunkedGroth16Inputs(
+            transcriptDigest, circuitHash, chunkIndex, totalChunks, opsDigest, expectedCount
+        );
+    }
+
+    function verifyAllChunks(
+        address ecVerifier,
+        uint256 ecInputCount,
+        bytes32 transcriptDigest,
+        bytes32 circuitHash,
+        uint256[][] memory chunkProofs,
+        uint256 totalChunks,
+        uint256 opsDigest
+    ) external view {
+        HybridStylusGroth16Verifier.verifyAllChunks(
+            ecVerifier, ecInputCount, transcriptDigest, circuitHash, chunkProofs, totalChunks, opsDigest
+        );
+    }
+
+    /// @dev Full chunked hybrid verification using storage-based step splitting
+    function verifyHybridChunkedTwoStep(
+        address stylusVerifier,
+        address ecGroth16Verifier,
+        uint256 ecGroth16InputCount,
+        bytes calldata proof,
+        bytes32 circuitHash,
+        bytes calldata publicInputs,
+        bytes calldata gensData,
+        bytes memory circuitDescData,
+        uint256[][] memory ecGroth16Proofs
+    ) external returns (bool) {
+        // Step 1: Stylus call
+        _runStylusStep(stylusVerifier, proof, publicInputs, gensData, circuitDescData);
+        if (!_lastStylusOk) return false;
+
+        // Step 2: Chunked Groth16
+        uint256 opsDigest = uint256(keccak256(_lastFrOutputs)) % FR_MODULUS;
+        HybridStylusGroth16Verifier.verifyAllChunks(
+            ecGroth16Verifier,
+            ecGroth16InputCount,
+            _lastDigest,
+            circuitHash,
+            ecGroth16Proofs,
+            ecGroth16Proofs.length,
+            opsDigest
+        );
+        return true;
+    }
+
+    uint256 constant FR_MODULUS = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
 }
 
 // =============================================================================
@@ -354,6 +426,134 @@ contract HybridStylusGroth16VerifierTest is Test {
             address(mockStylus), address(mockGroth16), 3, hex"1234", bytes32(0), hex"", hex"", "", ecProof
         );
     }
+
+    // ---- buildChunkedGroth16Inputs tests ----
+
+    function test_buildChunkedGroth16Inputs_basicLayout() public view {
+        bytes32 digest = bytes32(uint256(42));
+        bytes32 cHash = bytes32(uint256(123));
+
+        uint256[] memory inputs = harness.buildChunkedGroth16Inputs(digest, cHash, 2, 5, 999, 0);
+
+        assertEq(inputs.length, 6);
+        assertEq(inputs[0], uint256(digest) % FR_MODULUS);
+        // inputs[1] and [2] are circuitHash lo/hi
+        assertEq(inputs[3], 2); // chunkIndex
+        assertEq(inputs[4], 5); // totalChunks
+        assertEq(inputs[5], 999); // opsDigest
+    }
+
+    function test_buildChunkedGroth16Inputs_expectedCountPads() public view {
+        uint256[] memory inputs = harness.buildChunkedGroth16Inputs(bytes32(uint256(1)), bytes32(0), 0, 3, 42, 10);
+
+        assertEq(inputs.length, 10);
+        assertEq(inputs[3], 0); // chunkIndex
+        assertEq(inputs[4], 3); // totalChunks
+        assertEq(inputs[5], 42); // opsDigest
+        // Remaining slots are zero-padded
+        assertEq(inputs[6], 0);
+        assertEq(inputs[9], 0);
+    }
+
+    function test_buildChunkedGroth16Inputs_digestReducedModFr() public view {
+        bytes32 digest = bytes32(type(uint256).max);
+        uint256[] memory inputs = harness.buildChunkedGroth16Inputs(digest, bytes32(0), 0, 1, 0, 0);
+
+        assertEq(inputs[0], type(uint256).max % FR_MODULUS);
+        assertTrue(inputs[0] < FR_MODULUS);
+    }
+
+    // ---- verifyAllChunks tests ----
+
+    function test_verifyAllChunks_singleChunk() public view {
+        uint256[][] memory chunks = new uint256[][](1);
+        chunks[0] = new uint256[](8);
+
+        harness.verifyAllChunks(address(mockGroth16), 6, bytes32(uint256(1)), bytes32(uint256(2)), chunks, 1, 42);
+    }
+
+    function test_verifyAllChunks_multipleChunks() public view {
+        uint256[][] memory chunks = new uint256[][](3);
+        for (uint256 i = 0; i < 3; i++) {
+            chunks[i] = new uint256[](8);
+        }
+
+        harness.verifyAllChunks(address(mockGroth16), 6, bytes32(uint256(1)), bytes32(uint256(2)), chunks, 3, 42);
+    }
+
+    function test_verifyAllChunks_revertsZeroChunks() public {
+        uint256[][] memory chunks = new uint256[][](0);
+
+        vm.expectRevert(HybridStylusGroth16Verifier.InvalidChunkCount.selector);
+        harness.verifyAllChunks(address(mockGroth16), 6, bytes32(0), bytes32(0), chunks, 0, 0);
+    }
+
+    function test_verifyAllChunks_revertsMismatchedCount() public {
+        uint256[][] memory chunks = new uint256[][](2);
+        chunks[0] = new uint256[](8);
+        chunks[1] = new uint256[](8);
+
+        vm.expectRevert(HybridStylusGroth16Verifier.InvalidChunkCount.selector);
+        harness.verifyAllChunks(address(mockGroth16), 6, bytes32(0), bytes32(0), chunks, 3, 0);
+    }
+
+    function test_verifyAllChunks_revertsWrongProofLength() public {
+        uint256[][] memory chunks = new uint256[][](1);
+        chunks[0] = new uint256[](7); // Should be 8
+
+        vm.expectRevert(abi.encodeWithSelector(HybridStylusGroth16Verifier.ChunkVerificationFailed.selector, 0));
+        harness.verifyAllChunks(address(mockGroth16), 6, bytes32(0), bytes32(0), chunks, 1, 0);
+    }
+
+    function test_verifyAllChunks_revertsOnGroth16Failure() public {
+        mockGroth16.setShouldRevert(true);
+
+        uint256[][] memory chunks = new uint256[][](1);
+        chunks[0] = new uint256[](8);
+
+        vm.expectRevert();
+        harness.verifyAllChunks(address(mockGroth16), 6, bytes32(0), bytes32(0), chunks, 1, 0);
+    }
+
+    // ---- verifyHybridChunked end-to-end tests ----
+
+    function test_verifyHybridChunked_fullSuccess() public {
+        bytes32 digest = bytes32(uint256(0xBEEF));
+        bytes memory frOutputs = abi.encodePacked(uint256(42));
+        mockStylus.setResult(true, digest, frOutputs);
+
+        uint256[][] memory chunks = new uint256[][](2);
+        for (uint256 i = 0; i < 2; i++) {
+            chunks[i] = new uint256[](8);
+        }
+
+        bool result = harness.verifyHybridChunkedTwoStep(
+            address(mockStylus),
+            address(mockGroth16),
+            6,
+            hex"1234",
+            bytes32(uint256(99)),
+            hex"5678",
+            hex"abcd",
+            "",
+            chunks
+        );
+
+        assertTrue(result);
+    }
+
+    function test_verifyHybridChunked_stylusFails() public {
+        mockStylus.setResult(false, bytes32(0), "");
+
+        uint256[][] memory chunks = new uint256[][](1);
+        chunks[0] = new uint256[](8);
+
+        bool result = harness.verifyHybridChunkedTwoStep(
+            address(mockStylus), address(mockGroth16), 6, hex"1234", bytes32(0), hex"", hex"", "", chunks
+        );
+
+        assertFalse(result);
+    }
 }
 
 // =============================================================================
@@ -522,6 +722,93 @@ contract TEEMLVerifierHybridTest is Test {
         vm.expectRevert(abi.encodeWithSelector(ITEEMLVerifier.AlreadyResolved.selector));
         verifier.resolveDisputeHybrid(resultId, hex"", bytes32(0), hex"", hex"", ecProof);
     }
+
+    // ---- resolveDisputeHybridChunked tests ----
+
+    function test_resolveDisputeHybridChunked_routesToChunked() public {
+        verifier.setUseStylusGroth16(true);
+        bytes32 resultId = _submitAndChallenge();
+        mockVerifier.setResult(true);
+
+        uint256 balBefore = address(this).balance;
+
+        vm.expectEmit(true, false, false, true);
+        emit DisputeResolved(resultId, true);
+
+        uint256[][] memory chunks = new uint256[][](2);
+        for (uint256 i = 0; i < 2; i++) {
+            chunks[i] = new uint256[](8);
+        }
+
+        verifier.resolveDisputeHybridChunked(resultId, hex"", bytes32(0), hex"", hex"", chunks, 2, 42);
+
+        assertEq(
+            keccak256(bytes(mockVerifier.lastCalled())),
+            keccak256(bytes("hybrid-chunked")),
+            "Should route to verifyDAGProofStylusGroth16Chunked"
+        );
+        assertTrue(verifier.disputeResolved(resultId));
+        assertTrue(verifier.disputeProverWon(resultId));
+        assertTrue(verifier.isResultValid(resultId));
+        assertEq(address(this).balance, balBefore + DEFAULT_PROVER_STAKE + DEFAULT_CHALLENGE_BOND);
+    }
+
+    function test_resolveDisputeHybridChunked_revertsWhenDisabled() public {
+        assertFalse(verifier.useStylusGroth16());
+        bytes32 resultId = _submitAndChallenge();
+
+        uint256[][] memory chunks = new uint256[][](1);
+        chunks[0] = new uint256[](8);
+
+        vm.expectRevert(abi.encodeWithSelector(ITEEMLVerifier.HybridNotEnabled.selector));
+        verifier.resolveDisputeHybridChunked(resultId, hex"", bytes32(0), hex"", hex"", chunks, 1, 0);
+    }
+
+    function test_resolveDisputeHybridChunked_challengerWins() public {
+        verifier.setUseStylusGroth16(true);
+        bytes32 resultId = _submitAndChallenge();
+        mockVerifier.setResult(false);
+
+        address challenger = address(0xC0FFEE);
+        uint256 challengerBalBefore = challenger.balance;
+
+        uint256[][] memory chunks = new uint256[][](1);
+        chunks[0] = new uint256[](8);
+
+        verifier.resolveDisputeHybridChunked(resultId, hex"", bytes32(0), hex"", hex"", chunks, 1, 0);
+
+        assertTrue(verifier.disputeResolved(resultId));
+        assertFalse(verifier.disputeProverWon(resultId));
+        assertFalse(verifier.isResultValid(resultId));
+        assertEq(challenger.balance, challengerBalBefore + DEFAULT_CHALLENGE_BOND + DEFAULT_PROVER_STAKE);
+    }
+
+    function test_resolveDisputeHybridChunked_revertsNotChallenged() public {
+        verifier.setUseStylusGroth16(true);
+
+        bytes memory att = _signAttestation(modelHash, inputHash, resultData);
+        bytes32 resultId = verifier.submitResult{value: DEFAULT_PROVER_STAKE}(modelHash, inputHash, resultData, att);
+
+        uint256[][] memory chunks = new uint256[][](1);
+        chunks[0] = new uint256[](8);
+
+        vm.expectRevert(abi.encodeWithSelector(ITEEMLVerifier.NotChallenged.selector));
+        verifier.resolveDisputeHybridChunked(resultId, hex"", bytes32(0), hex"", hex"", chunks, 1, 0);
+    }
+
+    function test_resolveDisputeHybridChunked_revertsAlreadyResolved() public {
+        verifier.setUseStylusGroth16(true);
+        bytes32 resultId = _submitAndChallenge();
+        mockVerifier.setResult(true);
+
+        uint256[][] memory chunks = new uint256[][](1);
+        chunks[0] = new uint256[](8);
+
+        verifier.resolveDisputeHybridChunked(resultId, hex"", bytes32(0), hex"", hex"", chunks, 1, 0);
+
+        vm.expectRevert(abi.encodeWithSelector(ITEEMLVerifier.AlreadyResolved.selector));
+        verifier.resolveDisputeHybridChunked(resultId, hex"", bytes32(0), hex"", hex"", chunks, 1, 0);
+    }
 }
 
 // =============================================================================
@@ -618,5 +905,37 @@ contract RemainderVerifierHybridTest is Test {
         // Proof too short (< 4 bytes)
         vm.expectRevert(RemainderVerifier.InvalidProofLength.selector);
         verifier.verifyDAGProofStylusGroth16(hex"52454d", circuitHash, hex"", hex"", ecProof);
+    }
+
+    // ---- verifyDAGProofStylusGroth16Chunked validation tests ----
+
+    function test_verifyDAGProofStylusGroth16Chunked_revertsUnregisteredCircuit() public {
+        bytes32 unknownHash = bytes32(uint256(0x9999));
+        uint256[][] memory chunks = new uint256[][](1);
+        chunks[0] = new uint256[](8);
+
+        vm.expectRevert(RemainderVerifier.CircuitNotRegistered.selector);
+        verifier.verifyDAGProofStylusGroth16Chunked(hex"52454d31", unknownHash, hex"", hex"", chunks, 1, 0);
+    }
+
+    function test_verifyDAGProofStylusGroth16Chunked_revertsInvalidSelector() public {
+        verifier.setDAGStylusVerifier(circuitHash, address(0xBEEF));
+        verifier.setDAGECGroth16Verifier(circuitHash, address(0xBEEF), 6);
+
+        uint256[][] memory chunks = new uint256[][](1);
+        chunks[0] = new uint256[](8);
+
+        // "XXXX" instead of "REM1"
+        vm.expectRevert(RemainderVerifier.InvalidProofSelector.selector);
+        verifier.verifyDAGProofStylusGroth16Chunked(hex"58585858", circuitHash, hex"", hex"", chunks, 1, 0);
+    }
+
+    function test_verifyDAGProofStylusGroth16Chunked_revertsInvalidProofLength() public {
+        uint256[][] memory chunks = new uint256[][](1);
+        chunks[0] = new uint256[](8);
+
+        // Proof too short (< 4 bytes)
+        vm.expectRevert(RemainderVerifier.InvalidProofLength.selector);
+        verifier.verifyDAGProofStylusGroth16Chunked(hex"52454d", circuitHash, hex"", hex"", chunks, 1, 0);
     }
 }
