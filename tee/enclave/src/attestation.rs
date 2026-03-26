@@ -183,6 +183,7 @@ impl Attestor {
     /// * `input_hash` - keccak256 of the input
     /// * `result_bytes` - raw inference result (hashed internally)
     /// * `verifier_address` - address of the TEEMLVerifier contract
+    #[allow(dead_code)] // Used in tests; will be called from production EIP-712 flow
     pub fn sign_eip712_attestation(
         &self,
         model_hash: B256,
@@ -237,6 +238,7 @@ impl Attestor {
     /// Compute the EIP-712 domain separator matching TEEMLVerifier.sol.
     ///
     /// `keccak256(abi.encode(EIP712_DOMAIN_TYPEHASH, nameHash, versionHash, chainId, verifyingContract))`
+    #[allow(dead_code)] // Used in tests; will be called from production EIP-712 flow
     pub fn compute_domain_separator(chain_id: u64, verifier_address: Address) -> B256 {
         let domain_typehash = keccak256(
             b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)",
@@ -261,6 +263,7 @@ impl Attestor {
     }
 
     /// ABI-encode a struct: keccak256(typehash || field1 || field2 || field3)
+    #[allow(dead_code)] // Used in tests; will be called from production EIP-712 flow
     fn abi_encode_struct(typehash: B256, field1: B256, field2: B256, field3: B256) -> Vec<u8> {
         let mut encoded = Vec::with_capacity(128);
         encoded.extend_from_slice(typehash.as_slice());

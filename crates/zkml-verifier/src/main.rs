@@ -20,7 +20,7 @@ fn main() {
         "bundle" => cmd_bundle(&args[2..]),
         "--help" | "-h" => print_usage(),
         // Legacy: treat first arg as a file path for backward compat
-        path if path.ends_with(".json") => cmd_verify(&args[1..]),
+        path if path.ends_with(".json") || path.ends_with(".json.gz") => cmd_verify(&args[1..]),
         _ => {
             eprintln!("Unknown command: {}", args[1]);
             print_usage();
@@ -31,14 +31,18 @@ fn main() {
 
 fn print_usage() {
     eprintln!("Usage:");
-    eprintln!("  zkml-verifier verify <proof_bundle.json> [--hybrid] [--json]");
+    eprintln!("  zkml-verifier verify <proof_bundle.json|.json.gz> [--hybrid] [--json]");
     eprintln!(
-        "  zkml-verifier bundle --proof <file> --gens <file> --desc <file> [-o <output.json>]"
+        "  zkml-verifier bundle --proof <file> --gens <file> --desc <file> [-o <output.json>] [--compress]"
     );
     eprintln!();
     eprintln!("Commands:");
-    eprintln!("  verify   Verify a proof bundle JSON file");
+    eprintln!("  verify   Verify a proof bundle (auto-detects gzip-compressed files)");
     eprintln!("  bundle   Assemble proof components into a ProofBundle JSON file");
+    eprintln!();
+    eprintln!("Options:");
+    eprintln!("  --compress   Output gzip-compressed bundle (adds .gz suffix if needed)");
+    eprintln!("               Compressed bundles are auto-detected on verify");
 }
 
 fn cmd_verify(args: &[String]) {
@@ -130,6 +134,7 @@ fn cmd_bundle(args: &[String]) {
     let mut desc_path: Option<&str> = None;
     let mut output_path: Option<&str> = None;
     let mut pub_inputs_path: Option<&str> = None;
+    let mut compress = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -153,6 +158,9 @@ fn cmd_bundle(args: &[String]) {
             "-o" | "--output" => {
                 i += 1;
                 output_path = args.get(i).map(|s| s.as_str());
+            }
+            "--compress" => {
+                compress = true;
             }
             _ => {
                 eprintln!("Unknown bundle option: {}", args[i]);
@@ -178,9 +186,7 @@ fn cmd_bundle(args: &[String]) {
     // Read proof (raw bytes -> hex)
     let proof_hex = read_hex_file(proof_path);
     let gens_hex = read_hex_file(gens_path);
-    let pub_inputs_hex = pub_inputs_path
-        .map(|p| read_hex_file(p))
-        .unwrap_or_default();
+    let pub_inputs_hex = pub_inputs_path.map(read_hex_file).unwrap_or_default();
 
     // Read circuit description JSON
     let desc_str = std::fs::read_to_string(desc_path).unwrap_or_else(|e| {
@@ -203,17 +209,54 @@ fn cmd_bundle(args: &[String]) {
         circuit_hash: None,
     };
 
-    let json = serde_json::to_string_pretty(&bundle).unwrap();
-
     match output_path {
         Some(path) => {
-            std::fs::write(path, &json).unwrap_or_else(|e| {
-                eprintln!("Error writing {path}: {e}");
+            // Determine effective path: add .gz suffix if --compress and not already .gz
+            let effective_path = if compress && !path.ends_with(".gz") {
+                format!("{}.gz", path)
+            } else {
+                path.to_string()
+            };
+
+            if let Err(e) = bundle.save(&effective_path) {
+                eprintln!("Error writing {effective_path}: {e}");
                 process::exit(1);
-            });
-            eprintln!("Bundle written to {path}");
+            }
+
+            if compress {
+                let original_size = serde_json::to_string(&bundle).unwrap().len();
+                let compressed_size = std::fs::metadata(&effective_path).unwrap().len() as usize;
+                let ratio = if original_size > 0 {
+                    100.0 - (compressed_size as f64 / original_size as f64 * 100.0)
+                } else {
+                    0.0
+                };
+                eprintln!(
+                    "Bundle written to {effective_path} (compressed: {compressed_size} bytes, {ratio:.1}% reduction from {original_size} bytes)"
+                );
+            } else {
+                eprintln!("Bundle written to {effective_path}");
+            }
         }
-        None => println!("{json}"),
+        None => {
+            if compress {
+                // Write compressed binary to stdout
+                let compressed = bundle.to_compressed_json().unwrap_or_else(|e| {
+                    eprintln!("Error compressing bundle: {e}");
+                    process::exit(1);
+                });
+                use std::io::Write;
+                std::io::stdout()
+                    .write_all(&compressed)
+                    .unwrap_or_else(|e| {
+                        eprintln!("Error writing to stdout: {e}");
+                        process::exit(1);
+                    });
+            } else {
+                let json = serde_json::to_string_pretty(&bundle).unwrap();
+                println!("{json}");
+            }
+        }
     }
 }
 

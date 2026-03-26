@@ -1,7 +1,7 @@
 /// BN254 field arithmetic for Fq (base field) and Fr (scalar field).
 /// Uses simple [u64; 4] limb representation with direct modular arithmetic.
 /// Fq/Fr share common implementations via free functions to minimize code size.
-
+///
 /// BN254 base field modulus Fq
 pub const FQ_MOD: [u64; 4] = [
     0x3c208c16d87cfd47,
@@ -101,10 +101,10 @@ impl U256 {
     pub fn sub_no_mod(&self, other: &U256) -> U256 {
         let mut result = [0u64; 4];
         let mut borrow: u64 = 0;
-        for i in 0..4 {
+        for (i, res) in result.iter_mut().enumerate() {
             let (diff, b1) = self.0[i].overflowing_sub(other.0[i]);
             let (diff2, b2) = diff.overflowing_sub(borrow);
-            result[i] = diff2;
+            *res = diff2;
             borrow = (b1 as u64) + (b2 as u64);
         }
         U256(result)
@@ -114,9 +114,9 @@ impl U256 {
     fn add_no_mod(&self, other: &U256) -> (U256, bool) {
         let mut result = [0u64; 4];
         let mut carry: u64 = 0;
-        for i in 0..4 {
+        for (i, res) in result.iter_mut().enumerate() {
             let sum = (self.0[i] as u128) + (other.0[i] as u128) + (carry as u128);
-            result[i] = sum as u64;
+            *res = sum as u64;
             carry = (sum >> 64) as u64;
         }
         (U256(result), carry != 0)

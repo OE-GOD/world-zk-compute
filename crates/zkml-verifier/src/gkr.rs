@@ -248,12 +248,12 @@ pub fn resolve_point(
     let len = end - start;
     let mut point = vec![U256::ZERO; len];
 
-    for k in 0..len {
+    for (k, pt) in point.iter_mut().enumerate() {
         let entry = desc.pt_data[start + k];
         if entry < 1000 {
-            point[k] = source_bindings[entry as usize];
+            *pt = source_bindings[entry as usize];
         } else if entry >= FIXED_REF_BASE {
-            point[k] = U256::from_u64(entry - FIXED_REF_BASE);
+            *pt = U256::from_u64(entry - FIXED_REF_BASE);
         }
     }
 
@@ -308,8 +308,7 @@ fn verify_products(
         return true;
     }
 
-    let mut commit_idx: usize = 0;
-    for pop in &layer_proof.pops {
+    for (commit_idx, pop) in layer_proof.pops.iter().enumerate() {
         assert!(
             commit_idx + 2 < layer_proof.commitments.len(),
             "not enough commitments for PoP"
@@ -325,7 +324,6 @@ fn verify_products(
         ) {
             return false;
         }
-        commit_idx += 1;
     }
     true
 }

@@ -154,6 +154,11 @@ fn load_proxy_bytecode() -> Bytes {
 /// Anvil default chain ID.
 const ANVIL_CHAIN_ID: u64 = 31337;
 
+/// Dummy non-zero address used as the initial remainderVerifier during deployment.
+/// The contract's initialize() requires a non-zero address. Tests that don't exercise
+/// ZK dispute resolution can use any non-zero placeholder.
+const DUMMY_REMAINDER_VERIFIER: [u8; 20] = [0xDD; 20];
+
 /// Anvil pre-funded private keys (from Anvil default accounts).
 const ADMIN_KEY: &str = "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
 const USER_KEY: &str = "59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
@@ -203,7 +208,8 @@ impl TestContext {
 
         // Step 2: Encode the initialize(admin, remainderVerifier) calldata
         let tee_impl = TEEMLVerifier::new(impl_addr, &provider);
-        let init_call = tee_impl.initialize(admin_addr, Address::ZERO);
+        let dummy_verifier = Address::from(DUMMY_REMAINDER_VERIFIER);
+        let init_call = tee_impl.initialize(admin_addr, dummy_verifier);
         let init_data = init_call.calldata().clone();
 
         // Step 3: Deploy UUPSProxy(implementation, initData)
@@ -397,9 +403,9 @@ async fn test_deploy_and_initial_state() {
     let paused = contract.paused().call().await.unwrap();
     assert!(!paused, "Contract should not be paused initially");
 
-    // Remainder verifier should be zero (deployed with Address::ZERO)
+    // Remainder verifier should be the dummy address we passed to initialize()
     let rv = contract.remainderVerifier().call().await.unwrap();
-    assert_eq!(rv, Address::ZERO);
+    assert_eq!(rv, Address::from(DUMMY_REMAINDER_VERIFIER));
 
     // Default stake and bond = 0.1 ether
     let stake = contract.proverStake().call().await.unwrap();

@@ -16,7 +16,7 @@ use std::io::Write;
 use std::path::Path;
 
 /// A single audit log entry.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AuditEntry {
     /// ISO-8601 timestamp.
     pub timestamp: String,
@@ -57,6 +57,7 @@ pub enum ExportFormat {
 }
 
 impl ExportFormat {
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "csv" => Some(Self::Csv),
@@ -781,19 +782,3 @@ mod tests {
     }
 }
 
-impl Default for AuditEntry {
-    fn default() -> Self {
-        Self {
-            timestamp: String::new(),
-            event_type: String::new(),
-            result_id: String::new(),
-            tx_hash: String::new(),
-            block_number: 0,
-            actor: String::new(),
-            model_hash: String::new(),
-            details: String::new(),
-            outcome: String::new(),
-            gas_used: 0,
-        }
-    }
-}

@@ -228,14 +228,14 @@ impl PoseidonSponge {
     /// Rounds 4..60: partial rounds (S-box on state[0] only)
     /// Rounds 61..64: full rounds (S-box on all 3 state elements)
     fn permute(&mut self) {
-        for round in 0..NUM_ROUNDS {
+        for (round, round_constants) in ROUND_CONSTANTS.iter().enumerate() {
             // --- Add round constants ---
-            self.state[0] = self.state[0].add(&rc(&ROUND_CONSTANTS[round][0]));
-            self.state[1] = self.state[1].add(&rc(&ROUND_CONSTANTS[round][1]));
-            self.state[2] = self.state[2].add(&rc(&ROUND_CONSTANTS[round][2]));
+            self.state[0] = self.state[0].add(&rc(&round_constants[0]));
+            self.state[1] = self.state[1].add(&rc(&round_constants[1]));
+            self.state[2] = self.state[2].add(&rc(&round_constants[2]));
 
             // --- S-box (x^5) ---
-            if round < FULL_FIRST || round >= FULL_LAST_START {
+            if !(FULL_FIRST..FULL_LAST_START).contains(&round) {
                 // Full round: apply S-box to all state elements.
                 self.state[0] = self.state[0].pow5();
                 self.state[1] = self.state[1].pow5();
@@ -348,10 +348,10 @@ mod tests {
     #[test]
     fn test_constants_nonzero() {
         // Every round constant should be non-zero (all PSE/Scroll constants are)
-        for round in 0..NUM_ROUNDS {
-            for j in 0..3 {
+        for (round, round_constants) in ROUND_CONSTANTS.iter().enumerate() {
+            for (j, constant) in round_constants.iter().enumerate() {
                 assert_ne!(
-                    rc(&ROUND_CONSTANTS[round][j]),
+                    rc(constant),
                     Fq::ZERO,
                     "Round constant [{round}][{j}] should not be zero"
                 );

@@ -501,13 +501,12 @@ impl CachedProver {
             &mut prover_transcript
         );
 
-        // Verify the proof
+        // Verify the proof (reuse cached Pedersen generators — same deterministic
+        // points as the prover, avoids expensive re-derivation on every request)
         let hyrax_verifiable = verifier_circuit
             .gen_hyrax_verifiable_circuit()
             .expect("Failed to generate Hyrax-verifiable circuit");
 
-        let verifier_pedersen_committer =
-            PedersenCommitter::new(512, "xgboost-remainder Pedersen committer", None);
         let mut verifier_transcript: ECTranscript<Bn256Point, PoseidonSponge<Fq>> =
             ECTranscript::new("xgboost-remainder verifier transcript");
 
@@ -516,7 +515,7 @@ impl CachedProver {
             &self.verifier_config,
             &proof,
             &hyrax_verifiable,
-            &verifier_pedersen_committer,
+            &self.pedersen_committer,
             &mut verifier_transcript,
             &proof_config
         );

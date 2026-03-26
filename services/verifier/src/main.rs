@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::{
+    body::Bytes,
     extract::{Json, Path, State},
     http::StatusCode,
     middleware,
@@ -109,6 +110,29 @@ async fn health(State(store): State<CircuitStore>) -> Json<HealthResponse> {
 async fn verify_proof(
     Json(bundle): Json<ProofBundle>,
 ) -> Result<Json<VerifyResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let result = tokio::task::spawn_blocking(move || verify(&bundle))
+        .await
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    match result {
+        Ok(r) => Ok(Json(VerifyResponse {
+            verified: r.verified,
+            circuit_hash: format!("0x{}", hex::encode(r.circuit_hash)),
+        })),
+        Err(e) => Err(err(StatusCode::BAD_REQUEST, e.to_string())),
+    }
+}
+
+/// Accept a proof bundle as raw bytes (gzip-compressed or plain JSON).
+///
+/// Clients can POST a gzip-compressed bundle with `Content-Type: application/octet-stream`
+/// or plain JSON with `Content-Type: application/json`. The handler auto-detects format.
+async fn verify_proof_bytes(
+    body: Bytes,
+) -> Result<Json<VerifyResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let bundle = ProofBundle::from_bytes(&body)
+        .map_err(|e| err(StatusCode::BAD_REQUEST, format!("parse bundle: {e}")))?;
+
     let result = tokio::task::spawn_blocking(move || verify(&bundle))
         .await
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -361,6 +385,7 @@ fn build_app_with_config(config: ServiceConfig) -> Router {
     // Protected endpoints: auth + rate limit layers applied.
     let protected = Router::new()
         .route("/verify", post(verify_proof))
+        .route("/verify/raw", post(verify_proof_bytes))
         .route("/verify/batch", post(verify_batch))
         .route("/verify/hybrid", post(verify_hybrid_proof))
         .route("/circuits", get(list_circuits))

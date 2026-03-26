@@ -14,6 +14,7 @@ use crate::sumcheck;
 // ============================================================
 
 /// Verify all input layers (committed + public).
+#[allow(clippy::too_many_arguments)]
 pub fn verify_input_layers(
     proof: &GKRProof,
     desc: &DAGCircuitDescription,
@@ -74,6 +75,7 @@ pub fn verify_input_layers(
 // ============================================================
 
 /// Verify public input claims: Pedersen opening + MLE evaluation + commitment match.
+#[allow(clippy::too_many_arguments)]
 fn verify_public_input_claims(
     proof: &GKRProof,
     desc: &DAGCircuitDescription,
@@ -170,7 +172,7 @@ fn verify_committed_input_batch_eval(
         "eval proof count mismatch"
     );
 
-    for g in 0..groups.len() {
+    for (g, group) in groups.iter().enumerate() {
         verify_one_eval_group(
             dag_proof,
             claim_points,
@@ -178,13 +180,14 @@ fn verify_committed_input_batch_eval(
             log_n_cols,
             gens,
             g,
-            &groups[g],
+            group,
             sponge,
         );
     }
 }
 
 /// Verify a single eval proof group.
+#[allow(clippy::too_many_arguments)]
 fn verify_one_eval_group(
     dag_proof: &DAGInputLayerProof,
     claim_points: &[Vec<U256>],
@@ -277,6 +280,7 @@ pub struct InputFrOutputs {
 }
 
 /// Hybrid input layer verification: transcript replay + Fr outputs, no EC ops.
+#[allow(clippy::too_many_arguments)]
 pub fn verify_input_layers_hybrid(
     proof: &GKRProof,
     desc: &DAGCircuitDescription,
@@ -339,6 +343,7 @@ pub fn verify_input_layers_hybrid(
 }
 
 /// Hybrid public input claim verification: computes MLE evals without EC checks.
+#[allow(clippy::too_many_arguments)]
 fn verify_public_input_claims_hybrid(
     _proof: &GKRProof,
     desc: &DAGCircuitDescription,
@@ -391,14 +396,14 @@ fn verify_committed_input_batch_eval_hybrid(
     let groups = group_claims_by_r_half(claim_points, &sorted_indices, log_n_cols);
 
     // Step 3: Verify each group (hybrid)
-    for g in 0..groups.len() {
+    for (g, group) in groups.iter().enumerate() {
         verify_one_eval_group_hybrid(
             dag_proof,
             claim_points,
             l_half_len,
             log_n_cols,
             g,
-            &groups[g],
+            group,
             sponge,
             outputs,
         );
@@ -406,6 +411,7 @@ fn verify_committed_input_batch_eval_hybrid(
 }
 
 /// Hybrid single eval group: transcript replay + Fr outputs.
+#[allow(clippy::too_many_arguments)]
 fn verify_one_eval_group_hybrid(
     dag_proof: &DAGInputLayerProof,
     claim_points: &[Vec<U256>],
@@ -517,22 +523,22 @@ pub fn evaluate_mle_from_data(data: &[U256], point: &[U256]) -> U256 {
     assert!(data.len() <= (1 << n), "data too large");
 
     let mut result = Fr::ZERO;
-    for w in 0..data.len() {
-        if Fr::new(data[w]).0.is_zero() {
+    for (w, datum) in data.iter().enumerate() {
+        if Fr::new(*datum).0.is_zero() {
             continue;
         }
         let mut eq = Fr::ONE;
-        for i in 0..n {
+        for (i, pt) in point.iter().enumerate() {
             // MSB-first: point[0] controls the highest bit of w
             let wi = ((w >> (n - 1 - i)) & 1) as u64;
-            let xi = Fr::new(point[i]);
+            let xi = Fr::new(*pt);
             if wi == 1 {
                 eq = eq.mul(&xi);
             } else {
                 eq = eq.mul(&Fr::ONE.sub(&xi));
             }
         }
-        result = result.add(&Fr::new(data[w]).mul(&eq));
+        result = result.add(&Fr::new(*datum).mul(&eq));
     }
 
     result.0
@@ -593,9 +599,7 @@ fn group_claims_by_r_half(
     let mut temp_groups: Vec<Vec<usize>> = Vec::with_capacity(num_claims);
     let mut temp_group_sizes: Vec<usize> = Vec::with_capacity(num_claims);
 
-    for i in 0..num_claims {
-        let claim_idx = sorted_indices[i];
-
+    for (i, &claim_idx) in sorted_indices.iter().enumerate() {
         // Try to find existing group with matching R-half
         for g in 0..i {
             if temp_group_sizes[g] > 0 {
@@ -618,8 +622,8 @@ fn group_claims_by_r_half(
     }
 
     // Convert to final format
-    for i in 0..num_claims {
-        groups.push(temp_groups[i].clone());
+    for tg in &temp_groups {
+        groups.push(tg.clone());
     }
 
     groups

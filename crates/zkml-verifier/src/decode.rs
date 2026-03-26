@@ -377,6 +377,7 @@ impl<'a> ProofDecoder<'a> {
     }
 
     /// Decode a full proof for DAG verification, returning Result instead of panicking.
+    #[allow(clippy::type_complexity)]
     pub fn try_decode_proof_for_dag(
         &mut self,
     ) -> Result<(

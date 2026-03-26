@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 /// Entry stored in the proof archive.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ProofArchiveEntry {
     /// Unique identifier for this proof entry.
     pub id: String,
@@ -51,27 +51,6 @@ pub struct ProofArchiveEntry {
     pub finalized: bool,
 }
 
-impl Default for ProofArchiveEntry {
-    fn default() -> Self {
-        Self {
-            id: String::new(),
-            archived_at: String::new(),
-            result_id: String::new(),
-            model_hash: String::new(),
-            input_hash: String::new(),
-            result_hash: String::new(),
-            result: String::new(),
-            attestation: String::new(),
-            features: Vec::new(),
-            chain_id: 0,
-            enclave_address: String::new(),
-            proof_path: None,
-            disputed: false,
-            finalized: false,
-        }
-    }
-}
-
 /// Append-only proof archive with expiry and rotation support.
 pub struct ProofArchive {
     base_dir: PathBuf,
@@ -91,7 +70,7 @@ impl ProofArchive {
     ///
     /// Files are stored in `$base_dir/YYYY-MM-DD/proof-{uuid}.json`.
     pub async fn store(&self, entry: &ProofArchiveEntry) -> std::io::Result<PathBuf> {
-        let date_dir = self.base_dir.join(&today_date_string());
+        let date_dir = self.base_dir.join(today_date_string());
         tokio::fs::create_dir_all(&date_dir).await?;
 
         let filename = format!("proof-{}.json", &entry.id);
@@ -459,7 +438,7 @@ pub fn generate_id() -> String {
     format!(
         "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
         (hash >> 96) as u32,
-        (hash >> 80) as u16 & 0xffff,
+        (hash >> 80) as u16,
         (hash >> 64) as u16 & 0x0fff,
         ((hash >> 48) as u16 & 0x3fff) | 0x8000,
         hash as u64 & 0xffffffffffff,
