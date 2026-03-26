@@ -105,6 +105,24 @@ enum Commands {
     },
     /// List all registered models from the configuration
     Models,
+    /// Export audit records from the proof archive for compliance
+    ExportAudit {
+        /// Start date (inclusive, YYYY-MM-DD)
+        #[arg(long)]
+        from: String,
+        /// End date (inclusive, YYYY-MM-DD)
+        #[arg(long)]
+        to: String,
+        /// Output format: csv, json, or jsonl
+        #[arg(long, default_value = "csv")]
+        format: String,
+        /// Output file path
+        #[arg(long)]
+        output: String,
+        /// Proof archive directory (defaults to PROOFS_DIR from config)
+        #[arg(long)]
+        archive_dir: Option<String>,
+    },
 }
 
 fn hex_to_b256(hex_str: &str) -> anyhow::Result<B256> {
@@ -172,6 +190,13 @@ async fn main() -> anyhow::Result<()> {
             skip_verify,
         } => cmd_register(&config, expected_pcr0.as_deref(), skip_verify).await,
         Commands::Models => cmd_models(&config),
+        Commands::ExportAudit {
+            from,
+            to,
+            format,
+            output,
+            archive_dir,
+        } => cmd_export_audit(&config, &from, &to, &format, &output, archive_dir.as_deref()),
     }
 }
 
@@ -418,6 +443,69 @@ fn cmd_models(config: &Config) -> anyhow::Result<()> {
             model.name, model.path, model.model_format, hash_display
         );
     }
+    Ok(())
+}
+
+fn cmd_export_audit(
+    config: &Config,
+    from: &str,
+    to: &str,
+    format: &str,
+    output: &str,
+    archive_dir: Option<&str>,
+) -> anyhow::Result<()> {
+    use tee_operator::audit_export::{scan_archive, export_records, ExportFormat};
+
+    // Validate date format (basic check)
+    for (label, date) in [("from", from), ("to", to)] {
+        if date.len() != 10 || date.chars().filter(|c| *c == '-').count() != 2 {
+            anyhow::bail!("Invalid {} date '{}': expected YYYY-MM-DD format", label, date);
+        }
+    }
+
+    if from > to {
+        anyhow::bail!("--from date ({}) must not be after --to date ({})", from, to);
+    }
+
+    let fmt = ExportFormat::from_str(format)
+        .ok_or_else(|| anyhow::anyhow!("Unsupported format '{}'. Use csv, json, or jsonl.", format))?;
+
+    // Determine archive directory: CLI override > config > error
+    let dir = archive_dir
+        .map(String::from)
+        .unwrap_or_else(|| config.proof_archive_dir.clone());
+    if dir.is_empty() {
+        anyhow::bail!(
+            "No archive directory specified. Use --archive-dir or set PROOF_ARCHIVE_DIR."
+        );
+    }
+
+    let dir_path = std::path::Path::new(&dir);
+    if !dir_path.is_dir() {
+        anyhow::bail!("Archive directory does not exist: {}", dir);
+    }
+
+    tracing::info!(
+        from = from,
+        to = to,
+        format = format,
+        archive_dir = %dir,
+        output = output,
+        "Exporting audit records"
+    );
+
+    let records = scan_archive(dir_path, from, to)?;
+
+    let output_path = std::path::Path::new(output);
+    let count = export_records(&records, fmt, output_path)?;
+
+    println!(
+        "Exported {} audit record(s) to {} (format: {})",
+        count,
+        output,
+        fmt.extension()
+    );
+
     Ok(())
 }
 

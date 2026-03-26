@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>World ZK Compute — Verifiable AI Inference</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header>
+        <nav>
+            <div class="logo">World ZK Compute</div>
+            <div class="nav-links">
+                <a href="#features">Features</a>
+                <a href="#demo">Demo</a>
+                <a href="#docs">Docs</a>
+                <a href="https://github.com/OE-GOD/world-zk-compute" target="_blank">GitHub</a>
+            </div>
+        </nav>
+    </header>
+
+    <main>
+        <section class="hero">
+            <h1>Verifiable AI Inference</h1>
+            <p class="tagline">Prove your ML model ran correctly — on-chain, in zero knowledge.</p>
+            <div class="cta-group">
+                <a href="#demo" class="btn btn-primary">Try the Demo</a>
+                <a href="https://github.com/OE-GOD/world-zk-compute" class="btn btn-secondary">View Source</a>
+            </div>
+        </section>
+
+        <section id="features" class="features">
+            <h2>How It Works</h2>
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <h3>TEE Attestation</h3>
+                    <p>Run inference in a Trusted Execution Environment. The enclave signs the result with an ECDSA attestation — no one can tamper with the output.</p>
+                    <code>POST /infer → attestation</code>
+                </div>
+                <div class="feature-card">
+                    <h3>ZK Dispute Resolution</h3>
+                    <p>If a result is challenged, prove correctness with a GKR+Hyrax zero-knowledge proof. The on-chain verifier settles the dispute in one transaction.</p>
+                    <code>~3-6M gas on Arbitrum</code>
+                </div>
+                <div class="feature-card">
+                    <h3>Multi-Model Support</h3>
+                    <p>XGBoost, LightGBM, Random Forest, and Logistic Regression. Load any scikit-learn or XGBoost model and prove its inference.</p>
+                    <code>--model-format auto</code>
+                </div>
+                <div class="feature-card">
+                    <h3>Off-Chain Verification</h3>
+                    <p>Verify proofs without a blockchain. Use the REST API, Python, JavaScript, or Rust SDK. Batch verify hundreds of proofs per second.</p>
+                    <code>POST /verify → {verified: true}</code>
+                </div>
+            </div>
+        </section>
+
+        <section id="demo" class="demo">
+            <h2>Live Demo</h2>
+            <p>Verify an XGBoost credit scoring proof in your browser:</p>
+            <div class="demo-box">
+                <pre id="demo-output">Loading...</pre>
+                <button id="demo-btn" class="btn btn-primary" onclick="runDemo()">Verify Proof</button>
+            </div>
+        </section>
+
+        <section id="docs" class="docs">
+            <h2>Get Started</h2>
+            <div class="doc-grid">
+                <a href="https://github.com/OE-GOD/world-zk-compute/blob/main/docs/QUICKSTART.md" class="doc-card">
+                    <h3>Quickstart</h3>
+                    <p>Verify your first proof in 5 minutes</p>
+                </a>
+                <a href="https://github.com/OE-GOD/world-zk-compute/blob/main/docs/API_REFERENCE.md" class="doc-card">
+                    <h3>API Reference</h3>
+                    <p>Complete contract and service API docs</p>
+                </a>
+                <a href="https://github.com/OE-GOD/world-zk-compute/blob/main/docs/INTEGRATION_GUIDE.md" class="doc-card">
+                    <h3>Integration Guide</h3>
+                    <p>End-to-end integration patterns</p>
+                </a>
+                <a href="https://github.com/OE-GOD/world-zk-compute/blob/main/docs/SECURITY_MODEL.md" class="doc-card">
+                    <h3>Security Model</h3>
+                    <p>Defense-in-depth architecture</p>
+                </a>
+            </div>
+        </section>
+
+        <section class="install">
+            <h2>Install</h2>
+            <div class="install-grid">
+                <div>
+                    <h4>Python</h4>
+                    <code>pip install zkml-verifier</code>
+                </div>
+                <div>
+                    <h4>JavaScript</h4>
+                    <code>npm install @worldzk/verifier</code>
+                </div>
+                <div>
+                    <h4>Rust</h4>
+                    <code>cargo add zkml-verifier</code>
+                </div>
+                <div>
+                    <h4>Docker</h4>
+                    <code>docker pull ghcr.io/oe-god/zkml-verifier</code>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <p>Apache-2.0 License &middot; <a href="https://github.com/OE-GOD/world-zk-compute">GitHub</a></p>
+    </footer>
+
+    <script>
+    async function runDemo() {
+        const btn = document.getElementById('demo-btn');
+        const output = document.getElementById('demo-output');
+        btn.disabled = true;
+        output.textContent = 'Verifying proof...';
+
+        try {
+            const resp = await fetch('/verify', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    proof_hex: '0x52454d31',
+                    gens_hex: '0x00',
+                    dag_circuit_description: {}
+                })
+            });
+            const result = await resp.json();
+            output.textContent = JSON.stringify(result, null, 2);
+        } catch (e) {
+            output.textContent = `Demo requires verifier API.\nStart: docker compose -f docker-compose.bank-demo.yml up -d`;
+        }
+        btn.disabled = false;
+    }
+    document.getElementById('demo-output').textContent = 'Click "Verify Proof" to test the API.';
+    </script>
+</body>
+</html>

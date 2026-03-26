@@ -6,6 +6,7 @@
 //! Each proof file contains the inference result, attestation, and
 //! metadata needed to reproduce the verification.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -220,6 +221,162 @@ impl ProofArchive {
         tracing::info!(deleted, max_files, "Rotated proof archive");
         Ok(deleted)
     }
+
+    /// List all proof files whose date directory is older than `ttl_days`.
+    ///
+    /// Returns paths sorted oldest-first.
+    pub async fn list_expired(&self, ttl_days: u32) -> std::io::Result<Vec<PathBuf>> {
+        let cutoff = ttl_cutoff_date(ttl_days);
+        let mut expired = Vec::new();
+
+        let date_dirs = list_date_dirs(&self.base_dir).await?;
+        for dir in &date_dirs {
+            if let Some(name) = dir.file_name().and_then(|n| n.to_str()) {
+                if name < cutoff.as_str() {
+                    let files = list_proof_files(dir).await?;
+                    expired.extend(files);
+                }
+            }
+        }
+
+        expired.sort_unstable();
+        Ok(expired)
+    }
+
+    /// Archive expired proofs to cold storage with gzip compression.
+    ///
+    /// Proofs older than `ttl_days` are compressed and moved to `archive_dir`,
+    /// preserving the date-partitioned directory structure:
+    ///   `$archive_dir/YYYY-MM-DD/proof-{id}.json.gz`
+    ///
+    /// If `dry_run` is true, no files are moved or compressed; the function
+    /// only returns the list of files that *would* be archived.
+    ///
+    /// Returns the list of original file paths that were (or would be) archived.
+    pub async fn archive_expired(
+        &self,
+        ttl_days: u32,
+        archive_dir: impl AsRef<Path>,
+        dry_run: bool,
+    ) -> std::io::Result<Vec<PathBuf>> {
+        let archive_dir = archive_dir.as_ref();
+        let expired = self.list_expired(ttl_days).await?;
+
+        if expired.is_empty() {
+            tracing::info!("No expired proofs to archive");
+            return Ok(Vec::new());
+        }
+
+        if dry_run {
+            tracing::info!(
+                count = expired.len(),
+                ttl_days,
+                "[dry-run] Would archive expired proofs"
+            );
+            for path in &expired {
+                tracing::info!(path = %path.display(), "[dry-run] Would archive");
+            }
+            return Ok(expired);
+        }
+
+        tokio::fs::create_dir_all(archive_dir).await?;
+
+        let mut archived = Vec::new();
+        for path in &expired {
+            // Determine the date subdirectory name from the parent
+            let date_name = path
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown");
+
+            let dest_dir = archive_dir.join(date_name);
+            tokio::fs::create_dir_all(&dest_dir).await?;
+
+            let filename = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("proof.json");
+            let dest_path = dest_dir.join(format!("{}.gz", filename));
+
+            // Read, compress, and write
+            let data = tokio::fs::read(path).await?;
+            let compressed = compress_gzip(&data)?;
+            tokio::fs::write(&dest_path, &compressed).await?;
+
+            // Remove original
+            tokio::fs::remove_file(path).await?;
+            tracing::info!(
+                src = %path.display(),
+                dest = %dest_path.display(),
+                original_size = data.len(),
+                compressed_size = compressed.len(),
+                "Archived proof to cold storage"
+            );
+            archived.push(path.clone());
+        }
+
+        // Clean up empty date directories in the source
+        let date_dirs = list_date_dirs(&self.base_dir).await?;
+        for dir in date_dirs {
+            let files = list_proof_files(&dir).await?;
+            if files.is_empty() {
+                let _ = tokio::fs::remove_dir(&dir).await;
+            }
+        }
+
+        tracing::info!(
+            count = archived.len(),
+            archive_dir = %archive_dir.display(),
+            "Archived expired proofs to cold storage"
+        );
+
+        Ok(archived)
+    }
+}
+
+/// Default proof TTL in days (read from `PROOF_TTL_DAYS` env var).
+pub fn default_ttl_days() -> u32 {
+    std::env::var("PROOF_TTL_DAYS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(365)
+}
+
+/// Default cold-storage archive directory (read from `PROOF_ARCHIVE_DIR` env var).
+pub fn default_archive_dir() -> Option<String> {
+    std::env::var("PROOF_ARCHIVE_DIR").ok().filter(|s| !s.is_empty())
+}
+
+/// Compute the cutoff date string for a given TTL.
+fn ttl_cutoff_date(ttl_days: u32) -> String {
+    let now_secs = SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let cutoff_secs = now_secs.saturating_sub(ttl_days as u64 * 86400);
+    epoch_days_to_date(cutoff_secs / 86400)
+}
+
+/// Compress data using gzip (default compression level).
+fn compress_gzip(data: &[u8]) -> std::io::Result<Vec<u8>> {
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(data)?;
+    encoder.finish()
+}
+
+/// Decompress gzip data.
+pub fn decompress_gzip(data: &[u8]) -> std::io::Result<Vec<u8>> {
+    use flate2::read::GzDecoder;
+    use std::io::Read;
+
+    let mut decoder = GzDecoder::new(data);
+    let mut decompressed = Vec::new();
+    decoder.read_to_end(&mut decompressed)?;
+    Ok(decompressed)
 }
 
 /// Get today's date as YYYY-MM-DD string.

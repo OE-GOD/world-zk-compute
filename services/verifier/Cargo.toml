@@ -8,12 +8,16 @@ description = "REST API service for ZKML proof verification"
 [dependencies]
 zkml-verifier = { path = "../../crates/zkml-verifier" }
 axum = { workspace = true }
+axum-server = { version = "0.8", features = ["tls-rustls"] }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 hex = { workspace = true }
 tracing = { workspace = true }
 tower-http = { workspace = true, features = ["cors"] }
+rustls = "0.23"
+rustls-pemfile = "2"
 
 [dev-dependencies]
 tower = "0.5"
+rcgen = "0.13"

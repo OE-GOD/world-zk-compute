@@ -9,6 +9,8 @@ pub struct ServiceConfig {
     pub rate_limit_rpm: u32,
     /// Server port. Default: 3000.
     pub port: u16,
+    /// Circuit registration TTL in seconds. 0 = no expiry. Default: 0.
+    pub circuit_ttl_secs: u64,
 }
 
 impl ServiceConfig {
@@ -36,10 +38,16 @@ impl ServiceConfig {
             .and_then(|v| v.parse().ok())
             .unwrap_or(3000);
 
+        let circuit_ttl_secs = env::var("CIRCUIT_TTL_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+
         Self {
             api_keys,
             rate_limit_rpm,
             port,
+            circuit_ttl_secs,
         }
     }
 
@@ -60,11 +68,13 @@ mod tests {
         env::remove_var("VERIFIER_API_KEYS");
         env::remove_var("RATE_LIMIT_RPM");
         env::remove_var("PORT");
+        env::remove_var("CIRCUIT_TTL_SECS");
 
         let config = ServiceConfig::from_env();
         assert!(config.api_keys.is_empty());
         assert!(!config.auth_enabled());
         assert_eq!(config.rate_limit_rpm, 100);
         assert_eq!(config.port, 3000);
+        assert_eq!(config.circuit_ttl_secs, 0);
     }
 }

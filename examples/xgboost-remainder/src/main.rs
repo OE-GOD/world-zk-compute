@@ -276,6 +276,11 @@ fn detect_model_format(path: &std::path::Path) -> anyhow::Result<String> {
         return Ok("random_forest".to_string());
     }
 
+    // Logistic regression: has "weights" array at top level
+    if json.get("weights").is_some() {
+        return Ok("logistic_regression".to_string());
+    }
+
     anyhow::bail!(
         "Could not auto-detect model format from {}. Use --model-format to specify.",
         path.display()

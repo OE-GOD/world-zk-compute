@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ZKML Verifier Demo</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header>
+        <h1>ZKML Proof Verifier</h1>
+        <p class="subtitle">
+            Browser-based GKR+Hyrax zero-knowledge proof verification for ML inference.
+            <span id="version-badge" class="badge hidden"></span>
+        </p>
+        <button id="theme-toggle" title="Toggle dark/light theme" aria-label="Toggle theme">
+            <span id="theme-icon">&#9790;</span>
+        </button>
+    </header>
+
+    <main>
+        <!-- Section 1: Proof Bundle -->
+        <section class="card" id="bundle-section">
+            <h2>1. Proof Bundle</h2>
+            <p class="description">
+                A proof bundle contains everything needed to verify an ML inference was
+                computed correctly: the cryptographic proof, Pedersen generators, and the
+                circuit description. Load the included sample or upload your own.
+            </p>
+
+            <div class="button-row">
+                <button id="load-sample-btn" class="btn primary">Load Sample Proof</button>
+                <label class="btn secondary" for="upload-input">
+                    Upload Bundle JSON
+                    <input type="file" id="upload-input" accept=".json" hidden>
+                </label>
+            </div>
+
+            <div id="bundle-status" class="status-box hidden">
+                <div class="status-row">
+                    <span class="label">Status</span>
+                    <span id="bundle-status-text" class="value">--</span>
+                </div>
+                <div class="status-row">
+                    <span class="label">Circuit Hash</span>
+                    <code id="bundle-circuit-hash" class="value mono">--</code>
+                </div>
+                <div class="status-row">
+                    <span class="label">Proof Size</span>
+                    <span id="bundle-proof-size" class="value">--</span>
+                </div>
+                <div class="status-row">
+                    <span class="label">Generators Size</span>
+                    <span id="bundle-gens-size" class="value">--</span>
+                </div>
+                <div class="status-row">
+                    <span class="label">Compute Layers</span>
+                    <span id="bundle-layers" class="value">--</span>
+                </div>
+                <div class="status-row">
+                    <span class="label">Input Layers</span>
+                    <span id="bundle-inputs" class="value">--</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Section 2: How It Works -->
+        <section class="card" id="explainer-section">
+            <h2>2. How It Works</h2>
+            <p class="description">
+                The proof demonstrates that an XGBoost model inference was executed correctly
+                without revealing the model weights or internal computations.
+            </p>
+
+            <div class="explainer-grid">
+                <div class="explainer-item">
+                    <div class="explainer-number">A</div>
+                    <h3>GKR Protocol</h3>
+                    <p>
+                        The Goldwasser-Kalai-Rothblum (GKR) protocol verifies layered
+                        arithmetic circuits. Each layer's computation is checked via
+                        sumcheck, reducing the claim from output to input.
+                    </p>
+                </div>
+                <div class="explainer-item">
+                    <div class="explainer-number">B</div>
+                    <h3>Hyrax Commitments</h3>
+                    <p>
+                        Pedersen-based polynomial commitments bind the prover to specific
+                        input values. The verifier checks that committed inputs match the
+                        GKR transcript without seeing the raw data.
+                    </p>
+                </div>
+                <div class="explainer-item">
+                    <div class="explainer-number">C</div>
+                    <h3>DAG Topology</h3>
+                    <p>
+                        XGBoost trees form a directed acyclic graph (DAG), not a simple
+                        chain. The DAG verifier handles multi-claim routing, atom-level
+                        fan-out, and point templates across layers.
+                    </p>
+                </div>
+                <div class="explainer-item">
+                    <div class="explainer-number">D</div>
+                    <h3>Poseidon Transcript</h3>
+                    <p>
+                        Fiat-Shamir challenges are derived via a Poseidon sponge over BN254.
+                        This makes the proof non-interactive: anyone can verify without the
+                        original prover.
+                    </p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Section 3: Verify -->
+        <section class="card" id="verify-section">
+            <h2>3. Verify Proof</h2>
+            <p class="description">
+                Click below to run full GKR+Hyrax verification in your browser using the
+                WASM verifier. This performs the same cryptographic checks as the on-chain
+                Solidity verifier.
+            </p>
+
+            <div class="button-row">
+                <button id="verify-btn" class="btn primary" disabled>Verify Proof</button>
+            </div>
+
+            <div id="verify-result" class="result-box hidden">
+                <div id="result-banner" class="result-banner">
+                    <span id="result-icon" class="result-icon"></span>
+                    <span id="result-text" class="result-text"></span>
+                </div>
+                <div class="status-row">
+                    <span class="label">Circuit Hash</span>
+                    <code id="result-circuit-hash" class="value mono">--</code>
+                </div>
+                <div class="status-row">
+                    <span class="label">Verification Time</span>
+                    <span id="result-time" class="value">--</span>
+                </div>
+                <div id="result-error-row" class="status-row hidden">
+                    <span class="label">Error</span>
+                    <span id="result-error" class="value error-text">--</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Section 4: Raw Data -->
+        <section class="card collapsed" id="raw-section">
+            <h2 class="collapsible" id="raw-toggle">
+                4. Raw Proof Data
+                <span class="collapse-arrow">&#9660;</span>
+            </h2>
+            <div id="raw-content" class="collapsible-content hidden">
+                <p class="description">
+                    The raw hex-encoded proof data and circuit description.
+                    Expand to inspect the proof internals.
+                </p>
+                <div class="raw-data-block">
+                    <h3>Proof Hex (first 256 chars)</h3>
+                    <pre id="raw-proof-hex" class="raw-hex">--</pre>
+                </div>
+                <div class="raw-data-block">
+                    <h3>Circuit Description</h3>
+                    <pre id="raw-circuit-desc" class="raw-json">--</pre>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <p>
+            <a href="https://github.com/OE-GOD/world-zk-compute" target="_blank" rel="noopener">
+                world-zk-compute
+            </a>
+            &mdash; Chain-agnostic ZKML verification
+        </p>
+        <p class="footer-note">
+            WASM verifier built from
+            <code>crates/zkml-verifier</code> with
+            <code>wasm-pack</code>.
+            No data leaves your browser.
+        </p>
+    </footer>
+
+    <div id="loading-overlay" class="overlay hidden">
+        <div class="spinner"></div>
+        <p id="loading-text">Initializing WASM verifier...</p>
+    </div>
+
+    <script type="module" src="app.js"></script>
+</body>
+</html>

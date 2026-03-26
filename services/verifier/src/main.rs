@@ -1,6 +1,7 @@
 mod auth;
 mod config;
 mod rate_limit;
+mod tls;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -28,9 +29,17 @@ use rate_limit::{rate_limit_middleware, RateLimitState};
 struct CircuitConfig {
     gens_hex: String,
     dag_circuit_description: serde_json::Value,
+    registered_at: std::time::Instant,
 }
 
 type CircuitStore = Arc<RwLock<HashMap<String, CircuitConfig>>>;
+
+/// TTL for circuit registrations (0 = no expiry).
+static CIRCUIT_TTL: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+
+fn circuit_ttl() -> u64 {
+    *CIRCUIT_TTL.get().unwrap_or(&0)
+}
 
 // -- Request/response types --
 
@@ -141,6 +150,7 @@ async fn register_circuit(
         CircuitConfig {
             gens_hex: req.gens_hex,
             dag_circuit_description: req.dag_circuit_description,
+            registered_at: std::time::Instant::now(),
         },
     );
     Ok(Json(RegisterResponse {
@@ -154,15 +164,15 @@ async fn list_circuits(State(store): State<CircuitStore>) -> Json<CircuitListRes
     Json(CircuitListResponse { circuits: keys })
 }
 
-async fn warm_verify(
-    State(store): State<CircuitStore>,
-    Path(circuit_id): Path<String>,
-    Json(req): Json<WarmVerifyRequest>,
-) -> Result<Json<VerifyResponse>, (StatusCode, Json<ErrorResponse>)> {
+/// Look up a circuit config, checking TTL expiry.
+async fn get_circuit(
+    store: &CircuitStore,
+    circuit_id: &str,
+) -> Result<CircuitConfig, (StatusCode, Json<ErrorResponse>)> {
     let config = store
         .read()
         .await
-        .get(&circuit_id)
+        .get(circuit_id)
         .cloned()
         .ok_or_else(|| {
             err(
@@ -170,6 +180,26 @@ async fn warm_verify(
                 format!("circuit '{circuit_id}' not registered"),
             )
         })?;
+
+    let ttl = circuit_ttl();
+    if ttl > 0 && config.registered_at.elapsed().as_secs() > ttl {
+        // Remove expired entry
+        store.write().await.remove(circuit_id);
+        return Err(err(
+            StatusCode::GONE,
+            format!("circuit '{circuit_id}' registration expired"),
+        ));
+    }
+
+    Ok(config)
+}
+
+async fn warm_verify(
+    State(store): State<CircuitStore>,
+    Path(circuit_id): Path<String>,
+    Json(req): Json<WarmVerifyRequest>,
+) -> Result<Json<VerifyResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let config = get_circuit(&store, &circuit_id).await?;
 
     let bundle = ProofBundle {
         proof_hex: req.proof_hex,
@@ -200,16 +230,11 @@ async fn warm_verify_hybrid(
     Path(circuit_id): Path<String>,
     Json(req): Json<WarmVerifyRequest>,
 ) -> Result<Json<HybridResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let config = store
-        .read()
-        .await
-        .get(&circuit_id)
-        .cloned()
-        .ok_or_else(|| {
-            err(
-                StatusCode::NOT_FOUND,
-                format!("circuit '{circuit_id}' not registered"),
-            )
+    let config = get_circuit(&store, &circuit_id).await.map_err(|_| {
+        err(
+            StatusCode::NOT_FOUND,
+            format!("circuit '{circuit_id}' not registered or expired"),
+        )
         })?;
 
     let bundle = ProofBundle {
@@ -356,6 +381,11 @@ fn build_app_with_config(config: ServiceConfig) -> Router {
 #[tokio::main]
 async fn main() {
     let config = ServiceConfig::from_env();
+    let _ = CIRCUIT_TTL.set(config.circuit_ttl_secs);
+    let tls_config = tls::TlsConfig::from_env().unwrap_or_else(|e| {
+        eprintln!("TLS configuration error: {e}");
+        std::process::exit(1);
+    });
     let addr = format!("0.0.0.0:{}", config.port);
 
     if config.auth_enabled() {
@@ -370,9 +400,29 @@ async fn main() {
 
     let app = build_app_with_config(config);
 
-    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-    eprintln!("zkml-verifier-service listening on {addr}");
-    axum::serve(listener, app).await.unwrap();
+    if let Some(tls) = tls_config {
+        let mtls_enabled = tls.is_mtls();
+        let rustls_config = tls.into_rustls_config().await.unwrap_or_else(|e| {
+            eprintln!("Failed to load TLS certificates: {e}");
+            std::process::exit(1);
+        });
+        if mtls_enabled {
+            eprintln!("TLS enabled with mutual TLS (mTLS) client verification");
+        } else {
+            eprintln!("TLS enabled");
+        }
+        eprintln!("zkml-verifier-service listening on https://{addr}");
+        let addr: std::net::SocketAddr = addr.parse().unwrap();
+        axum_server::bind_rustls(addr, rustls_config)
+            .serve(app.into_make_service())
+            .await
+            .unwrap();
+    } else {
+        eprintln!("TLS disabled (set VERIFIER_TLS_CERT and VERIFIER_TLS_KEY to enable)");
+        let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+        eprintln!("zkml-verifier-service listening on http://{addr}");
+        axum::serve(listener, app).await.unwrap();
+    }
 }
 
 #[cfg(test)]
@@ -696,6 +746,7 @@ mod tests {
             api_keys: keys.into_iter().map(String::from).collect(),
             rate_limit_rpm: 10000, // high limit so rate limiting doesn't interfere
             port: 3000,
+            circuit_ttl_secs: 0,
         })
     }
 
@@ -825,6 +876,7 @@ mod tests {
             api_keys: vec![],  // no auth
             rate_limit_rpm: 3, // very low limit
             port: 3000,
+            circuit_ttl_secs: 0,
         });
         let bundle = serde_json::json!({
             "proof_hex": "0xdead",
@@ -872,6 +924,7 @@ mod tests {
             api_keys: vec![],
             rate_limit_rpm: 100,
             port: 3000,
+            circuit_ttl_secs: 0,
         });
         let bundle = serde_json::json!({
             "proof_hex": "0xdead",
@@ -895,6 +948,7 @@ mod tests {
             api_keys: vec!["key-a".into(), "key-b".into()],
             rate_limit_rpm: 2, // very low limit
             port: 3000,
+            circuit_ttl_secs: 0,
         });
         let bundle = serde_json::json!({
             "proof_hex": "0xdead",
@@ -938,6 +992,7 @@ mod tests {
             api_keys: vec![],
             rate_limit_rpm: 1,
             port: 3000,
+            circuit_ttl_secs: 0,
         });
 
         // Health should work unlimited times regardless of rate limit

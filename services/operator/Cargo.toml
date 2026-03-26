@@ -30,6 +30,7 @@ axum = "0.7"
 toml = "0.8"                # Parse operator configuration files
 uuid = { version = "1", features = ["v4"] }
 secrecy = { version = "0.10", features = ["serde"] }  # Zeroize-on-drop wrappers for secrets
+flate2 = "1"                # Gzip compression for cold-storage proof archival
 
 [dev-dependencies]
 tempfile = "3"
