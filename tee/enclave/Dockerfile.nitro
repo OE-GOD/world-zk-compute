@@ -1,0 +1,58 @@
+# AWS Nitro Enclave image for tee-enclave.
+#
+# This Dockerfile builds from the enclave crate directory (tee/enclave/) and
+# produces a minimal runtime image suitable for nitro-cli build-enclave.
+#
+# Build:
+#   docker build -f tee/enclave/Dockerfile.nitro -t worldzk-enclave tee/enclave/
+#
+# Convert to EIF (on a Nitro-enabled EC2 instance):
+#   nitro-cli build-enclave --docker-uri worldzk-enclave --output-file enclave.eif
+#
+# See also: tee/Dockerfile.nitro (top-level, includes test-model copy)
+
+# ---------------------------------------------------------------------------
+# Stage 1: Build the enclave binary with Nitro NSM support
+# ---------------------------------------------------------------------------
+# Keep in sync with RUST_VERSION in .github/workflows/rust-ci.yml
+FROM rust:1.82-bookworm AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY Cargo.toml Cargo.lock* ./
+COPY src/ src/
+
+# Build with Nitro NSM API enabled (aws-nitro-enclaves-nsm-api).
+# The binary must be compiled on x86_64 Linux for Nitro enclaves.
+RUN cargo build --release --features nitro
+
+# ---------------------------------------------------------------------------
+# Stage 2: Minimal runtime image
+# ---------------------------------------------------------------------------
+FROM debian:bookworm-slim
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /build/target/release/tee-enclave /usr/local/bin/tee-enclave
+
+# Default configuration for Nitro deployment.
+# MODEL_PATH must be supplied at runtime (via vsock proxy or baked into image).
+ENV MODEL_PATH=/app/model/model.json
+ENV PORT=5000
+ENV NITRO_ENABLED=true
+ENV RUST_LOG=info
+
+# Nitro enclaves communicate via vsock, not TCP. The enclave listens on this
+# port and a vsock proxy on the parent EC2 instance forwards traffic to it.
+EXPOSE 5000
+
+# nitro-cli build-enclave reads CMD/ENTRYPOINT as the enclave init process.
+# The binary reads all configuration from environment variables (no CLI args).
+CMD ["tee-enclave"]
