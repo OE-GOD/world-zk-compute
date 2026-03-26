@@ -166,6 +166,109 @@ impl Attestor {
         })
     }
 
+    /// Sign an attestation using EIP-712 typed data, matching TEEMLVerifier.sol.
+    ///
+    /// The contract verifies:
+    /// ```text
+    /// structHash = keccak256(abi.encode(RESULT_TYPEHASH, modelHash, inputHash, resultHash))
+    /// digest = keccak256("\x19\x01" || DOMAIN_SEPARATOR || structHash)
+    /// signer = ecrecover(digest, v, r, s)
+    /// ```
+    ///
+    /// This method computes the same EIP-712 digest and signs it with `sign_hash_sync`
+    /// (raw ecrecover-compatible signing, no EIP-191 prefix).
+    ///
+    /// # Arguments
+    /// * `model_hash` - keccak256 of the model
+    /// * `input_hash` - keccak256 of the input
+    /// * `result_bytes` - raw inference result (hashed internally)
+    /// * `verifier_address` - address of the TEEMLVerifier contract
+    pub fn sign_eip712_attestation(
+        &self,
+        model_hash: B256,
+        input_hash: B256,
+        result_bytes: &[u8],
+        verifier_address: Address,
+    ) -> Result<AttestationResult, String> {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| format!("Failed to get timestamp: {}", e))?
+            .as_secs();
+        let nonce = self.nonce_counter.fetch_add(1, Ordering::SeqCst);
+        let result_hash = keccak256(result_bytes);
+
+        // Compute EIP-712 struct hash: keccak256(abi.encode(RESULT_TYPEHASH, modelHash, inputHash, resultHash))
+        let result_typehash: B256 = keccak256(b"TEEMLResult(bytes32 modelHash,bytes32 inputHash,bytes32 resultHash)");
+        let struct_hash = keccak256(Self::abi_encode_struct(
+            result_typehash,
+            model_hash,
+            input_hash,
+            result_hash,
+        ));
+
+        // Compute EIP-712 domain separator
+        let domain_separator = Self::compute_domain_separator(self.chain_id, verifier_address);
+
+        // Compute EIP-712 digest: keccak256("\x19\x01" || domainSeparator || structHash)
+        let mut digest_input = Vec::with_capacity(66);
+        digest_input.extend_from_slice(b"\x19\x01");
+        digest_input.extend_from_slice(domain_separator.as_slice());
+        digest_input.extend_from_slice(struct_hash.as_slice());
+        let digest = keccak256(&digest_input);
+
+        // Sign the raw digest (no EIP-191 prefix — contract uses ecrecover on this digest directly)
+        let sig = self
+            .signer
+            .sign_hash_sync(&digest)
+            .map_err(|e| format!("EIP-712 signing failed: {}", e))?;
+
+        let sig_bytes = sig.as_bytes();
+
+        Ok(AttestationResult {
+            result_hash,
+            signature: sig_bytes.to_vec(),
+            chain_id: self.chain_id,
+            nonce,
+            timestamp,
+        })
+    }
+
+    /// Compute the EIP-712 domain separator matching TEEMLVerifier.sol.
+    ///
+    /// `keccak256(abi.encode(EIP712_DOMAIN_TYPEHASH, nameHash, versionHash, chainId, verifyingContract))`
+    pub fn compute_domain_separator(chain_id: u64, verifier_address: Address) -> B256 {
+        let domain_typehash = keccak256(
+            b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)",
+        );
+        let name_hash = keccak256(b"TEEMLVerifier");
+        let version_hash = keccak256(b"1");
+
+        let mut encoded = Vec::with_capacity(160);
+        encoded.extend_from_slice(domain_typehash.as_slice());
+        encoded.extend_from_slice(name_hash.as_slice());
+        encoded.extend_from_slice(version_hash.as_slice());
+        // chainId as uint256 (32 bytes, big-endian)
+        let mut chain_id_bytes = [0u8; 32];
+        chain_id_bytes[24..32].copy_from_slice(&chain_id.to_be_bytes());
+        encoded.extend_from_slice(&chain_id_bytes);
+        // address as uint256 (32 bytes, zero-padded)
+        let mut addr_bytes = [0u8; 32];
+        addr_bytes[12..32].copy_from_slice(verifier_address.as_slice());
+        encoded.extend_from_slice(&addr_bytes);
+
+        keccak256(&encoded)
+    }
+
+    /// ABI-encode a struct: keccak256(typehash || field1 || field2 || field3)
+    fn abi_encode_struct(typehash: B256, field1: B256, field2: B256, field3: B256) -> Vec<u8> {
+        let mut encoded = Vec::with_capacity(128);
+        encoded.extend_from_slice(typehash.as_slice());
+        encoded.extend_from_slice(field1.as_slice());
+        encoded.extend_from_slice(field2.as_slice());
+        encoded.extend_from_slice(field3.as_slice());
+        encoded
+    }
+
     /// Pack the attestation payload for hashing.
     ///
     /// Layout: model_hash(32) || input_hash(32) || result_hash(32) || chainId(32) || nonce(32) || timestamp(32)
@@ -586,5 +689,71 @@ mod tests {
         for (i, nonce) in nonces.iter().enumerate() {
             assert_eq!(*nonce, i as u64, "Nonce {} should be {}", nonce, i);
         }
+    }
+
+    #[test]
+    fn test_sign_eip712_and_recover() {
+        let mut attestor = Attestor::from_private_key(
+            "ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+        )
+        .unwrap();
+        attestor.set_chain_id(31337); // Anvil default chain ID
+
+        let expected_addr: Address = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+            .parse()
+            .unwrap();
+
+        let verifier_address: Address = "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+            .parse()
+            .unwrap();
+
+        let model_hash = keccak256(b"model data");
+        let input_hash = keccak256(b"input data");
+        let result_bytes = b"some result";
+
+        let attestation = attestor
+            .sign_eip712_attestation(model_hash, input_hash, result_bytes, verifier_address)
+            .unwrap();
+
+        assert_eq!(attestation.result_hash, keccak256(b"some result"));
+        assert_eq!(attestation.signature.len(), 65);
+
+        // Reconstruct the EIP-712 digest (same as contract would compute)
+        let result_typehash = keccak256(
+            b"TEEMLResult(bytes32 modelHash,bytes32 inputHash,bytes32 resultHash)",
+        );
+        let struct_hash = keccak256(Attestor::abi_encode_struct(
+            result_typehash,
+            model_hash,
+            input_hash,
+            attestation.result_hash,
+        ));
+        let domain_sep =
+            Attestor::compute_domain_separator(31337, verifier_address);
+        let mut digest_input = Vec::new();
+        digest_input.extend_from_slice(b"\x19\x01");
+        digest_input.extend_from_slice(domain_sep.as_slice());
+        digest_input.extend_from_slice(struct_hash.as_slice());
+        let digest = keccak256(&digest_input);
+
+        // Recover signer from the EIP-712 digest (no EIP-191 prefix)
+        let sig =
+            alloy_primitives::Signature::try_from(attestation.signature.as_slice()).unwrap();
+        let recovered = sig.recover_address_from_prehash(&digest).unwrap();
+        assert_eq!(recovered, expected_addr, "EIP-712 signer recovery failed");
+    }
+
+    #[test]
+    fn test_domain_separator_deterministic() {
+        let addr: Address = "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+            .parse()
+            .unwrap();
+        let ds1 = Attestor::compute_domain_separator(1, addr);
+        let ds2 = Attestor::compute_domain_separator(1, addr);
+        assert_eq!(ds1, ds2, "Domain separator should be deterministic");
+
+        // Different chain ID → different separator
+        let ds3 = Attestor::compute_domain_separator(2, addr);
+        assert_ne!(ds1, ds3, "Different chain IDs should give different separators");
     }
 }
