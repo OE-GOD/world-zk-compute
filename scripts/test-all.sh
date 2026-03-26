@@ -28,6 +28,8 @@ ALL_SUITES=(
     indexer
     watcher-crate
     events-crate
+    zkml-verifier
+    verifier-service
     chaos
     python-sdk
     typescript-sdk
@@ -58,6 +60,8 @@ Suite names:
   indexer           services/indexer (Rust)
   watcher-crate     crates/watcher (Rust)
   events-crate      crates/events (Rust)
+  zkml-verifier     crates/zkml-verifier (Rust, GKR DAG verifier)
+  verifier-service  services/verifier (Rust, REST API)
   chaos             tests/chaos (Rust, fault injection)
   python-sdk        sdk/python (pytest)
   typescript-sdk    sdk/typescript (vitest)
@@ -261,7 +265,21 @@ if should_run "events-crate"; then
         cargo test
 fi
 
-# ── 3e. Chaos Tests ─────────────────────────────────────────────────────────
+# ── 3e. ZKML Verifier ──────────────────────────────────────────────────────
+if should_run "zkml-verifier"; then
+    run_suite "ZKML Verifier" \
+        "$ROOT_DIR/crates/zkml-verifier" \
+        cargo test
+fi
+
+# ── 3f. Verifier Service ──────────────────────────────────────────────────
+if should_run "verifier-service"; then
+    run_suite "Verifier Service" \
+        "$ROOT_DIR/services/verifier" \
+        cargo test
+fi
+
+# ── 3g. Chaos Tests ─────────────────────────────────────────────────────────
 if should_run "chaos"; then
     run_suite "Chaos Tests" \
         "$ROOT_DIR/tests/chaos" \

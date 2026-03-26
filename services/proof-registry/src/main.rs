@@ -8,9 +8,14 @@
 //! | `PROOF_DB_PATH` | Path to SQLite database file | `./proofs.db` |
 //! | `PROOF_STORAGE_DIR` | Directory for proof bundle JSON files | `./proof-store/` |
 //! | `REGISTRY_API_KEYS` | Comma-separated API keys (empty = no auth) | (none) |
+//! | `REGISTRY_SIGNING_KEY` | Hex-encoded secp256k1 private key for receipt signing | (auto-gen) |
+//! | `TRANSPARENCY_DB_PATH` | Path to transparency log SQLite database | `./transparency.db` |
 
 mod db;
+pub mod receipt;
 mod routes;
+pub mod sign;
+mod transparency;
 
 use std::env;
 use std::sync::Arc;
@@ -77,6 +82,23 @@ async fn main() {
         std::process::exit(1);
     });
 
+    let tlog_path =
+        env::var("TRANSPARENCY_DB_PATH").unwrap_or_else(|_| "./transparency.db".to_string());
+    let tlog = transparency::TransparencyLog::new(&tlog_path).unwrap_or_else(|e| {
+        eprintln!("Failed to initialize transparency log: {e}");
+        std::process::exit(1);
+    });
+
+    let signing_key_path = env::var("REGISTRY_KEY_FILE")
+        .unwrap_or_else(|_| "./registry_signing_key.hex".to_string());
+    let signing_key = sign::load_or_generate_key(&signing_key_path).unwrap_or_else(|e| {
+        eprintln!("Failed to load signing key: {e}");
+        std::process::exit(1);
+    });
+
+    let vk_hex = sign::verifying_key_hex(&sign::verifying_key(&signing_key));
+    eprintln!("Receipt signing public key: {vk_hex}");
+
     if api_keys.is_empty() {
         eprintln!("API key auth disabled (no REGISTRY_API_KEYS set)");
     } else {
@@ -88,6 +110,8 @@ async fn main() {
 
     let state = Arc::new(AppState {
         db: Mutex::new(db),
+        transparency_log: Mutex::new(tlog),
+        signing_key,
         api_keys,
     });
 
@@ -110,13 +134,21 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let db_path = tmp.path().join("test.db");
         let storage_dir = tmp.path().join("bundles");
+        let tlog_path = tmp.path().join("transparency.db");
         let db = ProofDb::new(db_path.to_str().unwrap(), storage_dir.to_str().unwrap()).unwrap();
+        let tlog =
+            transparency::TransparencyLog::new(tlog_path.to_str().unwrap()).unwrap();
+
+        // Deterministic test signing key.
+        let signing_key = k256::ecdsa::SigningKey::from_slice(&[42u8; 32]).unwrap();
 
         // Leak the tempdir to keep it alive for the duration of the test.
         std::mem::forget(tmp);
 
         Arc::new(AppState {
             db: Mutex::new(db),
+            transparency_log: Mutex::new(tlog),
+            signing_key,
             api_keys: vec![],
         })
     }
@@ -332,12 +364,18 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let db_path = tmp.path().join("test.db");
         let storage_dir = tmp.path().join("bundles");
+        let tlog_path = tmp.path().join("transparency.db");
         let db =
             ProofDb::new(db_path.to_str().unwrap(), storage_dir.to_str().unwrap()).unwrap();
+        let tlog =
+            transparency::TransparencyLog::new(tlog_path.to_str().unwrap()).unwrap();
+        let signing_key = k256::ecdsa::SigningKey::from_slice(&[42u8; 32]).unwrap();
         std::mem::forget(tmp);
 
         let state = Arc::new(AppState {
             db: Mutex::new(db),
+            transparency_log: Mutex::new(tlog),
+            signing_key,
             api_keys: vec!["test-key-123".to_string()],
         });
 

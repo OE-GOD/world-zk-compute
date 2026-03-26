@@ -10,6 +10,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use zkml_verifier::ProofBundle;
 
+use crate::receipt::VerificationReceipt;
+
 /// A stored proof record combining metadata index and filesystem location.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredProof {
@@ -34,16 +36,7 @@ pub struct ProofMetadata {
     pub circuit_hash: String,
 }
 
-/// Verification receipt for an on-demand verification.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VerificationReceipt {
-    pub proof_id: String,
-    pub verified: bool,
-    pub verified_at: String,
-    pub circuit_hash: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
+// VerificationReceipt is defined in crate::receipt and re-exported here for DB operations.
 
 /// Database statistics.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,6 +87,10 @@ impl ProofDb {
                 verified        INTEGER NOT NULL,
                 verified_at     TEXT NOT NULL,
                 circuit_hash    TEXT NOT NULL DEFAULT '',
+                model_hash      TEXT NOT NULL DEFAULT '',
+                verifier_version TEXT NOT NULL DEFAULT '',
+                verifier_host   TEXT NOT NULL DEFAULT '',
+                signature       TEXT NOT NULL DEFAULT '',
                 error           TEXT,
                 FOREIGN KEY (proof_id) REFERENCES proofs(id)
             );",
@@ -247,41 +244,49 @@ impl ProofDb {
         Ok(())
     }
 
-    /// Store a verification receipt.
+    /// Store a verification receipt. The receipt's `receipt_id` is used as the DB primary key.
     pub fn store_receipt(&self, receipt: &VerificationReceipt) -> Result<String, String> {
-        let receipt_id = uuid::Uuid::new_v4().to_string();
         self.conn
             .execute(
-                "INSERT INTO verification_receipts (id, proof_id, verified, verified_at, circuit_hash, error)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO verification_receipts (id, proof_id, verified, verified_at, circuit_hash, model_hash, verifier_version, verifier_host, signature, error)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
-                    receipt_id,
+                    receipt.receipt_id,
                     receipt.proof_id,
                     receipt.verified,
                     receipt.verified_at,
                     receipt.circuit_hash,
+                    receipt.model_hash,
+                    receipt.verifier_version,
+                    receipt.verifier_host,
+                    receipt.signature,
                     receipt.error,
                 ],
             )
             .map_err(|e| format!("failed to store receipt: {e}"))?;
-        Ok(receipt_id)
+        Ok(receipt.receipt_id.clone())
     }
 
     /// Get the latest verification receipt for a proof.
     pub fn get_receipt(&self, proof_id: &str) -> Result<Option<VerificationReceipt>, String> {
         self.conn
             .query_row(
-                "SELECT proof_id, verified, verified_at, circuit_hash, error
+                "SELECT id, proof_id, verified, verified_at, circuit_hash, model_hash, verifier_version, verifier_host, signature, error
                  FROM verification_receipts WHERE proof_id = ?1
                  ORDER BY verified_at DESC LIMIT 1",
                 params![proof_id],
                 |row| {
                     Ok(VerificationReceipt {
-                        proof_id: row.get(0)?,
-                        verified: row.get::<_, i64>(1)? != 0,
-                        verified_at: row.get(2)?,
-                        circuit_hash: row.get(3)?,
-                        error: row.get(4)?,
+                        receipt_id: row.get(0)?,
+                        proof_id: row.get(1)?,
+                        verified: row.get::<_, i64>(2)? != 0,
+                        verified_at: row.get(3)?,
+                        circuit_hash: row.get(4)?,
+                        model_hash: row.get(5)?,
+                        verifier_version: row.get(6)?,
+                        verifier_host: row.get(7)?,
+                        signature: row.get(8)?,
+                        error: row.get(9)?,
                     })
                 },
             )
@@ -642,21 +647,18 @@ mod tests {
 
         db.store("r1", &bundle, &meta).unwrap();
 
-        let receipt = VerificationReceipt {
-            proof_id: "r1".to_string(),
-            verified: true,
-            verified_at: Utc::now().to_rfc3339(),
-            circuit_hash: "0xcircuit".to_string(),
-            error: None,
-        };
+        let receipt = VerificationReceipt::new("r1", "0xcircuit", "m", true, None);
 
         let receipt_id = db.store_receipt(&receipt).unwrap();
         assert!(!receipt_id.is_empty());
+        assert_eq!(receipt_id, receipt.receipt_id);
 
         let loaded = db.get_receipt("r1").unwrap().expect("receipt should exist");
         assert_eq!(loaded.proof_id, "r1");
         assert!(loaded.verified);
         assert_eq!(loaded.circuit_hash, "0xcircuit");
+        assert_eq!(loaded.model_hash, "m");
+        assert!(!loaded.verifier_version.is_empty());
         assert!(loaded.error.is_none());
     }
 

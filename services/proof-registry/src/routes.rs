@@ -9,12 +9,17 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
-use crate::db::{DbStats, ProofDb, ProofMetadata, StoredProof, VerificationReceipt};
+use crate::db::{DbStats, ProofDb, ProofMetadata, StoredProof};
+use crate::receipt::VerificationReceipt;
+use crate::transparency::{self, TransparencyLog};
+use k256::ecdsa::SigningKey;
 use zkml_verifier::ProofBundle;
 
 /// Shared application state.
 pub struct AppState {
     pub db: Mutex<ProofDb>,
+    pub transparency_log: Mutex<TransparencyLog>,
+    pub signing_key: SigningKey,
     pub api_keys: Vec<String>,
 }
 
@@ -29,6 +34,10 @@ pub struct ErrorResponse {
 pub struct SubmitResponse {
     pub id: String,
     pub status: &'static str,
+    /// Leaf index in the transparency log.
+    pub transparency_index: u64,
+    /// SHA-256 hash of the proof bundle (hex).
+    pub proof_hash: String,
 }
 
 #[derive(Serialize)]
@@ -92,15 +101,29 @@ pub async fn submit_proof(
         circuit_hash: req.bundle.circuit_hash.clone().unwrap_or_default(),
     };
 
+    // Compute proof hash for the transparency log before storing.
+    let bundle_json = serde_json::to_vec(&req.bundle)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("failed to serialize bundle: {e}")))?;
+    let proof_hash = transparency::hash_proof_bundle(&bundle_json);
+
     let db = state.db.lock().await;
     db.store(&id, &req.bundle, &metadata)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    drop(db);
+
+    // Append to transparency log.
+    let mut tlog = state.transparency_log.lock().await;
+    let transparency_index = tlog
+        .append(proof_hash, &id)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("transparency log error: {e}")))?;
 
     Ok((
         StatusCode::CREATED,
         Json(SubmitResponse {
             id,
             status: "stored",
+            transparency_index,
+            proof_hash: hex::encode(proof_hash),
         }),
     ))
 }
@@ -144,17 +167,21 @@ pub async fn verify_proof(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<VerifyResponse>, (StatusCode, Json<ErrorResponse>)> {
-    // Load the bundle from the filesystem.
-    let bundle = {
+    // Load the bundle and metadata from the filesystem.
+    let (bundle, model_hash) = {
         let db = state.db.lock().await;
 
-        // Check proof exists.
-        db.get(&id)
+        // Check proof exists and get metadata.
+        let stored = db
+            .get(&id)
             .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?
             .ok_or_else(|| err(StatusCode::NOT_FOUND, format!("proof '{id}' not found")))?;
 
-        db.load_bundle(&id)
-            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?
+        let bundle = db
+            .load_bundle(&id)
+            .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+        (bundle, stored.model_hash)
     };
 
     // Run verification in a blocking thread (CPU-intensive).
@@ -167,17 +194,15 @@ pub async fn verify_proof(
         Err(e) => (false, String::new(), Some(e.to_string())),
     };
 
+    // Create and sign the verification receipt.
+    let mut receipt =
+        VerificationReceipt::new(&id, &circuit_hash_hex, &model_hash, verified, error_msg.clone());
+    receipt.sign(&state.signing_key);
+
     // Store the result.
     let db = state.db.lock().await;
     let _ = db.mark_verified(&id, verified);
 
-    let receipt = VerificationReceipt {
-        proof_id: id.clone(),
-        verified,
-        verified_at: chrono::Utc::now().to_rfc3339(),
-        circuit_hash: circuit_hash_hex,
-        error: error_msg.clone(),
-    };
     let receipt_id = db
         .store_receipt(&receipt)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;

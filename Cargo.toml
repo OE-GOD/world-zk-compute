@@ -11,6 +11,7 @@ members = [
     "services/health-aggregator",
     "services/proof-registry",
     "services/proof-generator",
+    "services/gateway",
     "services/verifier",
     "tee/enclave",
     "tests/chaos",
