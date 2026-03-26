@@ -1,6 +1,7 @@
 pub mod abi_encode;
 pub mod cache;
 pub mod circuit;
+pub mod detect;
 pub mod lightgbm;
 pub mod logistic_regression;
 pub mod model;

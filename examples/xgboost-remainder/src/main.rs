@@ -18,6 +18,7 @@ use tracing::Level;
 
 mod abi_encode;
 mod circuit;
+mod detect;
 mod lightgbm;
 mod logistic_regression;
 mod model;
@@ -45,7 +46,7 @@ struct Cli {
     #[arg(long)]
     execute_only: bool,
 
-    /// Model format: "auto" (detect from JSON), "xgboost", "lightgbm", or "random_forest"
+    /// Model format: "auto" (detect from JSON), "xgboost", "lightgbm", "random_forest", or "logistic_regression"
     #[arg(long, default_value = "auto")]
     model_format: String,
 
@@ -127,9 +128,12 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    // Load model (supports XGBoost, LightGBM, and Random Forest JSON formats)
+    // Load model (supports XGBoost, LightGBM, Random Forest, and Logistic Regression JSON formats)
     let detected_format = if cli.model_format == "auto" {
-        detect_model_format(&cli.model)?
+        let fmt = detect::detect_model_format_from_file(&cli.model)
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        println!("Auto-detected model format: {}", fmt);
+        fmt
     } else {
         cli.model_format.clone()
     };
@@ -256,33 +260,3 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Auto-detect model format by inspecting the JSON structure.
-fn detect_model_format(path: &std::path::Path) -> anyhow::Result<String> {
-    let data = std::fs::read_to_string(path)?;
-    let json: serde_json::Value = serde_json::from_str(&data)?;
-
-    // XGBoost: has learner.gradient_booster.model.trees
-    if json.get("learner").is_some() {
-        return Ok("xgboost".to_string());
-    }
-
-    // LightGBM: has tree_info array
-    if json.get("tree_info").is_some() {
-        return Ok("lightgbm".to_string());
-    }
-
-    // Random forest: has "forest" or "n_estimators" at top level
-    if json.get("n_estimators").is_some() || json.get("forest").is_some() {
-        return Ok("random_forest".to_string());
-    }
-
-    // Logistic regression: has "weights" array at top level
-    if json.get("weights").is_some() {
-        return Ok("logistic_regression".to_string());
-    }
-
-    anyhow::bail!(
-        "Could not auto-detect model format from {}. Use --model-format to specify.",
-        path.display()
-    )
-}
