@@ -1,0 +1,6 @@
+{
+    "weights": [0.5, -0.3, 0.8, 0.1],
+    "bias": -0.2,
+    "threshold": 0.5,
+    "feature_names": ["age", "income", "score", "history"]
+}
