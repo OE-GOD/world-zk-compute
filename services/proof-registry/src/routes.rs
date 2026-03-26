@@ -102,8 +102,12 @@ pub async fn submit_proof(
     };
 
     // Compute proof hash for the transparency log before storing.
-    let bundle_json = serde_json::to_vec(&req.bundle)
-        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("failed to serialize bundle: {e}")))?;
+    let bundle_json = serde_json::to_vec(&req.bundle).map_err(|e| {
+        err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to serialize bundle: {e}"),
+        )
+    })?;
     let proof_hash = transparency::hash_proof_bundle(&bundle_json);
 
     let db = state.db.lock().await;
@@ -113,9 +117,12 @@ pub async fn submit_proof(
 
     // Append to transparency log.
     let mut tlog = state.transparency_log.lock().await;
-    let transparency_index = tlog
-        .append(proof_hash, &id)
-        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("transparency log error: {e}")))?;
+    let transparency_index = tlog.append(proof_hash, &id).map_err(|e| {
+        err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("transparency log error: {e}"),
+        )
+    })?;
 
     Ok((
         StatusCode::CREATED,
@@ -136,7 +143,10 @@ pub async fn get_proof(
     let db = state.db.lock().await;
     match db.get(&id) {
         Ok(Some(proof)) => Ok(Json(proof)),
-        Ok(None) => Err(err(StatusCode::NOT_FOUND, format!("proof '{id}' not found"))),
+        Ok(None) => Err(err(
+            StatusCode::NOT_FOUND,
+            format!("proof '{id}' not found"),
+        )),
         Err(e) => Err(err(StatusCode::INTERNAL_SERVER_ERROR, e)),
     }
 }
@@ -190,13 +200,22 @@ pub async fn verify_proof(
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let (verified, circuit_hash_hex, error_msg) = match verify_result {
-        Ok(r) => (r.verified, format!("0x{}", hex::encode(r.circuit_hash)), None),
+        Ok(r) => (
+            r.verified,
+            format!("0x{}", hex::encode(r.circuit_hash)),
+            None,
+        ),
         Err(e) => (false, String::new(), Some(e.to_string())),
     };
 
     // Create and sign the verification receipt.
-    let mut receipt =
-        VerificationReceipt::new(&id, &circuit_hash_hex, &model_hash, verified, error_msg.clone());
+    let mut receipt = VerificationReceipt::new(
+        &id,
+        &circuit_hash_hex,
+        &model_hash,
+        verified,
+        error_msg.clone(),
+    );
     receipt.sign(&state.signing_key);
 
     // Store the result.
@@ -246,9 +265,7 @@ pub async fn delete_proof(
 }
 
 /// GET /health — health check with DB status.
-pub async fn health(
-    State(state): State<Arc<AppState>>,
-) -> Json<HealthResponse> {
+pub async fn health(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
     let db = state.db.lock().await;
     let db_healthy = db.is_healthy();
     Json(HealthResponse {
@@ -329,7 +346,12 @@ pub async fn transparency_verify(
         .map_err(|_| err(StatusCode::BAD_REQUEST, "root must be 32 bytes".to_string()))?;
 
     let leaf: [u8; 32] = hex::decode(&req.leaf_hash)
-        .map_err(|e| err(StatusCode::BAD_REQUEST, format!("invalid leaf_hash hex: {e}")))?
+        .map_err(|e| {
+            err(
+                StatusCode::BAD_REQUEST,
+                format!("invalid leaf_hash hex: {e}"),
+            )
+        })?
         .try_into()
         .map_err(|_| {
             err(
@@ -355,8 +377,7 @@ pub async fn transparency_verify(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    let valid =
-        transparency::verify_inclusion(&root, &leaf, req.index, &proof, req.tree_size);
+    let valid = transparency::verify_inclusion(&root, &leaf, req.index, &proof, req.tree_size);
 
     Ok(Json(transparency::VerifyResponse { valid }))
 }

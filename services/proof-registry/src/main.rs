@@ -40,22 +40,13 @@ fn build_app_with_state(state: Arc<AppState>) -> Router {
         .route("/proofs/:id/receipt", get(routes::get_receipt))
         .route("/proofs/:id", delete(routes::delete_proof))
         .route("/stats", get(routes::stats))
-        .route(
-            "/transparency/root",
-            get(routes::transparency_root),
-        )
+        .route("/transparency/root", get(routes::transparency_root))
         .route(
             "/transparency/proof/:index",
             get(routes::transparency_proof),
         )
-        .route(
-            "/transparency/verify",
-            post(routes::transparency_verify),
-        )
-        .route(
-            "/transparency/entries",
-            get(routes::transparency_entries),
-        )
+        .route("/transparency/verify", post(routes::transparency_verify))
+        .route("/transparency/entries", get(routes::transparency_entries))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             routes::auth_middleware,
@@ -105,8 +96,8 @@ async fn main() {
         std::process::exit(1);
     });
 
-    let signing_key_path = env::var("REGISTRY_KEY_FILE")
-        .unwrap_or_else(|_| "./registry_signing_key.hex".to_string());
+    let signing_key_path =
+        env::var("REGISTRY_KEY_FILE").unwrap_or_else(|_| "./registry_signing_key.hex".to_string());
     let signing_key = sign::load_or_generate_key(&signing_key_path).unwrap_or_else(|e| {
         eprintln!("Failed to load signing key: {e}");
         std::process::exit(1);
@@ -152,8 +143,7 @@ mod tests {
         let storage_dir = tmp.path().join("bundles");
         let tlog_path = tmp.path().join("transparency.db");
         let db = ProofDb::new(db_path.to_str().unwrap(), storage_dir.to_str().unwrap()).unwrap();
-        let tlog =
-            transparency::TransparencyLog::new(tlog_path.to_str().unwrap()).unwrap();
+        let tlog = transparency::TransparencyLog::new(tlog_path.to_str().unwrap()).unwrap();
 
         // Deterministic test signing key.
         let signing_key = k256::ecdsa::SigningKey::from_slice(&[42u8; 32]).unwrap();
@@ -381,10 +371,8 @@ mod tests {
         let db_path = tmp.path().join("test.db");
         let storage_dir = tmp.path().join("bundles");
         let tlog_path = tmp.path().join("transparency.db");
-        let db =
-            ProofDb::new(db_path.to_str().unwrap(), storage_dir.to_str().unwrap()).unwrap();
-        let tlog =
-            transparency::TransparencyLog::new(tlog_path.to_str().unwrap()).unwrap();
+        let db = ProofDb::new(db_path.to_str().unwrap(), storage_dir.to_str().unwrap()).unwrap();
+        let tlog = transparency::TransparencyLog::new(tlog_path.to_str().unwrap()).unwrap();
         let signing_key = k256::ecdsa::SigningKey::from_slice(&[42u8; 32]).unwrap();
         std::mem::forget(tmp);
 
@@ -430,5 +418,303 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // -- Transparency log integration tests --
+
+    #[tokio::test]
+    async fn test_transparency_root_empty() {
+        let state = make_test_state();
+        let app = build_app_with_state(state);
+
+        let req = Request::builder()
+            .uri("/transparency/root")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["tree_size"], 0);
+        // Empty tree root is all zeros.
+        assert_eq!(
+            json["root"],
+            "0000000000000000000000000000000000000000000000000000000000000000"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_transparency_auto_append_on_submit() {
+        let state = make_test_state();
+        let app = build_app_with_state(state);
+
+        let bundle_json = make_test_bundle_json();
+
+        // Submit a proof.
+        let req = Request::builder()
+            .method("POST")
+            .uri("/proofs")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&bundle_json).unwrap()))
+            .unwrap();
+
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let submit_resp: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(submit_resp["transparency_index"], 0);
+        assert!(submit_resp["proof_hash"].as_str().unwrap().len() == 64);
+
+        // Check the root is no longer zero.
+        let req = Request::builder()
+            .uri("/transparency/root")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let root_resp: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(root_resp["tree_size"], 1);
+        assert_ne!(
+            root_resp["root"],
+            "0000000000000000000000000000000000000000000000000000000000000000"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_transparency_inclusion_proof_roundtrip() {
+        let state = make_test_state();
+        let app = build_app_with_state(state);
+
+        let bundle_json = make_test_bundle_json();
+
+        // Submit three proofs.
+        for _ in 0..3 {
+            let req = Request::builder()
+                .method("POST")
+                .uri("/proofs")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_string(&bundle_json).unwrap()))
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::CREATED);
+        }
+
+        // Get inclusion proof for leaf 1.
+        let req = Request::builder()
+            .uri("/transparency/proof/1")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let proof_resp: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(proof_resp["index"], 1);
+        assert_eq!(proof_resp["tree_size"], 3);
+        assert!(!proof_resp["proof"].as_array().unwrap().is_empty());
+
+        // Verify the inclusion proof via the verify endpoint.
+        let verify_req = serde_json::json!({
+            "index": proof_resp["index"],
+            "leaf_hash": proof_resp["leaf_hash"],
+            "proof": proof_resp["proof"],
+            "root": proof_resp["root"],
+            "tree_size": proof_resp["tree_size"],
+        });
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/transparency/verify")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&verify_req).unwrap()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let verify_resp: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(verify_resp["valid"], true);
+    }
+
+    #[tokio::test]
+    async fn test_transparency_verify_invalid_proof() {
+        let state = make_test_state();
+        let app = build_app_with_state(state);
+
+        // Submit a proof to have something in the log.
+        let bundle_json = make_test_bundle_json();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/proofs")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&bundle_json).unwrap()))
+            .unwrap();
+        app.clone().oneshot(req).await.unwrap();
+
+        // Try to verify with a wrong leaf hash.
+        let verify_req = serde_json::json!({
+            "index": 0,
+            "leaf_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "proof": [],
+            "root": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "tree_size": 1,
+        });
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/transparency/verify")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&verify_req).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let verify_resp: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(verify_resp["valid"], false);
+    }
+
+    #[tokio::test]
+    async fn test_transparency_entries() {
+        let state = make_test_state();
+        let app = build_app_with_state(state);
+
+        let bundle_json = make_test_bundle_json();
+
+        // Submit five proofs.
+        for _ in 0..5 {
+            let req = Request::builder()
+                .method("POST")
+                .uri("/proofs")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_string(&bundle_json).unwrap()))
+                .unwrap();
+            app.clone().oneshot(req).await.unwrap();
+        }
+
+        // Get entries 2..4.
+        let req = Request::builder()
+            .uri("/transparency/entries?from=2&count=2")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let entries_resp: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(entries_resp["total"], 5);
+        let entries = entries_resp["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["index"], 2);
+        assert_eq!(entries[1]["index"], 3);
+
+        // Get all entries.
+        let req = Request::builder()
+            .uri("/transparency/entries")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let entries_resp: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(entries_resp["entries"].as_array().unwrap().len(), 5);
+    }
+
+    #[tokio::test]
+    async fn test_transparency_proof_nonexistent() {
+        let state = make_test_state();
+        let app = build_app_with_state(state);
+
+        let req = Request::builder()
+            .uri("/transparency/proof/999")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_transparency_root_changes_after_append() {
+        let state = make_test_state();
+        let app = build_app_with_state(state);
+
+        let bundle_json = make_test_bundle_json();
+
+        // Submit first proof.
+        let req = Request::builder()
+            .method("POST")
+            .uri("/proofs")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&bundle_json).unwrap()))
+            .unwrap();
+        app.clone().oneshot(req).await.unwrap();
+
+        // Get root after first.
+        let req = Request::builder()
+            .uri("/transparency/root")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let root1: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        // Submit second proof (different bundle to get different hash).
+        let bundle_json2 = serde_json::json!({
+            "proof_hex": "0xdeadbeef",
+            "public_inputs_hex": "",
+            "gens_hex": "0xcafebabe",
+            "dag_circuit_description": {"num_compute_layers": 1},
+            "model_hash": "0x1111",
+            "timestamp": 1700000001u64,
+            "prover_version": "0.1.1-test",
+            "circuit_hash": "0x2222",
+        });
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/proofs")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&bundle_json2).unwrap()))
+            .unwrap();
+        app.clone().oneshot(req).await.unwrap();
+
+        // Get root after second.
+        let req = Request::builder()
+            .uri("/transparency/root")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let root2: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        // Root must change.
+        assert_ne!(root1["root"], root2["root"]);
+        assert_eq!(root2["tree_size"], 2);
     }
 }

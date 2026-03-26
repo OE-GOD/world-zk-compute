@@ -319,11 +319,9 @@ impl ProofDb {
 
         let active_proofs: i64 = self
             .conn
-            .query_row(
-                "SELECT COUNT(*) FROM proofs WHERE deleted = 0",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT COUNT(*) FROM proofs WHERE deleted = 0", [], |row| {
+                row.get(0)
+            })
             .map_err(|e| format!("failed to count active proofs: {e}"))?;
 
         let verified_count: i64 = self
@@ -372,16 +370,13 @@ impl ProofDb {
 
     /// Check if the database is healthy (can execute a simple query).
     pub fn is_healthy(&self) -> bool {
-        self.conn
-            .query_row("SELECT 1", [], |_| Ok(()))
-            .is_ok()
+        self.conn.query_row("SELECT 1", [], |_| Ok(())).is_ok()
     }
 
     /// Return the file path for a bundle with the given ID.
     fn bundle_path(&self, id: &str) -> PathBuf {
         self.storage_dir.join(format!("{id}.json"))
     }
-
 }
 
 #[cfg(test)]
@@ -411,11 +406,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let db_path = tmp.path().join("test.db");
         let storage_dir = tmp.path().join("bundles");
-        let db = ProofDb::new(
-            db_path.to_str().unwrap(),
-            storage_dir.to_str().unwrap(),
-        )
-        .unwrap();
+        let db = ProofDb::new(db_path.to_str().unwrap(), storage_dir.to_str().unwrap()).unwrap();
         (db, tmp)
     }
 
@@ -480,9 +471,7 @@ mod tests {
         )
         .unwrap();
 
-        let results = db
-            .search(Some("model-a"), None, None, 50)
-            .unwrap();
+        let results = db.search(Some("model-a"), None, None, 50).unwrap();
         assert_eq!(results.len(), 2);
         for r in &results {
             assert_eq!(r.model_hash, "model-a");
@@ -510,9 +499,7 @@ mod tests {
         assert_eq!(results.len(), 3);
 
         // Search with a narrow range that excludes all (far future).
-        let results = db
-            .search(None, Some("2099-01-01"), None, 50)
-            .unwrap();
+        let results = db.search(None, Some("2099-01-01"), None, 50).unwrap();
         assert!(results.is_empty());
     }
 

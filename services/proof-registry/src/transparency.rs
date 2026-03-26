@@ -102,11 +102,7 @@ impl TransparencyLog {
     }
 
     /// Append a proof hash to the log. Returns the leaf index.
-    pub fn append(
-        &mut self,
-        proof_hash: [u8; 32],
-        proof_id: &str,
-    ) -> Result<u64, String> {
+    pub fn append(&mut self, proof_hash: [u8; 32], proof_id: &str) -> Result<u64, String> {
         let now = chrono::Utc::now().to_rfc3339();
         let next_idx = self.size()?;
 
@@ -143,9 +139,7 @@ impl TransparencyLog {
         let n = leaves.len();
 
         if index as usize >= n {
-            return Err(format!(
-                "index {index} out of range (tree size: {n})"
-            ));
+            return Err(format!("index {index} out of range (tree size: {n})"));
         }
 
         Ok(merkle_proof(&leaves, index as usize))
@@ -253,9 +247,7 @@ impl TransparencyLog {
 
     /// Check if the log database is healthy.
     pub fn is_healthy(&self) -> bool {
-        self.conn
-            .query_row("SELECT 1", [], |_| Ok(()))
-            .is_ok()
+        self.conn.query_row("SELECT 1", [], |_| Ok(())).is_ok()
     }
 }
 
@@ -516,9 +508,7 @@ mod tests {
 
         // Using the wrong leaf hash should fail.
         let wrong_hash = make_hash(99);
-        assert!(!verify_inclusion(
-            &root, &wrong_hash, 0, &proof, tree_size
-        ));
+        assert!(!verify_inclusion(&root, &wrong_hash, 0, &proof, tree_size));
     }
 
     #[test]
@@ -549,9 +539,7 @@ mod tests {
         let proof = log.inclusion_proof(0).unwrap();
 
         let wrong_root = make_hash(255);
-        assert!(!verify_inclusion(
-            &wrong_root, &h1, 0, &proof, tree_size
-        ));
+        assert!(!verify_inclusion(&wrong_root, &h1, 0, &proof, tree_size));
     }
 
     #[test]
@@ -584,13 +572,7 @@ mod tests {
 
     #[test]
     fn test_verify_empty_tree() {
-        assert!(!verify_inclusion(
-            &[0u8; 32],
-            &[0u8; 32],
-            0,
-            &[],
-            0
-        ));
+        assert!(!verify_inclusion(&[0u8; 32], &[0u8; 32], 0, &[], 0));
     }
 
     #[test]
