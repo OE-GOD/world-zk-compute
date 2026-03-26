@@ -251,6 +251,20 @@ clean: ## Clean all build artifacts
 	cargo clean --manifest-path crates/events/Cargo.toml 2>/dev/null || true
 	cargo clean --manifest-path examples/xgboost-remainder/Cargo.toml 2>/dev/null || true
 
+# ── Bank Demo ────────────────────────────────────────────────────────────────
+
+demo-bank: ## Run bank demo (off-chain: verifier API + CLI)
+	docker compose -f docker-compose.bank-demo.yml up -d
+	@echo "Waiting for verifier API..."
+	@sleep 3
+	cd examples/bank-demo && cargo run -- --model models/credit_scoring.json --json
+	@echo ""
+	@echo "Verifier API running at http://localhost:3000"
+	@echo "Run 'make demo-bank-down' to stop."
+
+demo-bank-down: ## Stop bank demo services
+	docker compose -f docker-compose.bank-demo.yml down
+
 # ── Check ────────────────────────────────────────────────────────────────────
 
 check: lint ## Run all validation (lint + script checks + compose validation)
