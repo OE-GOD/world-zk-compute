@@ -1,0 +1,25 @@
+# Multi-stage build for the ZKML verifier service
+FROM rust:1.85-slim AS builder
+
+WORKDIR /app
+
+# Copy full workspace (needed for workspace dep resolution)
+COPY . .
+
+RUN cargo build --release -p zkml-verifier-service
+
+# Runtime stage
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app/target/release/zkml-verifier-service /usr/local/bin/
+
+RUN groupadd -r verifier && useradd -r -g verifier verifier
+USER verifier
+
+ENV PORT=3000
+EXPOSE 3000
+
+CMD ["zkml-verifier-service"]

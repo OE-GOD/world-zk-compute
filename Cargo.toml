@@ -4,9 +4,11 @@ members = [
     "sdk",
     "crates/watcher",
     "crates/events",
+    "crates/zkml-verifier",
     "services/operator",
     "services/admin-cli",
     "services/indexer",
+    "services/verifier",
     "tee/enclave",
     "tests/chaos",
 ]

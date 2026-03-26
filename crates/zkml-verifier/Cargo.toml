@@ -1,0 +1,19 @@
+[package]
+name = "zkml-verifier"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Standalone BN254 GKR DAG verifier for ZKML proof bundles"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
+thiserror = { workspace = true }
+sha2 = { workspace = true }
+
+[[bin]]
+name = "zkml-verifier"
+path = "src/main.rs"
+
+[dev-dependencies]

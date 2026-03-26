@@ -1,0 +1,37 @@
+# ZKML Verifier Service
+#
+# Usage:
+#   docker compose -f docker-compose.verifier.yml build
+#   docker compose -f docker-compose.verifier.yml up
+#
+# Endpoints:
+#   GET  /health                              - Health check
+#   POST /verify                              - Full verification (send ProofBundle JSON)
+#   POST /verify/hybrid                       - Hybrid verification
+#   POST /circuits                            - Register circuit config (warm)
+#   GET  /circuits                            - List registered circuits
+#   POST /circuits/:id/verify                 - Verify with pre-loaded circuit
+#   POST /circuits/:id/verify/hybrid          - Hybrid verify with pre-loaded circuit
+
+services:
+  verifier:
+    build:
+      context: .
+      dockerfile: Dockerfile.verifier
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    read_only: true
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    pids_limit: 50
