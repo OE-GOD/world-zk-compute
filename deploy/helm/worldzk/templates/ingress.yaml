@@ -53,5 +53,23 @@ spec:
                 port:
                   name: http
           {{- end }}
+          {{- if $.Values.verifier.enabled }}
+          - path: /api/verify
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "worldzk.verifier.fullname" $ }}
+                port:
+                  name: http
+          {{- end }}
+          {{- if $.Values.privateInput.enabled }}
+          - path: /api/private-input
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "worldzk.fullname" $ }}-private-input
+                port:
+                  name: http
+          {{- end }}
     {{- end }}
 {{- end }}

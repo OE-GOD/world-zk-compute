@@ -1,0 +1,19 @@
+{{- if .Values.prover.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "worldzk.fullname" . }}-prover
+  labels:
+    {{- include "worldzk.labels" . | nindent 4 }}
+    app.kubernetes.io/component: prover
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "worldzk.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: prover
+  ports:
+    - name: http
+      port: {{ .Values.prover.port }}
+      targetPort: http
+      protocol: TCP
+{{- end }}

@@ -1,0 +1,13 @@
+{{- if and .Values.verifier.enabled ((.Values.verifier.podDisruptionBudget).enabled) }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "worldzk.verifier.fullname" . }}-pdb
+  labels:
+    {{- include "worldzk.verifier.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.verifier.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "worldzk.verifier.selectorLabels" . | nindent 6 }}
+{{- end }}

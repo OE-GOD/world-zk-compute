@@ -15,6 +15,26 @@ OPERATOR
     kubectl logs -l "app.kubernetes.io/name=operator,app.kubernetes.io/instance={{ .Release.Name }}" -n {{ .Release.Namespace }} -f
 {{- end }}
 
+{{- if .Values.verifier.enabled }}
+
+VERIFIER API
+------------
+  Deployment: {{ include "worldzk.verifier.fullname" . }}
+  Service:    {{ include "worldzk.verifier.fullname" . }}:{{ .Values.verifier.port }}
+  Replicas:   {{ .Values.verifier.replicaCount }}
+
+  Check verifier status:
+    kubectl get pods -l "{{ include "worldzk.verifier.selectorLabels" . | replace ": " "=" | replace "\n" "," }}" -n {{ .Release.Namespace }}
+
+  View verifier logs:
+    kubectl logs -l "app.kubernetes.io/name=verifier,app.kubernetes.io/instance={{ .Release.Name }}" -n {{ .Release.Namespace }} -f
+
+  Endpoints:
+    POST /verify         - Full proof verification
+    POST /verify/hybrid  - Hybrid verification
+    GET  /health         - Health check
+{{- end }}
+
 {{- if .Values.indexer.enabled }}
 
 INDEXER
@@ -28,6 +48,39 @@ INDEXER
 
   View indexer logs:
     kubectl logs -l "app.kubernetes.io/name=indexer,app.kubernetes.io/instance={{ .Release.Name }}" -n {{ .Release.Namespace }} -f
+{{- end }}
+
+{{- if .Values.enclave.enabled }}
+
+ENCLAVE (TEE)
+-------------
+  Deployment: {{ include "worldzk.fullname" . }}-enclave
+  Service:    {{ include "worldzk.fullname" . }}-enclave:{{ .Values.enclave.port }}
+  Replicas:   {{ .Values.enclave.replicaCount }}
+
+  Check enclave status:
+    kubectl get pods -l "app.kubernetes.io/component=enclave" -n {{ .Release.Namespace }}
+{{- end }}
+
+{{- if .Values.prover.enabled }}
+
+WARM PROVER (ZK)
+----------------
+  Deployment: {{ include "worldzk.fullname" . }}-prover
+  Service:    {{ include "worldzk.fullname" . }}-prover:{{ .Values.prover.port }}
+  Replicas:   {{ .Values.prover.replicaCount }}
+
+  Check prover status:
+    kubectl get pods -l "app.kubernetes.io/component=prover" -n {{ .Release.Namespace }}
+{{- end }}
+
+{{- if .Values.privateInput.enabled }}
+
+PRIVATE INPUT SERVER
+--------------------
+  Deployment: {{ include "worldzk.fullname" . }}-private-input
+  Service:    {{ include "worldzk.fullname" . }}-private-input:{{ .Values.privateInput.port }}
+  Replicas:   {{ .Values.privateInput.replicaCount }}
 {{- end }}
 
 CONFIGURATION

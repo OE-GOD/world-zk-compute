@@ -207,6 +207,42 @@ app.kubernetes.io/variant: canary
 {{- end }}
 
 {{/*
+Verifier fully qualified name
+*/}}
+{{- define "worldzk.verifier.fullname" -}}
+{{- printf "%s-verifier" (include "worldzk.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{/*
+Verifier labels
+*/}}
+{{- define "worldzk.verifier.labels" -}}
+{{ include "worldzk.labels" . }}
+app.kubernetes.io/name: verifier
+app.kubernetes.io/component: verifier
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{/*
+Verifier selector labels
+*/}}
+{{- define "worldzk.verifier.selectorLabels" -}}
+app.kubernetes.io/name: verifier
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{/*
+Verifier service account name
+*/}}
+{{- define "worldzk.verifier.serviceAccountName" -}}
+{{- if .Values.serviceAccount.create }}
+{{- include "worldzk.verifier.fullname" . }}
+{{- else }}
+{{- default "default" }}
+{{- end }}
+{{- end }}
+
+{{/*
 Secret name
 */}}
 {{- define "worldzk.secretName" -}}

@@ -1,0 +1,81 @@
+# Off-Chain Production Stack
+#
+# Full proof generation, verification, and registry pipeline.
+# No blockchain required — purely off-chain proof lifecycle.
+#
+# Usage:
+#   docker compose -f docker-compose.offchain.yml up
+#
+# Services:
+#   - verifier-api (port 3000): Verify proofs
+#   - proof-registry (port 3001): Store and search proofs
+#   - proof-generator (port 3002): Generate proofs from models
+#   - health-aggregator (port 8090): Unified health dashboard
+
+services:
+  verifier-api:
+    build:
+      context: .
+      dockerfile: services/verifier/Dockerfile
+    ports:
+      - "${VERIFIER_PORT:-3000}:3000"
+    environment:
+      - PORT=3000
+      - RUST_LOG=${RUST_LOG:-info}
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  proof-registry:
+    build:
+      context: .
+      dockerfile: services/proof-registry/Dockerfile
+    ports:
+      - "${REGISTRY_PORT:-3001}:3001"
+    environment:
+      - PORT=3001
+      - RUST_LOG=${RUST_LOG:-info}
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  proof-generator:
+    build:
+      context: .
+      dockerfile: services/proof-generator/Dockerfile
+    ports:
+      - "${GENERATOR_PORT:-3002}:3002"
+    environment:
+      - PORT=3002
+      - RUST_LOG=${RUST_LOG:-info}
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3002/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  health-aggregator:
+    build:
+      context: .
+      dockerfile: services/health-aggregator/Dockerfile
+    ports:
+      - "${HEALTH_PORT:-8090}:8090"
+    environment:
+      - PORT=8090
+      - SERVICES=verifier=http://verifier-api:3000,registry=http://proof-registry:3001,generator=http://proof-generator:3002
+      - POLL_INTERVAL_SECS=15
+    depends_on:
+      verifier-api:
+        condition: service_healthy
+      proof-registry:
+        condition: service_healthy
+      proof-generator:
+        condition: service_healthy
+    restart: unless-stopped

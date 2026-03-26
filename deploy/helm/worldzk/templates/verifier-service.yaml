@@ -1,0 +1,17 @@
+{{- if .Values.verifier.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "worldzk.verifier.fullname" . }}
+  labels:
+    {{- include "worldzk.verifier.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "worldzk.verifier.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.verifier.port }}
+      targetPort: http
+      protocol: TCP
+{{- end }}

@@ -146,6 +146,76 @@ indexer:
     # -- Minimum number of available pods
     minAvailable: 1
 
+# -- Verifier API component configuration
+# Stateless REST API for off-chain ZKML proof verification.
+# Can be scaled horizontally behind a load balancer.
+verifier:
+  # -- Enable the verifier API deployment
+  enabled: true
+  # -- Number of verifier replicas
+  replicaCount: 2
+  image:
+    # -- Verifier container image repository
+    repository: world-zk-compute/verifier
+    # -- Verifier container image tag
+    tag: latest
+    # -- Image pull policy
+    pullPolicy: IfNotPresent
+  # -- Verifier service port
+  port: 3000
+  # -- Additional environment variables for the verifier
+  env:
+    RUST_LOG: "info"
+    RATE_LIMIT_RPM: "100"
+  # -- Resource requests and limits
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "250m"
+    limits:
+      memory: "512Mi"
+      cpu: "1000m"
+  # -- Liveness probe configuration
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 10
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 3
+  # -- Readiness probe configuration
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+  # -- Termination grace period in seconds
+  terminationGracePeriodSeconds: 15
+  # -- HorizontalPodAutoscaler configuration for the verifier
+  autoscaling:
+    # -- Enable HPA for verifier
+    enabled: false
+    # -- Minimum number of replicas
+    minReplicas: 2
+    # -- Maximum number of replicas
+    maxReplicas: 10
+    # -- Target CPU utilization percentage
+    targetCPUUtilizationPercentage: 70
+    # -- Scale-down stabilization window in seconds
+    scaleDownStabilizationSeconds: 300
+    # -- Scale-up stabilization window in seconds
+    scaleUpStabilizationSeconds: 60
+  # -- PodDisruptionBudget configuration for the verifier
+  podDisruptionBudget:
+    # -- Enable PDB for verifier (recommended when replicaCount > 1)
+    enabled: false
+    # -- Minimum number of available pods
+    minAvailable: 1
+
 # -- Enclave (TEE) component configuration
 enclave:
   # -- Enable the enclave deployment

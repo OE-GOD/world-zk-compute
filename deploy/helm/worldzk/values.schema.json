@@ -312,6 +312,118 @@
         }
       }
     },
+    "verifier": {
+      "type": "object",
+      "description": "Verifier API component configuration (stateless ZKML proof verification)",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable the verifier API deployment",
+          "default": true
+        },
+        "replicaCount": {
+          "type": "integer",
+          "description": "Number of verifier replicas",
+          "minimum": 1,
+          "default": 2
+        },
+        "image": {
+          "$ref": "#/$defs/image",
+          "description": "Verifier container image configuration"
+        },
+        "port": {
+          "type": "integer",
+          "description": "Verifier service port",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 3000
+        },
+        "env": {
+          "type": "object",
+          "description": "Additional environment variables for the verifier",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "resources": {
+          "$ref": "#/$defs/resources",
+          "description": "Resource requests and limits for verifier pods"
+        },
+        "livenessProbe": {
+          "$ref": "#/$defs/httpProbe",
+          "description": "Liveness probe configuration"
+        },
+        "readinessProbe": {
+          "$ref": "#/$defs/httpProbe",
+          "description": "Readiness probe configuration"
+        },
+        "terminationGracePeriodSeconds": {
+          "type": "integer",
+          "description": "Termination grace period in seconds",
+          "minimum": 0,
+          "default": 15
+        },
+        "autoscaling": {
+          "type": "object",
+          "description": "HorizontalPodAutoscaler configuration for the verifier",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Enable HPA for verifier",
+              "default": false
+            },
+            "minReplicas": {
+              "type": "integer",
+              "description": "Minimum number of replicas",
+              "minimum": 1,
+              "default": 2
+            },
+            "maxReplicas": {
+              "type": "integer",
+              "description": "Maximum number of replicas",
+              "minimum": 1,
+              "default": 10
+            },
+            "targetCPUUtilizationPercentage": {
+              "type": "integer",
+              "description": "Target CPU utilization percentage for scaling",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 70
+            },
+            "scaleDownStabilizationSeconds": {
+              "type": "integer",
+              "description": "Scale-down stabilization window in seconds",
+              "minimum": 0,
+              "default": 300
+            },
+            "scaleUpStabilizationSeconds": {
+              "type": "integer",
+              "description": "Scale-up stabilization window in seconds",
+              "minimum": 0,
+              "default": 60
+            }
+          }
+        },
+        "podDisruptionBudget": {
+          "type": "object",
+          "description": "PodDisruptionBudget configuration for the verifier",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Enable PDB for verifier",
+              "default": false
+            },
+            "minAvailable": {
+              "type": "integer",
+              "description": "Minimum number of available pods during voluntary disruptions",
+              "minimum": 0,
+              "default": 1
+            }
+          }
+        }
+      }
+    },
     "enclave": {
       "type": "object",
       "description": "Enclave (TEE) component configuration",

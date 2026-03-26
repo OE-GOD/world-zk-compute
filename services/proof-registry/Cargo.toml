@@ -1,0 +1,29 @@
+[package]
+name = "proof-registry"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Proof registry service — store, index, search, and verify proof bundles"
+
+[[bin]]
+name = "proof-registry"
+path = "src/main.rs"
+
+[dependencies]
+zkml-verifier = { path = "../../crates/zkml-verifier" }
+axum = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
+tracing = { workspace = true }
+tower-http = { workspace = true, features = ["cors"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+sha2 = { workspace = true }
+tracing-subscriber = "0.3"
+
+[dev-dependencies]
+tower = "0.5"
+tempfile = "3"

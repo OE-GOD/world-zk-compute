@@ -10,14 +10,16 @@ Measured with `forge test --gas-report --match-contract GasProfile` on Solidity 
 
 | Operation              | Gas Used | ETH @ 30 gwei | USD @ $2500/ETH | Notes                                      |
 |------------------------|----------|----------------|-----------------|---------------------------------------------|
-| `submitResult`         | 245,614  | 0.00737        | $0.018          | ECDSA recover + 14-field struct cold write  |
-| `challenge`            | 98,663   | 0.00296        | $0.007          | 4 warm SSTOREs + event                      |
-| `finalize`             | 64,640   | 0.00194        | $0.005          | 1 SSTORE + ETH transfer + 2 events         |
-| `resolveDisputeByTimeout` | 71,636 | 0.00215       | $0.005          | 3 SSTOREs + ETH transfer + event           |
-| `registerEnclave`      | 92,859   | 0.00279        | $0.007          | Cold SSTORE for 4-field EnclaveInfo struct  |
-| `revokeEnclave`        | 30,639   | 0.00092        | $0.002          | Single SSTORE (active = false)              |
+| `submitResult`         | 246,804  | 0.00740        | $0.019          | ECDSA recover + struct write (via UUPS proxy) |
+| `challenge`            | 300,900  | 0.00903        | $0.023          | Includes prover stake check + bond escrow   |
+| `finalize`             | 259,078  | 0.00777        | $0.019          | ETH transfers + state cleanup (via proxy)   |
+| `resolveDisputeByTimeout` | 333,713 | 0.01001     | $0.025          | ETH transfers + dispute settlement          |
+| `registerEnclave`      | 63,290   | 0.00190        | $0.005          | Cold SSTORE for EnclaveInfo struct          |
 
-**Happy path total (submit + finalize): ~310K gas ($0.023 at 30 gwei L1, $0.00008 at 0.1 gwei Arbitrum)**
+**Happy path total (submit + finalize): ~506K gas ($0.038 at 30 gwei L1, $0.00013 at 0.1 gwei Arbitrum)**
+
+> Note: Gas costs increased ~60% after UUPS proxy migration (delegatecall overhead + proxy storage reads).
+> On L2 (Arbitrum/World Chain), absolute costs remain negligible (~$0.0001).
 
 ### ExecutionEngine (`contracts/src/ExecutionEngine.sol`)
 

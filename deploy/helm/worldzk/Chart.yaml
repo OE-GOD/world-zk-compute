@@ -1,6 +1,6 @@
 apiVersion: v2
 name: worldzk
-description: World ZK Compute - TEE-based ML inference with ZK dispute resolution
+description: Verifiable AI Inference — off-chain proof generation and verification
 type: application
 version: 0.1.0
-appVersion: "1.0.0"
+appVersion: "0.1.0"

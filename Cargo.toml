@@ -9,6 +9,7 @@ members = [
     "services/admin-cli",
     "services/indexer",
     "services/health-aggregator",
+    "services/proof-registry",
     "services/verifier",
     "tee/enclave",
     "tests/chaos",

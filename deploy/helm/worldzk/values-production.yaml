@@ -129,6 +129,55 @@ indexer:
   terminationGracePeriodSeconds: 30
 
 # =============================================================================
+# Verifier API
+# =============================================================================
+verifier:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: world-zk-compute/verifier
+    tag: "v1.0.0"
+    pullPolicy: IfNotPresent
+  port: 3000
+  env:
+    RUST_LOG: "warn"
+    RATE_LIMIT_RPM: "200"
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "250m"
+    limits:
+      memory: "512Mi"
+      cpu: "1000m"
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 10
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+  terminationGracePeriodSeconds: 15
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    scaleDownStabilizationSeconds: 300
+    scaleUpStabilizationSeconds: 60
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+
+# =============================================================================
 # Enclave (TEE)
 # =============================================================================
 enclave:

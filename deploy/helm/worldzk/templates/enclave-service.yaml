@@ -1,0 +1,19 @@
+{{- if .Values.enclave.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "worldzk.fullname" . }}-enclave
+  labels:
+    {{- include "worldzk.labels" . | nindent 4 }}
+    app.kubernetes.io/component: enclave
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "worldzk.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: enclave
+  ports:
+    - name: http
+      port: {{ .Values.enclave.port }}
+      targetPort: http
+      protocol: TCP
+{{- end }}

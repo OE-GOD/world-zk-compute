@@ -1,0 +1,21 @@
+# World ZK Compute Code Owners
+# Each line is a file pattern followed by one or more owners.
+# Order matters — last match wins.
+
+# Default: project maintainers review everything
+*                                   @OE-GOD
+
+# Smart contracts — require careful review
+contracts/src/                      @OE-GOD
+contracts/script/                   @OE-GOD
+
+# Security-critical: TEE enclave code
+tee/                                @OE-GOD
+
+# Cryptographic verification code
+crates/zkml-verifier/               @OE-GOD
+contracts/stylus/gkr-verifier/      @OE-GOD
+
+# Infrastructure and deployment
+.github/workflows/                  @OE-GOD
+docker-compose*.yml                 @OE-GOD
