@@ -1,0 +1,346 @@
+openapi: 3.1.0
+info:
+  title: ZKML Verifier API
+  description: |
+    Stateless REST API for verifying GKR+Hyrax zero-knowledge proofs of ML inference.
+    Supports full verification, hybrid (transcript-only) verification, and batch operations.
+  version: 0.1.0
+  license:
+    name: Apache-2.0
+
+servers:
+  - url: http://localhost:3000
+    description: Local development
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      operationId: health
+      tags: [health]
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  circuits_loaded:
+                    type: integer
+                    example: 2
+
+  /verify:
+    post:
+      summary: Verify a proof bundle
+      operationId: verifyProof
+      tags: [verification]
+      description: |
+        Full GKR+Hyrax verification including EC operations.
+        Takes a complete ProofBundle JSON and returns the verification result.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProofBundle"
+      responses:
+        "200":
+          description: Verification completed (check `verified` field)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifyResponse"
+        "400":
+          description: Invalid proof data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /verify/batch:
+    post:
+      summary: Verify multiple proof bundles
+      operationId: verifyBatch
+      tags: [verification]
+      description: |
+        Verify up to 100 proof bundles in a single request.
+        Each bundle is verified independently. Partial failures are reported per-bundle.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [bundles]
+              properties:
+                bundles:
+                  type: array
+                  maxItems: 100
+                  items:
+                    $ref: "#/components/schemas/ProofBundle"
+      responses:
+        "200":
+          description: Batch verification results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BatchVerifyResponse"
+        "400":
+          description: Empty or oversized batch
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /verify/hybrid:
+    post:
+      summary: Hybrid verification (transcript replay only)
+      operationId: verifyHybrid
+      tags: [verification]
+      description: |
+        Performs GKR transcript replay and Fr arithmetic without EC operations.
+        Returns the transcript digest and Fr outputs needed for a separate Groth16 proof.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProofBundle"
+      responses:
+        "200":
+          description: Hybrid verification result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HybridResponse"
+        "400":
+          description: Invalid proof data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /circuits:
+    get:
+      summary: List registered circuits
+      operationId: listCircuits
+      tags: [circuits]
+      responses:
+        "200":
+          description: Circuit ID list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  circuits:
+                    type: array
+                    items:
+                      type: string
+    post:
+      summary: Register a circuit for warm verification
+      operationId: registerCircuit
+      tags: [circuits]
+      description: |
+        Pre-register a circuit's generators and description so that subsequent
+        verify requests only need the proof hex (faster, smaller payloads).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [circuit_id, gens_hex, dag_circuit_description]
+              properties:
+                circuit_id:
+                  type: string
+                  example: xgboost-credit-v1
+                gens_hex:
+                  type: string
+                  description: Hex-encoded Pedersen generators
+                dag_circuit_description:
+                  type: object
+                  description: DAG circuit topology
+      responses:
+        "200":
+          description: Circuit registered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  circuit_id:
+                    type: string
+                  status:
+                    type: string
+                    example: registered
+        "400":
+          description: Missing or empty circuit_id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /circuits/{circuit_id}/verify:
+    post:
+      summary: Warm verify (pre-registered circuit)
+      operationId: warmVerify
+      tags: [circuits]
+      parameters:
+        - name: circuit_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [proof_hex]
+              properties:
+                proof_hex:
+                  type: string
+                public_inputs_hex:
+                  type: string
+                  default: ""
+      responses:
+        "200":
+          description: Verification result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VerifyResponse"
+        "404":
+          description: Circuit not registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /circuits/{circuit_id}/verify/hybrid:
+    post:
+      summary: Warm hybrid verify (pre-registered circuit)
+      operationId: warmVerifyHybrid
+      tags: [circuits]
+      parameters:
+        - name: circuit_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [proof_hex]
+              properties:
+                proof_hex:
+                  type: string
+                public_inputs_hex:
+                  type: string
+                  default: ""
+      responses:
+        "200":
+          description: Hybrid verification result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HybridResponse"
+        "404":
+          description: Circuit not registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+components:
+  schemas:
+    ProofBundle:
+      type: object
+      required: [proof_hex, gens_hex, dag_circuit_description]
+      properties:
+        proof_hex:
+          type: string
+          description: Hex-encoded proof blob with REM1 selector prefix
+          example: "0x52454d31..."
+        gens_hex:
+          type: string
+          description: Hex-encoded Pedersen generator points
+        public_inputs_hex:
+          type: string
+          description: Hex-encoded public inputs (optional, verifier uses embedded)
+          default: ""
+        dag_circuit_description:
+          type: object
+          description: DAG circuit topology (numComputeLayers, layerTypes, etc.)
+        model_hash:
+          type: string
+          description: Keccak256 of the ML model (metadata)
+        timestamp:
+          type: integer
+          description: Unix timestamp when proof was generated (metadata)
+        prover_version:
+          type: string
+          description: Prover software version (metadata)
+        circuit_hash:
+          type: string
+          description: Circuit hash hex for indexing (metadata)
+
+    VerifyResponse:
+      type: object
+      properties:
+        verified:
+          type: boolean
+          description: Whether the proof passed verification
+        circuit_hash:
+          type: string
+          description: Hex-encoded 32-byte circuit hash from proof header
+          example: "0xabcd..."
+
+    HybridResponse:
+      type: object
+      properties:
+        circuit_hash:
+          type: string
+        transcript_digest:
+          type: string
+          description: Poseidon sponge digest binding the transcript state
+        num_compute_layers:
+          type: integer
+
+    BatchVerifyResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              index:
+                type: integer
+              verified:
+                type: boolean
+              circuit_hash:
+                type: string
+              error:
+                type: string
+                nullable: true
+        total:
+          type: integer
+        valid:
+          type: integer
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error message
