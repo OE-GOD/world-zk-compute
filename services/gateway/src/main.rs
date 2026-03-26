@@ -5,16 +5,22 @@
 //!
 //! # Routes
 //!
-//! | Prefix      | Backend            | Default URL                  |
-//! |-------------|--------------------|------------------------------|
-//! | `/prove`    | proof-generator    | `http://localhost:3002`      |
-//! | `/models`   | proof-generator    | `http://localhost:3002`      |
-//! | `/proofs`   | proof-registry     | `http://localhost:3001`      |
-//! | `/stats`    | proof-registry     | `http://localhost:3001`      |
-//! | `/verify`   | verifier-api       | `http://localhost:3000`      |
-//! | `/circuits` | verifier-api       | `http://localhost:3000`      |
-//! | `/health`   | aggregated health  | (built-in)                   |
-//! | `/health/{svc}` | specific svc   | (built-in)                   |
+//! All API routes are available under the `/v1/` prefix (canonical) and at
+//! the root level (backward-compatible alias).
+//!
+//! | Prefix           | Backend            | Default URL                  |
+//! |------------------|--------------------|------------------------------|
+//! | `/v1/prove`      | proof-generator    | `http://localhost:3002`      |
+//! | `/v1/models`     | proof-generator    | `http://localhost:3002`      |
+//! | `/v1/proofs`     | proof-registry     | `http://localhost:3001`      |
+//! | `/v1/stats`      | proof-registry     | `http://localhost:3001`      |
+//! | `/v1/verify`     | verifier-api       | `http://localhost:3000`      |
+//! | `/v1/circuits`   | verifier-api       | `http://localhost:3000`      |
+//! | `/health`        | aggregated health  | (built-in)                   |
+//! | `/health/{svc}`  | specific svc       | (built-in)                   |
+//!
+//! Root-level routes (`/prove`, `/proofs`, etc.) also work as backward-
+//! compatible aliases that proxy identically to their `/v1/` counterparts.
 //!
 //! # Environment Variables
 //!
@@ -119,8 +125,25 @@ struct GatewayState {
 // ---------------------------------------------------------------------------
 
 /// Determines which backend a request path should be routed to.
+///
+/// Accepts both `/v1/<route>` and `/<route>` forms. The `/v1/` prefix is
+/// stripped transparently so that the same matching logic applies.
 fn route_to_backend(path: &str) -> Option<&'static str> {
     let trimmed = path.trim_start_matches('/');
+
+    // Strip optional "v1/" version prefix.
+    let trimmed = trimmed
+        .strip_prefix("v1/")
+        .or_else(|| {
+            // Also match bare "/v1" (no trailing slash).
+            if trimmed == "v1" {
+                Some("")
+            } else {
+                Some(trimmed)
+            }
+        })
+        .unwrap_or(trimmed);
+
     let segment = trimmed.split('/').next().unwrap_or("");
 
     match segment {
@@ -131,6 +154,20 @@ fn route_to_backend(path: &str) -> Option<&'static str> {
         "verify" => Some("verifier"),
         "circuits" => Some("verifier"),
         _ => None,
+    }
+}
+
+/// Strips the `/v1` prefix from a path if present, returning the backend-
+/// facing path. For example `/v1/proofs/123` becomes `/proofs/123`.
+#[cfg(test)]
+fn strip_version_prefix(path: &str) -> &str {
+    if path == "/v1" {
+        "/"
+    } else if path.starts_with("/v1/") {
+        // Skip the first 3 chars ("/v1"), keeping the trailing "/<route>...".
+        &path[3..]
+    } else {
+        path
     }
 }
 
@@ -158,10 +195,21 @@ async fn proxy_request(
         .map(|pq| pq.as_str())
         .unwrap_or(uri.path());
 
+    // Strip the /v1 version prefix before forwarding to the backend service.
+    // The backend services don't know about the version prefix — they see only
+    // the bare path (e.g. /proofs/123, not /v1/proofs/123).
+    let forwarded_path = if path_and_query.starts_with("/v1/") {
+        &path_and_query[3..]
+    } else if path_and_query == "/v1" {
+        "/"
+    } else {
+        path_and_query
+    };
+
     let target_url = format!(
         "{}{}",
         backend.base_url.trim_end_matches('/'),
-        path_and_query
+        forwarded_path
     );
 
     // Copy headers, excluding hop-by-hop and Host.
@@ -424,6 +472,10 @@ fn build_app(state: GatewayState) -> Router {
     // Auth middleware is applied as a layer (not route_layer) so it covers
     // the fallback handler too. The middleware itself exempts /health paths.
     //
+    // API versioning: The fallback proxy_handler accepts requests at both
+    // `/v1/<route>` and `/<route>` (backward compat). The /v1/ prefix is
+    // stripped before forwarding to backend services.
+    //
     // Layer ordering (bottom-up — last `.layer()` call runs first):
     //   1. request_logger  — outermost: captures total latency including auth
     //   2. TraceLayer       — tower-http span tracing
@@ -543,7 +595,7 @@ mod tests {
         build_state(config)
     }
 
-    // -- Route matching tests --
+    // -- Route matching tests (root paths — backward compat) --
 
     #[test]
     fn test_route_to_backend_prove() {
@@ -590,6 +642,69 @@ mod tests {
         assert_eq!(route_to_backend("/unknown"), None);
         assert_eq!(route_to_backend("/"), None);
         assert_eq!(route_to_backend("/admin"), None);
+    }
+
+    // -- Route matching tests (v1/ prefix) --
+
+    #[test]
+    fn test_route_to_backend_v1_prove() {
+        assert_eq!(route_to_backend("/v1/prove"), Some("generator"));
+        assert_eq!(route_to_backend("/v1/prove/some-model"), Some("generator"));
+    }
+
+    #[test]
+    fn test_route_to_backend_v1_models() {
+        assert_eq!(route_to_backend("/v1/models"), Some("generator"));
+        assert_eq!(route_to_backend("/v1/models/abc123"), Some("generator"));
+    }
+
+    #[test]
+    fn test_route_to_backend_v1_proofs() {
+        assert_eq!(route_to_backend("/v1/proofs"), Some("registry"));
+        assert_eq!(route_to_backend("/v1/proofs/xyz"), Some("registry"));
+        assert_eq!(route_to_backend("/v1/proofs/xyz/verify"), Some("registry"));
+    }
+
+    #[test]
+    fn test_route_to_backend_v1_stats() {
+        assert_eq!(route_to_backend("/v1/stats"), Some("registry"));
+    }
+
+    #[test]
+    fn test_route_to_backend_v1_verify() {
+        assert_eq!(route_to_backend("/v1/verify"), Some("verifier"));
+        assert_eq!(route_to_backend("/v1/verify/hybrid"), Some("verifier"));
+    }
+
+    #[test]
+    fn test_route_to_backend_v1_circuits() {
+        assert_eq!(route_to_backend("/v1/circuits"), Some("verifier"));
+        assert_eq!(route_to_backend("/v1/circuits/abc"), Some("verifier"));
+    }
+
+    #[test]
+    fn test_route_to_backend_v1_unknown() {
+        // /v1 with no known sub-route should return None.
+        assert_eq!(route_to_backend("/v1/unknown"), None);
+        assert_eq!(route_to_backend("/v1/admin"), None);
+    }
+
+    // -- strip_version_prefix tests --
+
+    #[test]
+    fn test_strip_version_prefix() {
+        assert_eq!(strip_version_prefix("/v1/proofs"), "/proofs");
+        assert_eq!(strip_version_prefix("/v1/proofs/123"), "/proofs/123");
+        assert_eq!(
+            strip_version_prefix("/v1/proofs/123/verify"),
+            "/proofs/123/verify"
+        );
+        assert_eq!(strip_version_prefix("/v1/prove"), "/prove");
+        // Root paths are returned as-is.
+        assert_eq!(strip_version_prefix("/proofs"), "/proofs");
+        assert_eq!(strip_version_prefix("/prove"), "/prove");
+        // Bare /v1 maps to /.
+        assert_eq!(strip_version_prefix("/v1"), "/");
     }
 
     // -- Health aggregation tests --
@@ -858,7 +973,269 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
-    // -- Auth tests --
+    // -- Proxy routing tests (/v1/ prefix) --
+
+    #[tokio::test]
+    async fn test_proxy_v1_prove_routes_to_generator() {
+        let mock_server = MockServer::start().await;
+        // Backend should see /prove (without /v1 prefix).
+        Mock::given(method("POST"))
+            .and(path("/prove"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "proof_id": "v1-test-456"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let state = test_state(
+            "http://127.0.0.1:19990",
+            "http://127.0.0.1:19991",
+            &mock_server.uri(),
+            vec![],
+        );
+        let app = build_app(state);
+
+        let resp = app
+            .oneshot(
+                HttpRequest::builder()
+                    .method(http::Method::POST)
+                    .uri("/v1/prove")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"model_id":"m1","features":[1.0]}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["proof_id"], "v1-test-456");
+    }
+
+    #[tokio::test]
+    async fn test_proxy_v1_proofs_routes_to_registry() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proofs"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "proofs": [{"id": "p1"}]
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let state = test_state(
+            "http://127.0.0.1:19990",
+            &mock_server.uri(),
+            "http://127.0.0.1:19992",
+            vec![],
+        );
+        let app = build_app(state);
+
+        let resp = app
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/v1/proofs")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["proofs"].is_array());
+    }
+
+    #[tokio::test]
+    async fn test_proxy_v1_proofs_subpath_routes_to_registry() {
+        let mock_server = MockServer::start().await;
+        // Backend sees /proofs/abc/verify — the /v1 is stripped.
+        Mock::given(method("POST"))
+            .and(path("/proofs/abc/verify"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "verified": true
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let state = test_state(
+            "http://127.0.0.1:19990",
+            &mock_server.uri(),
+            "http://127.0.0.1:19992",
+            vec![],
+        );
+        let app = build_app(state);
+
+        let resp = app
+            .oneshot(
+                HttpRequest::builder()
+                    .method(http::Method::POST)
+                    .uri("/v1/proofs/abc/verify")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_proxy_v1_verify_routes_to_verifier() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/verify"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "verified": true
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let state = test_state(
+            &mock_server.uri(),
+            "http://127.0.0.1:19991",
+            "http://127.0.0.1:19992",
+            vec![],
+        );
+        let app = build_app(state);
+
+        let resp = app
+            .oneshot(
+                HttpRequest::builder()
+                    .method(http::Method::POST)
+                    .uri("/v1/verify")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_proxy_v1_models_routes_to_generator() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "models": []
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let state = test_state(
+            "http://127.0.0.1:19990",
+            "http://127.0.0.1:19991",
+            &mock_server.uri(),
+            vec![],
+        );
+        let app = build_app(state);
+
+        let resp = app
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/v1/models")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_proxy_v1_unknown_returns_404() {
+        let state = test_state(
+            "http://127.0.0.1:19990",
+            "http://127.0.0.1:19991",
+            "http://127.0.0.1:19992",
+            vec![],
+        );
+        let app = build_app(state);
+
+        let resp = app
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/v1/unknown")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // -- Auth tests with /v1/ prefix --
+
+    #[tokio::test]
+    async fn test_auth_required_on_v1_routes() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proofs"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&mock_server)
+            .await;
+
+        let state = test_state(
+            "http://127.0.0.1:19990",
+            &mock_server.uri(),
+            "http://127.0.0.1:19992",
+            vec!["secret-key-1".to_string()],
+        );
+        let app = build_app(state);
+
+        // /v1/proofs without auth -> 401
+        let resp = app
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/v1/proofs")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_auth_passes_on_v1_routes_with_valid_key() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/proofs"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
+            .mount(&mock_server)
+            .await;
+
+        let state = test_state(
+            "http://127.0.0.1:19990",
+            &mock_server.uri(),
+            "http://127.0.0.1:19992",
+            vec!["secret-key-1".to_string()],
+        );
+        let app = build_app(state);
+
+        let resp = app
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/v1/proofs")
+                    .header("Authorization", "Bearer secret-key-1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // -- Auth tests (root paths — backward compat) --
 
     #[tokio::test]
     async fn test_auth_required_when_keys_configured() {
