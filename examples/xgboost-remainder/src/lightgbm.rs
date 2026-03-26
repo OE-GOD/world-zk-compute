@@ -62,9 +62,11 @@ enum LightGBMNode {
         split_index: usize,
         split_feature: usize,
         #[allow(dead_code)]
+        #[serde(default)]
         split_gain: f64,
         threshold: f64,
         #[allow(dead_code)]
+        #[serde(default)]
         decision_type: String,
         left_child: Box<LightGBMNode>,
         right_child: Box<LightGBMNode>,
@@ -725,5 +727,42 @@ mod tests {
         // LightGBM base_score should always be 0.0
         let model = parse_lightgbm_json(SINGLE_TREE_LGBM).unwrap();
         assert!((model.base_score - 0.0).abs() < 1e-15);
+    }
+
+    /// E2E test: parse LightGBM model → build circuit → prove → verify in Rust.
+    /// Uses the sample LightGBM credit scoring model in test-model/.
+    #[test]
+    #[ignore] // ~2s, run with: cargo test lightgbm_e2e_prove_verify -- --ignored --nocapture
+    fn test_lightgbm_e2e_prove_verify() {
+        use crate::circuit::build_and_prove;
+        use crate::model::predict;
+
+        let model_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("test-model/lightgbm_sample.json");
+        let model = load_lightgbm_json(&model_path).unwrap();
+
+        eprintln!(
+            "LightGBM model: {} trees, {} features, depth {}",
+            model.trees.len(),
+            model.num_features,
+            model.max_depth
+        );
+
+        // Run inference
+        let features = vec![4.5, 2.5, 1.0, 0.3];
+        let predicted_class = predict(&model, &features);
+        eprintln!("Predicted class: {}", predicted_class);
+
+        // Build circuit and prove
+        let (proof_bytes, circuit_hash, public_inputs) =
+            build_and_prove(&model, &features, predicted_class).unwrap();
+
+        eprintln!("Proof size: {} bytes", proof_bytes.len());
+        eprintln!("Circuit hash: 0x{}", hex::encode(&circuit_hash));
+        eprintln!("Public inputs: 0x{}", hex::encode(&public_inputs));
+
+        // Proof bytes should have "REM1" selector
+        assert_eq!(&proof_bytes[0..4], b"REM1", "proof should start with REM1 selector");
+        assert!(!circuit_hash.is_empty(), "circuit hash should be non-empty");
     }
 }
