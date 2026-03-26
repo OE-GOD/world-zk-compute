@@ -13,6 +13,7 @@ use serde::Serialize;
 use tokio::sync::Mutex;
 
 use crate::auth::extract_client_id;
+use crate::tenant::TenantStore;
 
 /// Token bucket for a single client.
 #[derive(Debug)]
@@ -68,10 +69,17 @@ impl TokenBucket {
 }
 
 /// Shared rate limiter state.
+///
+/// Supports two modes:
+/// 1. **Default mode**: All clients share the same `default_rpm` limit.
+/// 2. **Per-tenant mode**: When a `TenantStore` is attached, tenant API keys
+///    get their individually configured `rate_limit_rpm`, and non-tenant
+///    clients fall back to `default_rpm`.
 #[derive(Clone)]
 pub struct RateLimitState {
     buckets: Arc<Mutex<HashMap<String, TokenBucket>>>,
-    rpm: u32,
+    default_rpm: u32,
+    tenant_store: Option<Arc<TenantStore>>,
 }
 
 #[derive(Serialize)]
@@ -80,21 +88,54 @@ struct RateLimitError {
 }
 
 impl RateLimitState {
-    /// Create a new rate limiter with the given requests-per-minute limit.
+    /// Create a new rate limiter with the given default requests-per-minute limit.
     pub fn new(rpm: u32) -> Self {
         Self {
             buckets: Arc::new(Mutex::new(HashMap::new())),
-            rpm,
+            default_rpm: rpm,
+            tenant_store: None,
         }
+    }
+
+    /// Attach a tenant store for per-tenant rate limits.
+    pub fn with_tenant_store(mut self, store: Arc<TenantStore>) -> Self {
+        self.tenant_store = Some(store);
+        self
+    }
+
+    /// Resolve the RPM limit for a client ID.
+    ///
+    /// If the client ID is `key:<api_key>` and a tenant store is available,
+    /// looks up the tenant's configured rate limit. Otherwise returns `default_rpm`.
+    fn resolve_rpm(&self, client_id: &str) -> u32 {
+        if let Some(api_key) = client_id.strip_prefix("key:") {
+            if let Some(store) = &self.tenant_store {
+                if let Some(tenant) = store.get_by_key(api_key) {
+                    return tenant.rate_limit_rpm;
+                }
+            }
+        }
+        self.default_rpm
     }
 
     /// Try to consume a token for the given client ID.
     /// Returns `(allowed, remaining, reset_seconds)`.
+    ///
+    /// If the client has a per-tenant rate limit that differs from the bucket's
+    /// current configuration, the bucket is recreated with the new limit.
     async fn check(&self, client_id: &str) -> (bool, u32, u64) {
+        let rpm = self.resolve_rpm(client_id);
         let mut buckets = self.buckets.lock().await;
-        let bucket = buckets
-            .entry(client_id.to_string())
-            .or_insert_with(|| TokenBucket::new(self.rpm));
+
+        let bucket = buckets.entry(client_id.to_string()).or_insert_with(|| {
+            TokenBucket::new(rpm)
+        });
+
+        // If the tenant's rate limit changed, recreate the bucket.
+        if (bucket.max_tokens - rpm as f64).abs() > 0.5 {
+            *bucket = TokenBucket::new(rpm);
+        }
+
         bucket.try_consume()
     }
 }
@@ -204,5 +245,71 @@ mod tests {
         // After 2 seconds at 1/sec, should have ~2 tokens
         let (allowed, _, _) = bucket.try_consume();
         assert!(allowed);
+    }
+
+    #[tokio::test]
+    async fn test_per_tenant_rate_limit() {
+        let store = Arc::new(TenantStore::new());
+
+        // Create tenant with 2 RPM limit
+        let tenant = store.create_with_id("slow", "Slow Tenant", 2).unwrap();
+        let state = RateLimitState::new(100).with_tenant_store(store);
+
+        let client_id = format!("key:{}", tenant.api_key);
+
+        // Tenant should get 2 requests
+        let (allowed, _, _) = state.check(&client_id).await;
+        assert!(allowed, "first request should be allowed");
+        let (allowed, _, _) = state.check(&client_id).await;
+        assert!(allowed, "second request should be allowed");
+
+        // Third should be denied (tenant limit is 2)
+        let (allowed, _, _) = state.check(&client_id).await;
+        assert!(!allowed, "third request should be denied (per-tenant limit)");
+
+        // Non-tenant client should still get 100 requests
+        let (allowed, _, _) = state.check("ip:1.2.3.4").await;
+        assert!(allowed, "non-tenant should use default limit");
+    }
+
+    #[tokio::test]
+    async fn test_unknown_key_uses_default_limit() {
+        let store = Arc::new(TenantStore::new());
+        let state = RateLimitState::new(3).with_tenant_store(store);
+
+        // Unknown key should get default limit (3)
+        let client_id = "key:unknown-key";
+        for i in 0..3 {
+            let (allowed, _, _) = state.check(client_id).await;
+            assert!(allowed, "request {i} should use default limit");
+        }
+        let (allowed, _, _) = state.check(client_id).await;
+        assert!(!allowed, "4th request should be denied at default limit");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_rpm_without_store() {
+        let state = RateLimitState::new(50);
+        assert_eq!(state.resolve_rpm("key:anything"), 50);
+        assert_eq!(state.resolve_rpm("ip:1.2.3.4"), 50);
+    }
+
+    #[tokio::test]
+    async fn test_resolve_rpm_with_store() {
+        let store = Arc::new(TenantStore::new());
+        let tenant = store.create_with_id("fast", "Fast Tenant", 500).unwrap();
+        let state = RateLimitState::new(100).with_tenant_store(store);
+
+        // Tenant key should resolve to tenant's RPM
+        assert_eq!(
+            state.resolve_rpm(&format!("key:{}", tenant.api_key)),
+            500
+        );
+
+        // Unknown key should resolve to default
+        assert_eq!(state.resolve_rpm("key:unknown"), 100);
+
+        // IP-based should resolve to default
+        assert_eq!(state.resolve_rpm("ip:1.2.3.4"), 100);
     }
 }
