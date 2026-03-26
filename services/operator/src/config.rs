@@ -9,7 +9,7 @@ pub struct ModelConfig {
     pub name: String,
     /// Path to the model file on disk.
     pub path: String,
-    /// Model format: "auto", "xgboost", or "lightgbm".
+    /// Model format: "auto", "xgboost", "lightgbm", or "random_forest".
     #[serde(default = "default_model_format")]
     pub model_format: String,
     /// Optional keccak256 hash of the model file for integrity verification.
@@ -556,10 +556,10 @@ impl Config {
 
             // Validate model_format
             match model.model_format.as_str() {
-                "auto" | "xgboost" | "lightgbm" => {}
+                "auto" | "xgboost" | "lightgbm" | "random_forest" => {}
                 other => {
                     anyhow::bail!(
-                        "Model '{}': invalid model_format '{}'. Expected one of: auto, xgboost, lightgbm",
+                        "Model '{}': invalid model_format '{}'. Expected one of: auto, xgboost, lightgbm, random_forest",
                         model.name,
                         other
                     );

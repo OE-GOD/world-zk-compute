@@ -1,6 +1,20 @@
 use std::env;
 
 /// Service configuration loaded from environment variables.
+///
+/// ## Environment Variables
+///
+/// | Variable | Description | Default |
+/// |---|---|---|
+/// | `VERIFIER_API_KEYS` | Comma-separated list of valid API keys | (none, auth disabled) |
+/// | `RATE_LIMIT_RPM` | Requests per minute per key/IP | 100 |
+/// | `PORT` | Server listen port | 3000 |
+/// | `CIRCUIT_TTL_SECS` | Circuit registration TTL in seconds (0 = no expiry) | 0 |
+/// | `VERIFIER_TLS_CERT` | Path to PEM server certificate (enables TLS) | (none, TLS disabled) |
+/// | `VERIFIER_TLS_KEY` | Path to PEM server private key (required when cert is set) | (none) |
+/// | `VERIFIER_TLS_CLIENT_CA` | Path to PEM CA cert for client verification (enables mTLS) | (none) |
+///
+/// TLS-related env vars are handled by [`crate::tls::TlsConfig`].
 #[derive(Clone, Debug)]
 pub struct ServiceConfig {
     /// Allowed API keys. If empty, authentication is disabled (open access).
@@ -20,6 +34,9 @@ impl ServiceConfig {
     ///   If unset or empty, authentication is disabled.
     /// - `RATE_LIMIT_RPM`: requests per minute per key/IP. Default: 100.
     /// - `PORT`: server listen port. Default: 3000.
+    /// - `CIRCUIT_TTL_SECS`: circuit registration TTL in seconds. Default: 0 (no expiry).
+    ///
+    /// TLS configuration is loaded separately via [`crate::tls::TlsConfig::from_env()`].
     pub fn from_env() -> Self {
         let api_keys = env::var("VERIFIER_API_KEYS")
             .unwrap_or_default()

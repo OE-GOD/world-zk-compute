@@ -28,6 +28,7 @@ use xgboost_remainder::abi_encode::encode_pedersen_gens;
 use xgboost_remainder::circuit::build_and_prove;
 use xgboost_remainder::lightgbm;
 use xgboost_remainder::model::{self, predict, XgboostModel};
+use xgboost_remainder::random_forest;
 
 #[derive(Parser)]
 #[command(name = "precompute_proof")]
@@ -41,7 +42,7 @@ struct Args {
     #[arg(long)]
     sample: bool,
 
-    /// Model format: "xgboost" (default) or "lightgbm"
+    /// Model format: "xgboost" (default), "lightgbm", or "random_forest"
     #[arg(long, default_value = "xgboost")]
     model_format: String,
 
@@ -61,6 +62,10 @@ fn load_model(path: &std::path::Path, model_format: &str) -> Result<XgboostModel
             eprintln!("  (loading as LightGBM format)");
             lightgbm::load_lightgbm_json(path).map_err(|e| anyhow::anyhow!("{}", e))
         }
+        "random_forest" => {
+            eprintln!("  (loading as random forest format)");
+            random_forest::load_random_forest_json(path).map_err(|e| anyhow::anyhow!("{}", e))
+        }
         "xgboost" => {
             let data = std::fs::read_to_string(path)?;
 
@@ -74,7 +79,7 @@ fn load_model(path: &std::path::Path, model_format: &str) -> Result<XgboostModel
             model::load_xgboost_json(path).map_err(|e| anyhow::anyhow!("Failed to load model: {e}"))
         }
         other => anyhow::bail!(
-            "Unknown model format '{}'. Supported: xgboost, lightgbm",
+            "Unknown model format '{}'. Supported: xgboost, lightgbm, random_forest",
             other
         ),
     }

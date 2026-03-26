@@ -123,6 +123,23 @@ enum Commands {
         #[arg(long)]
         archive_dir: Option<String>,
     },
+    /// Rotate expired proofs to compressed cold storage
+    RotateProofs {
+        /// Proof age threshold in days. Proofs older than this are archived.
+        /// Defaults to PROOF_TTL_DAYS env var, or 365 if not set.
+        #[arg(long)]
+        ttl_days: Option<u32>,
+        /// Destination directory for compressed cold-storage proofs.
+        /// Defaults to PROOF_ARCHIVE_DIR env var.
+        #[arg(long)]
+        archive_dir: Option<String>,
+        /// Source proof directory (defaults to PROOFS_DIR from config).
+        #[arg(long)]
+        proofs_dir: Option<String>,
+        /// Preview which proofs would be archived without actually moving them.
+        #[arg(long, default_value = "false")]
+        dry_run: bool,
+    },
 }
 
 fn hex_to_b256(hex_str: &str) -> anyhow::Result<B256> {
@@ -197,6 +214,12 @@ async fn main() -> anyhow::Result<()> {
             output,
             archive_dir,
         } => cmd_export_audit(&config, &from, &to, &format, &output, archive_dir.as_deref()),
+        Commands::RotateProofs {
+            ttl_days,
+            archive_dir,
+            proofs_dir,
+            dry_run,
+        } => cmd_rotate_proofs(&config, ttl_days, archive_dir.as_deref(), proofs_dir.as_deref(), dry_run).await,
     }
 }
 
@@ -504,6 +527,92 @@ fn cmd_export_audit(
         count,
         output,
         fmt.extension()
+    );
+
+    Ok(())
+}
+
+async fn cmd_rotate_proofs(
+    config: &Config,
+    ttl_days: Option<u32>,
+    archive_dir: Option<&str>,
+    proofs_dir: Option<&str>,
+    dry_run: bool,
+) -> anyhow::Result<()> {
+    use tee_operator::proof_archive::{self, ProofArchive};
+
+    let ttl = ttl_days.unwrap_or_else(proof_archive::default_ttl_days);
+
+    // Determine cold-storage destination
+    let cold_dir = archive_dir
+        .map(String::from)
+        .or_else(proof_archive::default_archive_dir)
+        .unwrap_or_else(|| config.proof_archive_dir.clone());
+    if cold_dir.is_empty() {
+        anyhow::bail!(
+            "No archive directory specified. Use --archive-dir or set PROOF_ARCHIVE_DIR."
+        );
+    }
+
+    // Determine source proof directory
+    let src_dir = proofs_dir
+        .map(String::from)
+        .or_else(|| std::env::var("PROOFS_DIR").ok())
+        .unwrap_or_else(|| config.proof_archive_dir.clone());
+    if src_dir.is_empty() {
+        anyhow::bail!(
+            "No proofs directory specified. Use --proofs-dir or set PROOFS_DIR."
+        );
+    }
+
+    let src_path = std::path::Path::new(&src_dir);
+    if !src_path.is_dir() {
+        anyhow::bail!("Proofs directory does not exist: {}", src_dir);
+    }
+
+    tracing::info!(
+        ttl_days = ttl,
+        archive_dir = %cold_dir,
+        proofs_dir = %src_dir,
+        dry_run,
+        "Starting proof rotation"
+    );
+
+    let archive = ProofArchive::new(src_path).await?;
+
+    // List expired first for reporting
+    let expired = archive.list_expired(ttl).await?;
+    println!(
+        "Found {} expired proof(s) (older than {} days)",
+        expired.len(),
+        ttl
+    );
+
+    if expired.is_empty() {
+        println!("Nothing to archive.");
+        return Ok(());
+    }
+
+    if dry_run {
+        println!("[dry-run] The following proofs would be archived:");
+        for path in &expired {
+            println!("  {}", path.display());
+        }
+        println!(
+            "[dry-run] Would archive {} proof(s) to {}",
+            expired.len(),
+            cold_dir
+        );
+        // Still call archive_expired in dry-run mode for logging
+        archive.archive_expired(ttl, &cold_dir, true).await?;
+        return Ok(());
+    }
+
+    let archived = archive.archive_expired(ttl, &cold_dir, false).await?;
+    println!(
+        "Archived {} proof(s) to {} (compressed with gzip)",
+        archived.len(),
+        cold_dir
     );
 
     Ok(())

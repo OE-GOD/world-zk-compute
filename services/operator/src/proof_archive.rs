@@ -659,6 +659,171 @@ mod tests {
         assert!(!old_dir.exists());
     }
 
+    #[tokio::test]
+    async fn test_list_expired_returns_old_proofs() {
+        let tmp = tempdir();
+        let archive = ProofArchive::new(&tmp).await.unwrap();
+
+        // Create an old date directory (well past any TTL)
+        let old_dir = tmp.join("2020-06-15");
+        tokio::fs::create_dir_all(&old_dir).await.unwrap();
+        tokio::fs::write(
+            old_dir.join("proof-expired1.json"),
+            r#"{"id":"expired1"}"#,
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(
+            old_dir.join("proof-expired2.json"),
+            r#"{"id":"expired2"}"#,
+        )
+        .await
+        .unwrap();
+
+        // Store a current entry (today)
+        let entry = ProofArchiveEntry {
+            id: "current".to_string(),
+            ..Default::default()
+        };
+        archive.store(&entry).await.unwrap();
+
+        // TTL of 30 days: the 2020 proofs are expired, the current one is not
+        let expired = archive.list_expired(30).await.unwrap();
+        assert_eq!(expired.len(), 2);
+        for path in &expired {
+            let name = path.file_name().unwrap().to_str().unwrap();
+            assert!(name.starts_with("proof-expired"));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_proof_within_ttl_stays_in_place() {
+        let tmp = tempdir();
+        let archive = ProofArchive::new(&tmp).await.unwrap();
+        let cold = tempdir();
+
+        // Store a current entry (today's date)
+        let entry = ProofArchiveEntry {
+            id: "fresh".to_string(),
+            result_id: "0xfresh".to_string(),
+            ..Default::default()
+        };
+        archive.store(&entry).await.unwrap();
+
+        // Archive with 365-day TTL — nothing should move
+        let archived = archive.archive_expired(365, &cold, false).await.unwrap();
+        assert!(archived.is_empty());
+        assert_eq!(archive.count().await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_expired_proof_moves_to_archive() {
+        let tmp = tempdir();
+        let archive = ProofArchive::new(&tmp).await.unwrap();
+        let cold = tempdir();
+
+        // Create an old date directory with a proof
+        let old_dir = tmp.join("2019-01-01");
+        tokio::fs::create_dir_all(&old_dir).await.unwrap();
+        let old_proof = ProofArchiveEntry {
+            id: "old-proof".to_string(),
+            result_id: "0xold".to_string(),
+            model_hash: "0xmodel".to_string(),
+            ..Default::default()
+        };
+        let json = serde_json::to_string_pretty(&old_proof).unwrap();
+        tokio::fs::write(old_dir.join("proof-old-proof.json"), json.as_bytes())
+            .await
+            .unwrap();
+
+        // Store a current proof
+        let current = ProofArchiveEntry {
+            id: "current".to_string(),
+            ..Default::default()
+        };
+        archive.store(&current).await.unwrap();
+
+        // Archive with 30-day TTL
+        let archived = archive.archive_expired(30, &cold, false).await.unwrap();
+        assert_eq!(archived.len(), 1);
+
+        // Current proof should remain
+        assert_eq!(archive.count().await.unwrap(), 1);
+
+        // Old proof should be gone from source
+        assert!(!old_dir.join("proof-old-proof.json").exists());
+
+        // Compressed file should exist in cold storage
+        let compressed_path = cold.join("2019-01-01/proof-old-proof.json.gz");
+        assert!(compressed_path.exists());
+
+        // Verify the compressed file is valid and contains the original data
+        let compressed = tokio::fs::read(&compressed_path).await.unwrap();
+        let decompressed = decompress_gzip(&compressed).unwrap();
+        let recovered: ProofArchiveEntry = serde_json::from_slice(&decompressed).unwrap();
+        assert_eq!(recovered.id, "old-proof");
+        assert_eq!(recovered.result_id, "0xold");
+        assert_eq!(recovered.model_hash, "0xmodel");
+    }
+
+    #[tokio::test]
+    async fn test_dry_run_does_not_move_anything() {
+        let tmp = tempdir();
+        let archive = ProofArchive::new(&tmp).await.unwrap();
+        let cold = tempdir();
+
+        // Create an old date directory with a proof
+        let old_dir = tmp.join("2018-06-01");
+        tokio::fs::create_dir_all(&old_dir).await.unwrap();
+        tokio::fs::write(
+            old_dir.join("proof-dryrun.json"),
+            r#"{"id":"dryrun"}"#,
+        )
+        .await
+        .unwrap();
+
+        // Dry-run should report the file but not move it
+        let archived = archive.archive_expired(30, &cold, true).await.unwrap();
+        assert_eq!(archived.len(), 1);
+
+        // Original file should still exist
+        assert!(old_dir.join("proof-dryrun.json").exists());
+
+        // Cold storage should have no date directories
+        let cold_dirs = list_date_dirs(&cold).await.unwrap();
+        assert!(cold_dirs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_compressed_archive_is_valid_gzip() {
+        // Test the compress/decompress roundtrip directly
+        let original = br#"{"id":"test","result_id":"0xabc","features":[1.0,2.0,3.0]}"#;
+        let compressed = compress_gzip(original).unwrap();
+
+        // Compressed should be different from original (and typically smaller for JSON)
+        assert_ne!(compressed, original.as_slice());
+
+        // Gzip magic number check
+        assert_eq!(compressed[0], 0x1f);
+        assert_eq!(compressed[1], 0x8b);
+
+        // Decompress and verify
+        let decompressed = decompress_gzip(&compressed).unwrap();
+        assert_eq!(decompressed, original.as_slice());
+
+        // Parse the decompressed JSON to confirm it's valid
+        let entry: serde_json::Value = serde_json::from_slice(&decompressed).unwrap();
+        assert_eq!(entry["id"], "test");
+        assert_eq!(entry["result_id"], "0xabc");
+    }
+
+    #[tokio::test]
+    async fn test_default_ttl_days_env_var() {
+        // Without the env var set, default should be 365
+        std::env::remove_var("PROOF_TTL_DAYS");
+        assert_eq!(default_ttl_days(), 365);
+    }
+
     /// Create a temporary directory for tests.
     fn tempdir() -> PathBuf {
         use std::sync::atomic::{AtomicU64, Ordering};

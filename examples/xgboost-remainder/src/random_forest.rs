@@ -580,8 +580,17 @@ mod tests {
             return;
         }
         let model = load_random_forest_json(&path).unwrap();
-        assert!(model.trees.len() >= 1, "expected at least 1 tree");
-        assert!(model.num_features >= 1, "expected at least 1 feature");
+        assert_eq!(model.trees.len(), 3, "sample model should have 3 trees");
+        assert_eq!(model.num_features, 4, "sample model should have 4 features");
+        assert_eq!(model.num_classes, 2, "sample model should have 2 classes");
+
+        // Tree depths: tree 0 = depth 2, tree 1 = depth 2, tree 2 = depth 1
+        assert_eq!(model.max_depth, 2);
+
+        // Verify inference runs without panic
+        let features = vec![4.0, 2.0, 1.0, 0.3];
+        let class = predict(&model, &features);
+        assert!(class < 2, "predicted class should be 0 or 1, got {}", class);
     }
 
     // -----------------------------------------------------------------------
