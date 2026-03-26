@@ -26,6 +26,8 @@
 //! | `GATEWAY_PORT`     | Port the gateway listens on              | `8080`                   |
 //! | `GATEWAY_API_KEYS` | Comma-separated API keys (optional)      | (none = no auth)         |
 
+mod logging;
+
 use std::collections::HashMap;
 use std::env;
 use std::sync::Arc;
@@ -421,6 +423,12 @@ fn build_app(state: GatewayState) -> Router {
     // Health routes take priority over the fallback proxy.
     // Auth middleware is applied as a layer (not route_layer) so it covers
     // the fallback handler too. The middleware itself exempts /health paths.
+    //
+    // Layer ordering (bottom-up — last `.layer()` call runs first):
+    //   1. request_logger  — outermost: captures total latency including auth
+    //   2. TraceLayer       — tower-http span tracing
+    //   3. CorsLayer        — CORS headers
+    //   4. auth_middleware   — API-key gating
     Router::new()
         .route("/health", get(health_aggregate))
         .route("/health/:service", get(health_single))
@@ -431,6 +439,7 @@ fn build_app(state: GatewayState) -> Router {
         ))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
+        .layer(middleware::from_fn(logging::request_logger))
         .with_state(state)
 }
 
@@ -453,12 +462,7 @@ fn build_state(config: GatewayConfig) -> GatewayState {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "api_gateway=info,tower_http=info".into()),
-        )
-        .init();
+    logging::init_tracing();
 
     let port: u16 = env::var("GATEWAY_PORT")
         .ok()
@@ -720,11 +724,9 @@ mod tests {
         let mock_server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/prove"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "proof_id": "test-123"
-                })),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "proof_id": "test-123"
+            })))
             .mount(&mock_server)
             .await;
 
@@ -759,11 +761,9 @@ mod tests {
         let mock_server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/proofs"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "proofs": []
-                })),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "proofs": []
+            })))
             .mount(&mock_server)
             .await;
 
@@ -796,12 +796,10 @@ mod tests {
         let mock_server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/verify"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "verified": true,
-                    "circuit_hash": "0xabc"
-                })),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "verified": true,
+                "circuit_hash": "0xabc"
+            })))
             .mount(&mock_server)
             .await;
 
@@ -833,11 +831,9 @@ mod tests {
         let mock_server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/models"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "models": []
-                })),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "models": []
+            })))
             .mount(&mock_server)
             .await;
 
@@ -900,9 +896,7 @@ mod tests {
         let mock_server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/proofs"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"ok": true})))
             .mount(&mock_server)
             .await;
 
@@ -984,11 +978,9 @@ mod tests {
         let mock_server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/verify"))
-            .respond_with(
-                ResponseTemplate::new(400).set_body_json(serde_json::json!({
-                    "error": "bad proof data"
-                })),
-            )
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": "bad proof data"
+            })))
             .mount(&mock_server)
             .await;
 
