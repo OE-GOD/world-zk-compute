@@ -22,6 +22,7 @@
 
 mod model_registry;
 mod models;
+mod prover;
 
 use axum::{
     extract::{Path, State},
@@ -33,6 +34,7 @@ use axum::{
 use clap::Parser;
 use model_registry::{ModelRegistry, VersionInfo};
 use models::{ModelMetadata, ModelStore};
+use prover::ProverManager;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -63,6 +65,22 @@ struct Cli {
     /// Enable CORS for all origins.
     #[arg(long)]
     enable_cors: bool,
+
+    /// Path to the `xgboost-remainder` binary for managed prover mode.
+    ///
+    /// In non-mock mode, this binary is spawned as a child process for each
+    /// registered model. The child runs a warm prover server that the
+    /// proof-generator communicates with over HTTP.
+    #[arg(long, default_value = "xgboost-remainder")]
+    prover_binary: String,
+
+    /// URL of an external warm prover instance.
+    ///
+    /// When set, all proof requests are forwarded to this URL instead of
+    /// spawning managed child processes. Useful when the prover runs as a
+    /// separate deployment.
+    #[arg(long)]
+    prover_url: Option<String>,
 }
 
 /// Shared application state.
@@ -72,6 +90,8 @@ struct AppState {
     registry: ModelRegistry,
     /// When true, proof requests return mock responses.
     mock_mode: bool,
+    /// Real prover manager (used when mock_mode is false).
+    prover_manager: Option<ProverManager>,
     start_time: Instant,
 }
 
@@ -170,6 +190,8 @@ struct HealthResponse {
     status: String,
     version: String,
     mock_mode: bool,
+    /// Whether a real prover manager is available (false in mock mode).
+    prover_available: bool,
     uptime_secs: u64,
     model_count: usize,
 }
@@ -212,6 +234,7 @@ async fn health_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse
         status: "ok".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         mock_mode: state.mock_mode,
+        prover_available: state.prover_manager.is_some(),
         uptime_secs: state.start_time.elapsed().as_secs(),
         model_count,
     })
@@ -477,18 +500,74 @@ async fn prove_handler(
         }));
     }
 
-    // Real proving: not yet integrated.
-    // When the real prover is plugged in, this block would:
-    //   1. Parse the model JSON into an XgboostModel (or other format)
-    //   2. Build or retrieve a CachedProver for this model
-    //   3. Call prover.prove(&features, predicted_class)
-    //   4. Return the real proof bytes
-    Err((
-        StatusCode::NOT_IMPLEMENTED,
-        Json(ErrorResponse {
-            error: "Real proof generation not yet integrated. Use --mock for testing.".to_string(),
-        }),
-    ))
+    // Real proving via the ProverManager.
+    let prover_mgr = state.prover_manager.as_ref().ok_or_else(|| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Prover manager not initialized. Service misconfigured.".to_string(),
+            }),
+        )
+    })?;
+
+    // Ensure the model has a registered prover instance. If not, attempt
+    // lazy registration (the model was loaded from disk at startup before
+    // the prover manager existed, or was uploaded while the prover was
+    // still starting).
+    if !prover_mgr.has_prover(&req.model_id).await {
+        // Auto-register: read the raw JSON from the model store and spin up
+        // a prover instance for this model.
+        if let Err(e) = prover_mgr
+            .register_model(&req.model_id, &model.raw_json, &model.model_hash)
+            .await
+        {
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ErrorResponse {
+                    error: format!(
+                        "Failed to start prover for model {}: {}. \
+                         Is the xgboost-remainder binary available?",
+                        req.model_id, e
+                    ),
+                }),
+            ));
+        }
+    }
+
+    let result = prover_mgr
+        .prove(&req.model_id, &req.features)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Proof generation failed: {}", e),
+                }),
+            )
+        })?;
+
+    let prove_time_ms = start.elapsed().as_millis() as u64;
+
+    // Determine output label from predicted class
+    let output = if result.predicted_class > 0 {
+        "approved".to_string()
+    } else {
+        "denied".to_string()
+    };
+
+    Ok(Json(ProveResponse {
+        proof_id,
+        model_hash: model.model_hash,
+        circuit_hash: result.circuit_hash.clone(),
+        output,
+        mock: false,
+        prove_time_ms,
+        proof_bundle: ProofBundle {
+            proof_hex: result.proof_hex,
+            public_inputs_hex: result.public_inputs_hex,
+            proof_size_bytes: result.proof_size_bytes,
+        },
+    }))
 }
 
 /// Mock proof output.
@@ -590,10 +669,24 @@ async fn main() -> anyhow::Result<()> {
     let model_count = model_store.list_models().await.len();
     let registry = ModelRegistry::new(model_store.clone()).await;
 
+    // Initialize the prover manager (only when not in mock mode).
+    let prover_manager = if cli.mock {
+        None
+    } else {
+        let mgr = ProverManager::new(cli.prover_binary.clone(), cli.prover_url.clone());
+        tracing::info!(
+            binary = %cli.prover_binary,
+            external_url = ?cli.prover_url,
+            "Prover manager initialized (real proving enabled)"
+        );
+        Some(mgr)
+    };
+
     let state = Arc::new(AppState {
         model_store,
         registry,
         mock_mode: cli.mock,
+        prover_manager,
         start_time: Instant::now(),
     });
 
@@ -603,6 +696,12 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Listening on {} ({} models loaded)", bind_addr, model_count);
     if cli.mock {
         tracing::info!("Mock mode enabled: proof requests return deterministic mock responses");
+    } else {
+        tracing::info!(
+            "Real proving mode enabled. Prover binary: {}, external URL: {:?}",
+            cli.prover_binary,
+            cli.prover_url
+        );
     }
 
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
@@ -631,6 +730,7 @@ mod tests {
             model_store: store,
             registry,
             mock_mode: true,
+            prover_manager: None,
             start_time: Instant::now(),
         });
         (build_router(state, false), tmp)
@@ -677,6 +777,7 @@ mod tests {
         let health: HealthResponse = serde_json::from_slice(&body_bytes).unwrap();
         assert_eq!(health.status, "ok");
         assert!(health.mock_mode);
+        assert!(!health.prover_available);
         assert_eq!(health.model_count, 0);
     }
 
