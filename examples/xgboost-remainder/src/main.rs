@@ -19,8 +19,10 @@ use tracing::Level;
 mod abi_encode;
 mod circuit;
 mod lightgbm;
+mod logistic_regression;
 mod model;
 mod proof_abi;
+mod random_forest;
 mod server;
 
 /// XGBoost Remainder prover CLI
@@ -43,8 +45,8 @@ struct Cli {
     #[arg(long)]
     execute_only: bool,
 
-    /// Model format: "xgboost" (default) or "lightgbm"
-    #[arg(long, default_value = "xgboost")]
+    /// Model format: "auto" (detect from JSON), "xgboost", "lightgbm", or "random_forest"
+    #[arg(long, default_value = "auto")]
     model_format: String,
 
     /// Start warm prover HTTP server instead of one-shot mode
@@ -125,20 +127,34 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    // Load model (supports XGBoost and LightGBM JSON formats)
-    let model = match cli.model_format.as_str() {
+    // Load model (supports XGBoost, LightGBM, and Random Forest JSON formats)
+    let detected_format = if cli.model_format == "auto" {
+        detect_model_format(&cli.model)?
+    } else {
+        cli.model_format.clone()
+    };
+    let model = match detected_format.as_str() {
         "xgboost" => model::load_xgboost_json(&cli.model).map_err(|e| anyhow::anyhow!("{}", e))?,
         "lightgbm" => {
             lightgbm::load_lightgbm_json(&cli.model).map_err(|e| anyhow::anyhow!("{}", e))?
         }
+        "random_forest" => {
+            random_forest::load_random_forest_json(&cli.model)
+                .map_err(|e| anyhow::anyhow!("{}", e))?
+        }
+        "logistic_regression" => {
+            let lr = logistic_regression::LogisticRegressionModel::from_file(&cli.model)
+                .map_err(|e| anyhow::anyhow!("{}", e))?;
+            lr.to_xgboost_model()
+        }
         other => anyhow::bail!(
-            "Unknown model format '{}'. Supported: xgboost, lightgbm",
+            "Unknown model format '{}'. Supported: auto, xgboost, lightgbm, random_forest, logistic_regression",
             other
         ),
     };
     println!(
         "Loaded {} model: {} trees, {} features, max_depth={}",
-        cli.model_format,
+        detected_format,
         model.trees.len(),
         model.num_features,
         model.max_depth
@@ -238,4 +254,30 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Auto-detect model format by inspecting the JSON structure.
+fn detect_model_format(path: &std::path::Path) -> anyhow::Result<String> {
+    let data = std::fs::read_to_string(path)?;
+    let json: serde_json::Value = serde_json::from_str(&data)?;
+
+    // XGBoost: has learner.gradient_booster.model.trees
+    if json.get("learner").is_some() {
+        return Ok("xgboost".to_string());
+    }
+
+    // LightGBM: has tree_info array
+    if json.get("tree_info").is_some() {
+        return Ok("lightgbm".to_string());
+    }
+
+    // Random forest: has "forest" or "n_estimators" at top level
+    if json.get("n_estimators").is_some() || json.get("forest").is_some() {
+        return Ok("random_forest".to_string());
+    }
+
+    anyhow::bail!(
+        "Could not auto-detect model format from {}. Use --model-format to specify.",
+        path.display()
+    )
 }
