@@ -653,6 +653,8 @@ async fn cmd_watch(config: &Config, metrics_port: u16, dry_run: bool) -> anyhow:
 
     let mut from_block = op_state.last_polled_block;
     let mut finalize_counter = 0u64;
+    // Cache result_id → model_hash for multi-model proof selection
+    let mut result_model_map: HashMap<String, String> = HashMap::new();
 
     while !shutdown.is_shutting_down() {
         // Poll for new events (through RPC circuit breaker)
@@ -715,6 +717,26 @@ async fn cmd_watch(config: &Config, metrics_port: u16, dry_run: bool) -> anyhow:
                     }
 
                     metrics_state.record_challenge();
+
+                    // Look up model hash for this result
+                    if let Some(mh) = result_model_map.get(&rid_hex) {
+                        if let Some(model) = config.find_model_by_hash(mh) {
+                            tracing::info!(
+                                result_id = %result_id,
+                                model_name = %model.name,
+                                model_hash = %mh,
+                                "Challenge maps to model '{}'",
+                                model.name
+                            );
+                        } else {
+                            tracing::warn!(
+                                result_id = %result_id,
+                                model_hash = %mh,
+                                "Challenge for unknown model hash (not in config)"
+                            );
+                        }
+                    }
+
                     tracing::warn!(
                         result_id = %result_id,
                         challenger = %challenger,
@@ -815,20 +837,32 @@ async fn cmd_watch(config: &Config, metrics_port: u16, dry_run: bool) -> anyhow:
                     // Mark as processed after handling initiated
                     op_state.processed_event_ids.insert(rid_hex);
                 }
-                TEEEvent::ResultSubmitted { result_id, .. } => {
+                TEEEvent::ResultSubmitted {
+                    result_id,
+                    model_hash,
+                    ..
+                } => {
                     metrics_state.record_submission();
-                    tracing::info!(result_id = %result_id, "New result submitted");
+                    let rid_hex = format!("0x{}", hex::encode(result_id));
+                    let mh_hex = format!("0x{}", hex::encode(model_hash));
+                    result_model_map.insert(rid_hex.clone(), mh_hex.clone());
+                    tracing::info!(
+                        result_id = %result_id,
+                        model_hash = %mh_hex,
+                        "New result submitted"
+                    );
                 }
                 TEEEvent::ResultFinalized { result_id } => {
                     metrics_state.record_finalization();
-                    // Remove from active disputes if present
                     let rid_hex = format!("0x{}", hex::encode(result_id));
                     op_state.active_disputes.remove(&rid_hex);
+                    result_model_map.remove(&rid_hex);
                     tracing::info!(result_id = %result_id, "Result finalized");
                 }
                 TEEEvent::ResultExpired { result_id } => {
                     let rid_hex = format!("0x{}", hex::encode(result_id));
                     op_state.active_disputes.remove(&rid_hex);
+                    result_model_map.remove(&rid_hex);
                     tracing::info!(result_id = %result_id, "Result expired (unchallenged finalize)");
                 }
                 TEEEvent::DisputeResolved {
@@ -837,6 +871,7 @@ async fn cmd_watch(config: &Config, metrics_port: u16, dry_run: bool) -> anyhow:
                 } => {
                     let rid_hex = format!("0x{}", hex::encode(result_id));
                     op_state.active_disputes.remove(&rid_hex);
+                    result_model_map.remove(&rid_hex);
                     tracing::info!(
                         result_id = %result_id,
                         prover_won = %prover_won,

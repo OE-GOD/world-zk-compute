@@ -519,6 +519,28 @@ impl Config {
         }
     }
 
+    /// Find a model by its on-chain model hash (hex, with or without "0x" prefix).
+    /// Returns the first model whose configured `model_hash` matches, or None.
+    pub fn find_model_by_hash(&self, hash_hex: &str) -> Option<&ModelConfig> {
+        let normalized = hash_hex
+            .strip_prefix("0x")
+            .or_else(|| hash_hex.strip_prefix("0X"))
+            .unwrap_or(hash_hex)
+            .to_lowercase();
+        self.models.iter().find(|m| {
+            m.model_hash
+                .as_ref()
+                .map(|h| {
+                    h.strip_prefix("0x")
+                        .or_else(|| h.strip_prefix("0X"))
+                        .unwrap_or(h)
+                        .to_lowercase()
+                        == normalized
+                })
+                .unwrap_or(false)
+        })
+    }
+
     /// Validate all model entries: check that model files exist and verify
     /// hashes when `model_hash` is provided.
     ///
