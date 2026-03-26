@@ -1,13 +1,13 @@
-app = "zkml-verifier"
+app = "worldzk-verifier"
 primary_region = "iad"
 
 [build]
   dockerfile = "Dockerfile"
-  build-target = "."
 
 [env]
   PORT = "3000"
   RUST_LOG = "info"
+  RATE_LIMIT_RPM = "60"
 
 [http_service]
   internal_port = 3000
@@ -21,15 +21,14 @@ primary_region = "iad"
     hard_limit = 100
     soft_limit = 80
 
-[[vm]]
-  size = "shared-cpu-2x"
-  memory = "512mb"
+[[http_service.checks]]
+  grace_period = "10s"
+  interval = "30s"
+  method = "GET"
+  path = "/health"
+  timeout = "5s"
 
-[checks]
-  [checks.health]
-    port = 3000
-    type = "http"
-    interval = "10s"
-    timeout = "5s"
-    path = "/health"
-    method = "GET"
+[[vm]]
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1

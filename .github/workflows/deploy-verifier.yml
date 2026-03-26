@@ -31,5 +31,5 @@ jobs:
       - name: Health check
         run: |
           sleep 10
-          curl -sf https://zkml-verifier.fly.dev/health | jq .
+          curl -sf https://worldzk-verifier.fly.dev/health | jq .
         continue-on-error: true
