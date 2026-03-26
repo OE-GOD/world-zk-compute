@@ -193,27 +193,34 @@ async fn main() -> Result<()> {
     println!("Proof size: {} bytes", proof_bytes.len());
 
     if cli.bundle {
-        // Build self-contained ProofBundle JSON
-        let (gens_bytes, circuit_desc) =
-            circuit::get_generators_and_description(&model, &input.features, predicted_class)?;
+        // Build self-contained ProofBundle JSON with generators and circuit description
+        use sha2::Digest;
+        let bundle_data =
+            circuit::build_and_prove_bundle(&model, &input.features, predicted_class)?;
+        let model_bytes = std::fs::read(&cli.model)?;
 
         let bundle = serde_json::json!({
-            "proof_hex": format!("0x{}", hex::encode(&proof_bytes)),
-            "gens_hex": format!("0x{}", hex::encode(&gens_bytes)),
-            "public_inputs_hex": format!("0x{}", hex::encode(&public_inputs)),
-            "dag_circuit_description": circuit_desc,
-            "model_hash": format!("0x{}", hex::encode(sha2::Sha256::digest(std::fs::read(&cli.model)?))),
+            "proof_hex": format!("0x{}", hex::encode(&bundle_data.proof_bytes)),
+            "gens_hex": format!("0x{}", hex::encode(&bundle_data.gens_bytes)),
+            "public_inputs_hex": format!("0x{}", hex::encode(&bundle_data.public_inputs)),
+            "dag_circuit_description": hex::encode(&bundle_data.circuit_desc_bytes),
+            "model_hash": format!("0x{}", hex::encode(sha2::Sha256::digest(&model_bytes))),
             "timestamp": std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs(),
             "prover_version": env!("CARGO_PKG_VERSION"),
-            "circuit_hash": format!("0x{}", hex::encode(&circuit_hash)),
+            "circuit_hash": format!("0x{}", hex::encode(&bundle_data.circuit_hash)),
         });
 
         let output_json = serde_json::to_string_pretty(&bundle)?;
         std::fs::write(&cli.output, &output_json)?;
-        println!("ProofBundle written to {}", cli.output.display());
+        println!(
+            "ProofBundle written to {} ({} bytes proof, {} bytes gens)",
+            cli.output.display(),
+            bundle_data.proof_bytes.len(),
+            bundle_data.gens_bytes.len()
+        );
     } else {
         // Legacy output format
         let output = ProofOutput {

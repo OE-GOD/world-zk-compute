@@ -344,6 +344,7 @@ pub async fn run_server_with_config(
     // Layer order: auth (outermost, runs first) -> rate limit -> handler.
     let auth_routes = Router::new()
         .route("/prove", post(prove_handler))
+        .route("/prove/bundle", post(prove_bundle_handler))
         .route("/prove/batch", post(batch_prove_handler))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -503,6 +504,56 @@ async fn prove_handler(
     );
 
     Ok((headers, response))
+}
+
+/// POST /prove/bundle -- generate a self-contained ProofBundle JSON.
+async fn prove_bundle_handler(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ProveRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
+    if req.features.len() != state.prover.model.num_features {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!(
+                    "Expected {} features, got {}",
+                    state.prover.model.num_features,
+                    req.features.len()
+                ),
+            }),
+        ));
+    }
+
+    let predicted_class = model::predict(&state.prover.model, &req.features);
+    let start = Instant::now();
+    let (proof_bytes, circuit_hash, public_inputs) =
+        state.prover.prove(&req.features, predicted_class).map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Proof generation failed: {}", e),
+                }),
+            )
+        })?;
+
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let bundle = serde_json::json!({
+        "proof_hex": format!("0x{}", hex::encode(&proof_bytes)),
+        "gens_hex": format!("0x{}", &state.gens_hex),
+        "public_inputs_hex": format!("0x{}", hex::encode(&public_inputs)),
+        "dag_circuit_description": hex::encode(&state.prover.circuit_desc),
+        "circuit_hash": format!("0x{}", hex::encode(&circuit_hash)),
+        "timestamp": timestamp,
+        "prover_version": env!("CARGO_PKG_VERSION"),
+        "predicted_class": predicted_class,
+        "prove_time_ms": start.elapsed().as_millis() as u64,
+    });
+
+    Ok(Json(bundle))
 }
 
 /// POST /prove/batch -- generate proofs for multiple feature vectors.

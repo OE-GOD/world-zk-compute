@@ -316,6 +316,38 @@ pub fn build_and_prove(
     Ok((proof_bytes, circuit_hash.to_vec(), public_inputs))
 }
 
+/// Extended proof output including generators and circuit description for bundling.
+pub struct ProofBundleData {
+    pub proof_bytes: Vec<u8>,
+    pub circuit_hash: Vec<u8>,
+    pub public_inputs: Vec<u8>,
+    pub gens_bytes: Vec<u8>,
+    pub circuit_desc_bytes: Vec<u8>,
+}
+
+/// Build and prove, returning all data needed for a self-contained ProofBundle.
+pub fn build_and_prove_bundle(
+    model: &XgboostModel,
+    features: &[f64],
+    predicted_class: u32,
+) -> Result<ProofBundleData> {
+    let (proof_bytes, circuit_hash, public_inputs) =
+        build_and_prove(model, features, predicted_class)?;
+
+    let pedersen_committer =
+        PedersenCommitter::new(512, "xgboost-remainder Pedersen committer", None);
+    let gens_bytes = crate::abi_encode::encode_pedersen_gens(&pedersen_committer)?;
+    let circuit_desc_bytes = build_circuit_description(model);
+
+    Ok(ProofBundleData {
+        proof_bytes,
+        circuit_hash,
+        public_inputs,
+        gens_bytes,
+        circuit_desc_bytes,
+    })
+}
+
 // ========================================================================
 // Cached (warm) prover: pre-builds circuit and generators for reuse
 // ========================================================================
@@ -346,6 +378,8 @@ pub struct CachedProver {
     pub num_features_padded: usize,
     #[allow(dead_code)]
     pub decomp_k: usize,
+    /// Cached circuit description bytes (for ProofBundle serialization).
+    pub circuit_desc: Vec<u8>,
 }
 
 impl CachedProver {
@@ -390,10 +424,10 @@ impl CachedProver {
             decomp_k,
         );
 
-        // Compute circuit hash
+        // Compute circuit description and hash
+        let circuit_desc = build_circuit_description(&model);
         let circuit_hash: [u8; 32] = {
             use sha2::{Digest, Sha256};
-            let circuit_desc = build_circuit_description(&model);
             let mut hasher = Sha256::new();
             hasher.update(&circuit_desc);
             hasher.finalize().into()
@@ -420,6 +454,7 @@ impl CachedProver {
             max_depth,
             num_features_padded,
             decomp_k,
+            circuit_desc,
         }
     }
 
