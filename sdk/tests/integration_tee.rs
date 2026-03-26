@@ -15,6 +15,7 @@
 //! than `.send().await`. Using `.send()` for reverts corrupts alloy's internal nonce
 //! tracker, causing subsequent transactions to hang indefinitely.
 
+use serial_test::serial;
 use std::path::PathBuf;
 
 use alloy::network::{EthereumWallet, TransactionBuilder};
@@ -390,6 +391,7 @@ async fn setup_submitted_result(ctx: &TestContext) -> B256 {
 // ==========================================================================
 
 /// 1. Deploy and verify initial state.
+#[serial]
 #[tokio::test]
 async fn test_deploy_and_initial_state() {
     let ctx = TestContext::new().await;
@@ -425,6 +427,7 @@ async fn test_deploy_and_initial_state() {
 }
 
 /// 2. Register an enclave and verify it is registered.
+#[serial]
 #[tokio::test]
 async fn test_register_enclave() {
     let ctx = TestContext::new().await;
@@ -471,6 +474,7 @@ async fn test_register_enclave() {
 }
 
 /// 3. Submit a result with stake and verify the result struct.
+#[serial]
 #[tokio::test]
 async fn test_submit_result_with_stake() {
     let ctx = TestContext::new().await;
@@ -562,6 +566,7 @@ async fn test_submit_result_with_stake() {
 }
 
 /// 4. Submit, warp time past challenge window, finalize, verify stake returned.
+#[serial]
 #[tokio::test]
 async fn test_finalize_after_time_warp() {
     let ctx = TestContext::new().await;
@@ -613,6 +618,7 @@ async fn test_finalize_after_time_warp() {
 }
 
 /// 5. Challenge flow: submit -> challenge -> verify challenged state.
+#[serial]
 #[tokio::test]
 async fn test_challenge_flow() {
     let ctx = TestContext::new().await;
@@ -664,6 +670,7 @@ async fn test_challenge_flow() {
 }
 
 /// 6. Dispute resolution by timeout: submit -> challenge -> timeout -> challenger wins.
+#[serial]
 #[tokio::test]
 async fn test_resolve_dispute_by_timeout() {
     let ctx = TestContext::new().await;
@@ -734,6 +741,7 @@ async fn test_resolve_dispute_by_timeout() {
 }
 
 /// 7. Pause/unpause: owner pauses, operations revert, owner unpauses.
+#[serial]
 #[tokio::test]
 async fn test_pause_unpause_flow() {
     let ctx = TestContext::new().await;
@@ -828,6 +836,7 @@ async fn test_pause_unpause_flow() {
 }
 
 /// 8. Admin transfer via changeAdmin (UUPS pattern).
+#[serial]
 #[tokio::test]
 async fn test_admin_transfer() {
     let ctx = TestContext::new().await;
@@ -875,6 +884,7 @@ async fn test_admin_transfer() {
 }
 
 /// 9. Revoke enclave: register, revoke, submission with revoked enclave fails.
+#[serial]
 #[tokio::test]
 async fn test_revoke_enclave() {
     let ctx = TestContext::new().await;
@@ -940,6 +950,7 @@ async fn test_revoke_enclave() {
 }
 
 /// 10. Admin config: setProverStake, setChallengeBondAmount, setRemainderVerifier.
+#[serial]
 #[tokio::test]
 async fn test_admin_config() {
     let ctx = TestContext::new().await;
@@ -1011,6 +1022,7 @@ async fn test_admin_config() {
 }
 
 /// 11. Dispute extension: submit -> challenge -> extend -> verify extended deadline.
+#[serial]
 #[tokio::test]
 async fn test_dispute_extension() {
     let ctx = TestContext::new().await;
