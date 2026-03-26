@@ -295,8 +295,8 @@ TRANSPARENCY_RESP=$(curl -sf "$GATEWAY_URL/proofs/transparency/root" 2>/dev/null
     TRANSPARENCY_RESP=""
 
 if [ -n "$TRANSPARENCY_RESP" ]; then
-    TREE_SIZE=$(echo "$TRANSPARENCY_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('tree_size', json.load(sys.stdin).get('size', 0)))" 2>/dev/null) || TREE_SIZE="0"
-    ROOT_HASH=$(echo "$TRANSPARENCY_RESP" | python3 -c "import sys,json; r=json.load(sys.stdin).get('root',''); print(r[:16]+'...' if len(r)>16 else r)" 2>/dev/null) || ROOT_HASH="?"
+    TREE_SIZE=$(echo "$TRANSPARENCY_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tree_size', d.get('size', 0)))" 2>/dev/null) || TREE_SIZE="0"
+    ROOT_HASH=$(echo "$TRANSPARENCY_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('root',''); print(r[:16]+'...' if len(r)>16 else r)" 2>/dev/null) || ROOT_HASH="?"
     pass "(tree_size=$TREE_SIZE, root=$ROOT_HASH)"
 else
     skip "(transparency endpoint not reachable -- try setting REGISTRY_URL)"
@@ -310,7 +310,7 @@ echo -n "  Stats... "
 STATS_RESP=$(curl -sf "$GATEWAY_URL/stats" 2>/dev/null) || STATS_RESP=""
 
 if [ -n "$STATS_RESP" ]; then
-    TOTAL=$(echo "$STATS_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('total_proofs', json.load(sys.stdin).get('total', '?')))" 2>/dev/null) || TOTAL="?"
+    TOTAL=$(echo "$STATS_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('total_proofs', d.get('total', '?')))" 2>/dev/null) || TOTAL="?"
     pass "(total_proofs=$TOTAL)"
 else
     fail "(no response from /stats)"
