@@ -1,0 +1,97 @@
+name: Verifier CI
+
+permissions: read-all
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/zkml-verifier/**'
+      - 'services/verifier/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  pull_request:
+    paths:
+      - 'crates/zkml-verifier/**'
+      - 'services/verifier/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.92.0"
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy, rustfmt
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-verifier-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-verifier-
+
+      - name: Check formatting
+        run: cargo fmt -p zkml-verifier -- --check
+
+      - name: Clippy
+        run: cargo clippy -p zkml-verifier -p zkml-verifier-service -- -D warnings
+
+      - name: Build
+        run: cargo build -p zkml-verifier -p zkml-verifier-service
+
+      - name: Unit tests
+        run: cargo test -p zkml-verifier -p zkml-verifier-service
+
+      - name: E2E verification test (release)
+        run: cargo test -p zkml-verifier --release -- --ignored test_verify_dag_proof_e2e
+        timeout-minutes: 10
+
+  wasm-check:
+    name: WASM Target Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: wasm32-unknown-unknown
+
+      - name: Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-verifier-wasm-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Check WASM target
+        run: cargo check -p zkml-verifier --target wasm32-unknown-unknown --no-default-features
