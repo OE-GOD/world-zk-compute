@@ -7,16 +7,76 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   RUST_VERSION: "1.92.0"
 
 jobs:
-  # NOTE: Solidity tests are handled by contracts-ci.yml (more thorough:
-  # includes gas regression, contract sizes, and fixture checks).
+  # ── Rust workspace-level checks ─────────────────────────────────────────
+  # Fast gate: formatting + type checking across the entire workspace.
 
-  rust:
-    name: Rust Build & Lint
+  rust-check:
+    name: Rust Workspace Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy, rustfmt
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workspace-check
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Check workspace
+        run: cargo check --workspace
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # ── Rust workspace tests ────────────────────────────────────────────────
+
+  rust-test:
+    name: Rust Workspace Tests
+    runs-on: ubuntu-latest
+    needs: rust-check
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workspace-test
+
+      - name: Run workspace tests
+        run: cargo test --workspace
+
+  # ── Prover (separate workspace, needs risc0) ────────────────────────────
+
+  prover:
+    name: Prover (risc0)
     runs-on: ubuntu-latest
     timeout-minutes: 25
 
@@ -50,22 +110,56 @@ jobs:
           ~/.risc0/bin/rzup install r0vm 3.0.5
           echo "$HOME/.risc0/bin" >> $GITHUB_PATH
 
-      - name: Check Rust formatting
+      - name: Check formatting
         run: cargo fmt --manifest-path prover/Cargo.toml --check
 
-      - name: Run Clippy
+      - name: Clippy
         run: cargo clippy --manifest-path prover/Cargo.toml -- -D warnings
 
-      - name: Run Rust tests
+      - name: Test
         run: cargo test --manifest-path prover/Cargo.toml
 
-  # NOTE: XGBoost Remainder tests are handled by rust-ci.yml (job: xgboost-remainder)
-  #       with proper path filters. Do not re-add here.
-  # NOTE: Stylus GKR Verifier tests are handled by rust-ci.yml (job: stylus-verifier)
-  #       with proper path filters. Do not re-add here.
+  # ── XGBoost Remainder (separate workspace) ──────────────────────────────
+
+  xgboost-remainder:
+    name: XGBoost Remainder
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy, rustfmt
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            examples/xgboost-remainder/target
+          key: ${{ runner.os }}-cargo-remainder-${{ hashFiles('examples/xgboost-remainder/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-remainder-
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path examples/xgboost-remainder/Cargo.toml --check
+
+      - name: Clippy
+        run: cargo clippy --manifest-path examples/xgboost-remainder/Cargo.toml -- -D warnings
+
+      - name: Test
+        run: cargo test --manifest-path examples/xgboost-remainder/Cargo.toml
+
+  # ── gnark Groth16 wrapper ───────────────────────────────────────────────
 
   gnark:
-    name: gnark Groth16 Wrapper Tests
+    name: gnark Groth16 Wrapper
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -84,17 +178,112 @@ jobs:
           cd examples/xgboost-remainder/gnark-wrapper
           go test -v -timeout 300s ./...
 
-  # NOTE: Rust SDK tests are handled by rust-ci.yml to avoid duplicate CI compute.
-  # NOTE: TypeScript + Python SDK tests are handled by sdk-ci.yml to avoid duplicate CI compute.
+  # ── Solidity contracts ──────────────────────────────────────────────────
+
+  solidity:
+    name: Solidity Build & Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Install dependencies
+        run: |
+          cd contracts
+          [ -d lib/forge-std ] || forge install foundry-rs/forge-std --no-git
+          [ -d lib/risc0-ethereum ] || forge install risc0/risc0-ethereum --no-git
+
+      - name: Build contracts
+        run: cd contracts && forge build
+
+      - name: Check formatting
+        run: cd contracts && forge fmt --check
+
+      - name: Run tests
+        run: cd contracts && forge test -vv
+
+  # ── Python native verifier ──────────────────────────────────────────────
+
+  python-verifier:
+    name: Python Verifier (native FFI)
+    runs-on: ubuntu-latest
+    needs: rust-check
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: python-verifier
+
+      - name: Build native library
+        run: cargo build --release --lib -p zkml-verifier
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install and test Python bindings
+        run: |
+          cd crates/zkml-verifier/python
+          ZKML_SKIP_BUILD=1 ZKML_LIB_DIR=${{ github.workspace }}/target/release pip install -e .
+          pip install pytest
+          python -m pytest tests/ -v
+
+  # ── WASM verifier build check ───────────────────────────────────────────
+
+  wasm:
+    name: WASM Verifier Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: wasm-check
+
+      - name: Check WASM target compiles
+        run: cargo check -p zkml-verifier --target wasm32-unknown-unknown --no-default-features
+
+  # ── SDK E2E (batch verification on Anvil) ───────────────────────────────
 
   sdk-e2e:
     name: SDK E2E (Batch Verification)
     runs-on: ubuntu-latest
+    needs: [rust-check, solidity]
     timeout-minutes: 30
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
@@ -130,23 +319,18 @@ jobs:
 
       - name: Start Anvil and deploy contracts
         run: |
-          # Start Anvil
           anvil --port 8545 --silent --disable-code-size-limit --gas-limit 500000000 &
-          ANVIL_PID=$!
           sleep 2
 
-          # Verify Anvil is up
           curl -sf http://127.0.0.1:8545 -X POST -H "Content-Type: application/json" \
             --data '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' > /dev/null
 
-          # Deploy RemainderVerifier + register DAG circuit
           # DEPLOYER_KEY is Anvil Account #0 (well-known test key, no real value).
           cd contracts
           DEPLOYER_KEY="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80" \
             forge script script/DeployRemainderDAG.s.sol:DeployRemainderDAG \
             --rpc-url http://127.0.0.1:8545 --broadcast --disable-code-size-limit
 
-          # Extract deployed contract address
           CONTRACT_ADDRESS=$(python3 -c "
           import json, sys
           data = json.load(open('broadcast/DeployRemainderDAG.s.sol/31337/run-latest.json'))
@@ -192,17 +376,19 @@ jobs:
             --contract $CONTRACT_ADDRESS \
             --fixture ../../contracts/test/fixtures/phase1a_dag_fixture.json
 
-  # NOTE: TEE Enclave build & test is handled by rust-ci.yml (job: enclave)
-  #       with proper path filters. Do not re-add here.
+  # ── TEE happy-path E2E ──────────────────────────────────────────────────
 
   tee-e2e:
     name: TEE Happy Path E2E
     runs-on: ubuntu-latest
+    needs: solidity
     timeout-minutes: 10
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
@@ -215,3 +401,67 @@ jobs:
 
       - name: Run TEE happy path E2E
         run: bash scripts/tee-e2e.sh
+
+  # ── Required status gate ────────────────────────────────────────────────
+  # Single job that depends on all required checks. Use this as the sole
+  # required status check in branch-protection rules.
+
+  ci-gate:
+    name: CI Gate
+    if: always()
+    needs:
+      - rust-check
+      - rust-test
+      - prover
+      - xgboost-remainder
+      - gnark
+      - solidity
+      - python-verifier
+      - wasm
+      - sdk-e2e
+      - tee-e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check all jobs passed
+        run: |
+          echo "Job results:"
+          echo "  rust-check:        ${{ needs.rust-check.result }}"
+          echo "  rust-test:         ${{ needs.rust-test.result }}"
+          echo "  prover:            ${{ needs.prover.result }}"
+          echo "  xgboost-remainder: ${{ needs.xgboost-remainder.result }}"
+          echo "  gnark:             ${{ needs.gnark.result }}"
+          echo "  solidity:          ${{ needs.solidity.result }}"
+          echo "  python-verifier:   ${{ needs.python-verifier.result }}"
+          echo "  wasm:              ${{ needs.wasm.result }}"
+          echo "  sdk-e2e:           ${{ needs.sdk-e2e.result }}"
+          echo "  tee-e2e:           ${{ needs.tee-e2e.result }}"
+
+          # Fail if any required job failed or was cancelled.
+          FAILED=0
+          for result in \
+            "${{ needs.rust-check.result }}" \
+            "${{ needs.rust-test.result }}" \
+            "${{ needs.prover.result }}" \
+            "${{ needs.xgboost-remainder.result }}" \
+            "${{ needs.gnark.result }}" \
+            "${{ needs.solidity.result }}" \
+            "${{ needs.python-verifier.result }}" \
+            "${{ needs.wasm.result }}" \
+            "${{ needs.sdk-e2e.result }}" \
+            "${{ needs.tee-e2e.result }}"; do
+            if [ "$result" != "success" ]; then
+              echo "FAILED: job returned '$result'"
+              FAILED=1
+            fi
+          done
+
+          if [ "$FAILED" -eq 1 ]; then
+            echo ""
+            echo "One or more CI jobs failed or were cancelled."
+            exit 1
+          fi
+
+          echo ""
+          echo "All CI jobs passed."
