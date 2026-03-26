@@ -69,13 +69,13 @@ struct SearchQuery {
     offset: Option<usize>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct SearchResponse {
     proofs: Vec<ProofSummary>,
     total: usize,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct ProofSummary {
     id: String,
     circuit_hash: Option<String>,
@@ -85,14 +85,14 @@ struct ProofSummary {
     content_hash: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct StatsResponse {
     total_proofs: usize,
     verified_count: usize,
     unverified_count: usize,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct VerifyResponse {
     id: String,
     verified: bool,
