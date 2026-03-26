@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -263,8 +263,8 @@ pub fn compute_model_hash(json: &str) -> String {
 ///
 /// Returns one of the `FORMAT_*` constants on success.
 pub fn detect_model_format(json_str: &str) -> anyhow::Result<&'static str> {
-    let v: serde_json::Value = serde_json::from_str(json_str)
-        .map_err(|e| anyhow::anyhow!("Invalid JSON: {}", e))?;
+    let v: serde_json::Value =
+        serde_json::from_str(json_str).map_err(|e| anyhow::anyhow!("Invalid JSON: {}", e))?;
 
     if v.get("learner").is_some() {
         return Ok(FORMAT_XGBOOST);
@@ -439,12 +439,10 @@ mod tests {
 
         let result = store.add_model("second".into(), json.into(), None).await;
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("identical hash already exists")
-        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("identical hash already exists"));
     }
 
     #[tokio::test]
