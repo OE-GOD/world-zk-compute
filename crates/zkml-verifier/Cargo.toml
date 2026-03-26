@@ -7,7 +7,7 @@ description = "Chain-agnostic GKR+Hyrax zero-knowledge proof verifier for ML inf
 repository = "https://github.com/OE-GOD/world-zk-compute"
 documentation = "https://docs.rs/zkml-verifier"
 keywords = ["zkml", "gkr", "hyrax", "zero-knowledge", "verifier"]
-categories = ["cryptography", "no-std"]
+categories = ["cryptography"]
 readme = "README.md"
 exclude = ["fuzz/", "python/", "tests/", "benches/"]
 

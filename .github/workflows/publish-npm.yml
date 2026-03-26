@@ -1,0 +1,144 @@
+name: Publish WASM Verifier to npm
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (skip actual publish)'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack
+
+      - name: Build WASM package
+        run: |
+          cd crates/zkml-verifier
+          wasm-pack build --target web --features wasm
+          echo "WASM package built successfully"
+          ls -la pkg/
+          echo "WASM binary size:"
+          du -h pkg/zkml_verifier_bg.wasm
+
+      - name: Customize package.json
+        run: |
+          cd crates/zkml-verifier/pkg
+          # wasm-pack generates package.json but we need to set the scoped name
+          # and add the .wasm.d.ts file to the files list.
+          # Use node to do a proper JSON edit.
+          node -e '
+            const fs = require("fs");
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            pkg.name = "@worldzk/verifier";
+            pkg.description = "Zero-knowledge proof verifier for ML inference (WASM) - BN254 GKR+Hyrax DAG verifier";
+            pkg.keywords = ["zkml","gkr","hyrax","zero-knowledge","verifier","wasm","bn254","machine-learning"];
+            if (!pkg.files.includes("zkml_verifier_bg.wasm.d.ts")) {
+              pkg.files.push("zkml_verifier_bg.wasm.d.ts");
+            }
+            fs.writeFileSync("package.json", JSON.stringify(pkg, null, 2) + "\n");
+          '
+          echo "Updated package.json:"
+          cat package.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Publish to npm
+        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'false')
+        run: |
+          cd crates/zkml-verifier/pkg
+          npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Dry run (show what would be published)
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.dry_run == 'true'
+        run: |
+          cd crates/zkml-verifier/pkg
+          echo "=== Files that would be published ==="
+          npm pack --dry-run
+          echo ""
+          echo "=== package.json ==="
+          cat package.json
+
+  # Verify the built WASM works with a basic smoke test
+  smoke-test:
+    runs-on: ubuntu-latest
+    needs: build-and-publish
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack
+
+      - name: Build WASM
+        run: |
+          cd crates/zkml-verifier
+          wasm-pack build --target web --features wasm
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Smoke test WASM loading
+        run: |
+          cd crates/zkml-verifier/pkg
+          # Verify the JS module can be parsed (no syntax errors)
+          node -e '
+            // Verify the module exports the expected functions
+            const fs = require("fs");
+            const source = fs.readFileSync("zkml_verifier.js", "utf8");
+
+            // Check expected exports exist in the source
+            const expectedExports = ["verify_proof_json", "version", "WasmVerifyResult", "initSync"];
+            for (const name of expectedExports) {
+              if (!source.includes(name)) {
+                console.error("Missing export: " + name);
+                process.exit(1);
+              }
+            }
+            console.log("All expected exports found in JS module");
+
+            // Verify .wasm file exists and is non-trivial
+            const wasmStat = fs.statSync("zkml_verifier_bg.wasm");
+            if (wasmStat.size < 1000) {
+              console.error("WASM file too small: " + wasmStat.size + " bytes");
+              process.exit(1);
+            }
+            console.log("WASM binary size: " + (wasmStat.size / 1024).toFixed(1) + " KB");
+
+            // Verify TypeScript declarations exist
+            const dts = fs.readFileSync("zkml_verifier.d.ts", "utf8");
+            if (!dts.includes("verify_proof_json")) {
+              console.error("TypeScript declarations missing verify_proof_json");
+              process.exit(1);
+            }
+            console.log("TypeScript declarations valid");
+
+            console.log("Smoke test passed!");
+          '

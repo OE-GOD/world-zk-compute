@@ -110,9 +110,8 @@ contract DeployFullStack is Script {
         TEEMLVerifier teeVerifier;
         {
             TEEMLVerifier teeImpl = new TEEMLVerifier();
-            UUPSProxy teeProxy = new UUPSProxy(
-                address(teeImpl), abi.encodeCall(TEEMLVerifier.initialize, (deployer, remainderAddr))
-            );
+            UUPSProxy teeProxy =
+                new UUPSProxy(address(teeImpl), abi.encodeCall(TEEMLVerifier.initialize, (deployer, remainderAddr)));
             teeVerifier = TEEMLVerifier(payable(address(teeProxy)));
         }
         console.log("[6/7] TEEMLVerifier:       ", address(teeVerifier));

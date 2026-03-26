@@ -19,9 +19,8 @@ contract DeployTEEMLVerifier is Script {
         vm.startBroadcast(deployerKey);
 
         TEEMLVerifier teeImpl = new TEEMLVerifier();
-        UUPSProxy teeProxy = new UUPSProxy(
-            address(teeImpl), abi.encodeCall(TEEMLVerifier.initialize, (deployer, remainderVerifier))
-        );
+        UUPSProxy teeProxy =
+            new UUPSProxy(address(teeImpl), abi.encodeCall(TEEMLVerifier.initialize, (deployer, remainderVerifier)));
         TEEMLVerifier tee = TEEMLVerifier(payable(address(teeProxy)));
         console.log("TEEMLVerifier deployed at:", address(tee));
 

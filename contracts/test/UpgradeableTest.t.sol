@@ -640,8 +640,7 @@ contract UpgradeableTest is Test {
         bytes32 imageId = bytes32(uint256(1));
         vm.deal(user1, 1 ether);
         vm.prank(user1);
-        uint256 requestId =
-            engine.requestExecution{value: 0.1 ether}(imageId, bytes32(0), "url", address(0), 3600);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, bytes32(0), "url", address(0), 3600);
 
         uint256 balBefore = user1.balance;
         vm.prank(user1);
@@ -656,8 +655,7 @@ contract UpgradeableTest is Test {
         bytes32 imageId = bytes32(uint256(1));
         vm.deal(user1, 1 ether);
         vm.prank(user1);
-        uint256 requestId =
-            engine.requestExecution{value: 0.1 ether}(imageId, bytes32(0), "url", address(0), 3600);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, bytes32(0), "url", address(0), 3600);
 
         vm.expectEmit(true, false, false, false);
         emit ExecutionCancelled(requestId);
@@ -669,8 +667,7 @@ contract UpgradeableTest is Test {
         bytes32 imageId = bytes32(uint256(1));
         vm.deal(user1, 1 ether);
         vm.prank(user1);
-        uint256 requestId =
-            engine.requestExecution{value: 0.1 ether}(imageId, bytes32(0), "url", address(0), 3600);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, bytes32(0), "url", address(0), 3600);
 
         vm.prank(user2);
         vm.expectRevert(UpgradeableExecutionEngine.NotRequester.selector);
@@ -681,8 +678,7 @@ contract UpgradeableTest is Test {
         bytes32 imageId = bytes32(uint256(1));
         vm.deal(user1, 1 ether);
         vm.prank(user1);
-        uint256 requestId =
-            engine.requestExecution{value: 0.1 ether}(imageId, bytes32(0), "url", address(0), 3600);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, bytes32(0), "url", address(0), 3600);
 
         // Claim it first
         vm.prank(user2);
@@ -698,8 +694,7 @@ contract UpgradeableTest is Test {
         bytes32 imageId = bytes32(uint256(1));
         vm.deal(user1, 1 ether);
         vm.prank(user1);
-        uint256 requestId =
-            engine.requestExecution{value: 0.1 ether}(imageId, bytes32(0), "url", address(0), 3600);
+        uint256 requestId = engine.requestExecution{value: 0.1 ether}(imageId, bytes32(0), "url", address(0), 3600);
 
         // Pause the contract
         engine.pause();

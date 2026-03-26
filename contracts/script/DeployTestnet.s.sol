@@ -175,11 +175,7 @@ contract DeployTestnet is Script {
         console.log("  DAG circuit registered (hash:", vm.toString(circuitHash), ")");
     }
 
-    function _parseDAGDesc(string memory json)
-        private
-        pure
-        returns (GKRDAGVerifier.DAGCircuitDescription memory desc)
-    {
+    function _parseDAGDesc(string memory json) private pure returns (GKRDAGVerifier.DAGCircuitDescription memory desc) {
         desc.numComputeLayers = vm.parseJsonUint(json, ".dag_circuit_description.numComputeLayers");
         desc.numInputLayers = vm.parseJsonUint(json, ".dag_circuit_description.numInputLayers");
         desc.layerTypes = _parseUint8Array(json, ".dag_circuit_description.layerTypes");
@@ -205,8 +201,7 @@ contract DeployTestnet is Script {
 
     function _deployTEE(address admin, address remainderAddr) private returns (TEEMLVerifier) {
         TEEMLVerifier impl = new TEEMLVerifier();
-        UUPSProxy proxy =
-            new UUPSProxy(address(impl), abi.encodeCall(TEEMLVerifier.initialize, (admin, remainderAddr)));
+        UUPSProxy proxy = new UUPSProxy(address(impl), abi.encodeCall(TEEMLVerifier.initialize, (admin, remainderAddr)));
         return TEEMLVerifier(payable(address(proxy)));
     }
 
@@ -256,11 +251,7 @@ contract DeployTestnet is Script {
         result = abi.decode(raw, (bool[]));
     }
 
-    function _parseUint256Array(string memory json, string memory key)
-        private
-        pure
-        returns (uint256[] memory result)
-    {
+    function _parseUint256Array(string memory json, string memory key) private pure returns (uint256[] memory result) {
         bytes memory raw = vm.parseJson(json, key);
         bytes32[] memory parsed = abi.decode(raw, (bytes32[]));
         result = new uint256[](parsed.length);

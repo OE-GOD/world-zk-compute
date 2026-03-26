@@ -92,11 +92,12 @@ sol! {
         function getResult(bytes32 resultId) external view returns (MLResult memory);
         function isResultValid(bytes32 resultId) external view returns (bool);
 
-        // Ownable2Step
-        function owner() external view returns (address);
-        function pendingOwner() external view returns (address);
-        function transferOwnership(address newOwner) external;
-        function acceptOwnership() external;
+        // UUPS admin (replaces Ownable2Step)
+        function admin() external view returns (address);
+        function changeAdmin(address newAdmin) external;
+
+        // Initialize (UUPS proxy pattern, no constructor)
+        function initialize(address _admin, address _remainderVerifier) external;
 
         // Pausable
         function pause() external;
@@ -114,9 +115,6 @@ sol! {
         // Storage getters (mutable state, not constants)
         function challengeWindow() external view returns (uint256);
         function disputeWindow() external view returns (uint256);
-
-        // Constructor
-        constructor(address _admin, address _remainderVerifier);
     }
 }
 
@@ -124,21 +122,33 @@ sol! {
 // Helpers
 // --------------------------------------------------------------------------
 
-/// Load the compiled TEEMLVerifier bytecode from the forge artifact.
-fn load_contract_bytecode() -> Bytes {
-    let artifact_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../contracts/out/TEEMLVerifier.sol/TEEMLVerifier.json");
+/// Load compiled bytecode from a forge artifact JSON file.
+fn load_bytecode_from_artifact(path: &std::path::Path) -> Bytes {
     assert!(
-        artifact_path.exists(),
-        "TEEMLVerifier artifact not found at {artifact_path:?}. \
+        path.exists(),
+        "Artifact not found at {path:?}. \
          Run: cd contracts && forge build --skip test --skip script"
     );
     let artifact: serde_json::Value =
-        serde_json::from_reader(std::fs::File::open(&artifact_path).unwrap()).unwrap();
+        serde_json::from_reader(std::fs::File::open(path).unwrap()).unwrap();
     let bytecode_hex = artifact["bytecode"]["object"]
         .as_str()
         .expect("bytecode.object not found in artifact");
     bytecode_hex.parse::<Bytes>().expect("invalid bytecode hex")
+}
+
+/// Load the compiled TEEMLVerifier implementation bytecode.
+fn load_contract_bytecode() -> Bytes {
+    let artifact_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../contracts/out/TEEMLVerifier.sol/TEEMLVerifier.json");
+    load_bytecode_from_artifact(&artifact_path)
+}
+
+/// Load the compiled UUPSProxy bytecode.
+fn load_proxy_bytecode() -> Bytes {
+    let artifact_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../contracts/out/Upgradeable.sol/UUPSProxy.json");
+    load_bytecode_from_artifact(&artifact_path)
 }
 
 /// Anvil default chain ID.
@@ -163,7 +173,7 @@ struct TestContext {
 }
 
 impl TestContext {
-    /// Spawn a fresh Anvil and deploy TEEMLVerifier.
+    /// Spawn a fresh Anvil and deploy TEEMLVerifier behind a UUPS proxy.
     async fn new() -> Self {
         let anvil = Anvil::new().spawn();
         let rpc_url = anvil.endpoint();
@@ -176,25 +186,44 @@ impl TestContext {
             .wallet(wallet)
             .connect_http(rpc_url.parse().unwrap());
 
-        // Build deployment bytecode: creation code + constructor args
-        let creation_code = load_contract_bytecode();
-        let constructor_args = (admin_addr, Address::ZERO).abi_encode_params();
-
-        let mut deploy_data = creation_code.to_vec();
-        deploy_data.extend_from_slice(&constructor_args);
-
-        let tx = alloy::rpc::types::TransactionRequest::default().with_deploy_code(deploy_data);
-        let receipt = provider
-            .send_transaction(tx)
+        // Step 1: Deploy the TEEMLVerifier implementation (no constructor args)
+        let impl_code = load_contract_bytecode();
+        let impl_tx =
+            alloy::rpc::types::TransactionRequest::default().with_deploy_code(impl_code.to_vec());
+        let impl_receipt = provider
+            .send_transaction(impl_tx)
             .await
-            .expect("Failed to send deploy tx")
+            .expect("Failed to send impl deploy tx")
             .get_receipt()
             .await
-            .expect("Failed to get deploy receipt");
-
-        let contract_addr = receipt
+            .expect("Failed to get impl deploy receipt");
+        let impl_addr = impl_receipt
             .contract_address
-            .expect("No contract address in deploy receipt");
+            .expect("No contract address in impl deploy receipt");
+
+        // Step 2: Encode the initialize(admin, remainderVerifier) calldata
+        let tee_impl = TEEMLVerifier::new(impl_addr, &provider);
+        let init_call = tee_impl.initialize(admin_addr, Address::ZERO);
+        let init_data = init_call.calldata().clone();
+
+        // Step 3: Deploy UUPSProxy(implementation, initData)
+        let proxy_code = load_proxy_bytecode();
+        let proxy_constructor_args = (impl_addr, init_data.to_vec()).abi_encode_params();
+        let mut proxy_deploy_data = proxy_code.to_vec();
+        proxy_deploy_data.extend_from_slice(&proxy_constructor_args);
+
+        let proxy_tx = alloy::rpc::types::TransactionRequest::default()
+            .with_deploy_code(proxy_deploy_data);
+        let proxy_receipt = provider
+            .send_transaction(proxy_tx)
+            .await
+            .expect("Failed to send proxy deploy tx")
+            .get_receipt()
+            .await
+            .expect("Failed to get proxy deploy receipt");
+        let contract_addr = proxy_receipt
+            .contract_address
+            .expect("No contract address in proxy deploy receipt");
 
         Self {
             _anvil: anvil,
@@ -355,11 +384,11 @@ async fn test_deploy_and_initial_state() {
     let ctx = TestContext::new().await;
     let contract = ctx.contract_with_key(ADMIN_KEY);
 
-    // Owner should be the admin address
-    let owner = contract.owner().call().await.unwrap();
+    // Admin should be the deployer address
+    let admin_addr = contract.admin().call().await.unwrap();
     assert_eq!(
-        owner, ctx.admin_addr,
-        "Owner should be the deployer (admin)"
+        admin_addr, ctx.admin_addr,
+        "Admin should be the deployer"
     );
 
     // Contract should not be paused
@@ -772,24 +801,26 @@ async fn test_pause_unpause_flow() {
     println!("test_pause_unpause_flow PASSED");
 }
 
-/// 8. Ownership transfer via Ownable2Step.
+/// 8. Admin transfer via changeAdmin (UUPS pattern).
 #[tokio::test]
-async fn test_ownership_transfer() {
+async fn test_admin_transfer() {
     let ctx = TestContext::new().await;
     let admin = ctx.contract_with_key(ADMIN_KEY);
-    let new_owner_addr = parse_signer(NEW_OWNER_KEY).address();
+    let new_admin_addr = parse_signer(NEW_OWNER_KEY).address();
 
-    // Current owner
-    assert_eq!(admin.owner().call().await.unwrap(), ctx.admin_addr);
-    assert_eq!(admin.pendingOwner().call().await.unwrap(), Address::ZERO);
+    // Current admin
+    assert_eq!(admin.admin().call().await.unwrap(), ctx.admin_addr);
 
-    // Non-owner cannot initiate
+    // Non-admin cannot change admin
     let user = ctx.contract_with_key(USER_KEY);
-    assert!(user.transferOwnership(new_owner_addr).call().await.is_err());
+    assert!(
+        user.changeAdmin(new_admin_addr).call().await.is_err(),
+        "Non-admin should not be able to change admin"
+    );
 
-    // Owner initiates transfer
+    // Admin changes admin (takes effect immediately in UUPS pattern)
     admin
-        .transferOwnership(new_owner_addr)
+        .changeAdmin(new_admin_addr)
         .send()
         .await
         .unwrap()
@@ -797,30 +828,14 @@ async fn test_ownership_transfer() {
         .await
         .unwrap();
 
-    assert_eq!(admin.pendingOwner().call().await.unwrap(), new_owner_addr);
-    assert_eq!(admin.owner().call().await.unwrap(), ctx.admin_addr); // not yet
+    assert_eq!(admin.admin().call().await.unwrap(), new_admin_addr);
 
-    // Wrong person cannot accept
-    assert!(user.acceptOwnership().call().await.is_err());
-
-    // Pending owner accepts
-    let new_owner = ctx.contract_with_key(NEW_OWNER_KEY);
-    new_owner
-        .acceptOwnership()
-        .send()
-        .await
-        .unwrap()
-        .get_receipt()
-        .await
-        .unwrap();
-
-    assert_eq!(admin.owner().call().await.unwrap(), new_owner_addr);
-
-    // Old owner cannot admin
+    // Old admin cannot perform admin actions
     assert!(admin.pause().call().await.is_err());
 
-    // New owner can admin
-    new_owner
+    // New admin can perform admin actions
+    let new_admin = ctx.contract_with_key(NEW_OWNER_KEY);
+    new_admin
         .pause()
         .send()
         .await
@@ -830,7 +845,7 @@ async fn test_ownership_transfer() {
         .unwrap();
     assert!(admin.paused().call().await.unwrap());
 
-    println!("test_ownership_transfer PASSED");
+    println!("test_admin_transfer PASSED");
 }
 
 /// 9. Revoke enclave: register, revoke, submission with revoked enclave fails.

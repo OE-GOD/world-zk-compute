@@ -1,0 +1,12 @@
+# Python build artifacts
+dist/
+build/
+*.egg-info/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Compiled shared libraries (bundled at build time, not checked in)
+zkml_verifier/*.so
+zkml_verifier/*.dylib
+zkml_verifier/*.dll

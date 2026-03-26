@@ -62,19 +62,78 @@ These addresses are only valid when deploying from the first Anvil account
 Primary deployment target for the full system including `RemainderVerifier`.
 Arbitrum Sepolia supports large contracts (200KB+ code size) and high gas limits.
 
+### Solidity Contracts
+
 | Contract              | Address                                      |
 |-----------------------|----------------------------------------------|
-| (no deployments yet)  |                                              |
+| RemainderVerifier     | `TBD` (UUPS proxy)                           |
+| ProgramRegistry       | `TBD`                                        |
+| ProverReputation      | `TBD`                                        |
+| ExecutionEngine       | `TBD`                                        |
+| TEEMLVerifier         | `TBD` (UUPS proxy)                           |
 
-**Block explorer:** <https://sepolia.arbiscan.io>
+**Deployment script:** `scripts/deploy-testnet.sh`
 
-**RPC:** `https://sepolia-rollup.arbitrum.io/rpc`
+**Deploy:**
+```bash
+DEPLOYER_PRIVATE_KEY=0x... bash scripts/deploy-testnet.sh
+```
 
-**Notes:**
+**Verify:**
+```bash
+bash scripts/deploy-testnet.sh --verify-only
+```
+
+### Stylus WASM Verifier
+
+The GKR DAG verifier is deployed as an Arbitrum Stylus (WASM) contract. It
+executes BN254 field arithmetic and EC operations natively, avoiding EVM gas
+overhead for the transcript replay and sumcheck verification.
+
+| Contract              | Address                                      |
+|-----------------------|----------------------------------------------|
+| Stylus GKR Verifier  | `TBD`                                        |
+
+**Deployment script:** `contracts/stylus/gkr-verifier/deploy-testnet.sh`
+
+**Deploy (Stylus only):**
+```bash
+DEPLOYER_PRIVATE_KEY=0x... bash contracts/stylus/gkr-verifier/deploy-testnet.sh
+```
+
+**Deploy (Stylus + Solidity adapter):**
+```bash
+PRIVATE_KEY=0x... ./scripts/stylus-sepolia-deploy.sh
+```
+
+**Dry run (build + validate, no deployment):**
+```bash
+DEPLOYER_PRIVATE_KEY=0x... DRY_RUN=true bash contracts/stylus/gkr-verifier/deploy-testnet.sh
+```
+
+**Notes (Stylus):**
+- The WASM binary must stay under 24KB Brotli-compressed (Stylus limit).
+  Current size: ~22.8KB Brotli after `wasm-opt -O3`.
+- Stylus contracts require yearly reactivation via `ArbWasm.activateProgram()`.
+- The Solidity `RemainderVerifier` adapter delegates verification calls to
+  the Stylus contract via `staticcall`.
+- See `docs/STYLUS_DEPLOYMENT.md` for the full deployment guide.
+
+**Notes (Solidity):**
 - Supports code size up to 200,000 bytes (no EIP-170 limit).
 - Gas limit up to 500M, sufficient for GKR DAG batch verification.
 - This is the recommended network for testing the full GKR + Groth16 hybrid
   verification pipeline.
+- Uses `DeployTestnet.s.sol` which deploys the full verifiable AI stack:
+  RemainderVerifier, ProgramRegistry, ProverReputation, ExecutionEngine,
+  TEEMLVerifier, plus XGBoost DAG circuit registration.
+- Deployer is also the admin (unlike mainnet which requires a separate multisig).
+- After first deployment, update addresses above and in
+  `deployments/arbitrum-sepolia-testnet.json`.
+
+**Block explorer:** <https://sepolia.arbiscan.io>
+
+**RPC:** `https://sepolia-rollup.arbitrum.io/rpc`
 
 ---
 
@@ -125,10 +184,18 @@ This checks bytecode presence, ownership, pause state, and contract wiring.
 
 ## Files
 
-| File                          | Description                          |
-|-------------------------------|--------------------------------------|
-| `deployments/chains.json`    | Chain configs (RPC, gas, limits)     |
-| `deployments/registry.json`  | Canonical contract address registry  |
-| `contracts/script/DeployAll.s.sol`       | Basic deployment script   |
-| `contracts/script/DeployFullStack.s.sol` | Full stack deployment     |
-| `scripts/verify-deployment.sh`           | Post-deploy health check  |
+| File                                      | Description                              |
+|-------------------------------------------|------------------------------------------|
+| `deployments/chains.json`                | Chain configs (RPC, gas, limits)         |
+| `deployments/registry.json`              | Canonical contract address registry      |
+| `contracts/script/DeployAll.s.sol`       | Basic deployment script                  |
+| `contracts/script/DeployTestnet.s.sol`   | Full testnet stack deployment (Solidity) |
+| `contracts/script/DeployFullStack.s.sol` | Full stack deployment                    |
+| `contracts/script/DeployWorldChainMainnet.s.sol` | Production mainnet deployment    |
+| `contracts/script/StylusSepoliaDeploy.s.sol` | Solidity adapter for Stylus verifier |
+| `contracts/stylus/gkr-verifier/deploy-testnet.sh` | Stylus WASM verifier deploy    |
+| `scripts/deploy-testnet.sh`              | Testnet deploy + address extraction      |
+| `scripts/deploy-sepolia.sh`             | Arbitrum Sepolia deploy (legacy)         |
+| `scripts/stylus-sepolia-deploy.sh`      | Full Stylus + adapter deployment         |
+| `scripts/verify-deployment.sh`           | Post-deploy health check                 |
+| `docs/STYLUS_DEPLOYMENT.md`             | Stylus deployment guide + troubleshooting|

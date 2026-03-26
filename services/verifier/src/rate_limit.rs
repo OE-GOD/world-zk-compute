@@ -43,7 +43,6 @@ impl TokenBucket {
     fn try_consume(&mut self) -> (bool, u32, u64) {
         self.refill();
 
-        let remaining = self.tokens.floor() as u32;
         let reset_secs = if self.tokens < 1.0 {
             // How long until we have 1 token
             ((1.0 - self.tokens) / self.refill_rate).ceil() as u64
@@ -132,14 +131,8 @@ pub async fn rate_limit_middleware(
             .into_response();
 
         let headers = response.headers_mut();
-        headers.insert(
-            "x-ratelimit-remaining",
-            "0".parse().unwrap(),
-        );
-        headers.insert(
-            "x-ratelimit-reset",
-            reset_secs.to_string().parse().unwrap(),
-        );
+        headers.insert("x-ratelimit-remaining", "0".parse().unwrap());
+        headers.insert("x-ratelimit-reset", reset_secs.to_string().parse().unwrap());
         return response;
     }
 
@@ -149,10 +142,7 @@ pub async fn rate_limit_middleware(
         "x-ratelimit-remaining",
         remaining.to_string().parse().unwrap(),
     );
-    headers.insert(
-        "x-ratelimit-reset",
-        reset_secs.to_string().parse().unwrap(),
-    );
+    headers.insert("x-ratelimit-reset", reset_secs.to_string().parse().unwrap());
     response
 }
 

@@ -233,8 +233,7 @@ contract DeployWorldChainMainnet is Script {
 
     function _deployTEE(address admin, address remainderAddr) private returns (TEEMLVerifier) {
         TEEMLVerifier impl = new TEEMLVerifier();
-        UUPSProxy proxy =
-            new UUPSProxy(address(impl), abi.encodeCall(TEEMLVerifier.initialize, (admin, remainderAddr)));
+        UUPSProxy proxy = new UUPSProxy(address(impl), abi.encodeCall(TEEMLVerifier.initialize, (admin, remainderAddr)));
         return TEEMLVerifier(payable(address(proxy)));
     }
 

@@ -131,7 +131,10 @@ async fn register_circuit(
     Json(req): Json<RegisterCircuitRequest>,
 ) -> Result<Json<RegisterResponse>, (StatusCode, Json<ErrorResponse>)> {
     if req.circuit_id.is_empty() {
-        return Err(err(StatusCode::BAD_REQUEST, "circuit_id is required".into()));
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "circuit_id is required".into(),
+        ));
     }
     store.write().await.insert(
         req.circuit_id.clone(),
@@ -161,7 +164,12 @@ async fn warm_verify(
         .await
         .get(&circuit_id)
         .cloned()
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, format!("circuit '{circuit_id}' not registered")))?;
+        .ok_or_else(|| {
+            err(
+                StatusCode::NOT_FOUND,
+                format!("circuit '{circuit_id}' not registered"),
+            )
+        })?;
 
     let bundle = ProofBundle {
         proof_hex: req.proof_hex,
@@ -197,7 +205,12 @@ async fn warm_verify_hybrid(
         .await
         .get(&circuit_id)
         .cloned()
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, format!("circuit '{circuit_id}' not registered")))?;
+        .ok_or_else(|| {
+            err(
+                StatusCode::NOT_FOUND,
+                format!("circuit '{circuit_id}' not registered"),
+            )
+        })?;
 
     let bundle = ProofBundle {
         proof_hex: req.proof_hex,
@@ -251,7 +264,10 @@ async fn verify_batch(
     Json(req): Json<BatchVerifyRequest>,
 ) -> Result<Json<BatchVerifyResponse>, (StatusCode, Json<ErrorResponse>)> {
     if req.bundles.is_empty() {
-        return Err(err(StatusCode::BAD_REQUEST, "bundles array is empty".into()));
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "bundles array is empty".into(),
+        ));
     }
     if req.bundles.len() > 100 {
         return Err(err(
@@ -297,6 +313,7 @@ fn err(code: StatusCode, msg: String) -> (StatusCode, Json<ErrorResponse>) {
     (code, Json(ErrorResponse { error: msg }))
 }
 
+#[cfg(test)]
 fn build_app() -> Router {
     build_app_with_config(ServiceConfig::from_env())
 }
@@ -314,10 +331,7 @@ fn build_app_with_config(config: ServiceConfig) -> Router {
         .route("/verify/hybrid", post(verify_hybrid_proof))
         .route("/circuits", get(list_circuits))
         .route("/circuits", post(register_circuit))
-        .route(
-            "/circuits/:circuit_id/verify",
-            post(warm_verify),
-        )
+        .route("/circuits/:circuit_id/verify", post(warm_verify))
         .route(
             "/circuits/:circuit_id/verify/hybrid",
             post(warm_verify_hybrid),
@@ -326,10 +340,7 @@ fn build_app_with_config(config: ServiceConfig) -> Router {
             rate_limit_state,
             rate_limit_middleware,
         ))
-        .route_layer(middleware::from_fn_with_state(
-            auth_state,
-            auth_middleware,
-        ))
+        .route_layer(middleware::from_fn_with_state(auth_state, auth_middleware))
         .with_state(store.clone());
 
     let health_router = Router::new()
@@ -484,7 +495,9 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["total"], 2);
         assert_eq!(json["valid"], 0);
@@ -809,7 +822,7 @@ mod tests {
     #[tokio::test]
     async fn test_rate_limit_returns_429() {
         let app = build_app_with_config(ServiceConfig {
-            api_keys: vec![], // no auth
+            api_keys: vec![],  // no auth
             rate_limit_rpm: 3, // very low limit
             port: 3000,
         });
@@ -844,10 +857,7 @@ mod tests {
         // Verify rate limit headers
         assert!(resp.headers().contains_key("x-ratelimit-remaining"));
         assert!(resp.headers().contains_key("x-ratelimit-reset"));
-        assert_eq!(
-            resp.headers().get("x-ratelimit-remaining").unwrap(),
-            "0"
-        );
+        assert_eq!(resp.headers().get("x-ratelimit-remaining").unwrap(), "0");
 
         let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
             .await

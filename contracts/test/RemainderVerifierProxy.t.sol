@@ -17,10 +17,7 @@ contract RemainderVerifierProxyTest is Test {
 
     function setUp() public {
         implementation = new RemainderVerifier();
-        UUPSProxy proxy = new UUPSProxy(
-            address(implementation),
-            abi.encodeCall(RemainderVerifier.initialize, (admin))
-        );
+        UUPSProxy proxy = new UUPSProxy(address(implementation), abi.encodeCall(RemainderVerifier.initialize, (admin)));
         verifier = RemainderVerifier(payable(address(proxy)));
     }
 
@@ -93,9 +90,7 @@ contract RemainderVerifierProxyTest is Test {
         bool[] memory committed = new bool[](2);
         committed[0] = false;
         committed[1] = true;
-        verifier.registerCircuit(
-            bytes32(uint256(42)), 2, sizes, types, committed, "TestCircuit"
-        );
+        verifier.registerCircuit(bytes32(uint256(42)), 2, sizes, types, committed, "TestCircuit");
 
         // Verify circuit is registered
         (bytes32 hash,,,,) = verifier.circuits(bytes32(uint256(42)));

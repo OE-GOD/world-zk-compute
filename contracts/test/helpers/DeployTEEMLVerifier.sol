@@ -11,14 +11,10 @@ abstract contract DeployTEEMLVerifierHelper {
     /// @param admin The admin address for the verifier
     /// @param remainderVerifier The RemainderVerifier address for dispute resolution
     /// @return verifier The TEEMLVerifier instance (proxy address cast)
-    function _deployTEEMLVerifier(address admin, address remainderVerifier)
-        internal
-        returns (TEEMLVerifier)
-    {
+    function _deployTEEMLVerifier(address admin, address remainderVerifier) internal returns (TEEMLVerifier) {
         TEEMLVerifier impl = new TEEMLVerifier();
-        UUPSProxy proxy = new UUPSProxy(
-            address(impl), abi.encodeCall(TEEMLVerifier.initialize, (admin, remainderVerifier))
-        );
+        UUPSProxy proxy =
+            new UUPSProxy(address(impl), abi.encodeCall(TEEMLVerifier.initialize, (admin, remainderVerifier)));
         return TEEMLVerifier(payable(address(proxy)));
     }
 }
