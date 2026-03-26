@@ -85,6 +85,11 @@ struct Cli {
     /// If not specified, allows all origins.
     #[arg(long, value_delimiter = ',')]
     cors_origins: Option<Vec<String>>,
+
+    /// Output a self-contained ProofBundle JSON (proof + generators + circuit desc + metadata).
+    /// When set, --output produces a bundle that can be verified by zkml-verifier.
+    #[arg(long)]
+    bundle: bool,
 }
 
 /// Standard input format for the XGBoost circuit
@@ -187,20 +192,43 @@ async fn main() -> Result<()> {
     );
     println!("Proof size: {} bytes", proof_bytes.len());
 
-    // proof_bytes is already ABI-encoded by abi_encode::encode_hyrax_proof
-    let output = ProofOutput {
-        proof_hex: hex::encode(&proof_bytes),
-        circuit_hash: hex::encode(&circuit_hash),
-        public_inputs_hex: hex::encode(&public_inputs),
-        predicted_class,
-        proof_size_bytes: proof_bytes.len(),
-        prove_time_ms: prove_time.as_millis() as u64,
-    };
+    if cli.bundle {
+        // Build self-contained ProofBundle JSON
+        let (gens_bytes, circuit_desc) =
+            circuit::get_generators_and_description(&model, &input.features, predicted_class)?;
 
-    // Write output
-    let output_json = serde_json::to_string_pretty(&output)?;
-    std::fs::write(&cli.output, &output_json)?;
-    println!("Proof output written to {}", cli.output.display());
+        let bundle = serde_json::json!({
+            "proof_hex": format!("0x{}", hex::encode(&proof_bytes)),
+            "gens_hex": format!("0x{}", hex::encode(&gens_bytes)),
+            "public_inputs_hex": format!("0x{}", hex::encode(&public_inputs)),
+            "dag_circuit_description": circuit_desc,
+            "model_hash": format!("0x{}", hex::encode(sha2::Sha256::digest(std::fs::read(&cli.model)?))),
+            "timestamp": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            "prover_version": env!("CARGO_PKG_VERSION"),
+            "circuit_hash": format!("0x{}", hex::encode(&circuit_hash)),
+        });
+
+        let output_json = serde_json::to_string_pretty(&bundle)?;
+        std::fs::write(&cli.output, &output_json)?;
+        println!("ProofBundle written to {}", cli.output.display());
+    } else {
+        // Legacy output format
+        let output = ProofOutput {
+            proof_hex: hex::encode(&proof_bytes),
+            circuit_hash: hex::encode(&circuit_hash),
+            public_inputs_hex: hex::encode(&public_inputs),
+            predicted_class,
+            proof_size_bytes: proof_bytes.len(),
+            prove_time_ms: prove_time.as_millis() as u64,
+        };
+
+        let output_json = serde_json::to_string_pretty(&output)?;
+        std::fs::write(&cli.output, &output_json)?;
+        println!("Proof output written to {}", cli.output.display());
+    }
 
     Ok(())
 }
