@@ -1,0 +1,38 @@
+# Bank Demo Docker Compose
+#
+# Runs the verifier API service for off-chain proof verification.
+# Optional Anvil service for on-chain mode.
+#
+# Usage:
+#   docker compose -f docker-compose.bank-demo.yml up          # off-chain mode
+#   docker compose -f docker-compose.bank-demo.yml --profile onchain up  # with Anvil
+
+services:
+  verifier-api:
+    build:
+      context: .
+      dockerfile: services/verifier/Dockerfile
+    ports:
+      - "${VERIFIER_PORT:-3000}:3000"
+    environment:
+      - PORT=3000
+      - RUST_LOG=${RUST_LOG:-info}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  anvil:
+    image: ghcr.io/foundry-rs/foundry:latest
+    entrypoint: ["anvil", "--host", "0.0.0.0", "--gas-limit", "500000000"]
+    ports:
+      - "${ANVIL_PORT:-8545}:8545"
+    profiles:
+      - onchain
+    healthcheck:
+      test: ["CMD", "cast", "block-number", "--rpc-url", "http://localhost:8545"]
+      interval: 5s
+      timeout: 3s
+      retries: 5

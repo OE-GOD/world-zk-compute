@@ -18,6 +18,7 @@ exclude = [
     "prover",
     "private-input-server",
     "examples/xgboost-remainder",
+    "examples/bank-demo",
     "tests/e2e",
     "contracts/lib/risc0-ethereum",
     "contracts/stylus/gkr-verifier",
