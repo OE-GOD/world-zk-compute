@@ -129,13 +129,17 @@ contract TEEMLVerifier is ITEEMLVerifier, UUPSUpgradeable, Pausable, ReentrancyG
     /// @notice Maximum number of extensions allowed per dispute
     uint256 public constant MAX_EXTENSIONS = 1;
 
-    /// @notice Initialize the verifier with an admin and RemainderVerifier address
-    /// @param _admin Address that will own and administer this contract
-    /// @param _remainderVerifier Address of the RemainderVerifier for ZK dispute resolution
+    /// @dev Disable initialization on the implementation contract (prevents H-1 attack vector).
+    ///      The proxy calls initialize() via delegatecall, which is unaffected by this constructor.
+    constructor() {
+        _initialized = type(uint8).max;
+    }
+
     /// @notice Initialize the contract (called once via proxy)
     /// @param _admin Admin address for access control and upgrades
     /// @param _remainderVerifier Address of the RemainderVerifier for ZK dispute resolution
     function initialize(address _admin, address _remainderVerifier) external initializer {
+        if (_remainderVerifier == address(0)) revert ZeroAddress();
         _setAdmin(_admin);
         remainderVerifier = _remainderVerifier;
         // Set default values explicitly (storage defaults don't apply behind a proxy)

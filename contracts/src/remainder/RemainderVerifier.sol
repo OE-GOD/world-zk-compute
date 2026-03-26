@@ -182,6 +182,12 @@ contract RemainderVerifier is UUPSUpgradeable, Pausable, ReentrancyGuard {
     // INITIALIZATION
     // ========================================================================
 
+    /// @dev Disable initialization on the implementation contract (prevents H-1 attack vector).
+    ///      The proxy calls initialize() via delegatecall, which is unaffected by this constructor.
+    constructor() {
+        _initialized = type(uint8).max;
+    }
+
     /// @notice Initialize the contract (called once via proxy)
     /// @param _admin Admin address for access control and upgrades
     function initialize(address _admin) external initializer {

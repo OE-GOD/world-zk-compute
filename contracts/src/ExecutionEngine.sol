@@ -383,22 +383,26 @@ contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
         if (block.timestamp > req.expiresAt) revert RequestExpired();
 
         // If previously claimed but deadline passed, allow reclaim
+        address previousClaimant;
         if (req.status == RequestStatus.Claimed) {
             if (block.timestamp <= req.claimDeadline) revert ClaimNotExpired();
-            // Record abandon in reputation system
-            if (address(reputation) != address(0)) {
-                try reputation.recordAbandon(req.claimedBy, requestId) {} catch {}
-            }
-            emit ClaimExpired(requestId, req.claimedBy);
+            previousClaimant = req.claimedBy;
+            emit ClaimExpired(requestId, previousClaimant);
         } else if (req.status != RequestStatus.Pending) {
             revert RequestNotPending();
         }
 
+        // Effects: update state before external calls (CEI pattern, fixes M-4)
         req.status = RequestStatus.Claimed;
         req.claimedBy = msg.sender;
         req.claimedAt = uint48(block.timestamp);
         // forge-lint: disable-next-line(unsafe-typecast)
         req.claimDeadline = uint48(block.timestamp + CLAIM_WINDOW);
+
+        // Interactions: external call after state changes
+        if (previousClaimant != address(0) && address(reputation) != address(0)) {
+            try reputation.recordAbandon(previousClaimant, requestId) {} catch {}
+        }
 
         emit ExecutionClaimed(requestId, msg.sender, req.claimDeadline);
     }
@@ -500,14 +504,14 @@ contract ExecutionEngine is Ownable2Step, Pausable, ReentrancyGuard {
 
         address failedProver = req.claimedBy;
 
-        // Record failure in reputation system (wrapped in try/catch for safety)
-        try reputation.recordFailure(failedProver, "missed claim deadline") {} catch {}
-
-        // Reset request to Pending so it can be reclaimed
+        // Effects: reset state before external calls (CEI pattern, fixes M-3)
         req.status = RequestStatus.Pending;
         req.claimedBy = address(0);
         req.claimedAt = 0;
         req.claimDeadline = 0;
+
+        // Interactions: external call after state changes
+        try reputation.recordFailure(failedProver, "missed claim deadline") {} catch {}
 
         emit BadProofReported(requestId, failedProver, msg.sender);
     }
