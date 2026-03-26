@@ -23,6 +23,7 @@
 mod model_registry;
 mod models;
 mod prover;
+mod registry_client;
 
 use axum::{
     extract::{Path, State},
@@ -35,6 +36,7 @@ use clap::Parser;
 use model_registry::{ModelRegistry, VersionInfo};
 use models::{ModelMetadata, ModelStore};
 use prover::ProverManager;
+use registry_client::RegistryClient;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -92,6 +94,9 @@ struct AppState {
     mock_mode: bool,
     /// Real prover manager (used when mock_mode is false).
     prover_manager: Option<ProverManager>,
+    /// Optional client for auto-submitting proofs to the proof-registry.
+    /// Configured via the `REGISTRY_URL` environment variable.
+    registry_client: Option<RegistryClient>,
     start_time: Instant,
 }
 
@@ -125,6 +130,10 @@ struct ProveResponse {
     prove_time_ms: u64,
     /// The proof bundle (hex-encoded bytes in production, placeholder in mock).
     proof_bundle: ProofBundle,
+    /// Proof ID assigned by the proof-registry, if auto-submit is configured.
+    /// `None` when `REGISTRY_URL` is not set or submission failed.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    registry_proof_id: Option<String>,
 }
 
 /// Proof bundle data returned inside a prove response.
@@ -489,6 +498,10 @@ async fn prove_handler(
         let mock = generate_mock_proof(&model, &req.features);
         let prove_time_ms = start.elapsed().as_millis() as u64;
 
+        // Auto-submit to registry if configured.
+        let registry_proof_id =
+            submit_to_registry(&state, &model, &mock.bundle, prove_time_ms).await;
+
         return Ok(Json(ProveResponse {
             proof_id,
             model_hash: model.model_hash,
@@ -497,6 +510,7 @@ async fn prove_handler(
             mock: true,
             prove_time_ms,
             proof_bundle: mock.bundle,
+            registry_proof_id,
         }));
     }
 
@@ -555,6 +569,15 @@ async fn prove_handler(
         "denied".to_string()
     };
 
+    let bundle = ProofBundle {
+        proof_hex: result.proof_hex,
+        public_inputs_hex: result.public_inputs_hex,
+        proof_size_bytes: result.proof_size_bytes,
+    };
+
+    // Auto-submit to registry if configured.
+    let registry_proof_id = submit_to_registry(&state, &model, &bundle, prove_time_ms).await;
+
     Ok(Json(ProveResponse {
         proof_id,
         model_hash: model.model_hash,
@@ -562,12 +585,54 @@ async fn prove_handler(
         output,
         mock: false,
         prove_time_ms,
-        proof_bundle: ProofBundle {
-            proof_hex: result.proof_hex,
-            public_inputs_hex: result.public_inputs_hex,
-            proof_size_bytes: result.proof_size_bytes,
-        },
+        proof_bundle: bundle,
+        registry_proof_id,
     }))
+}
+
+/// Submit a proof bundle to the proof-registry if `REGISTRY_URL` is configured.
+///
+/// Returns `Some(proof_id)` on success, `None` if the registry is not
+/// configured or submission failed (failures are logged but do not block
+/// the prove response).
+async fn submit_to_registry(
+    state: &AppState,
+    model: &models::LoadedModel,
+    bundle: &ProofBundle,
+    prove_time_ms: u64,
+) -> Option<String> {
+    let client = state.registry_client.as_ref()?;
+
+    // Build the registry submission payload. We include the proof bundle
+    // fields along with model metadata so the registry has full context.
+    let payload = serde_json::json!({
+        "proof_hex": bundle.proof_hex,
+        "public_inputs_hex": bundle.public_inputs_hex,
+        "model_hash": model.model_hash,
+        "circuit_hash": model.circuit_hash,
+        "prover_version": env!("CARGO_PKG_VERSION"),
+        "timestamp": chrono::Utc::now().timestamp(),
+    });
+
+    match client.submit_proof(&payload).await {
+        Ok(result) => {
+            tracing::info!(
+                registry_proof_id = %result.id,
+                registry_url = %client.url(),
+                prove_time_ms,
+                "Auto-submitted proof to registry"
+            );
+            Some(result.id)
+        }
+        Err(e) => {
+            tracing::warn!(
+                registry_url = %client.url(),
+                error = %e,
+                "Failed to auto-submit proof to registry (non-fatal)"
+            );
+            None
+        }
+    }
 }
 
 /// Mock proof output.
@@ -655,11 +720,21 @@ fn build_router(state: Arc<AppState>, enable_cors: bool) -> Router {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .init();
+    let log_format = std::env::var("LOG_FORMAT").unwrap_or_else(|_| "json".into());
+    let filter =
+        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
+
+    match log_format.as_str() {
+        "json" => {
+            tracing_subscriber::fmt()
+                .json()
+                .with_env_filter(filter)
+                .init();
+        }
+        _ => {
+            tracing_subscriber::fmt().with_env_filter(filter).init();
+        }
+    }
 
     let cli = Cli::parse();
 
@@ -682,11 +757,18 @@ async fn main() -> anyhow::Result<()> {
         Some(mgr)
     };
 
+    // Initialize the registry client if REGISTRY_URL is set.
+    let registry_client = std::env::var("REGISTRY_URL").ok().map(|url| {
+        tracing::info!(registry_url = %url, "Auto-submit to proof-registry enabled");
+        RegistryClient::new(url)
+    });
+
     let state = Arc::new(AppState {
         model_store,
         registry,
         mock_mode: cli.mock,
         prover_manager,
+        registry_client,
         start_time: Instant::now(),
     });
 
@@ -731,6 +813,23 @@ mod tests {
             registry,
             mock_mode: true,
             prover_manager: None,
+            registry_client: None,
+            start_time: Instant::now(),
+        });
+        (build_router(state, false), tmp)
+    }
+
+    /// Create a test app with a mock registry server for auto-submit testing.
+    async fn test_app_with_registry(registry_url: String) -> (Router, tempfile::TempDir) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = ModelStore::new(tmp.path().to_path_buf()).await.unwrap();
+        let registry = ModelRegistry::new(store.clone()).await;
+        let state = Arc::new(AppState {
+            model_store: store,
+            registry,
+            mock_mode: true,
+            prover_manager: None,
+            registry_client: Some(RegistryClient::new(registry_url)),
             start_time: Instant::now(),
         });
         (build_router(state, false), tmp)
@@ -993,6 +1092,8 @@ mod tests {
         assert!(prove_resp.proof_bundle.proof_hex.starts_with("0x"));
         assert!(prove_resp.proof_bundle.public_inputs_hex.starts_with("0x"));
         assert!(prove_resp.model_hash.starts_with("0x"));
+        // No registry configured, so registry_proof_id should be None.
+        assert!(prove_resp.registry_proof_id.is_none());
     }
 
     #[tokio::test]
@@ -1349,5 +1450,188 @@ mod tests {
             .unwrap();
         let resp = app.clone().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // ----- Registry auto-submit tests -----
+
+    /// Spin up a mock registry server that accepts POST /proofs and returns a
+    /// canned response with a known proof ID.
+    async fn start_mock_registry() -> (String, tokio::task::JoinHandle<()>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = call_count.clone();
+
+        let mock_app = axum::Router::new().route(
+            "/proofs",
+            post(move |Json(body): Json<serde_json::Value>| {
+                let count = call_count_clone.clone();
+                async move {
+                    let n = count.fetch_add(1, Ordering::SeqCst);
+                    // Validate that expected fields are present.
+                    assert!(body.get("proof_hex").is_some(), "missing proof_hex");
+                    assert!(body.get("model_hash").is_some(), "missing model_hash");
+                    (
+                        StatusCode::CREATED,
+                        Json(serde_json::json!({
+                            "id": format!("registry-proof-{}", n),
+                            "status": "stored",
+                            "transparency_index": n,
+                            "proof_hash": "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+                        })),
+                    )
+                }
+            }),
+        );
+
+        // Bind to a random available port.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://127.0.0.1:{}", addr.port());
+
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, mock_app).await.unwrap();
+        });
+
+        // Brief delay to let the server start.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        (url, handle)
+    }
+
+    #[tokio::test]
+    async fn test_prove_with_registry_auto_submit() {
+        let (registry_url, _server_handle) = start_mock_registry().await;
+        let (app, _tmp) = test_app_with_registry(registry_url).await;
+        let model_id = upload_test_model(&app).await;
+
+        let body = serde_json::json!({
+            "model_id": model_id,
+            "features": [52000.0, 0.38, 710.0, 4.0]
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/prove")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let prove_resp: ProveResponse = serde_json::from_slice(&body_bytes).unwrap();
+
+        assert!(prove_resp.mock);
+        assert_eq!(prove_resp.output, "approved");
+        // Registry auto-submit should have succeeded.
+        assert!(
+            prove_resp.registry_proof_id.is_some(),
+            "Expected registry_proof_id to be set"
+        );
+        assert!(prove_resp
+            .registry_proof_id
+            .as_ref()
+            .unwrap()
+            .starts_with("registry-proof-"));
+    }
+
+    #[tokio::test]
+    async fn test_prove_with_registry_unreachable() {
+        // Point at a port that is not listening.
+        let (app, _tmp) = test_app_with_registry("http://127.0.0.1:19999".to_string()).await;
+        let model_id = upload_test_model(&app).await;
+
+        let body = serde_json::json!({
+            "model_id": model_id,
+            "features": [1.0, 2.0, 3.0]
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/prove")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        // Proof generation should still succeed even if registry is down.
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let prove_resp: ProveResponse = serde_json::from_slice(&body_bytes).unwrap();
+
+        assert!(prove_resp.mock);
+        assert_eq!(prove_resp.output, "approved");
+        // Registry was unreachable, so registry_proof_id should be None.
+        assert!(
+            prove_resp.registry_proof_id.is_none(),
+            "Expected registry_proof_id to be None when registry is unreachable"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_prove_without_registry_config() {
+        // Standard test app has no registry configured.
+        let (app, _tmp) = test_app().await;
+        let model_id = upload_test_model(&app).await;
+
+        let body = serde_json::json!({
+            "model_id": model_id,
+            "features": [1.0, 2.0]
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/prove")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let prove_resp: ProveResponse = serde_json::from_slice(&body_bytes).unwrap();
+
+        // No registry configured -> field absent.
+        assert!(prove_resp.registry_proof_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_prove_multiple_proofs_get_different_registry_ids() {
+        let (registry_url, _server_handle) = start_mock_registry().await;
+        let (app, _tmp) = test_app_with_registry(registry_url).await;
+        let model_id = upload_test_model(&app).await;
+
+        let mut registry_ids = Vec::new();
+        for i in 0..3 {
+            let body = serde_json::json!({
+                "model_id": model_id,
+                "features": [1.0 + i as f64, 2.0]
+            });
+
+            let req = axum::http::Request::builder()
+                .method("POST")
+                .uri("/prove")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_string(&body).unwrap()))
+                .unwrap();
+
+            let resp = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+
+            let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+            let prove_resp: ProveResponse = serde_json::from_slice(&body_bytes).unwrap();
+
+            assert!(prove_resp.registry_proof_id.is_some());
+            registry_ids.push(prove_resp.registry_proof_id.unwrap());
+        }
+
+        // Each proof should get a unique registry ID.
+        assert_eq!(registry_ids[0], "registry-proof-0");
+        assert_eq!(registry_ids[1], "registry-proof-1");
+        assert_eq!(registry_ids[2], "registry-proof-2");
     }
 }
