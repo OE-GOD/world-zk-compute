@@ -53,8 +53,10 @@ pub const FIXED_POINT_SCALE: i64 = 1 << 16;
 
 /// Number of bits for decomposition of the logit value.
 /// Must be large enough to represent the range of possible logit values.
-/// With 2^16 scale and reasonable feature magnitudes, 32 bits is sufficient.
-pub const DECOMP_K: usize = 32;
+/// Products are weight_q * feature_q where each is scaled by 2^16, so
+/// products are in 2^32 scale. With N features summed, the logit can be
+/// up to N * max_product. 48 bits provides ample headroom.
+pub const DECOMP_K: usize = 48;
 
 /// A logistic regression model.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -234,8 +236,8 @@ pub fn prepare_logreg_inputs(
 
     // Bias is scaled by FIXED_POINT_SCALE^2 to match the product scale
     // (since products are weight_q * feature_q = value * SCALE^2)
-    let bias_q = (model.bias * (FIXED_POINT_SCALE as f64) * (FIXED_POINT_SCALE as f64)).round()
-        as i64;
+    let bias_q =
+        (model.bias * (FIXED_POINT_SCALE as f64) * (FIXED_POINT_SCALE as f64)).round() as i64;
 
     // Compute actual logit in quantized domain
     let dot_product: i64 = features_q
@@ -372,8 +374,7 @@ pub fn build_logreg_circuit(n_padded: usize, decomp_k: usize) -> Circuit<Fr> {
         }
         power
     };
-    let shifted_logit =
-        builder.add_sector(logit.expr() + AbstractExpression::constant(offset));
+    let shifted_logit = builder.add_sector(logit.expr() + AbstractExpression::constant(offset));
 
     // Reconstruction residual: weighted_sum - shifted_logit must be zero
     let recon_residual = builder.add_sector(weighted_sum.expr() - shifted_logit.expr());
@@ -532,8 +533,8 @@ pub fn build_logreg_circuit_description(model: &LogisticRegressionModel) -> Vec<
     }
 
     // Encode quantized bias
-    let bias_q = (model.bias * (FIXED_POINT_SCALE as f64) * (FIXED_POINT_SCALE as f64)).round()
-        as i64;
+    let bias_q =
+        (model.bias * (FIXED_POINT_SCALE as f64) * (FIXED_POINT_SCALE as f64)).round() as i64;
     desc.extend_from_slice(&bias_q.to_be_bytes());
 
     desc
