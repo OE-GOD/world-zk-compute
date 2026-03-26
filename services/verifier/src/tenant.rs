@@ -220,6 +220,7 @@ impl TenantStore {
     }
 
     /// Revoke (deactivate) a tenant by API key. Returns false if not found.
+    #[allow(dead_code)]
     pub fn revoke_by_key(&self, api_key: &str) -> bool {
         let result = {
             let mut tenants = match self.tenants_by_key.write() {

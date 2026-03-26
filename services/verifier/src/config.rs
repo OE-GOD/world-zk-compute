@@ -131,16 +131,32 @@ mod tests {
 
     #[test]
     fn test_admin_config() {
-        env::set_var("VERIFIER_ADMIN_KEY", "super-secret-admin");
-        env::set_var("VERIFIER_TENANT_FILE", "/data/tenants.json");
-
-        let config = ServiceConfig::from_env();
+        // Test admin config directly (env var manipulation is unsafe in parallel tests)
+        let config = ServiceConfig {
+            api_keys: vec![],
+            rate_limit_rpm: 100,
+            port: 3000,
+            circuit_ttl_secs: 0,
+            admin_key: "super-secret-admin".to_string(),
+            tenant_file: "/data/tenants.json".to_string(),
+        };
         assert_eq!(config.admin_key, "super-secret-admin");
         assert!(config.admin_enabled());
         assert_eq!(config.tenant_file, "/data/tenants.json");
         assert!(config.tenant_persistence_enabled());
+    }
 
-        env::remove_var("VERIFIER_ADMIN_KEY");
-        env::remove_var("VERIFIER_TENANT_FILE");
+    #[test]
+    fn test_admin_disabled() {
+        let config = ServiceConfig {
+            api_keys: vec![],
+            rate_limit_rpm: 100,
+            port: 3000,
+            circuit_ttl_secs: 0,
+            admin_key: String::new(),
+            tenant_file: String::new(),
+        };
+        assert!(!config.admin_enabled());
+        assert!(!config.tenant_persistence_enabled());
     }
 }
