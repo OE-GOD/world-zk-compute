@@ -250,6 +250,98 @@ impl ModelStore {
 
         Ok(())
     }
+
+    /// Activate a model (set active = true). The inverse of `deactivate_model`.
+    pub async fn activate_model(&self, id: &str) -> anyhow::Result<()> {
+        let mut models = self.models.write().await;
+        let model = models
+            .get_mut(id)
+            .ok_or_else(|| anyhow::anyhow!("Model not found: {}", id))?;
+        model.active = true;
+
+        // Update metadata on disk
+        let meta = ModelMetadata {
+            id: model.id.clone(),
+            name: model.name.clone(),
+            format: model.format.clone(),
+            model_hash: model.model_hash.clone(),
+            circuit_hash: model.circuit_hash.clone(),
+            active: true,
+            created_at: model.created_at.clone(),
+            file_size_bytes: model.raw_json.len() as u64,
+        };
+        let meta_path = self.storage_dir.join(&model.id).join("metadata.json");
+        tokio::fs::write(meta_path, serde_json::to_string_pretty(&meta)?).await?;
+
+        Ok(())
+    }
+
+    /// Store a new model without checking for global duplicate hashes.
+    ///
+    /// This is used by [`ModelRegistry`] which performs its own per-name
+    /// duplicate checking. The method is otherwise identical to `add_model`.
+    pub async fn add_model_no_dup_check(
+        &self,
+        name: String,
+        raw_json: String,
+        format_hint: Option<String>,
+    ) -> anyhow::Result<ModelMetadata> {
+        let format = match format_hint {
+            Some(f) if f != "auto" => {
+                validate_format(&f)?;
+                f
+            }
+            _ => detect_model_format(&raw_json)?.to_string(),
+        };
+
+        let model_hash = compute_model_hash(&raw_json);
+
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+
+        let circuit_hash = {
+            let mut h = Sha256::new();
+            h.update(b"circuit:");
+            h.update(model_hash.as_bytes());
+            format!("0x{}", hex::encode(h.finalize()))
+        };
+
+        let meta = ModelMetadata {
+            id: id.clone(),
+            name: name.clone(),
+            format: format.clone(),
+            model_hash: model_hash.clone(),
+            circuit_hash: circuit_hash.clone(),
+            active: true,
+            created_at: now.clone(),
+            file_size_bytes: raw_json.len() as u64,
+        };
+
+        // Persist to disk
+        let model_dir = self.storage_dir.join(&id);
+        tokio::fs::create_dir_all(&model_dir).await?;
+        tokio::fs::write(model_dir.join("model.json"), &raw_json).await?;
+        tokio::fs::write(
+            model_dir.join("metadata.json"),
+            serde_json::to_string_pretty(&meta)?,
+        )
+        .await?;
+
+        // Update in-memory index
+        let loaded = LoadedModel {
+            id: id.clone(),
+            name,
+            format,
+            model_hash,
+            circuit_hash,
+            active: true,
+            created_at: now,
+            raw_json,
+        };
+        self.models.write().await.insert(id, loaded);
+
+        Ok(meta)
+    }
 }
 
 /// Compute the SHA-256 hash of a model's raw JSON, returned as a hex string

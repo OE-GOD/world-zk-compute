@@ -9,13 +9,18 @@
 //!
 //! # Endpoints
 //!
-//! - `POST /prove`        -- generate a proof for given model + features
-//! - `POST /models`       -- upload a new model (JSON body)
-//! - `GET  /models`       -- list all registered models
-//! - `GET  /models/:id`   -- get a single model's metadata
-//! - `DELETE /models/:id` -- deactivate a model (soft delete)
-//! - `GET  /health`       -- health check
+//! - `POST /prove`                    -- generate a proof for given model + features
+//! - `POST /models`                   -- upload a new model version (JSON body)
+//! - `GET  /models`                   -- list all registered models
+//! - `GET  /models/:id`               -- get a single model's metadata + version info
+//! - `DELETE /models/:id`             -- deactivate a model version (soft delete)
+//! - `POST /models/:id/activate`      -- activate a specific model version
+//! - `POST /models/:id/deactivate`    -- deactivate a specific model version
+//! - `GET  /models/:name/versions`    -- list all versions for a model name
+//! - `POST /models/:name/rollback`    -- rollback to the previous version
+//! - `GET  /health`                   -- health check
 
+mod model_registry;
 mod models;
 
 use axum::{
@@ -26,6 +31,7 @@ use axum::{
     Json, Router,
 };
 use clap::Parser;
+use model_registry::{ModelRegistry, VersionInfo};
 use models::{ModelMetadata, ModelStore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -62,6 +68,8 @@ struct Cli {
 /// Shared application state.
 struct AppState {
     model_store: ModelStore,
+    /// Model registry with versioning and activation controls.
+    registry: ModelRegistry,
     /// When true, proof requests return mock responses.
     mock_mode: bool,
     start_time: Instant,
@@ -166,6 +174,27 @@ struct HealthResponse {
     model_count: usize,
 }
 
+/// Response body for version listing endpoints.
+#[derive(Debug, Serialize, Deserialize)]
+struct ListVersionsResponse {
+    name: String,
+    versions: Vec<VersionSummary>,
+}
+
+/// Summary of a single model version.
+#[derive(Debug, Serialize, Deserialize)]
+struct VersionSummary {
+    id: String,
+    version: u32,
+    created_at: String,
+    activated_at: Option<String>,
+    is_active: bool,
+    model_hash: String,
+    circuit_hash: String,
+    format: String,
+    file_size_bytes: u64,
+}
+
 /// Standard error response body.
 #[derive(Debug, Serialize)]
 struct ErrorResponse {
@@ -188,7 +217,11 @@ async fn health_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse
     })
 }
 
-/// `POST /models` -- upload a new model.
+/// `POST /models` -- upload a new model version.
+///
+/// If a model with the same name already exists, a new version is created.
+/// The new version is automatically activated and any previous active version
+/// of the same name is deactivated.
 async fn upload_model_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<UploadModelRequest>,
@@ -208,13 +241,13 @@ async fn upload_model_handler(
         Some(req.format.clone())
     };
 
-    let meta = state
-        .model_store
-        .add_model(req.name, raw_json, format_hint)
+    let version_info = state
+        .registry
+        .upload(req.name, raw_json, format_hint)
         .await
         .map_err(|e| {
             let msg = e.to_string();
-            if msg.contains("identical hash") {
+            if msg.contains("identical model hash") {
                 (StatusCode::CONFLICT, Json(ErrorResponse { error: msg }))
             } else {
                 (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: msg }))
@@ -224,11 +257,11 @@ async fn upload_model_handler(
     Ok((
         StatusCode::CREATED,
         Json(UploadModelResponse {
-            model_id: meta.id,
-            model_hash: meta.model_hash,
-            circuit_hash: meta.circuit_hash,
-            format: meta.format,
-            active: meta.active,
+            model_id: version_info.id,
+            model_hash: version_info.model_hash,
+            circuit_hash: version_info.circuit_hash,
+            format: version_info.format,
+            active: version_info.is_active,
         }),
     ))
 }
@@ -286,7 +319,7 @@ async fn deactivate_model_handler(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
-    state.model_store.deactivate_model(&id).await.map_err(|e| {
+    state.registry.deactivate(&id).await.map_err(|e| {
         (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
@@ -296,6 +329,95 @@ async fn deactivate_model_handler(
     })?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `POST /models/:id/activate` -- activate a specific model version.
+///
+/// Deactivates any other active version of the same model name.
+async fn activate_model_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<VersionSummary>, (StatusCode, Json<ErrorResponse>)> {
+    let info = state.registry.activate(&id).await.map_err(|e| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+    })?;
+
+    Ok(Json(version_info_to_summary(&info)))
+}
+
+/// `POST /models/:id/deactivate` -- deactivate a specific model version.
+async fn deactivate_version_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<VersionSummary>, (StatusCode, Json<ErrorResponse>)> {
+    let info = state.registry.deactivate(&id).await.map_err(|e| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+    })?;
+
+    Ok(Json(version_info_to_summary(&info)))
+}
+
+/// `GET /models/:name/versions` -- list all versions for a model name.
+async fn list_versions_handler(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Result<Json<ListVersionsResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let versions = state.registry.list_versions(&name).await.ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("Model name not found: {}", name),
+            }),
+        )
+    })?;
+
+    Ok(Json(ListVersionsResponse {
+        name,
+        versions: versions.iter().map(version_info_to_summary).collect(),
+    }))
+}
+
+/// `POST /models/:name/rollback` -- rollback to the previous version.
+async fn rollback_handler(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+) -> Result<Json<VersionSummary>, (StatusCode, Json<ErrorResponse>)> {
+    let info = state.registry.rollback(&name).await.map_err(|e| {
+        let msg = e.to_string();
+        let status = if msg.contains("not found") {
+            StatusCode::NOT_FOUND
+        } else {
+            StatusCode::BAD_REQUEST
+        };
+        (status, Json(ErrorResponse { error: msg }))
+    })?;
+
+    Ok(Json(version_info_to_summary(&info)))
+}
+
+/// Convert a `VersionInfo` to a `VersionSummary` for API responses.
+fn version_info_to_summary(info: &VersionInfo) -> VersionSummary {
+    VersionSummary {
+        id: info.id.clone(),
+        version: info.version,
+        created_at: info.created_at.clone(),
+        activated_at: info.activated_at.clone(),
+        is_active: info.is_active,
+        model_hash: info.model_hash.clone(),
+        circuit_hash: info.circuit_hash.clone(),
+        format: info.format.clone(),
+        file_size_bytes: info.file_size_bytes,
+    }
 }
 
 /// `POST /prove` -- generate a proof.
@@ -427,6 +549,11 @@ fn build_router(state: Arc<AppState>, enable_cors: bool) -> Router {
         .route("/models", get(list_models_handler))
         .route("/models/:id", get(get_model_handler))
         .route("/models/:id", delete(deactivate_model_handler))
+        // Versioning endpoints
+        .route("/models/:id/activate", post(activate_model_handler))
+        .route("/models/:id/deactivate", post(deactivate_version_handler))
+        .route("/models/:name/versions", get(list_versions_handler))
+        .route("/models/:name/rollback", post(rollback_handler))
         .route("/prove", post(prove_handler))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
