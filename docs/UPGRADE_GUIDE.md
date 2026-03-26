@@ -11,6 +11,7 @@ This document covers how to safely upgrade deployed World ZK Compute contracts, 
 | Contract | Proxy Pattern | Admin Mechanism | File |
 |---|---|---|---|
 | `UpgradeableExecutionEngine` | `UUPSProxy` + `UUPSUpgradeable` | EIP-1967 admin slot | `contracts/src/Upgradeable.sol` |
+| `RemainderVerifier` | `UUPSProxy` + `UUPSUpgradeable` | EIP-1967 admin slot + `onlyTimelocked` | `contracts/src/remainder/RemainderVerifier.sol` |
 
 The custom UUPS implementation uses EIP-1967 storage slots for both the implementation address and the admin address. The proxy delegates all calls to the implementation via `delegatecall`. Upgrades are authorized through the `onlyAdmin` modifier and the `_authorizeUpgrade()` hook.
 

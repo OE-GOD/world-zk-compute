@@ -446,4 +446,184 @@ mod tests {
             assert!(r["error"].is_string());
         }
     }
+
+    #[tokio::test]
+    async fn test_register_circuit_empty_id() {
+        let app = build_app();
+        let body = serde_json::json!({
+            "circuit_id": "",
+            "gens_hex": "0x00",
+            "dag_circuit_description": {}
+        });
+        let req = Request::post("/circuits")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(json["error"].as_str().unwrap().contains("circuit_id"));
+    }
+
+    #[tokio::test]
+    async fn test_register_circuit_overwrites() {
+        let app = build_app();
+
+        // Register first time
+        let body = serde_json::json!({
+            "circuit_id": "dup-circuit",
+            "gens_hex": "0xaa",
+            "dag_circuit_description": {"version": 1}
+        });
+        let req = Request::post("/circuits")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Register second time with same id
+        let body2 = serde_json::json!({
+            "circuit_id": "dup-circuit",
+            "gens_hex": "0xbb",
+            "dag_circuit_description": {"version": 2}
+        });
+        let req = Request::post("/circuits")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body2).unwrap()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // List should still show exactly one circuit
+        let req = Request::get("/circuits").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["circuits"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_verify_hybrid_invalid_proof() {
+        let app = build_app();
+        let bundle = serde_json::json!({
+            "proof_hex": "0xdead",
+            "gens_hex": "0xbeef",
+            "dag_circuit_description": {}
+        });
+        let req = Request::post("/verify/hybrid")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&bundle).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_warm_verify_hybrid_not_found() {
+        let app = build_app();
+        let body = serde_json::json!({
+            "proof_hex": "0xdead"
+        });
+        let req = Request::post("/circuits/nonexistent/verify/hybrid")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_verify_batch_over_limit() {
+        let app = build_app();
+        let single = serde_json::json!({
+            "proof_hex": "0xdead",
+            "gens_hex": "0x00",
+            "dag_circuit_description": {}
+        });
+        let bundles: Vec<_> = (0..101).map(|_| single.clone()).collect();
+        let body = serde_json::json!({ "bundles": bundles });
+        let req = Request::post("/verify/batch")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(json["error"].as_str().unwrap().contains("100"));
+    }
+
+    #[tokio::test]
+    async fn test_health_after_circuit_registration() {
+        let app = build_app();
+
+        // Register a circuit
+        let body = serde_json::json!({
+            "circuit_id": "health-test",
+            "gens_hex": "0x00",
+            "dag_circuit_description": {}
+        });
+        let req = Request::post("/circuits")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Health should show circuits_loaded=1
+        let req = Request::get("/health").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["circuits_loaded"], 1);
+    }
+
+    #[tokio::test]
+    async fn test_verify_missing_content_type() {
+        let app = build_app();
+        // POST /verify with a JSON body but no content-type header
+        let bundle = serde_json::json!({
+            "proof_hex": "0xdead",
+            "gens_hex": "0xbeef",
+            "dag_circuit_description": {}
+        });
+        let req = Request::post("/verify")
+            .body(Body::from(serde_json::to_vec(&bundle).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let status = resp.status().as_u16();
+        // Axum rejects missing content-type with 415 (Unsupported Media Type)
+        // or 422 (Unprocessable Entity) depending on version
+        assert!(
+            status == 415 || status == 422,
+            "expected 415 or 422, got {status}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_verify_malformed_json() {
+        let app = build_app();
+        let req = Request::post("/verify")
+            .header("content-type", "application/json")
+            .body(Body::from("not valid json {{{"))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let status = resp.status().as_u16();
+        // Axum returns 400 or 422 for malformed JSON
+        assert!(
+            status == 400 || status == 422,
+            "expected 400 or 422, got {status}"
+        );
+    }
 }

@@ -184,8 +184,13 @@ rate (<1%), the TEE path dominates total cost.
 | **P5** | Merge disputeResolved+disputeProverWon mappings | `TEEMLVerifier.sol:42-44` | ~2,100 gas/query | Low |
 | **P6** | Add batch operations (registerEnclaves, submitResults) | New functions | ~21K gas/extra op | Medium |
 
+| **P7** | ~~Replace modExp loop with MODEXP precompile (0x05)~~ | `SumcheckVerifier.sol`, `CommittedSumcheckVerifier.sol` | ~7K gas/inverse call | **DONE** |
+
 **Total potential savings on happy path (P0+P1+P4): ~41K gas per submit+finalize cycle,
 reducing from ~310K to ~269K gas (13% reduction).**
+
+**ZK verification path: MODEXP precompile (P7) saves ~7K gas per modular inverse, called
+multiple times during sumcheck verification. Estimated 50-100K gas savings per full DAG proof.**
 
 ---
 

@@ -91,7 +91,7 @@ On Sepolia testnet, the system runs in **TEE-only mode**:
 For on-chain ZK verification, options include:
 
 1. **Library deployment**: Deploy each library separately, link to RemainderVerifier
-2. **Proxy pattern (EIP-1967)**: Split RemainderVerifier behind a UUPS proxy (infrastructure exists in `contracts/src/Upgradeable.sol`)
+2. **UUPS Proxy (implemented)**: RemainderVerifier is deployed behind a `UUPSProxy` with `initialize()`. Deploy scripts use: `new RemainderVerifier()` → `new UUPSProxy(impl, abi.encodeCall(RemainderVerifier.initialize, (admin)))`. Critical admin ops are guarded by `onlyTimelocked`.
 3. **Diamond pattern (EIP-2535)**: Split into facets for each verification mode
 4. **Stylus delegation**: Use WASM verifier on Arbitrum (implemented and tested)
 
