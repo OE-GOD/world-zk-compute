@@ -159,6 +159,10 @@ async fn warm_verify(
         public_inputs_hex: req.public_inputs_hex,
         gens_hex: config.gens_hex,
         dag_circuit_description: config.dag_circuit_description,
+        model_hash: None,
+        timestamp: None,
+        prover_version: None,
+        circuit_hash: None,
     };
 
     let result = tokio::task::spawn_blocking(move || verify(&bundle))
@@ -191,6 +195,10 @@ async fn warm_verify_hybrid(
         public_inputs_hex: req.public_inputs_hex,
         gens_hex: config.gens_hex,
         dag_circuit_description: config.dag_circuit_description,
+        model_hash: None,
+        timestamp: None,
+        prover_version: None,
+        circuit_hash: None,
     };
 
     let result = tokio::task::spawn_blocking(move || verify_hybrid(&bundle))
@@ -242,7 +250,7 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
-    use tower::ServiceExt;
+    use tower::util::ServiceExt;
 
     #[tokio::test]
     async fn test_health_endpoint() {

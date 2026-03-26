@@ -6,8 +6,10 @@ pub mod config;
 pub mod deadline_monitor;
 pub mod middleware;
 pub mod notifications;
+pub mod proof_archive;
 pub mod ssrf;
 pub mod store;
+pub mod verify;
 pub mod watcher;
 
 use std::collections::HashMap;

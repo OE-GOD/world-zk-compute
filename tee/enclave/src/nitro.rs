@@ -4,6 +4,20 @@
 //! this module calls the NSM device to produce attestation documents.
 //! In dev mode (no `nitro` feature), it produces mock attestation documents
 //! for testing.
+//!
+//! ## User Data Binding
+//!
+//! The attestation document's `user_data` field binds the document to
+//! application-level context:
+//!
+//! - **Basic attestation** (startup / periodic refresh):
+//!   `user_data = keccak256(model_hash)`
+//!
+//! - **Inference-bound attestation** (after running inference):
+//!   `user_data = keccak256(inference_result || model_hash || nonce)`
+//!
+//! This ensures that an attestation document can be cryptographically
+//! linked to a specific inference result when needed.
 
 use alloy_primitives::{Address, B256};
 use base64::Engine as _;
@@ -29,6 +43,8 @@ pub struct NitroAttestor {
     attestation_doc: Option<AttestationDocument>,
     /// Whether Nitro is enabled.
     nitro_enabled: bool,
+    /// Timestamp of the last successful attestation refresh (seconds since epoch).
+    last_refresh: u64,
 }
 
 impl NitroAttestor {
@@ -67,6 +83,7 @@ impl NitroAttestor {
         Ok(Self {
             attestation_doc,
             nitro_enabled,
+            last_refresh: Self::now_secs(),
         })
     }
 
@@ -91,6 +108,7 @@ impl NitroAttestor {
         Self {
             attestation_doc: Some(attestation_doc),
             nitro_enabled: false,
+            last_refresh: Self::now_secs(),
         }
     }
 
@@ -102,6 +120,82 @@ impl NitroAttestor {
     /// Whether this attestor uses real Nitro attestation.
     pub fn is_nitro(&self) -> bool {
         self.nitro_enabled
+    }
+
+    /// Returns the Unix timestamp (seconds) of the last successful attestation refresh.
+    pub fn last_refresh_timestamp(&self) -> u64 {
+        self.last_refresh
+    }
+
+    /// Compute the `user_data` field for an attestation document.
+    ///
+    /// - **Basic** (no inference result): `keccak256(model_hash)`
+    /// - **Inference-bound**: `keccak256(inference_result || model_hash || nonce)`
+    ///
+    /// This binds the attestation to the application-level context so that a
+    /// verifier can confirm which model and optionally which inference result
+    /// the attestation covers.
+    pub fn compute_user_data(
+        model_hash: B256,
+        inference_result: Option<&[u8]>,
+        nonce: Option<&[u8]>,
+    ) -> B256 {
+        match inference_result {
+            Some(result) => {
+                let mut preimage = Vec::with_capacity(
+                    result.len() + 32 + nonce.map_or(0, |n| n.len()),
+                );
+                preimage.extend_from_slice(result);
+                preimage.extend_from_slice(model_hash.as_slice());
+                if let Some(n) = nonce {
+                    preimage.extend_from_slice(n);
+                }
+                alloy_primitives::keccak256(&preimage)
+            }
+            None => alloy_primitives::keccak256(model_hash.as_slice()),
+        }
+    }
+
+    /// Refresh the attestation document with inference result binding.
+    ///
+    /// Produces an attestation whose `user_data` is
+    /// `keccak256(inference_result || model_hash || nonce)`, tying the
+    /// attestation to a specific inference output. Use this after running
+    /// an inference when a tight binding is required.
+    pub fn refresh_with_inference(
+        &mut self,
+        enclave_address: Address,
+        model_hash: B256,
+        inference_result: &[u8],
+        nonce: Option<&[u8]>,
+    ) -> Result<(), String> {
+        let user_data = Self::compute_user_data(model_hash, Some(inference_result), nonce);
+        if self.nitro_enabled {
+            #[cfg(feature = "nitro")]
+            {
+                self.attestation_doc = Some(Self::get_nitro_attestation_with_user_data(
+                    enclave_address,
+                    user_data,
+                    nonce,
+                )?);
+                self.last_refresh = Self::now_secs();
+                return Ok(());
+            }
+            #[cfg(not(feature = "nitro"))]
+            {
+                let _ = (enclave_address, user_data, nonce);
+                return Err(
+                    "Nitro enabled but binary not compiled with 'nitro' feature".to_string(),
+                );
+            }
+        }
+        self.attestation_doc = Some(Self::mock_attestation_with_user_data(
+            enclave_address,
+            user_data,
+            nonce,
+        )?);
+        self.last_refresh = Self::now_secs();
+        Ok(())
     }
 
     /// Refresh the cached attestation document.
@@ -123,6 +217,7 @@ impl NitroAttestor {
                     model_hash,
                     nonce,
                 )?);
+                self.last_refresh = Self::now_secs();
                 return Ok(());
             }
             #[cfg(not(feature = "nitro"))]
@@ -134,18 +229,40 @@ impl NitroAttestor {
             }
         }
         self.attestation_doc = Some(Self::mock_attestation(enclave_address, model_hash, nonce)?);
+        self.last_refresh = Self::now_secs();
         Ok(())
     }
 
+    /// Current time in seconds since epoch, or 0 on clock error.
+    fn now_secs() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or(std::time::Duration::ZERO)
+            .as_secs()
+    }
+
     /// Create a mock attestation document for dev/testing.
+    ///
+    /// Delegates to [`mock_attestation_with_user_data`] with
+    /// `user_data = keccak256(model_hash)`.
+    fn mock_attestation(
+        enclave_address: Address,
+        model_hash: B256,
+        nonce: Option<&[u8]>,
+    ) -> Result<AttestationDocument, String> {
+        let user_data = Self::compute_user_data(model_hash, None, nonce);
+        Self::mock_attestation_with_user_data(enclave_address, user_data, nonce)
+    }
+
+    /// Create a mock attestation document with a pre-computed `user_data` value.
     ///
     /// The CBOR serialization here uses deterministic, well-known structures
     /// (BTreeMaps of simple CBOR values), so in practice these serializations
     /// cannot fail. We return `Result` nonetheless to avoid `expect`/`unwrap`
     /// in production code paths.
-    fn mock_attestation(
+    fn mock_attestation_with_user_data(
         enclave_address: Address,
-        model_hash: B256,
+        user_data: B256,
         nonce: Option<&[u8]>,
     ) -> Result<AttestationDocument, String> {
         // Build a mock CBOR structure that mimics Nitro attestation format.
@@ -199,8 +316,7 @@ impl NitroAttestor {
             serde_cbor::Value::Bytes(enclave_address.as_slice().to_vec()),
         );
 
-        // user_data -- keccak256(model_hash) to bind attestation to model
-        let user_data = alloy_primitives::keccak256(model_hash.as_slice());
+        // user_data -- pre-computed binding hash
         payload.insert(
             "user_data".to_string(),
             serde_cbor::Value::Bytes(user_data.as_slice().to_vec()),
@@ -241,11 +357,29 @@ impl NitroAttestor {
     }
 
     /// Get real Nitro attestation from NSM device.
-    /// Only available when compiled with `nitro` feature.
+    ///
+    /// Computes `user_data = keccak256(model_hash)` and delegates to
+    /// [`get_nitro_attestation_with_user_data`].
     #[cfg(feature = "nitro")]
     fn get_nitro_attestation(
         enclave_address: Address,
         model_hash: B256,
+        nonce: Option<&[u8]>,
+    ) -> Result<AttestationDocument, String> {
+        let user_data = Self::compute_user_data(model_hash, None, nonce);
+        Self::get_nitro_attestation_with_user_data(enclave_address, user_data, nonce)
+    }
+
+    /// Get real Nitro attestation from NSM device with a pre-computed `user_data`.
+    ///
+    /// This is the inner implementation used by both the basic `get_nitro_attestation`
+    /// (model-only binding) and `refresh_with_inference` (inference-bound).
+    ///
+    /// Only available when compiled with `nitro` feature on Linux.
+    #[cfg(feature = "nitro")]
+    fn get_nitro_attestation_with_user_data(
+        enclave_address: Address,
+        user_data: B256,
         nonce: Option<&[u8]>,
     ) -> Result<AttestationDocument, String> {
         use aws_nitro_enclaves_nsm_api::api::{Request, Response};
@@ -258,8 +392,6 @@ impl NitroAttestor {
         }
 
         // 2. Build attestation request
-        // user_data = keccak256(model_hash) to bind attestation to the model
-        let user_data = alloy_primitives::keccak256(model_hash.as_slice());
         let request = Request::Attestation {
             public_key: Some(enclave_address.as_slice().to_vec()),
             user_data: Some(user_data.as_slice().to_vec()),
@@ -329,6 +461,34 @@ impl NitroAttestor {
         };
 
         Ok(hex::encode(pcr0_bytes))
+    }
+
+    /// Helper: extract user_data bytes from a base64-encoded attestation document.
+    ///
+    /// Decodes the base64 COSE_Sign1 envelope, parses the inner CBOR payload,
+    /// and returns the raw `user_data` bytes. Used in tests to verify correct
+    /// binding.
+    #[cfg(test)]
+    fn extract_user_data_from_doc(doc: &AttestationDocument) -> Result<Vec<u8>, String> {
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&doc.document)
+            .map_err(|e| format!("base64 decode: {}", e))?;
+        let cose: serde_cbor::Value =
+            serde_cbor::from_slice(&decoded).map_err(|e| format!("CBOR decode: {}", e))?;
+        let items = match cose {
+            serde_cbor::Value::Array(items) if items.len() == 4 => items,
+            _ => return Err("not a COSE_Sign1".to_string()),
+        };
+        let payload_bytes = match &items[2] {
+            serde_cbor::Value::Bytes(b) => b,
+            _ => return Err("payload not bytes".to_string()),
+        };
+        let payload: std::collections::BTreeMap<String, serde_cbor::Value> =
+            serde_cbor::from_slice(payload_bytes).map_err(|e| format!("payload parse: {}", e))?;
+        match payload.get("user_data") {
+            Some(serde_cbor::Value::Bytes(b)) => Ok(b.clone()),
+            _ => Err("user_data not found or not bytes".to_string()),
+        }
     }
 }
 
@@ -557,5 +717,228 @@ mod tests {
             );
         }
         Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // User data binding tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_compute_user_data_basic() {
+        let model_hash = alloy_primitives::keccak256(b"my model");
+        // Basic: user_data = keccak256(model_hash)
+        let ud = NitroAttestor::compute_user_data(model_hash, None, None);
+        assert_eq!(ud, alloy_primitives::keccak256(model_hash.as_slice()));
+    }
+
+    #[test]
+    fn test_compute_user_data_with_inference() {
+        let model_hash = alloy_primitives::keccak256(b"my model");
+        let inference_result = b"[0.85, 0.15]";
+        let nonce = b"abc123";
+
+        // Inference-bound: user_data = keccak256(result || model_hash || nonce)
+        let ud =
+            NitroAttestor::compute_user_data(model_hash, Some(inference_result), Some(nonce));
+
+        let mut expected_preimage = Vec::new();
+        expected_preimage.extend_from_slice(inference_result);
+        expected_preimage.extend_from_slice(model_hash.as_slice());
+        expected_preimage.extend_from_slice(nonce);
+        let expected = alloy_primitives::keccak256(&expected_preimage);
+
+        assert_eq!(ud, expected);
+    }
+
+    #[test]
+    fn test_compute_user_data_inference_without_nonce() {
+        let model_hash = B256::ZERO;
+        let inference_result = b"result";
+
+        // Without nonce, should be keccak256(result || model_hash)
+        let ud = NitroAttestor::compute_user_data(model_hash, Some(inference_result), None);
+
+        let mut expected_preimage = Vec::new();
+        expected_preimage.extend_from_slice(inference_result);
+        expected_preimage.extend_from_slice(model_hash.as_slice());
+        let expected = alloy_primitives::keccak256(&expected_preimage);
+
+        assert_eq!(ud, expected);
+    }
+
+    #[test]
+    fn test_compute_user_data_different_inputs_different_outputs() {
+        let model_hash = alloy_primitives::keccak256(b"model");
+
+        let ud1 = NitroAttestor::compute_user_data(model_hash, Some(b"result_a"), None);
+        let ud2 = NitroAttestor::compute_user_data(model_hash, Some(b"result_b"), None);
+        let ud_basic = NitroAttestor::compute_user_data(model_hash, None, None);
+
+        assert_ne!(ud1, ud2, "Different inference results must produce different user_data");
+        assert_ne!(ud1, ud_basic, "Inference-bound must differ from basic");
+    }
+
+    #[test]
+    fn test_mock_attestation_user_data_matches_compute() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let addr = address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
+        let model_hash = alloy_primitives::keccak256(b"test model");
+
+        let attestor = NitroAttestor::new(false, addr, model_hash)
+            .map_err(|e| format!("failed: {}", e))?;
+        let doc = attestor
+            .attestation_document()
+            .ok_or("no doc")?;
+
+        let user_data_bytes = NitroAttestor::extract_user_data_from_doc(doc)
+            .map_err(|e| format!("extract: {}", e))?;
+
+        // Basic attestation: user_data = keccak256(model_hash)
+        let expected = NitroAttestor::compute_user_data(model_hash, None, None);
+        assert_eq!(
+            user_data_bytes,
+            expected.as_slice(),
+            "Mock attestation user_data must match compute_user_data"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_refresh_with_inference_binds_result() -> Result<(), Box<dyn std::error::Error>> {
+        let addr = address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
+        let model_hash = alloy_primitives::keccak256(b"model");
+        let inference_result = b"[0.9, 0.1]";
+        let nonce = b"challenge-nonce";
+
+        let mut attestor = NitroAttestor::new(false, addr, model_hash)
+            .map_err(|e| format!("failed: {}", e))?;
+
+        // Refresh with inference binding
+        attestor
+            .refresh_with_inference(addr, model_hash, inference_result, Some(nonce))
+            .map_err(|e| format!("refresh: {}", e))?;
+
+        let doc = attestor
+            .attestation_document()
+            .ok_or("no doc after refresh")?;
+
+        let user_data_bytes = NitroAttestor::extract_user_data_from_doc(doc)
+            .map_err(|e| format!("extract: {}", e))?;
+
+        // Should match: keccak256(inference_result || model_hash || nonce)
+        let expected =
+            NitroAttestor::compute_user_data(model_hash, Some(inference_result), Some(nonce));
+        assert_eq!(
+            user_data_bytes,
+            expected.as_slice(),
+            "Inference-bound attestation user_data must match"
+        );
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Cache refresh timestamp tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_last_refresh_timestamp_set_on_creation() {
+        let addr = address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
+        let model_hash = B256::ZERO;
+
+        let attestor = NitroAttestor::new(false, addr, model_hash).unwrap();
+        let ts = attestor.last_refresh_timestamp();
+        assert!(ts > 0, "last_refresh should be set on creation");
+
+        // Should be within the last few seconds
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!(
+            now - ts < 5,
+            "last_refresh ({}) should be within 5s of now ({})",
+            ts,
+            now
+        );
+    }
+
+    #[test]
+    fn test_last_refresh_timestamp_updates_on_refresh() -> Result<(), Box<dyn std::error::Error>> {
+        let addr = address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
+        let model_hash = B256::ZERO;
+
+        let mut attestor = NitroAttestor::new(false, addr, model_hash)
+            .map_err(|e| format!("failed: {}", e))?;
+
+        let ts_before = attestor.last_refresh_timestamp();
+
+        // Refresh
+        attestor
+            .refresh(addr, model_hash, None)
+            .map_err(|e| format!("refresh: {}", e))?;
+
+        let ts_after = attestor.last_refresh_timestamp();
+
+        // Timestamp should be >= previous (same second is fine)
+        assert!(
+            ts_after >= ts_before,
+            "last_refresh after ({}) should be >= before ({})",
+            ts_after,
+            ts_before
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_mock_fallback_sets_refresh_timestamp() {
+        let addr = address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
+        let model_hash = B256::ZERO;
+
+        let attestor = NitroAttestor::mock_fallback(addr, model_hash);
+        let ts = attestor.last_refresh_timestamp();
+        assert!(ts > 0, "mock_fallback should set last_refresh");
+    }
+
+    // -----------------------------------------------------------------------
+    // Real NSM test (ignored -- only runs on Nitro hardware)
+    // -----------------------------------------------------------------------
+
+    /// This test attempts to open the real NSM device and get an attestation.
+    ///
+    /// It can only succeed inside an actual AWS Nitro Enclave. On any other
+    /// platform it will fail with "not in a Nitro enclave". Run manually with:
+    ///
+    /// ```sh
+    /// cargo test -p tee-enclave --features nitro -- --ignored test_real_nsm_attestation
+    /// ```
+    #[test]
+    #[ignore]
+    fn test_real_nsm_attestation() {
+        let addr = address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
+        let model_hash = alloy_primitives::keccak256(b"test model");
+
+        let attestor = NitroAttestor::new(true, addr, model_hash)
+            .expect("Nitro attestation should succeed inside a Nitro enclave");
+
+        let doc = attestor
+            .attestation_document()
+            .expect("should have an attestation document");
+
+        assert!(doc.is_nitro, "attestation should be marked as Nitro");
+        assert_eq!(doc.pcr0.len(), 96, "PCR0 should be 48 bytes (96 hex chars)");
+        assert!(
+            !doc.document.is_empty(),
+            "document should not be empty"
+        );
+
+        // Verify the document is valid base64
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&doc.document)
+            .expect("document should be valid base64");
+        assert!(
+            decoded.len() > 100,
+            "real attestation should be substantial (got {} bytes)",
+            decoded.len()
+        );
     }
 }

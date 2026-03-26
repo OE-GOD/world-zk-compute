@@ -41,6 +41,25 @@ contract MockStylusHybridVerifier {
     }
 }
 
+/// @dev Mock chunked Groth16 verifier that tracks calls and can fail on specific chunks
+contract MockChunkedGroth16Verifier {
+    uint256 public callCount;
+    mapping(uint256 => bool) public failOnChunk;
+
+    function setFailOnChunk(uint256 chunkIdx, bool shouldFail) external {
+        failOnChunk[chunkIdx] = shouldFail;
+    }
+
+    fallback(bytes calldata data) external returns (bytes memory) {
+        // Extract chunk index from public inputs (4th uint256 after proof + selector)
+        // The chunk index is at a known offset in the calldata
+        uint256 currentCall = callCount;
+        callCount++;
+        if (failOnChunk[currentCall]) revert("chunk failed");
+        return "";
+    }
+}
+
 /// @dev Mock Groth16 verifier that returns success (view-safe for staticcall)
 contract MockECGroth16Verifier {
     bool public shouldRevert;
@@ -1031,5 +1050,136 @@ contract ChunkedHybridGasProfileTest is Test, DeployRemainderVerifierHelper {
 
         emit log("vs Solidity DAG direct: ~254M gas");
         emit log("Target: 3-6M gas for single-tx chunked hybrid");
+    }
+}
+
+// =============================================================================
+// TEST: Chunked Hybrid Verification (T491)
+// =============================================================================
+
+contract ChunkedHybridVerificationTest is Test, DeployRemainderVerifierHelper {
+    event DAGProofVerified(bytes32 indexed circuitHash, bool valid, string method);
+
+    RemainderVerifier verifier;
+    MockStylusHybridVerifier mockStylus;
+    MockECGroth16Verifier mockGroth16;
+    MockChunkedGroth16Verifier mockChunkedGroth16;
+
+    bytes32 circuitHash = bytes32(uint256(0xC0DE));
+    bytes constant DUMMY_PROOF = hex"52454d31aabbccdd";
+    bytes32 constant DUMMY_DIGEST = bytes32(uint256(0x42));
+
+    function setUp() public {
+        verifier = _deployRemainderVerifier(address(this));
+        mockStylus = new MockStylusHybridVerifier();
+        mockGroth16 = new MockECGroth16Verifier();
+        mockChunkedGroth16 = new MockChunkedGroth16Verifier();
+
+        // Register minimal DAG circuit
+        GKRDAGVerifier.DAGCircuitDescription memory desc;
+        desc.numComputeLayers = 4;
+        desc.numInputLayers = 2;
+        desc.layerTypes = new uint8[](4);
+        desc.numSumcheckRounds = new uint256[](4);
+        desc.atomOffsets = new uint256[](5);
+        desc.atomTargetLayers = new uint256[](0);
+        desc.atomCommitIdxs = new uint256[](0);
+        desc.ptOffsets = new uint256[](1);
+        desc.ptData = new uint256[](0);
+        desc.inputIsCommitted = new bool[](2);
+        desc.oracleProductOffsets = new uint256[](5);
+        desc.oracleResultIdxs = new uint256[](0);
+        desc.oracleExprCoeffs = new uint256[](0);
+
+        bytes memory descData = abi.encode(desc);
+        verifier.registerDAGCircuit(circuitHash, descData, "chunked-test-circuit", bytes32(0));
+
+        // Wire verifiers
+        verifier.setDAGStylusVerifier(circuitHash, address(mockStylus));
+        verifier.setDAGECGroth16Verifier(circuitHash, address(mockGroth16), 5);
+
+        // Configure mock Stylus to succeed
+        mockStylus.setResult(true, DUMMY_DIGEST, hex"");
+    }
+
+    function _makeChunks(uint256 n) internal pure returns (uint256[][] memory) {
+        uint256[][] memory chunks = new uint256[][](n);
+        for (uint256 i = 0; i < n; i++) {
+            chunks[i] = new uint256[](8);
+        }
+        return chunks;
+    }
+
+    function test_chunked_all_pass_1_chunk() public {
+        bool valid = verifier.verifyDAGProofStylusGroth16Chunked(
+            DUMMY_PROOF, circuitHash, hex"", hex"", _makeChunks(1), 1, 0
+        );
+        assertTrue(valid, "1 chunk should pass");
+    }
+
+    function test_chunked_all_pass_3_chunks() public {
+        bool valid = verifier.verifyDAGProofStylusGroth16Chunked(
+            DUMMY_PROOF, circuitHash, hex"", hex"", _makeChunks(3), 3, 0
+        );
+        assertTrue(valid, "3 chunks should pass");
+    }
+
+    function test_chunked_all_pass_8_chunks() public {
+        bool valid = verifier.verifyDAGProofStylusGroth16Chunked(
+            DUMMY_PROOF, circuitHash, hex"", hex"", _makeChunks(8), 8, 0
+        );
+        assertTrue(valid, "8 chunks should pass");
+    }
+
+    function test_chunked_zero_chunks_reverts() public {
+        uint256[][] memory chunks = new uint256[][](0);
+        vm.expectRevert(HybridStylusGroth16Verifier.InvalidChunkCount.selector);
+        verifier.verifyDAGProofStylusGroth16Chunked(
+            DUMMY_PROOF, circuitHash, hex"", hex"", chunks, 0, 0
+        );
+    }
+
+    function test_chunked_mismatched_count_reverts() public {
+        // 2 proofs but totalChunks = 3
+        vm.expectRevert(HybridStylusGroth16Verifier.InvalidChunkCount.selector);
+        verifier.verifyDAGProofStylusGroth16Chunked(
+            DUMMY_PROOF, circuitHash, hex"", hex"", _makeChunks(2), 3, 0
+        );
+    }
+
+    function test_chunked_wrong_proof_size_reverts() public {
+        // Chunk with 7 elements instead of 8
+        uint256[][] memory chunks = new uint256[][](1);
+        chunks[0] = new uint256[](7);
+        vm.expectRevert(abi.encodeWithSelector(HybridStylusGroth16Verifier.ChunkVerificationFailed.selector, 0));
+        verifier.verifyDAGProofStylusGroth16Chunked(
+            DUMMY_PROOF, circuitHash, hex"", hex"", chunks, 1, 0
+        );
+    }
+
+    function test_chunked_stylus_failure_returns_false() public {
+        // Configure Stylus to fail
+        mockStylus.setResult(false, bytes32(0), hex"");
+        bool valid = verifier.verifyDAGProofStylusGroth16Chunked(
+            DUMMY_PROOF, circuitHash, hex"", hex"", _makeChunks(1), 1, 0
+        );
+        assertFalse(valid, "Should return false when Stylus fails");
+    }
+
+    function test_chunked_groth16_failure_reverts() public {
+        // Configure Groth16 to fail
+        mockGroth16.setShouldRevert(true);
+        vm.expectRevert();
+        verifier.verifyDAGProofStylusGroth16Chunked(
+            DUMMY_PROOF, circuitHash, hex"", hex"", _makeChunks(1), 1, 0
+        );
+    }
+
+    function test_chunked_emits_verified_event() public {
+        vm.expectEmit(true, false, false, true);
+        emit DAGProofVerified(circuitHash, true, "stylus-groth16-chunked");
+        verifier.verifyDAGProofStylusGroth16Chunked(
+            DUMMY_PROOF, circuitHash, hex"", hex"", _makeChunks(2), 2, 0
+        );
     }
 }

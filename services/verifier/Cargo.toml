@@ -14,3 +14,6 @@ serde_json = { workspace = true }
 hex = { workspace = true }
 tracing = { workspace = true }
 tower-http = { workspace = true, features = ["cors"] }
+
+[dev-dependencies]
+tower = "0.5"

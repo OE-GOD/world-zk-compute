@@ -492,6 +492,22 @@ async fn infer(
     let elapsed = start.elapsed();
     state.metrics.record_inference(elapsed);
 
+    // Best-effort: refresh the Nitro attestation document to bind it to
+    // this inference result. The user_data will become
+    // keccak256(result_bytes || model_hash || nonce_bytes). This is
+    // non-blocking for the response -- if it fails we log and continue.
+    if let Ok(mut nitro) = state.nitro_attestor.lock() {
+        let nonce_bytes = attestation.nonce.to_be_bytes();
+        if let Err(e) = nitro.refresh_with_inference(
+            state.enclave_address,
+            model_hash,
+            &result_bytes,
+            Some(&nonce_bytes),
+        ) {
+            tracing::debug!("Post-inference attestation refresh skipped: {}", e);
+        }
+    }
+
     tracing::info!(
         target: "audit",
         event = "attestation_signed",
@@ -1039,7 +1055,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     tracing::warn!("Failed to refresh attestation: {}", e);
                 } else {
                     state_clone.metrics.record_attestation_refresh();
-                    tracing::debug!("Attestation document refreshed");
+                    tracing::debug!(
+                        last_refresh = attestor.last_refresh_timestamp(),
+                        "Attestation document refreshed"
+                    );
                 }
             }
         });

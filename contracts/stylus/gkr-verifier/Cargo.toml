@@ -25,6 +25,7 @@ default = ["stylus"]
 stylus = ["dep:stylus-sdk", "dep:alloy-primitives", "dep:alloy-sol-types", "dep:ruint"]
 export-abi = ["stylus", "stylus-sdk/export-abi"]
 hybrid = []
+core-only = []
 
 [lib]
 crate-type = ["lib", "cdylib"]

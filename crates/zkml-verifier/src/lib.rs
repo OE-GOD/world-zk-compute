@@ -19,6 +19,7 @@ pub mod bundle;
 pub mod decode;
 pub mod ec;
 pub mod error;
+pub mod ffi;
 pub mod field;
 pub mod gkr;
 pub mod hyrax;
@@ -26,10 +27,13 @@ pub mod poseidon;
 pub mod sumcheck;
 pub mod test_utils;
 pub mod transcript;
+pub mod types;
+pub mod wasm;
 
 // Re-exports
 pub use bundle::{HybridVerificationResult, ProofBundle, VerificationResult};
 pub use error::{Result, VerifyError};
+pub use types::ProofMetadata;
 
 // Imports
 use crate::decode::ProofDecoder;
@@ -165,6 +169,61 @@ pub fn encode_hybrid_fr_outputs(result: &HybridVerificationResult) -> Vec<u8> {
     buf
 }
 
+/// Verify a GKR DAG proof from raw byte slices.
+///
+/// This is the low-level verification entry point. For a higher-level API that
+/// accepts JSON proof bundles, see [`verify`].
+///
+/// # Arguments
+/// * `proof_data` - Proof blob with "REM1" 4-byte selector prefix
+/// * `generators` - Serialized Pedersen generators
+/// * `circuit_desc` - ABI-encoded DAG circuit description
+///
+/// # Returns
+/// `Ok(VerificationResult)` on success, `Err(VerifyError)` on failure.
+pub fn verify_raw(
+    proof_data: &[u8],
+    generators: &[u8],
+    circuit_desc: &[u8],
+) -> Result<VerificationResult> {
+    if proof_data.len() < 36 {
+        return Err(VerifyError::InvalidFormat(
+            "proof data too short (need at least 36 bytes)".to_string(),
+        ));
+    }
+    if &proof_data[0..4] != b"REM1" {
+        return Err(VerifyError::InvalidFormat(
+            "invalid selector (expected REM1)".to_string(),
+        ));
+    }
+    let mut circuit_hash = [0u8; 32];
+    circuit_hash.copy_from_slice(&proof_data[4..36]);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        verify_dag_proof_inner(proof_data, &[], generators, circuit_desc)
+    }));
+    match result {
+        Ok(true) => Ok(VerificationResult {
+            circuit_hash,
+            verified: true,
+        }),
+        Ok(false) => Ok(VerificationResult {
+            circuit_hash,
+            verified: false,
+        }),
+        Err(e) => {
+            let msg = if let Some(s) = e.downcast_ref::<&str>() {
+                s.to_string()
+            } else if let Some(s) = e.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "unknown verification panic".to_string()
+            };
+            Err(VerifyError::VerificationFailed(msg))
+        }
+    }
+}
+
 /// Verify a proof bundle (full verification with EC checks).
 pub fn verify(bundle: &ProofBundle) -> Result<VerificationResult> {
     let proof_data = bundle.proof_data()?;
@@ -293,6 +352,10 @@ mod tests {
             public_inputs_hex: String::new(),
             gens_hex: "0x00".to_string(),
             dag_circuit_description: serde_json::json!({}),
+            model_hash: None,
+            timestamp: None,
+            prover_version: None,
+            circuit_hash: None,
         };
         let result = verify(&bundle);
         assert!(result.is_err());
@@ -310,8 +373,34 @@ mod tests {
     #[test]
     fn test_error_api() {
         assert_eq!(format!("{}", VerifyError::InvalidProof("test".into())), "invalid proof: test");
+        assert_eq!(format!("{}", VerifyError::InvalidFormat("fmt".into())), "invalid proof format: fmt");
         assert_eq!(format!("{}", VerifyError::BundleParse("bad".into())), "bundle parse error: bad");
         assert_eq!(format!("{}", VerifyError::VerificationFailed("x".into())), "verification failed: x");
+        assert_eq!(format!("{}", VerifyError::DecodeError("dec".into())), "decode error: dec");
+    }
+
+    #[test]
+    fn test_verify_raw_rejects_short_proof() {
+        let result = verify_raw(&[0u8; 3], &[], &[]);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), VerifyError::InvalidFormat(_)));
+    }
+
+    #[test]
+    fn test_verify_raw_rejects_wrong_selector() {
+        let mut data = vec![0u8; 68];
+        data[0..4].copy_from_slice(b"BAAD");
+        let result = verify_raw(&data, &[], &[]);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), VerifyError::InvalidFormat(_)));
+    }
+
+    #[test]
+    fn test_proof_metadata_default() {
+        let meta = ProofMetadata::default();
+        assert!(meta.model_hash.is_empty());
+        assert_eq!(meta.timestamp, 0);
+        assert!(meta.prover_version.is_empty());
     }
 
     #[test]

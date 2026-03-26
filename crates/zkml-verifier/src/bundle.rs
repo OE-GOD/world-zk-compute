@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Result, VerifyError};
+use crate::types::ProofMetadata;
 
 /// A self-contained proof bundle with everything needed for verification.
 ///
@@ -19,6 +20,23 @@ pub struct ProofBundle {
 
     /// DAG circuit description as structured JSON.
     pub dag_circuit_description: serde_json::Value,
+
+    /// Metadata: keccak256 hash of the ML model (hex, optional).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_hash: Option<String>,
+
+    /// Metadata: Unix timestamp (seconds) when the proof was generated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<u64>,
+
+    /// Metadata: version of the prover that generated this bundle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prover_version: Option<String>,
+
+    /// Metadata: circuit hash (hex, 32 bytes). Redundant with proof header
+    /// but useful for indexing without decoding the proof blob.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub circuit_hash: Option<String>,
 }
 
 impl ProofBundle {
@@ -50,6 +68,15 @@ impl ProofBundle {
     /// Decode gens_hex to bytes.
     pub fn gens_data(&self) -> Result<Vec<u8>> {
         decode_hex(&self.gens_hex, "gens_hex")
+    }
+
+    /// Extract proof metadata.
+    pub fn metadata(&self) -> ProofMetadata {
+        ProofMetadata {
+            model_hash: self.model_hash.clone().unwrap_or_default(),
+            timestamp: self.timestamp.unwrap_or(0),
+            prover_version: self.prover_version.clone().unwrap_or_default(),
+        }
     }
 }
 

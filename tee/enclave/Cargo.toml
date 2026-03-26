@@ -39,7 +39,7 @@ serial_test = "3"
 tempfile = "3"
 
 # NSM API is only available on Linux (Nitro enclaves).
-# This dep is resolved but not compiled on non-Linux platforms.
+# These deps are resolved but not compiled on non-Linux platforms.
 # Code gates actual usage behind #[cfg(all(feature = "nitro", target_os = "linux"))].
 [target.'cfg(target_os = "linux")'.dependencies]
 aws-nitro-enclaves-nsm-api = { version = "0.4", optional = true }
