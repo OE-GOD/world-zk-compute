@@ -231,7 +231,7 @@ mod tests {
         })
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_health_endpoint() {
         let state = make_test_state();
         let app = build_app_with_state(state);
@@ -252,7 +252,7 @@ mod tests {
         assert_eq!(json["db_healthy"], true);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_submit_and_get_proof() {
         let state = make_test_state();
         let app = build_app_with_state(state);
@@ -294,7 +294,7 @@ mod tests {
         assert_eq!(get_resp["model_hash"], "0xabcdef1234567890");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_search_proofs() {
         let state = make_test_state();
         let app = build_app_with_state(state);
@@ -344,7 +344,7 @@ mod tests {
         assert_eq!(search_resp["count"], 2);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_delete_proof() {
         let state = make_test_state();
         let app = build_app_with_state(state);
@@ -383,7 +383,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_stats_endpoint() {
         let state = make_test_state();
         let app = build_app_with_state(state);
@@ -404,7 +404,7 @@ mod tests {
         assert_eq!(stats["active_proofs"], 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_get_nonexistent_proof() {
         let state = make_test_state();
         let app = build_app_with_state(state);
@@ -418,7 +418,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_auth_required_when_keys_set() {
         let tmp = tempfile::tempdir().unwrap();
         let db_path = tmp.path().join("test.db");
@@ -475,7 +475,7 @@ mod tests {
 
     // -- Transparency log integration tests --
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_transparency_root_empty() {
         let state = make_test_state();
         let app = build_app_with_state(state);
@@ -500,7 +500,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_transparency_auto_append_on_submit() {
         let state = make_test_state();
         let app = build_app_with_state(state);
@@ -544,7 +544,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_transparency_inclusion_proof_roundtrip() {
         let state = make_test_state();
         let app = build_app_with_state(state);
@@ -604,7 +604,7 @@ mod tests {
         assert_eq!(verify_resp["valid"], true);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_transparency_verify_invalid_proof() {
         let state = make_test_state();
         let app = build_app_with_state(state);
@@ -644,7 +644,7 @@ mod tests {
         assert_eq!(verify_resp["valid"], false);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_transparency_entries() {
         let state = make_test_state();
         let app = build_app_with_state(state);
@@ -695,7 +695,7 @@ mod tests {
         assert_eq!(entries_resp["entries"].as_array().unwrap().len(), 5);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_transparency_proof_nonexistent() {
         let state = make_test_state();
         let app = build_app_with_state(state);
@@ -708,7 +708,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_transparency_root_changes_after_append() {
         let state = make_test_state();
         let app = build_app_with_state(state);
