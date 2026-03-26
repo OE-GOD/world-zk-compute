@@ -1,0 +1,35 @@
+app = "zkml-verifier"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+  build-target = "."
+
+[env]
+  PORT = "3000"
+  RUST_LOG = "info"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    hard_limit = 100
+    soft_limit = 80
+
+[[vm]]
+  size = "shared-cpu-2x"
+  memory = "512mb"
+
+[checks]
+  [checks.health]
+    port = 3000
+    type = "http"
+    interval = "10s"
+    timeout = "5s"
+    path = "/health"
+    method = "GET"

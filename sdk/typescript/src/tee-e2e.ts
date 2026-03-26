@@ -2,8 +2,8 @@
  * TypeScript SDK — TEE Verifier E2E test
  *
  * Tests the full TEE lifecycle on a local Anvil instance:
- *   owner, pause/unpause, registerEnclave, submitResult,
- *   getResult, isResultValid, finalize, ownership transfer, revokeEnclave
+ *   admin, pause/unpause, registerEnclave, submitResult,
+ *   getResult, isResultValid, finalize, admin transfer, revokeEnclave
  *
  * Usage:
  *   npx tsx src/tee-e2e.ts --rpc-url <url> --private-key <key> --contract <addr>
@@ -27,9 +27,9 @@ const ENCLAVE_KEY =
 const ENCLAVE_ADDR =
   '0x70997970C51812dc3A010C7d01b50e0d17dc79C8' as Hex;
 
-const NEW_OWNER_KEY =
+const NEW_ADMIN_KEY =
   '0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a' as Hex;
-const NEW_OWNER_ADDR =
+const NEW_ADMIN_ADDR =
   '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC' as Hex;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -127,20 +127,20 @@ async function main() {
   });
   const publicClient = createPublicClient({ chain, transport: http(rpcUrl) });
 
-  // ── Test 1: owner() ────────────────────────────────────────────────────
+  // ── Test 1: admin() ────────────────────────────────────────────────────
 
-  console.log('--- Test 1: owner() ---');
+  console.log('--- Test 1: admin() ---');
   const verifier = new TEEVerifier({
     rpcUrl,
     privateKey: adminKey,
     contractAddress,
   });
 
-  const owner = await verifier.owner();
-  if (owner.toLowerCase() === adminAddr.toLowerCase()) {
-    ok(`owner() = ${owner}`);
+  const adminResult = await verifier.admin();
+  if (adminResult.toLowerCase() === adminAddr.toLowerCase()) {
+    ok(`admin() = ${adminResult}`);
   } else {
-    fail(`owner() expected ${adminAddr}, got ${owner}`);
+    fail(`admin() expected ${adminAddr}, got ${adminResult}`);
   }
 
   // ── Test 2: paused() — should be false initially ───────────────────────
@@ -288,46 +288,35 @@ async function main() {
     fail('isResultValid() expected true after finalize');
   }
 
-  // ── Test 10: 2-step ownership transfer ─────────────────────────────────
+  // ── Test 10: admin transfer ────────────────────────────────────────────
 
-  console.log('--- Test 10: 2-step ownership transfer ---');
-  tx = await verifier.transferOwnership(NEW_OWNER_ADDR);
-  ok(`transferOwnership() tx = ${tx.slice(0, 18)}...`);
+  console.log('--- Test 10: admin transfer ---');
+  tx = await verifier.changeAdmin(NEW_ADMIN_ADDR);
+  ok(`changeAdmin() tx = ${tx.slice(0, 18)}...`);
 
-  const pending = await verifier.pendingOwner();
-  if (pending.toLowerCase() === NEW_OWNER_ADDR.toLowerCase()) {
-    ok(`pendingOwner() = ${pending}`);
-  } else {
-    fail(`pendingOwner() expected ${NEW_OWNER_ADDR}, got ${pending}`);
-  }
-
-  // Accept from new owner
-  const newOwnerVerifier = new TEEVerifier({
+  // Verify new admin
+  const newAdminVerifier = new TEEVerifier({
     rpcUrl,
-    privateKey: NEW_OWNER_KEY,
+    privateKey: NEW_ADMIN_KEY,
     contractAddress,
   });
-  tx = await newOwnerVerifier.acceptOwnership();
-  ok(`acceptOwnership() tx = ${tx.slice(0, 18)}...`);
 
-  const newOwner = await newOwnerVerifier.owner();
-  if (newOwner.toLowerCase() === NEW_OWNER_ADDR.toLowerCase()) {
-    ok(`owner() = ${newOwner} (after transfer)`);
+  const newAdmin = await newAdminVerifier.admin();
+  if (newAdmin.toLowerCase() === NEW_ADMIN_ADDR.toLowerCase()) {
+    ok(`admin() = ${newAdmin} (after transfer)`);
   } else {
-    fail(`owner() expected ${NEW_OWNER_ADDR}, got ${newOwner}`);
+    fail(`admin() expected ${NEW_ADMIN_ADDR}, got ${newAdmin}`);
   }
 
   // Transfer back
-  tx = await newOwnerVerifier.transferOwnership(adminAddr);
-  ok(`transferOwnership() back tx = ${tx.slice(0, 18)}...`);
-  tx = await verifier.acceptOwnership();
-  ok(`acceptOwnership() by admin tx = ${tx.slice(0, 18)}...`);
+  tx = await newAdminVerifier.changeAdmin(adminAddr);
+  ok(`changeAdmin() back tx = ${tx.slice(0, 18)}...`);
 
-  const restoredOwner = await verifier.owner();
-  if (restoredOwner.toLowerCase() === adminAddr.toLowerCase()) {
-    ok(`owner() = ${restoredOwner} (restored)`);
+  const restoredAdmin = await verifier.admin();
+  if (restoredAdmin.toLowerCase() === adminAddr.toLowerCase()) {
+    ok(`admin() = ${restoredAdmin} (restored)`);
   } else {
-    fail(`owner() expected ${adminAddr}, got ${restoredOwner}`);
+    fail(`admin() expected ${adminAddr}, got ${restoredAdmin}`);
   }
 
   // ── Test 11: revokeEnclave ─────────────────────────────────────────────

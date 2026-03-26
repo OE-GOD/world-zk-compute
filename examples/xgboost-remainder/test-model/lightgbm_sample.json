@@ -1,0 +1,63 @@
+{
+  "name": "tree",
+  "version": "v3.3.5",
+  "num_class": 1,
+  "num_tree_per_iteration": 1,
+  "label_index": 0,
+  "max_feature_idx": 3,
+  "objective": "binary binary:sigmoid",
+  "average_output": false,
+  "feature_names": ["feature_0", "feature_1", "feature_2", "feature_3"],
+  "tree_info": [
+    {
+      "tree_index": 0,
+      "num_leaves": 4,
+      "num_cat": 0,
+      "shrinkage": 1.0,
+      "tree_structure": {
+        "split_index": 0,
+        "split_feature": 0,
+        "threshold": 5.0,
+        "left_child": {
+          "split_index": 1,
+          "split_feature": 1,
+          "threshold": 3.0,
+          "left_child": { "leaf_index": 0, "leaf_value": -0.5 },
+          "right_child": { "leaf_index": 1, "leaf_value": 0.3 }
+        },
+        "right_child": {
+          "split_index": 2,
+          "split_feature": 2,
+          "threshold": 1.5,
+          "left_child": { "leaf_index": 2, "leaf_value": 0.2 },
+          "right_child": { "leaf_index": 3, "leaf_value": 0.8 }
+        }
+      }
+    },
+    {
+      "tree_index": 1,
+      "num_leaves": 4,
+      "num_cat": 0,
+      "shrinkage": 1.0,
+      "tree_structure": {
+        "split_index": 0,
+        "split_feature": 2,
+        "threshold": 2.0,
+        "left_child": {
+          "split_index": 1,
+          "split_feature": 3,
+          "threshold": 0.5,
+          "left_child": { "leaf_index": 0, "leaf_value": -0.3 },
+          "right_child": { "leaf_index": 1, "leaf_value": 0.4 }
+        },
+        "right_child": {
+          "split_index": 2,
+          "split_feature": 0,
+          "threshold": 6.0,
+          "left_child": { "leaf_index": 2, "leaf_value": 0.1 },
+          "right_child": { "leaf_index": 3, "leaf_value": 0.6 }
+        }
+      }
+    }
+  ]
+}

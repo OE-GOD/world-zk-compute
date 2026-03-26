@@ -96,10 +96,11 @@ class TestABI:
             "resolveDisputeByTimeout",
             "getResult",
             "isResultValid",
-            "owner",
-            "pendingOwner",
-            "transferOwnership",
-            "acceptOwnership",
+            "admin",
+            "changeAdmin",
+            "timelock",
+            "setTimelock",
+            "implementation",
             "pause",
             "unpause",
             "paused",
@@ -143,17 +144,19 @@ class TestABI:
         ]
         view_names = {e["name"] for e in views}
         assert "isResultValid" in view_names
-        assert "owner" in view_names
-        assert "pendingOwner" in view_names
+        assert "admin" in view_names
+        assert "timelock" in view_names
+        assert "implementation" in view_names
         assert "paused" in view_names
         assert "getResult" in view_names
 
-    def test_ownable2step_functions(self):
+    def test_uups_admin_functions(self):
         fn_names = {e["name"] for e in TEE_ML_VERIFIER_ABI if e["type"] == "function"}
-        assert "owner" in fn_names
-        assert "pendingOwner" in fn_names
-        assert "transferOwnership" in fn_names
-        assert "acceptOwnership" in fn_names
+        assert "admin" in fn_names
+        assert "changeAdmin" in fn_names
+        assert "timelock" in fn_names
+        assert "setTimelock" in fn_names
+        assert "implementation" in fn_names
 
     def test_pausable_functions(self):
         fn_names = {e["name"] for e in TEE_ML_VERIFIER_ABI if e["type"] == "function"}
@@ -161,10 +164,10 @@ class TestABI:
         assert "unpause" in fn_names
         assert "paused" in fn_names
 
-    def test_transfer_ownership_has_address_input(self):
+    def test_change_admin_has_address_input(self):
         fn = next(
             e for e in TEE_ML_VERIFIER_ABI
-            if e.get("name") == "transferOwnership"
+            if e.get("name") == "changeAdmin"
         )
         assert fn["inputs"][0]["type"] == "address"
         assert fn["stateMutability"] == "nonpayable"

@@ -191,31 +191,38 @@ TEE_ML_VERIFIER_ABI: list[dict[str, Any]] = [
     },
     {
         "type": "function",
-        "name": "owner",
+        "name": "admin",
         "inputs": [],
         "outputs": [{"name": "", "type": "address"}],
         "stateMutability": "view",
     },
     {
         "type": "function",
-        "name": "pendingOwner",
+        "name": "changeAdmin",
+        "inputs": [{"name": "newAdmin", "type": "address"}],
+        "outputs": [],
+        "stateMutability": "nonpayable",
+    },
+    {
+        "type": "function",
+        "name": "timelock",
         "inputs": [],
         "outputs": [{"name": "", "type": "address"}],
         "stateMutability": "view",
     },
     {
         "type": "function",
-        "name": "transferOwnership",
-        "inputs": [{"name": "newOwner", "type": "address"}],
+        "name": "setTimelock",
+        "inputs": [{"name": "_timelock", "type": "address"}],
         "outputs": [],
         "stateMutability": "nonpayable",
     },
     {
         "type": "function",
-        "name": "acceptOwnership",
+        "name": "implementation",
         "inputs": [],
-        "outputs": [],
-        "stateMutability": "nonpayable",
+        "outputs": [{"name": "", "type": "address"}],
+        "stateMutability": "view",
     },
     {
         "type": "function",
@@ -469,29 +476,35 @@ class TEEVerifier:
             _to_bytes32(result_id)
         ).call()
 
-    def owner(self) -> str:
-        """Get the contract owner address."""
-        return self._contract.functions.owner().call()
+    def admin(self) -> str:
+        """Get the contract admin address."""
+        return self._contract.functions.admin().call()
 
-    def pending_owner(self) -> str:
-        """Get the pending owner address (for 2-step transfer)."""
-        return self._contract.functions.pendingOwner().call()
-
-    def transfer_ownership(self, new_owner: str) -> str:
-        """Initiate ownership transfer (2-step). Returns tx hash."""
+    def change_admin(self, new_admin: str) -> str:
+        """Transfer admin role to a new address. Returns tx hash."""
         receipt = self._send_tx(
-            self._contract.functions.transferOwnership(
-                Web3.to_checksum_address(new_owner),
+            self._contract.functions.changeAdmin(
+                Web3.to_checksum_address(new_admin),
             )
         )
         return self._tx_hash_hex(receipt)
 
-    def accept_ownership(self) -> str:
-        """Accept pending ownership transfer. Returns tx hash."""
+    def timelock(self) -> str:
+        """Get the timelock controller address (zero if none set)."""
+        return self._contract.functions.timelock().call()
+
+    def set_timelock(self, timelock_addr: str) -> str:
+        """Set the timelock controller address. Returns tx hash."""
         receipt = self._send_tx(
-            self._contract.functions.acceptOwnership()
+            self._contract.functions.setTimelock(
+                Web3.to_checksum_address(timelock_addr),
+            )
         )
         return self._tx_hash_hex(receipt)
+
+    def implementation(self) -> str:
+        """Get the current implementation address (UUPS proxy)."""
+        return self._contract.functions.implementation().call()
 
     def pause(self) -> str:
         """Pause the contract. Returns tx hash."""

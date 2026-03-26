@@ -121,30 +121,38 @@ export class TEEVerifier {
     });
   }
 
-  // -- Owner / Pausable (Ownable2Step) --
+  // -- Admin / Proxy (UUPSUpgradeable) --
 
-  async owner(): Promise<Hex> {
+  async admin(): Promise<Hex> {
     return this.publicClient.readContract({
       address: this.contractAddress,
       abi: teeMLVerifierAbi,
-      functionName: 'owner',
+      functionName: 'admin',
     });
   }
 
-  async pendingOwner(): Promise<Hex> {
+  async changeAdmin(newAdmin: Hex): Promise<Hex> {
+    return this.send('changeAdmin', [newAdmin]);
+  }
+
+  async timelock(): Promise<Hex> {
     return this.publicClient.readContract({
       address: this.contractAddress,
       abi: teeMLVerifierAbi,
-      functionName: 'pendingOwner',
+      functionName: 'timelock',
     });
   }
 
-  async transferOwnership(newOwner: Hex): Promise<Hex> {
-    return this.send('transferOwnership', [newOwner]);
+  async setTimelock(addr: Hex): Promise<Hex> {
+    return this.send('setTimelock', [addr]);
   }
 
-  async acceptOwnership(): Promise<Hex> {
-    return this.send('acceptOwnership', []);
+  async implementation(): Promise<Hex> {
+    return this.publicClient.readContract({
+      address: this.contractAddress,
+      abi: teeMLVerifierAbi,
+      functionName: 'implementation',
+    });
   }
 
   async pause(): Promise<Hex> {

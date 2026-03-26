@@ -68,9 +68,9 @@ async fn test_tee_happy_path_submit_and_finalize() {
         Client::new(&rpc_url, ADMIN_KEY, &contract_addr).expect("Failed to create admin client");
     let admin_verifier = TEEVerifier::new(admin_client);
 
-    // Verify owner
-    let owner = admin_verifier.owner().await.expect("Failed to get owner");
-    println!("Contract owner: {owner}");
+    // Verify admin
+    let admin = admin_verifier.admin().await.expect("Failed to get admin");
+    println!("Contract admin: {admin}");
 
     // Register enclave (use ENCLAVE_KEY_1 — unique to this test)
     let enclave_signer: PrivateKeySigner = ENCLAVE_KEY_1.parse().unwrap();

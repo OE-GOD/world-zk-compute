@@ -220,33 +220,24 @@ impl TEEVerifier {
         Ok(valid)
     }
 
-    // -- Owner / Pausable --
+    // -- Admin / UUPS / Pausable --
 
-    /// Get the owner address (Ownable2Step).
+    /// Get the admin address (UUPS proxy pattern).
     #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
-    pub async fn owner(&self) -> anyhow::Result<Address> {
+    pub async fn admin(&self) -> anyhow::Result<Address> {
         let provider = self.build_provider();
         let contract = TEEMLVerifier::new(self.client.contract_address(), provider);
-        let addr = contract.owner().call().await?;
+        let addr = contract.admin().call().await?;
         Ok(addr)
     }
 
-    /// Get the pending owner address (Ownable2Step).
-    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
-    pub async fn pending_owner(&self) -> anyhow::Result<Address> {
-        let provider = self.build_provider();
-        let contract = TEEMLVerifier::new(self.client.contract_address(), provider);
-        let addr = contract.pendingOwner().call().await?;
-        Ok(addr)
-    }
-
-    /// Initiate ownership transfer (Ownable2Step). New owner must call `accept_ownership()`.
-    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(new_owner = %new_owner)))]
-    pub async fn transfer_ownership(&self, new_owner: Address) -> anyhow::Result<B256> {
+    /// Change the admin address (onlyAdmin).
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(new_admin = %new_admin)))]
+    pub async fn change_admin(&self, new_admin: Address) -> anyhow::Result<B256> {
         let provider = self.build_provider();
         let contract = TEEMLVerifier::new(self.client.contract_address(), provider);
         let receipt = contract
-            .transferOwnership(new_owner)
+            .changeAdmin(new_admin)
             .send()
             .await?
             .get_receipt()
@@ -254,13 +245,22 @@ impl TEEVerifier {
         Ok(receipt.transaction_hash)
     }
 
-    /// Accept pending ownership transfer (Ownable2Step).
+    /// Get the timelock controller address.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
-    pub async fn accept_ownership(&self) -> anyhow::Result<B256> {
+    pub async fn timelock(&self) -> anyhow::Result<Address> {
+        let provider = self.build_provider();
+        let contract = TEEMLVerifier::new(self.client.contract_address(), provider);
+        let addr = contract.timelock().call().await?;
+        Ok(addr)
+    }
+
+    /// Set the timelock controller address (onlyAdmin).
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(addr = %addr)))]
+    pub async fn set_timelock(&self, addr: Address) -> anyhow::Result<B256> {
         let provider = self.build_provider();
         let contract = TEEMLVerifier::new(self.client.contract_address(), provider);
         let receipt = contract
-            .acceptOwnership()
+            .setTimelock(addr)
             .send()
             .await?
             .get_receipt()
@@ -268,7 +268,16 @@ impl TEEVerifier {
         Ok(receipt.transaction_hash)
     }
 
-    /// Pause the contract (onlyOwner).
+    /// Get the current implementation address (UUPS proxy).
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
+    pub async fn implementation(&self) -> anyhow::Result<Address> {
+        let provider = self.build_provider();
+        let contract = TEEMLVerifier::new(self.client.contract_address(), provider);
+        let addr = contract.implementation().call().await?;
+        Ok(addr)
+    }
+
+    /// Pause the contract (onlyAdmin).
     #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     pub async fn pause(&self) -> anyhow::Result<B256> {
         let provider = self.build_provider();
@@ -277,7 +286,7 @@ impl TEEVerifier {
         Ok(receipt.transaction_hash)
     }
 
-    /// Unpause the contract (onlyOwner).
+    /// Unpause the contract (onlyAdmin).
     #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     pub async fn unpause(&self) -> anyhow::Result<B256> {
         let provider = self.build_provider();

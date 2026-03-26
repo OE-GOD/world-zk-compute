@@ -108,7 +108,8 @@ contract TEEMLVerifierSecurityTest is Test, DeployTEEMLVerifierHelper {
 
     function setUp() public {
         enclaveKey = vm.addr(enclavePrivateKey);
-        verifier = _deployTEEMLVerifier(admin, address(0));
+        // Use a dummy non-zero address for remainderVerifier (required by M-1 fix)
+        verifier = _deployTEEMLVerifier(admin, address(0xDEAD));
         verifier.registerEnclave(enclaveKey, bytes32(uint256(0xBEEF)));
 
         vm.deal(submitter, 100 ether);
@@ -684,7 +685,7 @@ contract TEEMLVerifierSecurityTest is Test, DeployTEEMLVerifierHelper {
         vm.chainId(originalChainId + 1);
 
         // Deploy a second verifier on chain B
-        TEEMLVerifier verifierB = _deployTEEMLVerifier(admin, address(0));
+        TEEMLVerifier verifierB = _deployTEEMLVerifier(admin, address(0xDEAD));
         verifierB.registerEnclave(enclaveKey, bytes32(uint256(0xBEEF)));
 
         // Try to replay chain A's attestation on chain B -- should fail
@@ -699,7 +700,7 @@ contract TEEMLVerifierSecurityTest is Test, DeployTEEMLVerifierHelper {
 
     function test_eip712_crossContractReplayBlocked() public {
         // Deploy two verifiers on the SAME chain but at different addresses
-        TEEMLVerifier verifier2 = _deployTEEMLVerifier(admin, address(0));
+        TEEMLVerifier verifier2 = _deployTEEMLVerifier(admin, address(0xDEAD));
         verifier2.registerEnclave(enclaveKey, bytes32(uint256(0xBEEF)));
 
         // Create attestation targeting verifier (first contract)

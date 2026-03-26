@@ -50,7 +50,28 @@ pub struct ProofArchiveEntry {
     pub finalized: bool,
 }
 
-/// Append-only proof archive.
+impl Default for ProofArchiveEntry {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            archived_at: String::new(),
+            result_id: String::new(),
+            model_hash: String::new(),
+            input_hash: String::new(),
+            result_hash: String::new(),
+            result: String::new(),
+            attestation: String::new(),
+            features: Vec::new(),
+            chain_id: 0,
+            enclave_address: String::new(),
+            proof_path: None,
+            disputed: false,
+            finalized: false,
+        }
+    }
+}
+
+/// Append-only proof archive with expiry and rotation support.
 pub struct ProofArchive {
     base_dir: PathBuf,
 }
@@ -136,6 +157,68 @@ impl ProofArchive {
     /// Return the base directory path.
     pub fn base_dir(&self) -> &Path {
         &self.base_dir
+    }
+
+    /// Delete proof files older than `max_age_days`.
+    ///
+    /// Removes entire date directories whose date is older than the cutoff.
+    /// Returns the number of files deleted.
+    pub async fn expire(&self, max_age_days: u32) -> std::io::Result<usize> {
+        let cutoff = {
+            let now_secs = SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let cutoff_secs = now_secs.saturating_sub(max_age_days as u64 * 86400);
+            epoch_days_to_date(cutoff_secs / 86400)
+        };
+
+        let mut deleted = 0;
+        let date_dirs = list_date_dirs(&self.base_dir).await?;
+        for dir in date_dirs {
+            if let Some(name) = dir.file_name().and_then(|n| n.to_str()) {
+                if name < cutoff.as_str() {
+                    let files = list_proof_files(&dir).await?;
+                    let count = files.len();
+                    tokio::fs::remove_dir_all(&dir).await?;
+                    tracing::info!(dir = %dir.display(), files = count, "Expired proof directory");
+                    deleted += count;
+                }
+            }
+        }
+
+        Ok(deleted)
+    }
+
+    /// Rotate: keep only the most recent `max_files` proof files.
+    ///
+    /// Deletes oldest files first. Returns the number of files deleted.
+    pub async fn rotate(&self, max_files: usize) -> std::io::Result<usize> {
+        // Collect all files sorted newest-first
+        let all_files = self.list(usize::MAX).await?;
+        if all_files.len() <= max_files {
+            return Ok(0);
+        }
+
+        let to_delete = &all_files[max_files..];
+        let mut deleted = 0;
+        for path in to_delete {
+            if tokio::fs::remove_file(path).await.is_ok() {
+                deleted += 1;
+            }
+        }
+
+        // Clean up empty date directories
+        let date_dirs = list_date_dirs(&self.base_dir).await?;
+        for dir in date_dirs {
+            let files = list_proof_files(&dir).await?;
+            if files.is_empty() {
+                let _ = tokio::fs::remove_dir(&dir).await;
+            }
+        }
+
+        tracing::info!(deleted, max_files, "Rotated proof archive");
+        Ok(deleted)
     }
 }
 
@@ -351,6 +434,72 @@ mod tests {
             let name = e.file_name().to_string_lossy().to_string();
             assert!(!name.starts_with('.'), "temp file left behind: {}", name);
         }
+    }
+
+    #[tokio::test]
+    async fn test_rotate_keeps_newest() {
+        let tmp = tempdir();
+        let archive = ProofArchive::new(&tmp).await.unwrap();
+
+        // Store 5 entries
+        for i in 0..5 {
+            let entry = ProofArchiveEntry {
+                id: format!("rotate-{}", i),
+                archived_at: format!("2026-03-23T12:{:02}:00Z", i),
+                result_id: format!("0x{:04x}", i),
+                ..Default::default()
+            };
+            archive.store(&entry).await.unwrap();
+        }
+        assert_eq!(archive.count().await.unwrap(), 5);
+
+        // Rotate to keep only 3
+        let deleted = archive.rotate(3).await.unwrap();
+        assert_eq!(deleted, 2);
+        assert_eq!(archive.count().await.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_rotate_noop_under_limit() {
+        let tmp = tempdir();
+        let archive = ProofArchive::new(&tmp).await.unwrap();
+
+        let entry = ProofArchiveEntry {
+            id: "single".to_string(),
+            ..Default::default()
+        };
+        archive.store(&entry).await.unwrap();
+
+        let deleted = archive.rotate(100).await.unwrap();
+        assert_eq!(deleted, 0);
+        assert_eq!(archive.count().await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_expire_removes_old_dirs() {
+        let tmp = tempdir();
+        let archive = ProofArchive::new(&tmp).await.unwrap();
+
+        // Create an old date directory manually
+        let old_dir = tmp.join("2020-01-01");
+        tokio::fs::create_dir_all(&old_dir).await.unwrap();
+        tokio::fs::write(old_dir.join("proof-old.json"), "{}").await.unwrap();
+
+        // Store a current entry
+        let entry = ProofArchiveEntry {
+            id: "current".to_string(),
+            ..Default::default()
+        };
+        archive.store(&entry).await.unwrap();
+
+        // Expire anything older than 30 days
+        let expired = archive.expire(30).await.unwrap();
+        assert_eq!(expired, 1);
+
+        // Current entry should remain
+        assert_eq!(archive.count().await.unwrap(), 1);
+        // Old dir should be gone
+        assert!(!old_dir.exists());
     }
 
     /// Create a temporary directory for tests.

@@ -198,18 +198,18 @@ describeIfAnvil('TEEMLVerifier Anvil Integration Tests', () => {
   });
 
   // ------------------------------------------------------------------
-  // Test: Deploy contract and verify owner
+  // Test: Deploy contract and verify admin
   // ------------------------------------------------------------------
-  it('should deploy the contract and set the correct owner', async () => {
+  it('should deploy the contract and set the correct admin', async () => {
     const publicClient = createPublicClient({ chain, transport: http(rpcUrl) });
 
-    const owner = await publicClient.readContract({
+    const adminAddr = await publicClient.readContract({
       address: contractAddress,
       abi: contractAbi,
-      functionName: 'owner',
+      functionName: 'admin',
     });
 
-    expect(getAddress(owner as string)).toBe(getAddress(adminAccount.address));
+    expect(getAddress(adminAddr as string)).toBe(getAddress(adminAccount.address));
   });
 
   it('should report the correct remainderVerifier', async () => {
@@ -256,9 +256,9 @@ describeIfAnvil('TEEMLVerifier Anvil Integration Tests', () => {
     const txHash = await verifier.registerEnclave(enclaveAccount.address, imageHash);
     expect(txHash).toMatch(/^0x[0-9a-f]{64}$/);
 
-    // Verify via owner() that the contract is accessible
-    const owner = await verifier.owner();
-    expect(getAddress(owner)).toBe(getAddress(adminAccount.address));
+    // Verify via admin() that the contract is accessible
+    const adminAddr = await verifier.admin();
+    expect(getAddress(adminAddr)).toBe(getAddress(adminAccount.address));
   });
 
   // ------------------------------------------------------------------
@@ -924,9 +924,9 @@ describeIfAnvil('TEEMLVerifier Anvil Integration Tests', () => {
   });
 
   // ------------------------------------------------------------------
-  // Test: Non-owner cannot register enclave
+  // Test: Non-admin cannot register enclave
   // ------------------------------------------------------------------
-  it('should reject enclave registration from non-owner', async () => {
+  it('should reject enclave registration from non-admin', async () => {
     const nonOwnerVerifier = new TEEVerifier({
       rpcUrl,
       privateKey: PROVER_PRIVATE_KEY,

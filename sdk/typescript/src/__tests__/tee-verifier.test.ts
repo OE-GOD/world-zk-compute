@@ -9,36 +9,52 @@ describe('teeMLVerifierAbi', () => {
       (e) => e.type === 'function' && e.name === name,
     );
 
-  it('should not have admin() function (replaced by owner)', () => {
-    expect(findFunction('admin')).toBeUndefined();
-  });
-
-  it('should have owner() view function', () => {
-    const fn = findFunction('owner');
+  it('should have admin() view function', () => {
+    const fn = findFunction('admin');
     expect(fn).toBeDefined();
     expect(fn.stateMutability).toBe('view');
     expect(fn.outputs).toHaveLength(1);
     expect(fn.outputs[0].type).toBe('address');
   });
 
-  it('should have pendingOwner() view function', () => {
-    const fn = findFunction('pendingOwner');
-    expect(fn).toBeDefined();
-    expect(fn.stateMutability).toBe('view');
-  });
-
-  it('should have transferOwnership(address) function', () => {
-    const fn = findFunction('transferOwnership');
+  it('should have changeAdmin(address) function', () => {
+    const fn = findFunction('changeAdmin');
     expect(fn).toBeDefined();
     expect(fn.stateMutability).toBe('nonpayable');
     expect(fn.inputs).toHaveLength(1);
     expect(fn.inputs[0].type).toBe('address');
   });
 
-  it('should have acceptOwnership() function', () => {
-    const fn = findFunction('acceptOwnership');
+  it('should have timelock() view function', () => {
+    const fn = findFunction('timelock');
+    expect(fn).toBeDefined();
+    expect(fn.stateMutability).toBe('view');
+    expect(fn.outputs).toHaveLength(1);
+    expect(fn.outputs[0].type).toBe('address');
+  });
+
+  it('should have setTimelock(address) function', () => {
+    const fn = findFunction('setTimelock');
     expect(fn).toBeDefined();
     expect(fn.stateMutability).toBe('nonpayable');
+    expect(fn.inputs).toHaveLength(1);
+    expect(fn.inputs[0].type).toBe('address');
+  });
+
+  it('should have implementation() view function', () => {
+    const fn = findFunction('implementation');
+    expect(fn).toBeDefined();
+    expect(fn.stateMutability).toBe('view');
+    expect(fn.outputs).toHaveLength(1);
+    expect(fn.outputs[0].type).toBe('address');
+  });
+
+  it('should not have owner() function (replaced by admin)', () => {
+    expect(findFunction('owner')).toBeUndefined();
+  });
+
+  it('should not have pendingOwner() function', () => {
+    expect(findFunction('pendingOwner')).toBeUndefined();
   });
 
   it('should have pause() function', () => {
@@ -72,7 +88,11 @@ describe('teeMLVerifierAbi', () => {
       'resolveDisputeByTimeout',
       'getResult',
       'isResultValid',
-      'owner',
+      'admin',
+      'changeAdmin',
+      'timelock',
+      'setTimelock',
+      'implementation',
       'remainderVerifier',
     ];
     for (const name of required) {
@@ -94,10 +114,11 @@ describe('TEEVerifier class', () => {
       'resolveDisputeByTimeout',
       'getResult',
       'isResultValid',
-      'owner',
-      'pendingOwner',
-      'transferOwnership',
-      'acceptOwnership',
+      'admin',
+      'changeAdmin',
+      'timelock',
+      'setTimelock',
+      'implementation',
       'pause',
       'unpause',
       'paused',
@@ -109,8 +130,8 @@ describe('TEEVerifier class', () => {
     }
   });
 
-  it('should not have admin() method', () => {
+  it('should not have owner() method (replaced by admin)', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect((TEEVerifier.prototype as any).admin).toBeUndefined();
+    expect((TEEVerifier.prototype as any).owner).toBeUndefined();
   });
 });

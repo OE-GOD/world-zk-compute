@@ -179,11 +179,16 @@ sol! {
 
         function pause() external;
         function unpause() external;
-        function transferOwnership(address newOwner) external;
-        function acceptOwnership() external;
 
-        function owner() external view returns (address);
-        function pendingOwner() external view returns (address);
+        function initialize(address _admin, address _remainderVerifier) external;
+        function admin() external view returns (address);
+        function changeAdmin(address newAdmin) external;
+        function timelock() external view returns (address);
+        function setTimelock(address _timelock) external;
+        function implementation() external view returns (address);
+        function upgradeTo(address newImplementation) external;
+        function upgradeToAndCall(address newImplementation, bytes calldata data) external payable;
+
         function paused() external view returns (bool);
         function remainderVerifier() external view returns (address);
         function challengeBondAmount() external view returns (uint256);

@@ -118,10 +118,11 @@ describe.skipIf(!ANVIL_URL)('E2E Anvil: SDK classes against local Anvil', () => 
     expect(typeof verifier.resolveDisputeByTimeout).toBe('function');
     expect(typeof verifier.getResult).toBe('function');
     expect(typeof verifier.isResultValid).toBe('function');
-    expect(typeof verifier.owner).toBe('function');
-    expect(typeof verifier.pendingOwner).toBe('function');
-    expect(typeof verifier.transferOwnership).toBe('function');
-    expect(typeof verifier.acceptOwnership).toBe('function');
+    expect(typeof verifier.admin).toBe('function');
+    expect(typeof verifier.changeAdmin).toBe('function');
+    expect(typeof verifier.timelock).toBe('function');
+    expect(typeof verifier.setTimelock).toBe('function');
+    expect(typeof verifier.implementation).toBe('function');
     expect(typeof verifier.pause).toBe('function');
     expect(typeof verifier.unpause).toBe('function');
     expect(typeof verifier.paused).toBe('function');
@@ -406,7 +407,7 @@ describe.skipIf(!ANVIL_URL)('E2E Anvil: SDK classes against local Anvil', () => 
     expect(functionNames).toContain('getResult');
     expect(functionNames).toContain('isResultValid');
     expect(functionNames).toContain('registerEnclave');
-    expect(functionNames).toContain('owner');
+    expect(functionNames).toContain('admin');
     expect(functionNames).toContain('paused');
 
     // Check for key event signatures

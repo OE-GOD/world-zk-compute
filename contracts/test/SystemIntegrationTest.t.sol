@@ -132,7 +132,7 @@ contract SystemIntegrationTest is Test, DeployTEEMLVerifierHelper {
         proverRegistry = new ProverRegistry(address(stakeToken), 100 ether, 500); // 100 STK min, 5% slash
         reputation = new ProverReputation();
         engine = new ExecutionEngine(admin, address(programRegistry), address(mockVerifier), address(0xFEE));
-        teeVerifier = _deployTEEMLVerifier(admin, address(0)); // no remainder verifier for happy-path tests
+        teeVerifier = _deployTEEMLVerifier(admin, address(0xDEAD)); // dummy remainder verifier for happy-path tests
 
         // Wire up
         engine.setReputation(address(reputation));

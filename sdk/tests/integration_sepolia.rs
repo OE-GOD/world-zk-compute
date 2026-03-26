@@ -117,12 +117,12 @@ async fn test_sepolia_contract_has_code() {
 
 #[tokio::test]
 #[ignore = "requires Sepolia RPC"]
-async fn test_sepolia_owner_query() {
+async fn test_sepolia_admin_query() {
     let url = rpc_url();
     let address = verifier_address();
     let client = reqwest::Client::new();
 
-    // owner() function selector: keccak256("owner()")[:4] = 0x8da5cb5b
+    // admin() function selector: keccak256("admin()")[:4] = 0xf851a440
     let body = rpc_call(
         &client,
         &url,
@@ -130,7 +130,7 @@ async fn test_sepolia_owner_query() {
         serde_json::json!([
             {
                 "to": address,
-                "data": "0x8da5cb5b"
+                "data": "0xf851a440"
             },
             "latest"
         ]),
@@ -145,17 +145,17 @@ async fn test_sepolia_owner_query() {
     assert_eq!(
         raw.len(),
         66,
-        "Unexpected return data length for owner(): expected 66 chars (0x + 64 hex), got {}",
+        "Unexpected return data length for admin(): expected 66 chars (0x + 64 hex), got {}",
         raw.len()
     );
 
     // Extract the address from the last 40 hex characters
-    let owner_hex = &raw[raw.len() - 40..];
+    let admin_hex = &raw[raw.len() - 40..];
     let zero_addr = "0".repeat(40);
     assert_ne!(
-        owner_hex, zero_addr,
-        "owner() returned the zero address; expected a real admin address"
+        admin_hex, zero_addr,
+        "admin() returned the zero address; expected a real admin address"
     );
 
-    println!("Contract owner: 0x{owner_hex}");
+    println!("Contract admin: 0x{admin_hex}");
 }

@@ -273,20 +273,16 @@ contract RemainderVerifierUpgradeableTest is Test, DeployRemainderVerifierHelper
     // ========================================================================
 
     /// @notice Verify that the implementation contract itself cannot be initialized directly
+    /// @dev The constructor sets _initialized = type(uint8).max, preventing direct initialization
+    ///      of the implementation contract (H-1 fix). Only the proxy can initialize via delegatecall.
     function test_implementationCannotBeInitializedDirectly() public {
         // Deploy a bare implementation (not via proxy)
         RemainderVerifier impl = new RemainderVerifier();
 
-        // The implementation should not be initializable since during construction,
-        // the constructor is not setting _initialized. However, with UUPS contracts
-        // that don't have a constructor that blocks initialization, the impl CAN
-        // be initialized directly. This test documents the current behavior.
-        // If the implementation should be locked, add disableInitializers() to constructor.
-        impl.initialize(address(0xDEAD));
-
-        // But it cannot be initialized twice
+        // The constructor disables initialization on the implementation contract.
+        // Any attempt to initialize directly should revert with AlreadyInitialized.
         vm.expectRevert(UUPSUpgradeable.AlreadyInitialized.selector);
-        impl.initialize(address(0xBEEF));
+        impl.initialize(address(0xDEAD));
     }
 
     /// @notice Verify proxiableUUID returns the correct slot
