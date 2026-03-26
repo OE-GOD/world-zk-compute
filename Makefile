@@ -14,7 +14,8 @@
         load-test load-test-enclave load-test-prover load-test-batch load-test-indexer \
         sepolia-e2e check-sepolia-balances test-sepolia-sdk \
         bench clean verify snapshot snapshot-check snapshot-update gas-report help \
-        smoke-test audit docs check preflight sepolia-status
+        smoke-test audit docs check preflight sepolia-status \
+        test-docker-demo
 
 # ── Test ─────────────────────────────────────────────────────────────────────
 
@@ -264,6 +265,9 @@ demo-bank: ## Run bank demo (off-chain: verifier API + CLI)
 
 demo-bank-down: ## Stop bank demo services
 	docker compose -f docker-compose.bank-demo.yml down
+
+test-docker-demo: ## Run Docker Compose integration test for bank demo
+	./scripts/test-docker-demo.sh
 
 # ── Check ────────────────────────────────────────────────────────────────────
 

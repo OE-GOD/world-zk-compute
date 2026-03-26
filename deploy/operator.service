@@ -1,0 +1,57 @@
+# World ZK Compute -- Operator Service (systemd)
+#
+# Install:
+#   sudo cp deploy/operator.service /etc/systemd/system/worldzk-operator.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now worldzk-operator
+#
+# Prerequisites:
+#   1. Copy the operator binary to /usr/local/bin/tee-operator
+#   2. Create the operator user:  sudo useradd --system --no-create-home operator
+#   3. Create the env file:       sudo cp deploy/operator.env.example /etc/worldzk/operator.env
+#      then fill in real values and restrict permissions:
+#      sudo chmod 600 /etc/worldzk/operator.env
+#      sudo chown operator:operator /etc/worldzk/operator.env
+#   4. (Optional) Copy config:    sudo cp services/operator/config.example.toml /etc/worldzk/operator.toml
+
+[Unit]
+Description=World ZK Compute Operator
+Documentation=https://github.com/worldcoin/world-zk-compute
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=operator
+Group=operator
+
+# The "watch" subcommand is the long-running daemon that monitors on-chain
+# events and auto-resolves disputes.  Use "run" only for one-shot submit+watch.
+ExecStart=/usr/local/bin/tee-operator watch
+
+Restart=always
+RestartSec=5
+
+# Environment from file (contains RPC URL, private key, contract addresses)
+EnvironmentFile=/etc/worldzk/operator.env
+
+# Optional TOML config (uncomment if using a config file)
+# ExecStart=/usr/local/bin/tee-operator --config /etc/worldzk/operator.toml watch
+
+# File descriptor limit for many concurrent RPC/WebSocket connections
+LimitNOFILE=65536
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/worldzk
+
+# Logging (stdout/stderr -> journald)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=worldzk-operator
+
+[Install]
+WantedBy=multi-user.target

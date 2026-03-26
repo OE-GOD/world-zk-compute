@@ -1,9 +1,14 @@
+mod auth;
+mod config;
+mod rate_limit;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::{
     extract::{Json, Path, State},
     http::StatusCode,
+    middleware,
     routing::{get, post},
     Router,
 };
@@ -11,6 +16,10 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 use zkml_verifier::{verify, verify_hybrid, ProofBundle};
+
+use auth::{auth_middleware, AuthState};
+use config::ServiceConfig;
+use rate_limit::{rate_limit_middleware, RateLimitState};
 
 // -- Shared state for warm circuits --
 
@@ -289,26 +298,66 @@ fn err(code: StatusCode, msg: String) -> (StatusCode, Json<ErrorResponse>) {
 }
 
 fn build_app() -> Router {
+    build_app_with_config(ServiceConfig::from_env())
+}
+
+fn build_app_with_config(config: ServiceConfig) -> Router {
     let store: CircuitStore = Arc::new(RwLock::new(HashMap::new()));
-    Router::new()
-        .route("/health", get(health))
+    let auth_state = AuthState::new(config.api_keys.clone());
+    let rate_limit_state = RateLimitState::new(config.rate_limit_rpm);
+
+    // Health endpoint: public, no auth or rate limiting.
+    // Protected endpoints: auth + rate limit layers applied.
+    let protected = Router::new()
         .route("/verify", post(verify_proof))
         .route("/verify/batch", post(verify_batch))
         .route("/verify/hybrid", post(verify_hybrid_proof))
         .route("/circuits", get(list_circuits))
         .route("/circuits", post(register_circuit))
-        .route("/circuits/:circuit_id/verify", post(warm_verify))
-        .route("/circuits/:circuit_id/verify/hybrid", post(warm_verify_hybrid))
+        .route(
+            "/circuits/:circuit_id/verify",
+            post(warm_verify),
+        )
+        .route(
+            "/circuits/:circuit_id/verify/hybrid",
+            post(warm_verify_hybrid),
+        )
+        .route_layer(middleware::from_fn_with_state(
+            rate_limit_state,
+            rate_limit_middleware,
+        ))
+        .route_layer(middleware::from_fn_with_state(
+            auth_state,
+            auth_middleware,
+        ))
+        .with_state(store.clone());
+
+    let health_router = Router::new()
+        .route("/health", get(health))
+        .with_state(store);
+
+    Router::new()
+        .merge(health_router)
+        .merge(protected)
         .layer(CorsLayer::permissive())
-        .with_state(store)
 }
 
 #[tokio::main]
 async fn main() {
-    let port = std::env::var("PORT").unwrap_or_else(|_| "3000".to_string());
-    let addr = format!("0.0.0.0:{port}");
+    let config = ServiceConfig::from_env();
+    let addr = format!("0.0.0.0:{}", config.port);
 
-    let app = build_app();
+    if config.auth_enabled() {
+        eprintln!(
+            "API key auth enabled ({} key(s) configured)",
+            config.api_keys.len()
+        );
+    } else {
+        eprintln!("API key auth disabled (no VERIFIER_API_KEYS set)");
+    }
+    eprintln!("Rate limit: {} requests/minute", config.rate_limit_rpm);
+
+    let app = build_app_with_config(config);
 
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     eprintln!("zkml-verifier-service listening on {addr}");
@@ -625,5 +674,267 @@ mod tests {
             status == 400 || status == 422,
             "expected 400 or 422, got {status}"
         );
+    }
+
+    // -- Auth middleware tests --
+
+    fn build_app_with_auth(keys: Vec<&str>) -> Router {
+        build_app_with_config(ServiceConfig {
+            api_keys: keys.into_iter().map(String::from).collect(),
+            rate_limit_rpm: 10000, // high limit so rate limiting doesn't interfere
+            port: 3000,
+        })
+    }
+
+    #[tokio::test]
+    async fn test_valid_api_key_passes() {
+        let app = build_app_with_auth(vec!["test-key-123"]);
+        let bundle = serde_json::json!({
+            "proof_hex": "0xdead",
+            "gens_hex": "0xbeef",
+            "dag_circuit_description": {}
+        });
+        let req = Request::post("/verify")
+            .header("content-type", "application/json")
+            .header("x-api-key", "test-key-123")
+            .body(Body::from(serde_json::to_vec(&bundle).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        // Should reach the handler (which returns 400 for invalid proof, not 401)
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_invalid_api_key_returns_401() {
+        let app = build_app_with_auth(vec!["valid-key"]);
+        let bundle = serde_json::json!({
+            "proof_hex": "0xdead",
+            "gens_hex": "0xbeef",
+            "dag_circuit_description": {}
+        });
+        let req = Request::post("/verify")
+            .header("content-type", "application/json")
+            .header("x-api-key", "wrong-key")
+            .body(Body::from(serde_json::to_vec(&bundle).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(json["error"].as_str().unwrap().contains("Invalid"));
+    }
+
+    #[tokio::test]
+    async fn test_missing_api_key_returns_401() {
+        let app = build_app_with_auth(vec!["valid-key"]);
+        let bundle = serde_json::json!({
+            "proof_hex": "0xdead",
+            "gens_hex": "0xbeef",
+            "dag_circuit_description": {}
+        });
+        let req = Request::post("/verify")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&bundle).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(json["error"].as_str().unwrap().contains("Missing"));
+    }
+
+    #[tokio::test]
+    async fn test_no_auth_when_disabled() {
+        // No API keys configured -> open access
+        let app = build_app_with_auth(vec![]);
+        let bundle = serde_json::json!({
+            "proof_hex": "0xdead",
+            "gens_hex": "0xbeef",
+            "dag_circuit_description": {}
+        });
+        let req = Request::post("/verify")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&bundle).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        // Should pass through to handler (400 = invalid proof, not 401)
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_health_works_without_auth() {
+        let app = build_app_with_auth(vec!["secret-key"]);
+        // No API key header, but /health should still work
+        let req = Request::get("/health").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["status"], "ok");
+    }
+
+    #[tokio::test]
+    async fn test_multiple_api_keys() {
+        let app = build_app_with_auth(vec!["key-alpha", "key-beta"]);
+        let bundle = serde_json::json!({
+            "proof_hex": "0xdead",
+            "gens_hex": "0xbeef",
+            "dag_circuit_description": {}
+        });
+
+        // Both keys should work
+        for key in &["key-alpha", "key-beta"] {
+            let req = Request::post("/verify")
+                .header("content-type", "application/json")
+                .header("x-api-key", *key)
+                .body(Body::from(serde_json::to_vec(&bundle).unwrap()))
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::BAD_REQUEST,
+                "key {key} should authenticate successfully"
+            );
+        }
+    }
+
+    // -- Rate limiting tests --
+
+    #[tokio::test]
+    async fn test_rate_limit_returns_429() {
+        let app = build_app_with_config(ServiceConfig {
+            api_keys: vec![], // no auth
+            rate_limit_rpm: 3, // very low limit
+            port: 3000,
+        });
+        let bundle = serde_json::json!({
+            "proof_hex": "0xdead",
+            "gens_hex": "0xbeef",
+            "dag_circuit_description": {}
+        });
+
+        // First 3 requests should succeed (get through to handler -> 400)
+        for i in 0..3 {
+            let req = Request::post("/verify")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&bundle).unwrap()))
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::BAD_REQUEST,
+                "request {i} should pass rate limit"
+            );
+        }
+
+        // 4th request should be rate limited
+        let req = Request::post("/verify")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&bundle).unwrap()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        // Verify rate limit headers
+        assert!(resp.headers().contains_key("x-ratelimit-remaining"));
+        assert!(resp.headers().contains_key("x-ratelimit-reset"));
+        assert_eq!(
+            resp.headers().get("x-ratelimit-remaining").unwrap(),
+            "0"
+        );
+
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(json["error"].as_str().unwrap().contains("Rate limit"));
+    }
+
+    #[tokio::test]
+    async fn test_rate_limit_headers_on_success() {
+        let app = build_app_with_config(ServiceConfig {
+            api_keys: vec![],
+            rate_limit_rpm: 100,
+            port: 3000,
+        });
+        let bundle = serde_json::json!({
+            "proof_hex": "0xdead",
+            "gens_hex": "0xbeef",
+            "dag_circuit_description": {}
+        });
+
+        let req = Request::post("/verify")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&bundle).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        // Should have rate limit headers even on successful pass-through
+        assert!(resp.headers().contains_key("x-ratelimit-remaining"));
+        assert!(resp.headers().contains_key("x-ratelimit-reset"));
+    }
+
+    #[tokio::test]
+    async fn test_rate_limit_per_api_key() {
+        let app = build_app_with_config(ServiceConfig {
+            api_keys: vec!["key-a".into(), "key-b".into()],
+            rate_limit_rpm: 2, // very low limit
+            port: 3000,
+        });
+        let bundle = serde_json::json!({
+            "proof_hex": "0xdead",
+            "gens_hex": "0xbeef",
+            "dag_circuit_description": {}
+        });
+
+        // Exhaust key-a's limit
+        for _ in 0..2 {
+            let req = Request::post("/verify")
+                .header("content-type", "application/json")
+                .header("x-api-key", "key-a")
+                .body(Body::from(serde_json::to_vec(&bundle).unwrap()))
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::BAD_REQUEST); // passes auth, invalid proof
+        }
+
+        // key-a should be rate limited
+        let req = Request::post("/verify")
+            .header("content-type", "application/json")
+            .header("x-api-key", "key-a")
+            .body(Body::from(serde_json::to_vec(&bundle).unwrap()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        // key-b should still work
+        let req = Request::post("/verify")
+            .header("content-type", "application/json")
+            .header("x-api-key", "key-b")
+            .body(Body::from(serde_json::to_vec(&bundle).unwrap()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST); // passes auth + rate limit
+    }
+
+    #[tokio::test]
+    async fn test_health_not_rate_limited() {
+        let app = build_app_with_config(ServiceConfig {
+            api_keys: vec![],
+            rate_limit_rpm: 1,
+            port: 3000,
+        });
+
+        // Health should work unlimited times regardless of rate limit
+        for _ in 0..5 {
+            let req = Request::get("/health").body(Body::empty()).unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+        }
     }
 }

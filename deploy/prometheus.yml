@@ -1,0 +1,34 @@
+# Prometheus scrape configuration for World ZK Compute services.
+#
+# Standalone version for bare-metal / VM deployments.
+# For Kubernetes, see deploy/k8s/overlays/monitoring/prometheus-config.yaml
+#
+# Usage:
+#   prometheus --config.file=deploy/prometheus.yml
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+
+scrape_configs:
+  # Operator service metrics and health
+  - job_name: "worldzk-operator"
+    metrics_path: "/metrics"
+    scheme: "http"
+    static_configs:
+      - targets: ["localhost:9090"]
+        labels:
+          service: "operator"
+          app: "world-zk-compute"
+
+  # Operator health probe (used for uptime alerting)
+  - job_name: "worldzk-operator-health"
+    metrics_path: "/health"
+    scheme: "http"
+    scrape_interval: 30s
+    static_configs:
+      - targets: ["localhost:9090"]
+        labels:
+          service: "operator"
+          probe: "health"

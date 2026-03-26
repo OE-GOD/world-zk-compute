@@ -3,22 +3,29 @@ name = "zkml-verifier"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-description = "Standalone BN254 GKR DAG verifier for ZKML proof bundles"
+description = "Chain-agnostic GKR+Hyrax zero-knowledge proof verifier for ML inference"
+repository = "https://github.com/OE-GOD/world-zk-compute"
+documentation = "https://docs.rs/zkml-verifier"
+keywords = ["zkml", "gkr", "hyrax", "zero-knowledge", "verifier"]
+categories = ["cryptography", "no-std"]
+readme = "README.md"
+exclude = ["fuzz/", "python/", "tests/", "benches/"]
 
 [lib]
 crate-type = ["lib", "cdylib"]
 
 [dependencies]
-serde = { workspace = true }
-serde_json = { workspace = true }
-hex = { workspace = true }
-thiserror = { workspace = true }
-sha2 = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hex = "0.4"
+thiserror = "2"
+sha2 = "0.10"
 wasm-bindgen = { version = "0.2", optional = true }
 
 [features]
 default = []
 wasm = ["wasm-bindgen"]
+ffi = []
 
 [[bin]]
 name = "zkml-verifier"
