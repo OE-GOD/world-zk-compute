@@ -1,0 +1,64 @@
+# =============================================================================
+# Prometheus Configuration -- Production Docker Compose
+#
+# Same scrape targets as prometheus.yml but using Docker Compose service names
+# instead of localhost. Used by docker-compose.production.yml.
+#
+# For standalone/bare-metal deployments, use deploy/prometheus.yml instead.
+# =============================================================================
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - "alerting-rules.yml"
+
+scrape_configs:
+  # Operator service (port 9090, /metrics)
+  - job_name: "operator"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["operator:9090"]
+        labels:
+          service: "operator"
+
+  # TEE Enclave service (port 8080, /metrics)
+  - job_name: "enclave"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["enclave:8080"]
+        labels:
+          service: "enclave"
+
+  # Warm Prover service (port 3000, /metrics)
+  - job_name: "warm-prover"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["warm-prover:3000"]
+        labels:
+          service: "warm-prover"
+
+  # Indexer service (port 8081, /metrics)
+  - job_name: "indexer"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["indexer:8081"]
+        labels:
+          service: "indexer"
+
+  # Verifier API service (port 3000, /metrics)
+  - job_name: "verifier-api"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["verifier-api:3000"]
+        labels:
+          service: "verifier-api"
+
+  # Private Input Server (port 3001, /metrics)
+  - job_name: "private-input-server"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["private-input-server:3001"]
+        labels:
+          service: "private-input-server"

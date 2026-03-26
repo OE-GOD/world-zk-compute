@@ -1,0 +1,350 @@
+# ===============================================================================
+# World ZK Compute -- Full Production Stack
+#
+# One-command deployment of all production services:
+#   enclave (TEE) + warm-prover (ZK) + operator + verifier-api + indexer
+#   + private-input-server + prometheus + grafana
+#
+# Prerequisites:
+#   - Contracts deployed to target chain (Arbitrum, Sepolia, etc.)
+#   - Copy deploy/production.env.example to .env.production and fill in values
+#
+# Usage:
+#   docker compose -f docker-compose.production.yml --env-file .env.production build
+#   docker compose -f docker-compose.production.yml --env-file .env.production up -d
+#   docker compose -f docker-compose.production.yml --env-file .env.production logs -f
+#   docker compose -f docker-compose.production.yml --env-file .env.production down
+#
+# Access:
+#   Verifier API:  http://localhost:3000
+#   Enclave:       http://localhost:8080 (internal, not exposed in production)
+#   Operator:      http://localhost:9090/health
+#   Indexer:       http://localhost:8081
+#   Prometheus:    http://localhost:9091
+#   Grafana:       http://localhost:3001 (admin / $GRAFANA_PASSWORD)
+# ===============================================================================
+
+services:
+  # -- TEE Enclave ----------------------------------------------------------------
+  # Runs ML inference inside a trusted execution environment. In production on AWS
+  # Nitro, use tee/enclave/Dockerfile.nitro and vsock transport instead.
+  enclave:
+    build:
+      context: ./tee
+    ports:
+      - "${ENCLAVE_PORT:-8080}:8080"
+    environment:
+      MODEL_PATH: /app/model/model.json
+      PORT: "8080"
+      ENCLAVE_PRIVATE_KEY: "${ENCLAVE_PRIVATE_KEY:?Set ENCLAVE_PRIVATE_KEY in .env.production}"
+      CHAIN_ID: "${CHAIN_ID:-42161}"
+      RUST_LOG: "${RUST_LOG:-info}"
+      MAX_REQUESTS_PER_MINUTE: "${ENCLAVE_RATE_LIMIT:-60}"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    # Security hardening
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=64m
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    user: "1000:1000"
+    pids_limit: 100
+    networks:
+      - backend
+
+  # -- Warm Prover (ZK Proof Server) ---------------------------------------------
+  # Pre-warmed prover for Groth16/STARK proof generation on demand.
+  # Keeps the prover process resident to avoid cold-start latency (~6-7 min).
+  warm-prover:
+    build:
+      context: ./examples/xgboost-remainder
+    ports:
+      - "${PROVER_PORT:-3002}:3000"
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    mem_limit: 4g
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    # Security hardening
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=256m
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    user: "1000:1000"
+    pids_limit: 100
+    networks:
+      - backend
+
+  # -- Operator Service -----------------------------------------------------------
+  # Watches on-chain events, triggers TEE re-execution or ZK proof generation
+  # when disputes arise, and submits proof transactions.
+  operator:
+    build:
+      context: .
+      dockerfile: services/operator/Dockerfile
+    depends_on:
+      enclave:
+        condition: service_healthy
+      warm-prover:
+        condition: service_healthy
+    ports:
+      - "${OPERATOR_PORT:-9090}:9090"
+    environment:
+      OPERATOR_RPC_URL: "${RPC_URL:?Set RPC_URL in .env.production}"
+      OPERATOR_PRIVATE_KEY: "${OPERATOR_PRIVATE_KEY:?Set OPERATOR_PRIVATE_KEY in .env.production}"
+      ENCLAVE_URL: "http://enclave:8080"
+      PROVER_URL: "http://warm-prover:3000"
+      MODEL_PATH: /app/model/model.json
+      PROOFS_DIR: /app/proofs
+      PRECOMPUTE_BIN: /usr/local/bin/precompute_proof
+      TEE_VERIFIER_ADDRESS: "${TEE_VERIFIER_ADDRESS:?Set TEE_VERIFIER_ADDRESS in .env.production}"
+      EXECUTION_ENGINE_ADDRESS: "${EXECUTION_ENGINE_ADDRESS:-}"
+      PROGRAM_REGISTRY_ADDRESS: "${PROGRAM_REGISTRY_ADDRESS:-}"
+      CHAIN_ID: "${CHAIN_ID:-42161}"
+      OPERATOR_POLL_INTERVAL: "${OPERATOR_POLL_INTERVAL:-12}"
+      OPERATOR_AUTO_DISPUTE: "${OPERATOR_AUTO_DISPUTE:-true}"
+      NITRO_VERIFICATION: "${NITRO_VERIFICATION:-false}"
+      EXPECTED_PCR0: "${EXPECTED_PCR0:-}"
+      ALERT_CONFIG_JSON: "${ALERT_CONFIG_JSON:-}"
+      RUST_LOG: "${RUST_LOG:-info}"
+      RUST_LOG_FORMAT: "json"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9090/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    mem_limit: 1g
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    volumes:
+      - proof-storage:/app/proofs
+    # Security hardening
+    tmpfs:
+      - /tmp:noexec,nosuid,size=64m
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    user: "1000:1000"
+    pids_limit: 100
+    networks:
+      - backend
+
+  # -- Verifier API ---------------------------------------------------------------
+  # REST API for off-chain ZKML proof verification. Stateless service that can be
+  # scaled horizontally behind a load balancer.
+  verifier-api:
+    build:
+      context: .
+      dockerfile: services/verifier/Dockerfile
+    ports:
+      - "${VERIFIER_PORT:-3000}:3000"
+    environment:
+      PORT: "3000"
+      RUST_LOG: "${RUST_LOG:-info}"
+      RATE_LIMIT_RPM: "${RATE_LIMIT_RPM:-100}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    # Security hardening
+    read_only: true
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    pids_limit: 50
+    networks:
+      - frontend
+      - backend
+
+  # -- Indexer Service ------------------------------------------------------------
+  # Indexes on-chain events (ResultSubmitted, ResultChallenged, ResultFinalized)
+  # into a queryable store with WebSocket push notifications.
+  indexer:
+    build:
+      context: .
+      dockerfile: services/indexer/Dockerfile
+    depends_on:
+      operator:
+        condition: service_healthy
+    ports:
+      - "${INDEXER_PORT:-8081}:8081"
+    environment:
+      RPC_URL: "${RPC_URL:?Set RPC_URL in .env.production}"
+      CONTRACT_ADDRESS: "${TEE_VERIFIER_ADDRESS:?Set TEE_VERIFIER_ADDRESS in .env.production}"
+      PORT: "8081"
+      DB_PATH: /data/indexer.db
+      POLL_INTERVAL: "${INDEXER_POLL_INTERVAL:-12}"
+      RATE_LIMIT_PER_IP: "${INDEXER_RATE_LIMIT:-100}"
+      RUST_LOG: "${RUST_LOG:-info}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    volumes:
+      - indexer-data:/data
+    # Security hardening
+    tmpfs:
+      - /tmp:noexec,nosuid,size=64m
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    user: "1000:1000"
+    pids_limit: 100
+    networks:
+      - frontend
+      - backend
+
+  # -- Private Input Server -------------------------------------------------------
+  # Serves private input data to the TEE enclave for inference requests.
+  private-input-server:
+    build:
+      context: ./private-input-server
+    ports:
+      - "${PRIVATE_INPUT_PORT:-3003}:3001"
+    environment:
+      PORT: "3001"
+      RUST_LOG: "${RUST_LOG:-info}"
+      RPC_URL: "${RPC_URL:?Set RPC_URL in .env.production}"
+      ENGINE_ADDRESS: "${EXECUTION_ENGINE_ADDRESS:-0x0000000000000000000000000000000000000000}"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3001/health || exit 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=64m
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    user: "1000:1000"
+    pids_limit: 100
+    networks:
+      - frontend
+      - backend
+
+  # -- Prometheus -----------------------------------------------------------------
+  # Metrics collection from all services. Scrape config uses Docker Compose
+  # service names for target resolution.
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    ports:
+      - "${PROMETHEUS_PORT:-9091}:9090"
+    volumes:
+      - ./monitoring/prometheus-production.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerting-rules.yml:/etc/prometheus/alerting-rules.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=30d'
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - backend
+
+  # -- Grafana --------------------------------------------------------------------
+  # Dashboards for operator, enclave, indexer, and chain metrics.
+  grafana:
+    image: grafana/grafana:11.1.0
+    ports:
+      - "${GRAFANA_PORT:-3001}:3000"
+    volumes:
+      - ./monitoring/grafana-operator.json:/var/lib/grafana/dashboards/operator.json:ro
+      - ./monitoring/grafana-enclave.json:/var/lib/grafana/dashboards/enclave.json:ro
+      - ./monitoring/grafana-indexer.json:/var/lib/grafana/dashboards/indexer.json:ro
+      - grafana-data:/var/lib/grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: '${GRAFANA_PASSWORD:-admin}'
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/operator.json
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - backend
+
+networks:
+  frontend:
+    driver: bridge
+  backend:
+    driver: bridge
+
+volumes:
+  proof-storage:
+  indexer-data:
+  prometheus-data:
+  grafana-data:
