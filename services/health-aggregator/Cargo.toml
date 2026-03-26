@@ -3,17 +3,13 @@ name = "health-aggregator"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-description = "Aggregate health-check endpoint for all world-zk-compute services"
+description = "Health check aggregator for all World ZK Compute services"
 
 [dependencies]
-axum = { workspace = true }
-tokio = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-tracing = { workspace = true }
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", features = ["json"] }
-chrono = { version = "0.4", features = ["serde"] }
-
-[dev-dependencies]
-tower = "0.5"
+axum = "0.7"
+tracing = "0.1"
+tracing-subscriber = "0.3"

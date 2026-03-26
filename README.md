@@ -101,15 +101,15 @@ See the [Quick Start tutorial](docs/QUICKSTART.md) for detailed setup instructio
 
 ## Test Coverage
 
-1,570+ tests across all components. Every push runs the full suite in CI.
+2,100+ tests across all components. Every push runs the full suite in CI.
 
 ```
-Solidity:     789 tests    (verifier, batch, Groth16 hybrid, TEE, fuzz)
-Python SDK:   449 tests    (client, verifier, XGBoost, LightGBM, batch)
-TypeScript:   199 tests    (TEE verifier, event watcher, Anvil integration)
-Stylus WASM:   85 tests    (BN254 field/EC, Poseidon, GKR, Hyrax, sumcheck)
-Remainder:     34 tests    (XGBoost circuit, prove-and-verify, ABI encoding)
-gnark Go:      14 tests    (Groth16 circuit, proving, chunked EC)
+Solidity:    1,183 tests   (verifier, batch, Groth16 hybrid, TEE, fuzz, invariant)
+Rust workspace: 970 tests  (SDK, operator, enclave, indexer, watcher, chaos)
+zkml-verifier:  188 tests  (GKR, Hyrax, Poseidon, BN254, bundle, FFI)
+xgboost-prover: 146 tests  (XGBoost, LightGBM, random forest, logistic regression)
+Python SDK:      12 tests  (ctypes FFI, integration)
+gnark Go:        14 tests  (Groth16, chunked EC, Poseidon)
 ```
 
 ## Documentation

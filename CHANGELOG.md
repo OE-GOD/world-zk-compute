@@ -2,181 +2,86 @@
 
 All notable changes to this project will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.1.0] - 2026-03-26
 
-Initial release. Cryptographic proof that ML models produce correct outputs.
-
 ### Added
 
-#### Verifier Core (`crates/zkml-verifier/`)
-- Chain-agnostic `zkml-verifier` Rust crate for GKR+Hyrax proof verification
-- C-FFI bindings (`ffi.rs`) for Python, Go, and Java integration
-- WASM compilation target (`wasm.rs`) for browser-based verification
-- Python wrapper package (`pip install zkml-verifier`)
-- npm package (`@worldzk/verifier`) for JavaScript and TypeScript
-- JSON proof bundle format with metadata and hex encoding
-- Gzip compression for proof bundles with auto-detection
-- CLI binary (`zkml-verifier verify <bundle.json>`)
+#### Core Verifier
+- `zkml-verifier` crate: standalone GKR+Hyrax DAG proof verification (BN254)
+- `verify()` and `verify_hybrid()` API for full and transcript-only verification
+- `verify_raw()` low-level API for direct byte-slice verification
+- `ProofBundle` JSON format with metadata (model_hash, timestamp, prover_version)
+- C-FFI bindings (`zkml_verify_json`, `zkml_verify_raw`, `zkml_free_string`)
+- WASM bindings via `wasm-bindgen` (browser verification)
+- Python wrapper (`pip install zkml-verifier`) with ctypes FFI
+- npm package (`@worldzk/verifier`) for JavaScript/TypeScript
+- CLI tool: `zkml-verifier verify <bundle.json> [--hybrid] [--json]`
+- CLI tool: `zkml-verifier bundle --proof <hex> --gens <hex> --desc <json>`
+- Criterion benchmarks for verification performance
 
-#### Supported Models
-- XGBoost tree ensemble inference (native JSON parser)
-- LightGBM tree ensemble inference
-- Random forest inference (scikit-learn JSON format)
-- Logistic regression inference (48-bit decomposition)
-- Model format auto-detection from JSON structure
+#### Verifier REST API
+- `POST /verify` — full GKR verification from ProofBundle JSON
+- `POST /verify/batch` — batch verification (up to 100 bundles)
+- `POST /verify/hybrid` — transcript-only verification
+- Circuit registration and warm verification (`/circuits`)
+- Rate limiting, API key auth, TLS/mTLS support
+- Multi-tenant API key management
+- OpenAPI 3.1 specification
 
-#### XGBoost ZK Circuit (`examples/xgboost-remainder/`)
-- GKR+Hyrax zero-knowledge circuit for XGBoost tree inference
-- Phase 1a: leaf selection and aggregation via fold-based reduction
-- Phase 1b: comparison verification with bit decomposition (K=18)
-- 88-layer DAG circuit for the sample credit scoring model
-- gnark Groth16 wrapper for EC equation checks (`gnark-wrapper/`)
-- Chunked EC Groth16 proving for large circuits (500 ops/chunk)
-- Rust ABI encoder for on-chain proof submission
+#### TEE Enclave
+- AWS Nitro NSM real attestation with graceful fallback to mock
+- Multi-model support (load/unload models at runtime)
+- EIP-712 ECDSA attestation with replay protection (chain_id, nonce, timestamp)
+- Rate limiting, CORS, request timeout configuration
 
-#### Smart Contracts (`contracts/`)
-- **RemainderVerifier** with UUPS proxy pattern (upgradeable)
-- **RemainderVerifierUpgradeable** with constructor initialization guard
-- **TEEMLVerifier** with UUPS proxy (TEE attestation + ZK dispute resolution)
-- **GKRVerifier** for single-circuit GKR+Hyrax proof verification
-- **GKRDAGVerifier** for arbitrary DAG circuits (multi-layer, multi-claim RLC)
-- **GKRHybridVerifier** for Groth16-wrapped EC checks (single circuit)
-- **GKRDAGHybridVerifier** for DAG Groth16-wrapped EC checks
-- **DAGBatchVerifier** for multi-transaction verification (8 layers/batch, <30M gas/tx)
-- **HybridStylusGroth16Verifier** for Stylus WASM + Groth16 hybrid path
-- **DAGRemainderGroth16Verifier** (gnark-exported Groth16 verifier with embedded VK)
-- **RemainderGroth16Verifier** (gnark-exported, single-circuit variant)
-- **PoseidonSponge** (width=3, rate=2, BN254 scalar field, PSE/Scroll constants)
-- **SumcheckVerifier** and **CommittedSumcheckVerifier**
-- **HyraxVerifier** and **HyraxProofDecoder**
-- **ExecutionEngine** with request lifecycle and tip escalation
-- **ProgramRegistry** (permissionless registration, admin verification)
-- **ProverRegistry** with Ownable2Step
-- **ProverReputation** with decay-based scoring
-- **TimelockController** for admin operations
-- **Pausable** emergency mechanism on all entry points
-- Implementation contract initialization protection (`_initialized = type(uint8).max`)
-- Zero-address validation on critical initializer parameters
-- Checks-effects-interactions pattern in ExecutionEngine
-- Custom errors across all contracts (no revert strings)
-- NatSpec documentation on public and external functions
+#### Operator Service
+- Submit-watch-dispute lifecycle automation
+- Proof pre-verification using zkml-verifier before on-chain submission
+- Proof archive storage (append-only, date-partitioned)
+- Proof expiry and rotation policies
+- Audit log export (CSV, JSON, JSONL/NDJSON)
+- Prometheus metrics and webhook notifications
 
-#### Stylus WASM Verifier (`contracts/stylus/gkr-verifier/`)
-- Rust/WASM port of GKR DAG verifier for Arbitrum Stylus
-- 52KB raw / 24.5KB Brotli (under 24KB Stylus deployment limit)
-- BN254 field arithmetic, EC operations via EVM precompiles
-- Poseidon sponge, GKR compute layers, Hyrax input layers, sumcheck
-- Hybrid mode: transcript replay + Fr arithmetic only (feature-gated)
-- Pure Rust BN254 EC for native testing; Stylus `RawCall` for WASM
-- Knuth Algorithm D for 512-bit modular reduction
+#### ML Model Support
+- XGBoost decision tree ensemble inference + GKR circuit
+- LightGBM model parser and inference
+- Random forest circuit compiler (scikit-learn JSON format)
+- Logistic regression circuit (dot product + sign check, full prove-and-verify)
+- Auto-detection of model format from JSON structure
+- `--bundle` flag for self-contained ProofBundle output
 
-#### REST API (`services/verifier/`)
-- Standalone verifier service (`POST /verify`, `/verify/batch`, `/verify/hybrid`)
-- API key authentication with `X-API-Key` header
-- Token bucket rate limiting per client
-- Multi-tenant API key management with admin API
-- Per-tenant rate limit configuration
-- Circuit registration TTL expiry
-- TLS and mTLS support via rustls
-- OpenAPI 3.0.3 specification
+#### On-Chain Contracts
+- `TEEMLVerifier`: submit-challenge-dispute lifecycle with EIP-712 verification
+- `RemainderVerifier`: GKR/Hyrax/Groth16 proof verification
+- DAG batch verifier: multi-tx verification for L1 (15 txs for 88-layer XGBoost)
+- Stylus WASM verifier: ~5-25M gas on Arbitrum
+- Stylus + Groth16 hybrid: ~3-6M gas target
+- Chunked EC Groth16: split large EC circuits across multiple proofs
+- UUPS proxy + pausable + timelock admin
 
-#### Operator Service (`services/operator/`)
-- Submit, watch, and auto-dispute workflow
-- Multi-model support with `find_model_by_hash`
-- Proof archive with expiry and rotation
-- Alerting, audit logging, and metrics
-- Circuit breaker and deadline monitoring
-- SSRF protection for external calls
-
-#### TEE Enclave (`tee/`)
-- AWS Nitro enclave for XGBoost and LightGBM inference
-- ECDSA attestation with EIP-712 typed data signing
-- Enclave image hash (PCR0) recorded on-chain at registration
-- Nitro enclave Dockerfile and EIF build script
-- Key rotation script (`rotate-enclave-key.sh`)
-
-#### Additional Services
-- **Indexer** (`services/indexer/`) with PostgreSQL storage, REST API, WebSocket, and rate limiting
-- **Health check aggregator** (`services/health-aggregator/`)
-- **Admin CLI** (`services/admin-cli/`) for contract and service management
-
-#### SDKs and Examples
-- Python SDK quickstart (`examples/sdk-python-quickstart/`)
-- Rust SDK quickstart (`examples/sdk-rust-quickstart/`)
-- TypeScript SDK quickstart (`examples/sdk-typescript-quickstart/`)
-- Bank credit scoring demo (`examples/bank-demo/`)
-- Browser WASM demo (`web/`)
-
-#### Deployment
-- Docker Compose for bank demo, production, monitoring, Sepolia, GPU, and load testing
-- fly.io deployment config for verifier service
-- Arbitrum mainnet deployment script with safety checks (`scripts/deploy-mainnet.sh`)
-- Arbitrum Sepolia testnet deployment script (`scripts/deploy-sepolia.sh`)
-- World Chain mainnet deployment script (`contracts/script/DeployWorldChainMainnet.s.sol`)
-- Stylus WASM deployment script (`scripts/stylus-sepolia-deploy.sh`)
-- Nitro enclave EIF build script (`tee/scripts/build-enclave.sh`)
-- systemd-compatible operator service configuration
-
-#### CI/CD (`.github/workflows/`)
-- Rust CI (cargo check, clippy, test, fmt)
-- Solidity CI (forge build, test, fmt)
-- Stylus CI (WASM build, size check, native tests)
-- Python SDK CI
-- E2E smoke tests (local Anvil and Sepolia)
-- Docker security scanning
-- Coverage reporting
+#### Infrastructure
+- Docker Compose for bank demo (verifier API + optional Anvil)
+- Fly.io deployment config + CI workflow
+- GitHub Actions: Rust CI, Solidity CI, Stylus CI, verifier CI
 - PyPI and npm publish workflows
-- Release workflow with artifact generation
+- Bank demo CLI with credit scoring model
 
-#### Documentation (`docs/`)
-- Security model and threat analysis (`SECURITY_MODEL.md`)
-- Audit trail format for compliance (`AUDIT_TRAIL.md`)
-- Static analysis findings with fixes (`AUDIT_FINDINGS.md`)
-- API reference for CLI, REST, Rust, Python, C FFI (`API_REFERENCE.md`)
-- Quick start tutorial -- Python, Rust, JS, REST (`QUICKSTART.md`)
-- Architecture overview (`ARCHITECTURE.md`)
-- TEE deployment guide (`TEE_DEPLOYMENT.md`)
-- Contract deployment guide (`CONTRACT_DEPLOYMENT.md`)
-- Stylus deployment guide (`STYLUS_DEPLOYMENT.md`)
-- Monitoring guide with Grafana dashboard (`MONITORING.md`)
-- Publishing guide for PyPI, npm, crates.io (`PUBLISHING.md`)
-- Gas optimization notes (`GAS_OPTIMIZATION.md`)
-- Disaster recovery runbook (`DISASTER_RECOVERY.md`)
-- Troubleshooting guide (`TROUBLESHOOTING.md`)
+#### Documentation
+- API Reference (contracts + services + CLI)
+- Proof Format Reference (all wire formats)
+- Integration Guide (patterns, chain-specific notes, monitoring)
+- Security Model (defense-in-depth, threat model)
+- Audit Trail (on-chain events, off-chain logs, SIEM)
+- Quickstart tutorial (Python, JavaScript, Rust, REST API)
+- Architecture overview (5 verification paths)
+- Benchmarks (native verification timing + on-chain gas costs)
 
-#### Security
-- Slither static analysis (2 high, 5 medium findings -- 4 fixed, 3 accepted as design decisions)
-- Fuzz testing: 3 Foundry fuzz contracts + 1 invariant contract (`ExecutionEngineFuzz`, `ProverRegistryFuzz`, `TEEMLVerifierFuzz`, `InvariantTest`)
-- Implementation contract initialization protection on all UUPS proxies
-- Zero-address validation on TEEMLVerifier initializer
-- Checks-effects-interactions pattern enforced in ExecutionEngine
-- `nonReentrant` on all state-changing external functions
-- No `tx.origin` or `selfdestruct` usage
-- `gitleaks` pre-commit hook for secret detection
-
-#### Performance
-- Warm prover cache (cached Pedersen generators)
-- Verification benchmarks (Criterion, 88-layer XGBoost circuit):
-  - Hybrid (Fr only): 629ms
-  - Full (`verify_raw`): 2.16s
-  - Full with JSON bundle (`verify`): 6.29s
-- Proof size: 130.7KB binary, 432.9KB JSON bundle
-- Gzip compression reduces bundle size approximately 70%
-- On-chain gas costs:
-  - Stylus + Groth16 hybrid: ~3-6M gas (single tx, Arbitrum)
-  - Multi-tx batch: <30M gas per tx, 15 transactions total (Ethereum L1)
-  - Direct GKR+Hyrax: ~254M gas (high-gas-limit chains)
-
-#### Test Coverage
-- 1,570+ tests across all components
-- Solidity: 789 tests (verifier, batch, Groth16 hybrid, TEE, fuzz)
-- Python SDK: 449 tests
-- TypeScript SDK: 199 tests
-- Stylus WASM: 85 tests (BN254 field/EC, Poseidon, GKR, Hyrax, sumcheck)
-- Remainder circuit: 34 tests (XGBoost circuit, prove-and-verify, ABI encoding)
-- gnark Go: 14 tests (Groth16 circuit, proving, chunked EC)
-
-[0.1.0]: https://github.com/worldcoin/world-zk-compute/releases/tag/v0.1.0
+### Security
+- Poseidon sponge for Fiat-Shamir transcript (BN254 PSE/Scroll constants)
+- MiMC batch challenge computed in-circuit (prevents malicious prover)
+- OpsDigest integrity check across chunked Groth16 proofs
+- Replay protection: chain_id + nonce + timestamp in attestation
+- Rate limiting on all POST endpoints
+- SSRF protection in operator service

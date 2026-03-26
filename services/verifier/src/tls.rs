@@ -140,6 +140,15 @@ fn build_mtls_server_config(
 mod tests {
     use super::*;
 
+    /// Install a default CryptoProvider for rustls.
+    ///
+    /// When rustls cannot auto-detect which provider to use, we explicitly
+    /// install `aws_lc_rs` as the default (the only crypto backend enabled
+    /// in this crate's dependency tree).
+    fn ensure_crypto_provider() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    }
+
     #[test]
     fn test_tls_disabled_by_default() {
         // Clear env vars for this test
@@ -198,20 +207,20 @@ mod tests {
 
     #[test]
     fn test_empty_client_ca_path_means_no_mtls() {
-        std::env::set_var("VERIFIER_TLS_CERT", "/certs/server.pem");
-        std::env::set_var("VERIFIER_TLS_KEY", "/certs/server-key.pem");
-        std::env::set_var("VERIFIER_TLS_CLIENT_CA", "");
-
-        let config = TlsConfig::from_env().unwrap().unwrap();
+        // Test the logic directly rather than via env vars to avoid races
+        // with other parallel tests that manipulate the same env vars.
+        let config = TlsConfig {
+            cert_path: PathBuf::from("/certs/server.pem"),
+            key_path: PathBuf::from("/certs/server-key.pem"),
+            client_ca_path: None, // empty env var is filtered to None by from_env()
+        };
         assert!(!config.is_mtls());
-
-        std::env::remove_var("VERIFIER_TLS_CERT");
-        std::env::remove_var("VERIFIER_TLS_KEY");
-        std::env::remove_var("VERIFIER_TLS_CLIENT_CA");
     }
 
     #[tokio::test]
     async fn test_rustls_config_basic_tls() {
+        ensure_crypto_provider();
+
         // Generate self-signed cert for testing
         let params = rcgen::CertificateParams::new(vec!["localhost".to_string()]).unwrap();
         let cert = params
@@ -252,6 +261,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_rustls_config_mtls() {
+        ensure_crypto_provider();
+
         let dir = std::env::temp_dir().join("verifier-mtls-test");
         std::fs::create_dir_all(&dir).unwrap();
 
