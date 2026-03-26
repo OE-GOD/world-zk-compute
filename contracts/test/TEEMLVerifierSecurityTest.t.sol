@@ -616,19 +616,19 @@ contract TEEMLVerifierSecurityTest is Test {
         verifier.challenge{value: 0.1 ether}(resultId);
     }
 
-    function test_finalizeWorksWhilePaused() public {
+    function test_finalizeBlockedWhilePaused() public {
         bytes32 resultId = _submitResult(submitter, "result");
         vm.warp(block.timestamp + 1 hours + 1);
 
         // Pause
         verifier.pause();
 
-        // Finalize should still work (no whenNotPaused on finalize)
+        // Finalize should revert (whenNotPaused on all entry points)
+        vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
         verifier.finalize(resultId);
-        assertTrue(verifier.isResultValid(resultId));
     }
 
-    function test_resolveDisputeWorksWhilePaused() public {
+    function test_resolveDisputeBlockedWhilePaused() public {
         bytes32 resultId = _submitResult(submitter, "result");
 
         vm.prank(challenger);
@@ -639,9 +639,9 @@ contract TEEMLVerifierSecurityTest is Test {
         // Pause
         verifier.pause();
 
-        // Resolve should still work (no whenNotPaused on resolve)
+        // Resolve should revert (whenNotPaused on all entry points)
+        vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
         verifier.resolveDisputeByTimeout(resultId);
-        assertTrue(verifier.disputeResolved(resultId));
     }
 
     // ========================================================================

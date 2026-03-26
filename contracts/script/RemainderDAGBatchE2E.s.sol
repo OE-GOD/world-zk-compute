@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Script.sol";
 import "../src/remainder/RemainderVerifier.sol";
+import {UUPSProxy} from "../src/Upgradeable.sol";
 import "../src/remainder/GKRDAGVerifier.sol";
 
 /// @title RemainderDAGBatchE2E
@@ -52,7 +53,13 @@ contract RemainderDAGBatchE2E is Script {
         private
         returns (RemainderVerifier verifier)
     {
-        verifier = new RemainderVerifier(vm.addr(deployerKey));
+        {
+            RemainderVerifier verifierImpl = new RemainderVerifier();
+            UUPSProxy verifierProxy = new UUPSProxy(
+                address(verifierImpl), abi.encodeCall(RemainderVerifier.initialize, (vm.addr(deployerKey)))
+            );
+            verifier = RemainderVerifier(address(verifierProxy));
+        }
         console.log("RemainderVerifier:", address(verifier));
 
         bytes32 gensHash = keccak256(f.gensHex);

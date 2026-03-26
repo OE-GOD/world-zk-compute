@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Script.sol";
 import "../src/remainder/RemainderVerifier.sol";
+import {UUPSProxy} from "../src/Upgradeable.sol";
 import "../src/remainder/GKRDAGVerifier.sol";
 import "../src/tee/TEEMLVerifier.sol";
 
@@ -78,7 +79,12 @@ contract StylusDisputeE2E is Script {
         console.log("[Phase 3] Deploying Solidity contracts...");
         vm.startBroadcast(k.deployerKey);
 
-        remainder = new RemainderVerifier(k.deployer);
+        {
+            RemainderVerifier remainderImpl = new RemainderVerifier();
+            UUPSProxy remainderProxy =
+                new UUPSProxy(address(remainderImpl), abi.encodeCall(RemainderVerifier.initialize, (k.deployer)));
+            remainder = RemainderVerifier(address(remainderProxy));
+        }
         console.log("  RemainderVerifier:", address(remainder));
 
         remainder.registerDAGCircuit(fix.circuitHash, fix.descData, "XGBoost-Phase1a", fix.gensHash);

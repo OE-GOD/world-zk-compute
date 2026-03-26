@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Script.sol";
 import "../src/remainder/RemainderVerifier.sol";
+import {UUPSProxy} from "../src/Upgradeable.sol";
 import "../src/remainder/GKRDAGVerifier.sol";
 import {DAGGroth16Verifier} from "../src/remainder/DAGRemainderGroth16Verifier.sol";
 
@@ -45,7 +46,10 @@ contract DeployRemainder is Script {
         vm.startBroadcast(deployerKey);
 
         // 1. Deploy contracts
-        RemainderVerifier verifier = new RemainderVerifier(deployer);
+        RemainderVerifier verifierImpl = new RemainderVerifier();
+        UUPSProxy verifierProxy =
+            new UUPSProxy(address(verifierImpl), abi.encodeCall(RemainderVerifier.initialize, (deployer)));
+        RemainderVerifier verifier = RemainderVerifier(address(verifierProxy));
         DAGGroth16Verifier groth16 = new DAGGroth16Verifier();
 
         // 2. Register DAG circuit

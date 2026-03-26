@@ -4,7 +4,8 @@ pragma solidity ^0.8.20;
 import "forge-std/Test.sol";
 import "../src/remainder/RemainderVerifier.sol";
 import "../src/remainder/GKRDAGVerifier.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {UUPSUpgradeable, UUPSProxy} from "../src/Upgradeable.sol";
+import {DeployRemainderVerifierHelper} from "./helpers/DeployRemainderVerifier.sol";
 
 /// @notice Mock Stylus verifier that returns true
 contract MockStylusVerifier {
@@ -35,7 +36,7 @@ contract MockStylusVerifierReverts {
     }
 }
 
-contract StylusAdapterTest is Test {
+contract StylusAdapterTest is Test, DeployRemainderVerifierHelper {
     RemainderVerifier verifier;
     MockStylusVerifier mockStylus;
     MockStylusVerifierFalse mockStylusFalse;
@@ -44,7 +45,7 @@ contract StylusAdapterTest is Test {
     bytes32 circuitHash;
 
     function setUp() public {
-        verifier = new RemainderVerifier(address(this));
+        verifier = _deployRemainderVerifier(address(this));
         mockStylus = new MockStylusVerifier();
         mockStylusFalse = new MockStylusVerifierFalse();
         mockStylusReverts = new MockStylusVerifierReverts();
@@ -96,7 +97,7 @@ contract StylusAdapterTest is Test {
     /// @notice Test only admin can set Stylus verifier
     function test_set_stylus_verifier_not_admin_reverts() public {
         vm.prank(address(0xBEEF));
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, address(0xBEEF)));
+        vm.expectRevert(UUPSUpgradeable.NotAdmin.selector);
         verifier.setDAGStylusVerifier(circuitHash, address(mockStylus));
     }
 

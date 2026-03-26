@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Script.sol";
 import "../src/remainder/RemainderVerifier.sol";
+import {UUPSProxy} from "../src/Upgradeable.sol";
 
 /// @title RemainderE2E
 /// @notice Deploy RemainderVerifier and test with a real proof from Remainder_CE
@@ -14,7 +15,10 @@ contract RemainderE2E is Script {
         vm.startBroadcast(deployerKey);
 
         // 1. Deploy RemainderVerifier
-        RemainderVerifier verifier = new RemainderVerifier(deployer);
+        RemainderVerifier verifierImpl = new RemainderVerifier();
+        UUPSProxy verifierProxy =
+            new UUPSProxy(address(verifierImpl), abi.encodeCall(RemainderVerifier.initialize, (deployer)));
+        RemainderVerifier verifier = RemainderVerifier(address(verifierProxy));
         console.log("RemainderVerifier deployed at:", address(verifier));
 
         // 2. Register the XGBoost circuit

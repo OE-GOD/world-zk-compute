@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Script.sol";
 import "../src/remainder/RemainderVerifier.sol";
+import {UUPSProxy} from "../src/Upgradeable.sol";
 import "../src/remainder/GKRDAGVerifier.sol";
 import "../src/remainder/HybridStylusGroth16Verifier.sol";
 
@@ -48,7 +49,7 @@ contract StylusHybridE2E is Script {
 
         // Phase 1: Deploy + register + configure
         vm.startBroadcast(deployerKey);
-        RemainderVerifier verifier = new RemainderVerifier(vm.addr(deployerKey));
+        RemainderVerifier verifier = _deployRemainder(vm.addr(deployerKey));
         console.log("RemainderVerifier deployed at:", address(verifier));
 
         verifier.registerDAGCircuit(fix.circuitHash, fix.descData, "XGBoost-Phase1a", fix.gensHash);
@@ -156,6 +157,12 @@ contract StylusHybridE2E is Script {
         desc.oracleResultIdxs = vm.parseJsonUintArray(json, ".dag_circuit_description.oracleResultIdxs");
         desc.oracleExprCoeffs = _parseUint256Array(json, ".dag_circuit_description.oracleExprCoeffs");
         fix.descData = abi.encode(desc);
+    }
+
+    function _deployRemainder(address admin) private returns (RemainderVerifier) {
+        RemainderVerifier impl = new RemainderVerifier();
+        UUPSProxy proxy = new UUPSProxy(address(impl), abi.encodeCall(RemainderVerifier.initialize, (admin)));
+        return RemainderVerifier(address(proxy));
     }
 
     function _parseUint8Array(string memory json, string memory key) private pure returns (uint8[] memory result) {

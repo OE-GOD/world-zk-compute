@@ -331,7 +331,7 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
         bytes32 circuitHash,
         bytes calldata publicInputs,
         bytes calldata gensData
-    ) external nonReentrant {
+    ) external whenNotPaused nonReentrant {
         PackedMLResult storage r = _results[resultId];
         if (!r.challenged) revert NotChallenged();
         if (disputeResolved[resultId]) revert AlreadyResolved();
@@ -366,7 +366,7 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
         bytes calldata publicInputs,
         bytes calldata gensData,
         uint256[8] calldata ecGroth16Proof
-    ) external nonReentrant {
+    ) external whenNotPaused nonReentrant {
         if (!useStylusGroth16) revert HybridNotEnabled();
 
         PackedMLResult storage r = _results[resultId];
@@ -403,7 +403,7 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
         uint256[][] calldata ecGroth16Proofs,
         uint256 totalChunks,
         uint256 opsDigest
-    ) external nonReentrant {
+    ) external whenNotPaused nonReentrant {
         if (!useStylusGroth16) revert HybridNotEnabled();
 
         PackedMLResult storage r = _results[resultId];
@@ -448,7 +448,7 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
     }
 
     /// @inheritdoc ITEEMLVerifier
-    function resolveDisputeByTimeout(bytes32 resultId) external nonReentrant {
+    function resolveDisputeByTimeout(bytes32 resultId) external whenNotPaused nonReentrant {
         PackedMLResult storage r = _results[resultId];
         if (!r.challenged) revert NotChallenged();
         if (disputeResolved[resultId]) revert AlreadyResolved();
@@ -478,7 +478,7 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
 
     /// @inheritdoc ITEEMLVerifier
     /// @dev Returns the prover's stake via low-level call for contract wallet compatibility.
-    function finalize(bytes32 resultId) external nonReentrant {
+    function finalize(bytes32 resultId) external whenNotPaused nonReentrant {
         PackedMLResult storage r = _results[resultId];
         if (r.submittedAt == 0) revert ResultNotFound();
         if (block.timestamp < r.challengeDeadline) revert ChallengeWindowNotPassed();

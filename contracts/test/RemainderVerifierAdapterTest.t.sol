@@ -23,7 +23,7 @@ contract MockRemainderVerifier is RemainderVerifier {
     bytes public lastGensData;
     uint256 public callCount;
 
-    constructor() RemainderVerifier(address(this)) {}
+    constructor() {}
 
     /// @dev Override verifyOrRevert to skip real proof verification
     function verifyOrRevert(
@@ -53,7 +53,7 @@ contract MockRemainderVerifier is RemainderVerifier {
 
 /// @dev A RemainderVerifier mock that always reverts
 contract AlwaysRevertRemainderVerifier is RemainderVerifier {
-    constructor() RemainderVerifier(address(this)) {}
+    constructor() {}
 
     function verifyOrRevert(bytes calldata, bytes32, bytes calldata, bytes calldata) external pure override {
         revert("AlwaysRevertRemainderVerifier: rejected");

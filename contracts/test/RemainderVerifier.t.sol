@@ -3,7 +3,8 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
 import "../src/remainder/RemainderVerifier.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {UUPSUpgradeable, UUPSProxy} from "../src/Upgradeable.sol";
+import {DeployRemainderVerifierHelper} from "./helpers/DeployRemainderVerifier.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "../src/remainder/PoseidonSponge.sol";
 import "../src/remainder/SumcheckVerifier.sol";
@@ -109,7 +110,7 @@ contract PoseidonSpongeTest is Test {
 
 contract SumcheckVerifierTest is Test {
     /// @notice Test polynomial evaluation via Lagrange interpolation (linear)
-    function test_evaluate_linear() public pure {
+    function test_evaluate_linear() public view {
         // Linear polynomial: f(0)=3, f(1)=7 → f(x) = 3 + 4x
         uint256[] memory evals = new uint256[](2);
         evals[0] = 3;
@@ -122,7 +123,7 @@ contract SumcheckVerifierTest is Test {
     }
 
     /// @notice Test polynomial evaluation (quadratic)
-    function test_evaluate_quadratic() public pure {
+    function test_evaluate_quadratic() public view {
         // Quadratic: f(0)=1, f(1)=4, f(2)=9 → f(x) = x^2 + 2x + 1
         uint256[] memory evals = new uint256[](3);
         evals[0] = 1;
@@ -138,7 +139,7 @@ contract SumcheckVerifierTest is Test {
     }
 
     /// @notice Test modular inverse
-    function test_mod_inverse() public pure {
+    function test_mod_inverse() public view {
         uint256 p = SumcheckVerifier.FR_MODULUS;
         // inv(2) * 2 == 1 (mod p)
         uint256 inv2 = SumcheckVerifier.modInverse(2, p);
@@ -150,7 +151,7 @@ contract SumcheckVerifierTest is Test {
     }
 
     /// @notice Test sumcheck verification with valid proof
-    function test_verify_valid_sumcheck() public pure {
+    function test_verify_valid_sumcheck() public view {
         // Create a simple sumcheck proof for f(x) = 3 + 4x over {0,1}
         // Sum = f(0) + f(1) = 3 + 7 = 10
         SumcheckVerifier.RoundPoly[] memory rounds = new SumcheckVerifier.RoundPoly[](1);
@@ -242,7 +243,7 @@ contract HyraxVerifierTest is Test {
     }
 }
 
-contract RemainderVerifierTest is Test {
+contract RemainderVerifierTest is Test, DeployRemainderVerifierHelper {
     RemainderVerifier public verifier;
 
     address public admin = address(1);
@@ -250,7 +251,7 @@ contract RemainderVerifierTest is Test {
 
     function setUp() public {
         vm.startPrank(admin);
-        verifier = new RemainderVerifier(admin);
+        verifier = _deployRemainderVerifier(admin);
 
         // Register a test circuit
         uint256 numLayers = 4;
@@ -323,21 +324,18 @@ contract RemainderVerifierTest is Test {
 
     function test_only_admin_can_register() public {
         vm.prank(address(99));
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, address(99)));
+        vm.expectRevert(UUPSUpgradeable.NotAdmin.selector);
         uint256[] memory sizes = new uint256[](1);
         uint8[] memory types = new uint8[](1);
         bool[] memory committed = new bool[](1);
         verifier.registerCircuit(keccak256("another"), 1, sizes, types, committed, "test");
     }
 
-    function test_ownership_transfer() public {
+    function test_admin_transfer() public {
         address newAdmin = address(42);
         vm.prank(admin);
-        verifier.transferOwnership(newAdmin);
-        // Ownable2Step: must accept
-        vm.prank(newAdmin);
-        verifier.acceptOwnership();
-        assertEq(verifier.owner(), newAdmin);
+        verifier.changeAdmin(newAdmin);
+        assertEq(verifier.admin(), newAdmin);
     }
 
     function test_get_circuit_hashes() public view {
@@ -412,19 +410,19 @@ contract RemainderVerifierTest is Test {
         verifier.verifyProof(proof, circuitHash, pubInputs, "");
     }
 
-    /// @notice Non-owner calling pause() should revert with OwnableUnauthorizedAccount.
+    /// @notice Non-owner calling pause() should revert with NotAdmin_replaced.
     function test_nonOwner_cannotPause_reverts() public {
         address nonOwner = address(0xdead);
         vm.prank(nonOwner);
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, nonOwner));
+        vm.expectRevert(UUPSUpgradeable.NotAdmin.selector);
         verifier.pause();
     }
 
-    /// @notice Non-owner calling registerCircuit() should revert with OwnableUnauthorizedAccount.
+    /// @notice Non-owner calling registerCircuit() should revert with NotAdmin_replaced.
     function test_nonOwner_cannotRegisterCircuit_reverts() public {
         address nonOwner = address(0xdead);
         vm.prank(nonOwner);
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, nonOwner));
+        vm.expectRevert(UUPSUpgradeable.NotAdmin.selector);
 
         uint256[] memory sizes = new uint256[](1);
         uint8[] memory types = new uint8[](1);
@@ -506,7 +504,7 @@ contract RemainderVerifierTest is Test {
 /// @title RemainderVerifierTestDAGSecurity
 /// @notice DAG batch negative path tests for access control (T406).
 ///         Uses the phase1a_dag_fixture for realistic proof data.
-contract RemainderVerifierTestDAGSecurity is Test {
+contract RemainderVerifierTestDAGSecurity is Test, DeployRemainderVerifierHelper {
     RemainderVerifier verifier;
 
     bytes proofHex;
@@ -515,7 +513,7 @@ contract RemainderVerifierTestDAGSecurity is Test {
     bytes publicInputsHex;
 
     function setUp() public {
-        verifier = new RemainderVerifier(address(this));
+        verifier = _deployRemainderVerifier(address(this));
         _loadAndRegisterDAG();
     }
 
@@ -606,7 +604,7 @@ contract RemainderVerifierTestDAGSecurity is Test {
 /// @title RemainderVerifierNegativeTest
 /// @notice Negative / adversarial tests for RemainderVerifier.verifyProof
 ///         using the real e2e_fixture.json proof data.
-contract RemainderVerifierNegativeTest is Test {
+contract RemainderVerifierNegativeTest is Test, DeployRemainderVerifierHelper {
     RemainderVerifier public verifier;
     bytes32 public circuitHash;
 
@@ -617,7 +615,7 @@ contract RemainderVerifierNegativeTest is Test {
 
     function setUp() public {
         // Deploy verifier
-        verifier = new RemainderVerifier(address(this));
+        verifier = _deployRemainderVerifier(address(this));
 
         // Load fixture
         string memory json = vm.readFile("test/fixtures/e2e_fixture.json");
@@ -1033,7 +1031,7 @@ contract RemainderVerifierNegativeTest is Test {
     }
 }
 
-contract IntegrationTest is Test {
+contract IntegrationTest is Test, DeployRemainderVerifierHelper {
     ProgramRegistry public registry;
     ExecutionEngine public engine;
     MockRiscZeroVerifier public mockVerifier;
@@ -1054,7 +1052,7 @@ contract IntegrationTest is Test {
         // Deploy registry and verifiers
         registry = new ProgramRegistry(deployer);
         mockVerifier = new MockRiscZeroVerifier();
-        remainderVerifier = new RemainderVerifier(deployer);
+        remainderVerifier = _deployRemainderVerifier(deployer);
 
         // Deploy adapters
         remainderAdapter = new RemainderVerifierAdapter(address(remainderVerifier));
@@ -1658,11 +1656,11 @@ contract PedersenGensDecoderTest is Test {
 /// @notice Validates the committed sumcheck proof decoder against real Rust-generated data.
 ///         Loads the real ABI-encoded proof, decodes it into committed GKR structs,
 ///         and validates the structure matches expected counts.
-contract E2EProofDecodeTest is Test {
+contract E2EProofDecodeTest is Test, DeployRemainderVerifierHelper {
     RemainderVerifier public verifier;
 
     function setUp() public {
-        verifier = new RemainderVerifier(address(this));
+        verifier = _deployRemainderVerifier(address(this));
     }
 
     /// @notice Test that the proof decodes successfully and has correct structure
@@ -2337,7 +2335,7 @@ contract E2EProofDecodeTest is Test {
 /// @title TestableRemainderVerifier
 /// @notice Subclass that exposes internal transcript setup functions for testing
 contract TestableRemainderVerifier is RemainderVerifier {
-    constructor(address _admin) RemainderVerifier(_admin) {}
+    constructor() {}
 
     function sha256HashChain(uint256[] memory fqElements) external view returns (uint256 fq1, uint256 fq2) {
         return _sha256HashChain(fqElements);
@@ -2359,7 +2357,7 @@ contract TranscriptSetupTest is Test {
     TestableRemainderVerifier public verifier;
 
     function setUp() public {
-        verifier = new TestableRemainderVerifier(address(this));
+        verifier = new TestableRemainderVerifier();
     }
 
     /// @notice Test hashToFqPair conversion matches fixture values
@@ -2613,7 +2611,7 @@ contract TranscriptSetupTest is Test {
 /// @notice Unit tests for the committed sumcheck verification components.
 contract CommittedSumcheckVerifierTest is Test {
     /// @notice Test modular inverse
-    function test_mod_inverse() public pure {
+    function test_mod_inverse() public view {
         uint256 p = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
 
         // inv(2) * 2 == 1 (mod p)
@@ -2630,7 +2628,7 @@ contract CommittedSumcheckVerifierTest is Test {
     }
 
     /// @notice Test modular exponentiation
-    function test_mod_exp() public pure {
+    function test_mod_exp() public view {
         uint256 p = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
 
         // 2^10 = 1024
@@ -2644,7 +2642,7 @@ contract CommittedSumcheckVerifierTest is Test {
     }
 
     /// @notice Test j_star computation with known values
-    function test_compute_jstar_basic() public pure {
+    function test_compute_jstar_basic() public view {
         uint256 n = 1;
         uint256 degree = 2;
 
@@ -2793,14 +2791,14 @@ contract Groth16VerifierTest is Test {
 /// @title GKRHybridVerifierTest
 /// @notice Tests for the hybrid GKR+Groth16 verification flow.
 /// Tests transcript replay, Groth16 input building, and EC check wiring.
-contract GKRHybridVerifierTest is Test {
+contract GKRHybridVerifierTest is Test, DeployRemainderVerifierHelper {
     RemainderVerifier remainderVerifier;
     Groth16Verifier groth16Verifier;
 
     uint256 constant FR_MODULUS = 21888242871839275222246405745257275088548364400416034343698204186575808495617;
 
     function setUp() public {
-        remainderVerifier = new RemainderVerifier(address(this));
+        remainderVerifier = _deployRemainderVerifier(address(this));
         groth16Verifier = new Groth16Verifier();
         remainderVerifier.setGroth16Verifier(address(groth16Verifier));
 
@@ -3391,7 +3389,7 @@ contract GKRHybridVerifierTest is Test {
 
     /// @notice Test that verifyWithGroth16 rejects when groth16Verifier is not set
     function test_hybrid_rejects_no_groth16_verifier() public {
-        RemainderVerifier freshVerifier = new RemainderVerifier(address(this));
+        RemainderVerifier freshVerifier = _deployRemainderVerifier(address(this));
         // Don't set groth16Verifier, but register the circuit
 
         (bytes memory proofHex, bytes memory gensHex, bytes32 circuitHash) = _loadE2EFixture();
@@ -3699,7 +3697,7 @@ contract GKRHybridVerifierTest is Test {
     ///      fixture's final layer commitment is a Hyrax commitment, not scalarMul(g, mleEval).
     function test_hybrid_noncommitted_triggers_claim_check() public {
         // Deploy a fresh verifier and register the circuit with isCommitted[0] = false
-        RemainderVerifier freshVerifier = new RemainderVerifier(address(this));
+        RemainderVerifier freshVerifier = _deployRemainderVerifier(address(this));
         freshVerifier.setGroth16Verifier(address(groth16Verifier));
 
         string memory json = vm.readFile("test/fixtures/groth16_e2e_fixture.json");
@@ -3737,7 +3735,7 @@ contract GKRHybridVerifierTest is Test {
     /// @notice Test that committed-only constraint is relaxed: registering with isCommitted[0]=false
     ///         no longer reverts at _validateHybridInputs (it proceeds past validation).
     function test_hybrid_accepts_noncommitted_registration() public {
-        RemainderVerifier freshVerifier = new RemainderVerifier(address(this));
+        RemainderVerifier freshVerifier = _deployRemainderVerifier(address(this));
         freshVerifier.setGroth16Verifier(address(groth16Verifier));
 
         string memory json = vm.readFile("test/fixtures/groth16_e2e_fixture.json");
@@ -3794,11 +3792,11 @@ contract GKRHybridVerifierTest is Test {
 // DAG Verifier Tests
 // ========================================================================
 
-contract GKRDAGVerifierTest is Test {
+contract GKRDAGVerifierTest is Test, DeployRemainderVerifierHelper {
     RemainderVerifier verifier;
 
     function setUp() public {
-        verifier = new RemainderVerifier(address(this));
+        verifier = _deployRemainderVerifier(address(this));
     }
 
     /// @notice Load fixture and build DAGCircuitDescription from JSON
@@ -4231,11 +4229,11 @@ contract GKRDAGVerifierTest is Test {
 // DAG HYBRID VERIFIER TESTS (Phase 1 validation)
 // ========================================================================
 
-contract GKRDAGHybridVerifierTest is Test {
+contract GKRDAGHybridVerifierTest is Test, DeployRemainderVerifierHelper {
     RemainderVerifier verifier;
 
     function setUp() public {
-        verifier = new RemainderVerifier(address(this));
+        verifier = _deployRemainderVerifier(address(this));
     }
 
     function _loadFixtureAndRegister()
@@ -4391,12 +4389,12 @@ contract GKRDAGHybridVerifierTest is Test {
 
 import {DAGGroth16Verifier} from "../src/remainder/DAGRemainderGroth16Verifier.sol";
 
-contract GKRDAGGroth16E2ETest is Test {
+contract GKRDAGGroth16E2ETest is Test, DeployRemainderVerifierHelper {
     RemainderVerifier verifier;
     DAGGroth16Verifier dagGroth16Verifier;
 
     function setUp() public {
-        verifier = new RemainderVerifier(address(this));
+        verifier = _deployRemainderVerifier(address(this));
         dagGroth16Verifier = new DAGGroth16Verifier();
     }
 
@@ -4637,7 +4635,7 @@ contract GKRDAGGroth16E2ETest is Test {
 // DAG BATCH VERIFIER TESTS (Multi-transaction batch verification)
 // ========================================================================
 
-contract DAGBatchVerifierTest is Test {
+contract DAGBatchVerifierTest is Test, DeployRemainderVerifierHelper {
     RemainderVerifier verifier;
 
     // Fixture data cached for reuse
@@ -4647,7 +4645,7 @@ contract DAGBatchVerifierTest is Test {
     bytes publicInputsHex;
 
     function setUp() public {
-        verifier = new RemainderVerifier(address(this));
+        verifier = _deployRemainderVerifier(address(this));
         _loadAndRegister();
     }
 
@@ -5027,7 +5025,7 @@ contract EventTestMockStylusVerifier {
 /// @title DAGProofVerifiedEventTest
 /// @notice Tests that DAGProofVerified events are emitted by verifyDAGProof,
 ///         verifyDAGWithGroth16, and verifyDAGProofStylus.
-contract DAGProofVerifiedEventTest is Test {
+contract DAGProofVerifiedEventTest is Test, DeployRemainderVerifierHelper {
     RemainderVerifier verifier;
     DAGGroth16Verifier dagGroth16Verifier;
     EventTestMockStylusVerifier mockStylus;
@@ -5036,7 +5034,7 @@ contract DAGProofVerifiedEventTest is Test {
     event DAGProofVerified(bytes32 indexed circuitHash, bool valid, string method);
 
     function setUp() public {
-        verifier = new RemainderVerifier(address(this));
+        verifier = _deployRemainderVerifier(address(this));
         dagGroth16Verifier = new DAGGroth16Verifier();
         mockStylus = new EventTestMockStylusVerifier();
     }
@@ -5206,7 +5204,7 @@ contract ReentrantRemainderVerifier is RemainderVerifier {
     bytes public storedGensData;
     bytes32 public storedSessionId;
 
-    constructor(address admin) RemainderVerifier(admin) {}
+    constructor() {}
 
     /// @notice Configure what to re-enter and with what data
     function setReentryParams(
@@ -5240,7 +5238,7 @@ contract ReentrantRemainderVerifier is RemainderVerifier {
     }
 }
 
-contract ReentrancyGuardTest is Test {
+contract ReentrancyGuardTest is Test, DeployRemainderVerifierHelper {
     ReentrantRemainderVerifier verifier;
 
     // Fixture data
@@ -5250,7 +5248,9 @@ contract ReentrancyGuardTest is Test {
     bytes publicInputsHex;
 
     function setUp() public {
-        verifier = new ReentrantRemainderVerifier(address(this));
+        ReentrantRemainderVerifier impl = new ReentrantRemainderVerifier();
+        UUPSProxy proxy = new UUPSProxy(address(impl), abi.encodeCall(RemainderVerifier.initialize, (address(this))));
+        verifier = ReentrantRemainderVerifier(address(proxy));
         _loadAndRegister();
     }
 

@@ -613,17 +613,15 @@ contract TEEMLVerifierTest is Test {
         verifier.challenge{value: DEFAULT_CHALLENGE_BOND}(resultId);
     }
 
-    function test_pause_doesNotBlockFinalize() public {
+    function test_pause_blocksFinalize() public {
         bytes32 resultId = _submitDefault();
         vm.warp(block.timestamp + 1 hours + 1);
 
         verifier.pause();
 
-        // finalize should still work while paused
+        // finalize should revert while paused (whenNotPaused on all entry points)
+        vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
         verifier.finalize(resultId);
-
-        ITEEMLVerifier.MLResult memory r = verifier.getResult(resultId);
-        assertTrue(r.finalized);
     }
 
     // ─── NEW: ReentrancyGuard ───────────────────────────────────────────────

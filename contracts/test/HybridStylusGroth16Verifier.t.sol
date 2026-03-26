@@ -6,7 +6,9 @@ import "../src/remainder/HybridStylusGroth16Verifier.sol";
 import "../src/remainder/RemainderVerifier.sol";
 import "../src/remainder/GKRDAGVerifier.sol";
 import "../src/tee/TEEMLVerifier.sol";
+import {UUPSUpgradeable, UUPSProxy} from "../src/Upgradeable.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {DeployRemainderVerifierHelper} from "./helpers/DeployRemainderVerifier.sol";
 
 /// @dev Mock Stylus verifier that returns configurable results for hybrid mode
 contract MockStylusHybridVerifier {
@@ -815,7 +817,7 @@ contract TEEMLVerifierHybridTest is Test {
 // TEST: RemainderVerifier hybrid admin + routing
 // =============================================================================
 
-contract RemainderVerifierHybridTest is Test {
+contract RemainderVerifierHybridTest is Test, DeployRemainderVerifierHelper {
     event DAGECGroth16VerifierUpdated(bytes32 indexed circuitHash, address indexed verifier, uint256 inputCount);
 
     RemainderVerifier verifier;
@@ -824,7 +826,7 @@ contract RemainderVerifierHybridTest is Test {
     bytes32 circuitHash = bytes32(uint256(0x1234));
 
     function setUp() public {
-        verifier = new RemainderVerifier(admin);
+        verifier = _deployRemainderVerifier(admin);
 
         // Register a minimal DAG circuit so we can test admin functions.
         // atomOffsets[numComputeLayers] = totalAtoms = 0
@@ -862,10 +864,10 @@ contract RemainderVerifierHybridTest is Test {
         assertEq(verifier.dagECGroth16InputCounts(circuitHash), 100);
     }
 
-    function test_setDAGECGroth16Verifier_onlyOwner() public {
-        address nonOwner = address(0xDEAD);
-        vm.prank(nonOwner);
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, nonOwner));
+    function test_setDAGECGroth16Verifier_onlyAdmin() public {
+        address nonAdmin = address(0xDEAD);
+        vm.prank(nonAdmin);
+        vm.expectRevert(UUPSUpgradeable.NotAdmin.selector);
         verifier.setDAGECGroth16Verifier(circuitHash, address(0xBEEF), 100);
     }
 
@@ -937,5 +939,97 @@ contract RemainderVerifierHybridTest is Test {
         // Proof too short (< 4 bytes)
         vm.expectRevert(RemainderVerifier.InvalidProofLength.selector);
         verifier.verifyDAGProofStylusGroth16Chunked(hex"52454d", circuitHash, hex"", hex"", chunks, 1, 0);
+    }
+}
+
+// =============================================================================
+// TEST: Chunked Hybrid Gas Profile
+// =============================================================================
+
+contract ChunkedHybridGasProfileTest is Test, DeployRemainderVerifierHelper {
+    RemainderVerifier verifier;
+    MockStylusHybridVerifier mockStylus;
+    MockECGroth16Verifier mockGroth16;
+
+    bytes32 circuitHash = bytes32(uint256(0xDAD));
+    bytes constant DUMMY_PROOF = hex"52454d31aabbccdd";
+    bytes32 constant DUMMY_DIGEST = bytes32(uint256(0x42));
+    bytes constant DUMMY_FR_OUTPUTS = hex"";
+
+    function setUp() public {
+        verifier = _deployRemainderVerifier(address(this));
+        mockStylus = new MockStylusHybridVerifier();
+        mockGroth16 = new MockECGroth16Verifier();
+
+        // Register minimal DAG circuit
+        GKRDAGVerifier.DAGCircuitDescription memory desc;
+        desc.numComputeLayers = 4;
+        desc.numInputLayers = 2;
+        desc.layerTypes = new uint8[](4);
+        desc.numSumcheckRounds = new uint256[](4);
+        desc.atomOffsets = new uint256[](5);
+        desc.atomTargetLayers = new uint256[](0);
+        desc.atomCommitIdxs = new uint256[](0);
+        desc.ptOffsets = new uint256[](1);
+        desc.ptData = new uint256[](0);
+        desc.inputIsCommitted = new bool[](2);
+        desc.oracleProductOffsets = new uint256[](5);
+        desc.oracleResultIdxs = new uint256[](0);
+        desc.oracleExprCoeffs = new uint256[](0);
+
+        bytes memory descData = abi.encode(desc);
+        verifier.registerDAGCircuit(circuitHash, descData, "gas-profile-circuit", bytes32(0));
+
+        // Wire Stylus + EC Groth16 verifiers
+        verifier.setDAGStylusVerifier(circuitHash, address(mockStylus));
+        verifier.setDAGECGroth16Verifier(circuitHash, address(mockGroth16), 5);
+
+        // Configure mock Stylus to return success
+        mockStylus.setResult(true, DUMMY_DIGEST, DUMMY_FR_OUTPUTS);
+    }
+
+    function _makeChunks(uint256 numChunks) internal pure returns (uint256[][] memory) {
+        uint256[][] memory chunks = new uint256[][](numChunks);
+        for (uint256 i = 0; i < numChunks; i++) {
+            chunks[i] = new uint256[](8);
+        }
+        return chunks;
+    }
+
+    function test_chunked_hybrid_gas_profile() public {
+        emit log("=== CHUNKED HYBRID GAS PROFILE ===");
+
+        // 1 chunk
+        {
+            uint256 gasBefore = gasleft();
+            verifier.verifyDAGProofStylusGroth16Chunked(
+                DUMMY_PROOF, circuitHash, hex"", hex"", _makeChunks(1), 1, 0
+            );
+            uint256 gasUsed = gasBefore - gasleft();
+            emit log_named_uint("1 chunk total", gasUsed);
+        }
+
+        // 4 chunks
+        {
+            uint256 gasBefore = gasleft();
+            verifier.verifyDAGProofStylusGroth16Chunked(
+                DUMMY_PROOF, circuitHash, hex"", hex"", _makeChunks(4), 4, 0
+            );
+            uint256 gasUsed = gasBefore - gasleft();
+            emit log_named_uint("4 chunks total", gasUsed);
+        }
+
+        // 8 chunks (expected for full XGBoost)
+        {
+            uint256 gasBefore = gasleft();
+            verifier.verifyDAGProofStylusGroth16Chunked(
+                DUMMY_PROOF, circuitHash, hex"", hex"", _makeChunks(8), 8, 0
+            );
+            uint256 gasUsed = gasBefore - gasleft();
+            emit log_named_uint("8 chunks total", gasUsed);
+        }
+
+        emit log("vs Solidity DAG direct: ~254M gas");
+        emit log("Target: 3-6M gas for single-tx chunked hybrid");
     }
 }

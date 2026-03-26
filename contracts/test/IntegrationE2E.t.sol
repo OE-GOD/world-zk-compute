@@ -12,6 +12,7 @@ import "../src/mocks/MockRiscZeroVerifier.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {GKRDAGVerifier} from "../src/remainder/GKRDAGVerifier.sol";
+import {DeployRemainderVerifierHelper} from "./helpers/DeployRemainderVerifier.sol";
 
 // ========================================================================
 // MOCKS
@@ -72,7 +73,7 @@ contract MockCallback is IExecutionCallback {
 // SHARED FIXTURE BASE (DAG circuit loading)
 // ========================================================================
 
-contract IntegrationFixtureBase is Test {
+contract IntegrationFixtureBase is Test, DeployRemainderVerifierHelper {
     RemainderVerifier remainderVerifier;
 
     bytes proofHex;
@@ -81,7 +82,7 @@ contract IntegrationFixtureBase is Test {
     bytes publicInputsHex;
 
     function _deployAndRegisterDAGCircuit() internal {
-        remainderVerifier = new RemainderVerifier(address(this));
+        remainderVerifier = _deployRemainderVerifier(address(this));
         _loadAndRegisterDAG();
     }
 

@@ -9,7 +9,7 @@ import {GKRDAGVerifier} from "./GKRDAGVerifier.sol";
 import {GKRDAGHybridVerifier} from "./GKRDAGHybridVerifier.sol";
 import {DAGBatchVerifier} from "./DAGBatchVerifier.sol";
 import {HybridStylusGroth16Verifier} from "./HybridStylusGroth16Verifier.sol";
-import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {UUPSUpgradeable} from "../Upgradeable.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
@@ -27,7 +27,7 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 ///      Each registered circuit has a fixed description hash that
 ///      identifies the model structure. The proof must reference
 ///      a registered circuit.
-contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
+contract RemainderVerifier is UUPSUpgradeable, Pausable, ReentrancyGuard {
     // ========================================================================
     // TYPES
     // ========================================================================
@@ -179,22 +179,31 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
     error BatchPublicInputMLEMismatch();
 
     // ========================================================================
-    // CONSTRUCTOR
+    // INITIALIZATION
     // ========================================================================
 
-    constructor(address _admin) Ownable(_admin) {}
+    /// @notice Initialize the contract (called once via proxy)
+    /// @param _admin Admin address for access control and upgrades
+    function initialize(address _admin) external initializer {
+        _setAdmin(_admin);
+    }
+
+    /// @notice Authorization hook for upgrades
+    function _authorizeUpgrade(address newImplementation) internal override {
+        if (newImplementation.code.length == 0) revert InvalidImplementation();
+    }
 
     // ========================================================================
     // PAUSABLE
     // ========================================================================
 
     /// @notice Pause the contract (disables registration and verification)
-    function pause() external onlyOwner {
+    function pause() external onlyAdmin {
         _pause();
     }
 
     /// @notice Unpause the contract
-    function unpause() external onlyOwner {
+    function unpause() external onlyAdmin {
         _unpause();
     }
 
@@ -999,7 +1008,7 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
         uint8[] calldata layerTypes,
         bool[] calldata isCommitted,
         string calldata name
-    ) external onlyOwner whenNotPaused {
+    ) external onlyTimelocked whenNotPaused {
         _registerCircuit(circuitHash, numLayers, layerSizes, layerTypes, isCommitted, name, bytes32(0));
     }
 
@@ -1013,7 +1022,7 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
         bool[] calldata isCommitted,
         string calldata name,
         bytes32 gensHash
-    ) external onlyOwner whenNotPaused {
+    ) external onlyTimelocked whenNotPaused {
         _registerCircuit(circuitHash, numLayers, layerSizes, layerTypes, isCommitted, name, gensHash);
     }
 
@@ -1046,7 +1055,7 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
     }
 
     /// @notice Deactivate a circuit
-    function deactivateCircuit(bytes32 circuitHash) external onlyOwner whenNotPaused {
+    function deactivateCircuit(bytes32 circuitHash) external onlyAdmin whenNotPaused {
         CircuitConfig storage config = circuits[circuitHash];
         if (config.circuitHash == bytes32(0)) revert CircuitNotRegistered();
         config.active = false;
@@ -1054,7 +1063,7 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
     }
 
     /// @notice Reactivate a circuit
-    function reactivateCircuit(bytes32 circuitHash) external onlyOwner whenNotPaused {
+    function reactivateCircuit(bytes32 circuitHash) external onlyAdmin whenNotPaused {
         CircuitConfig storage config = circuits[circuitHash];
         if (config.circuitHash == bytes32(0)) revert CircuitNotRegistered();
         config.active = true;
@@ -1062,7 +1071,7 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
     }
 
     /// @notice Deactivate a DAG circuit
-    function deactivateDAGCircuit(bytes32 circuitHash) external onlyOwner whenNotPaused {
+    function deactivateDAGCircuit(bytes32 circuitHash) external onlyAdmin whenNotPaused {
         DAGCircuitConfig storage config = dagCircuits[circuitHash];
         if (config.circuitHash == bytes32(0)) revert CircuitNotRegistered();
         config.active = false;
@@ -1070,7 +1079,7 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
     }
 
     /// @notice Reactivate a DAG circuit
-    function reactivateDAGCircuit(bytes32 circuitHash) external onlyOwner whenNotPaused {
+    function reactivateDAGCircuit(bytes32 circuitHash) external onlyAdmin whenNotPaused {
         DAGCircuitConfig storage config = dagCircuits[circuitHash];
         if (config.circuitHash == bytes32(0)) revert CircuitNotRegistered();
         config.active = true;
@@ -1078,7 +1087,7 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
     }
 
     /// @notice Set the Groth16 verifier contract address (for hybrid verification)
-    function setGroth16Verifier(address _groth16Verifier) external onlyOwner {
+    function setGroth16Verifier(address _groth16Verifier) external onlyTimelocked {
         if (_groth16Verifier == address(0)) revert ZeroAddress();
         address oldVerifier = groth16Verifier;
         groth16Verifier = _groth16Verifier;
@@ -1088,7 +1097,7 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
     /// @notice Set a per-circuit Groth16 verifier address and input count
     function setCircuitGroth16Verifier(bytes32 circuitHash, address verifier, uint256 groth16InputCount)
         external
-        onlyOwner
+        onlyTimelocked
     {
         if (circuits[circuitHash].circuitHash == bytes32(0)) revert CircuitNotRegistered();
         if (verifier == address(0)) revert ZeroAddress();
@@ -1111,7 +1120,7 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
     /// @param gensHash keccak256 of expected generators (0 = skip)
     function registerDAGCircuit(bytes32 circuitHash, bytes calldata descData, string calldata name, bytes32 gensHash)
         external
-        onlyOwner
+        onlyTimelocked
         whenNotPaused
     {
         if (circuitHash == bytes32(0)) revert CircuitHashZero();
@@ -1404,7 +1413,7 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
     /// @notice Set a per-DAG-circuit Groth16 verifier address and input count
     function setDAGCircuitGroth16Verifier(bytes32 circuitHash, address verifier, uint256 groth16InputCount)
         external
-        onlyOwner
+        onlyTimelocked
     {
         if (dagCircuits[circuitHash].circuitHash == bytes32(0)) revert DAGCircuitNotRegistered();
         if (verifier == address(0)) revert ZeroAddress();
@@ -1418,7 +1427,7 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
     // ========================================================================
 
     /// @notice Set a per-DAG-circuit Stylus verifier address
-    function setDAGStylusVerifier(bytes32 circuitHash, address stylusVerifier) external onlyOwner {
+    function setDAGStylusVerifier(bytes32 circuitHash, address stylusVerifier) external onlyTimelocked {
         if (dagCircuits[circuitHash].circuitHash == bytes32(0)) revert DAGCircuitNotRegistered();
         if (stylusVerifier == address(0)) revert ZeroAddress();
         dagCircuitStylusVerifiers[circuitHash] = stylusVerifier;
@@ -1499,7 +1508,7 @@ contract RemainderVerifier is Ownable2Step, Pausable, ReentrancyGuard {
     /// @notice Set a per-DAG-circuit EC Groth16 verifier for the hybrid Stylus+Groth16 path
     function setDAGECGroth16Verifier(bytes32 circuitHash, address verifier, uint256 groth16InputCount)
         external
-        onlyOwner
+        onlyTimelocked
     {
         if (dagCircuits[circuitHash].circuitHash == bytes32(0)) revert DAGCircuitNotRegistered();
         if (verifier == address(0)) revert ZeroAddress();

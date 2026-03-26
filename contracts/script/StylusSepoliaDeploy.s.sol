@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Script.sol";
 import "../src/remainder/RemainderVerifier.sol";
+import {UUPSProxy} from "../src/Upgradeable.sol";
 import "../src/remainder/GKRDAGVerifier.sol";
 import "../src/tee/TEEMLVerifier.sol";
 
@@ -46,7 +47,10 @@ contract StylusSepoliaDeploy is Script {
 
         // Deploy + register + configure
         vm.startBroadcast(deployerKey);
-        RemainderVerifier verifier = new RemainderVerifier(vm.addr(deployerKey));
+        RemainderVerifier verifierImpl = new RemainderVerifier();
+        UUPSProxy verifierProxy =
+            new UUPSProxy(address(verifierImpl), abi.encodeCall(RemainderVerifier.initialize, (vm.addr(deployerKey))));
+        RemainderVerifier verifier = RemainderVerifier(address(verifierProxy));
         console.log("RemainderVerifier deployed at:", address(verifier));
 
         verifier.registerDAGCircuit(fix.circuitHash, fix.descData, "XGBoost-Phase1a", fix.gensHash);

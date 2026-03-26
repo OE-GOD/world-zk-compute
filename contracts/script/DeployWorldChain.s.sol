@@ -7,6 +7,7 @@ import "../src/ProverRegistry.sol";
 import "../src/ProverReputation.sol";
 import "../src/ExecutionEngine.sol";
 import "../src/remainder/RemainderVerifier.sol";
+import {UUPSProxy} from "../src/Upgradeable.sol";
 import "../src/remainder/GKRDAGVerifier.sol";
 import "../src/tee/TEEMLVerifier.sol";
 
@@ -58,7 +59,7 @@ contract DeployWorldChain is Script {
         vm.startBroadcast(deployerKey);
 
         // -- 1. Deploy RemainderVerifier --------------------------------------------------
-        RemainderVerifier remainder = new RemainderVerifier(deployer);
+        RemainderVerifier remainder = _deployRemainder(deployer);
         console.log("[1/6] RemainderVerifier:   ", address(remainder));
 
         // -- 2. Deploy ProgramRegistry ----------------------------------------------------
@@ -125,7 +126,7 @@ contract DeployWorldChain is Script {
         // -- Optional: Ownership transfer -------------------------------------------------
         address adminAddr = vm.envOr("ADMIN_ADDRESS", address(0));
         if (adminAddr != address(0) && adminAddr != deployer) {
-            remainder.transferOwnership(adminAddr);
+            remainder.changeAdmin(adminAddr);
             programRegistry.transferOwnership(adminAddr);
             reputation.transferOwnership(adminAddr);
             proverRegistry.transferOwnership(adminAddr);
@@ -187,6 +188,14 @@ contract DeployWorldChain is Script {
         bytes memory descData = abi.encode(desc);
         verifier.registerDAGCircuit(circuitHash, descData, "XGBoost-Phase1a", gensHash);
         console.log("  DAG circuit registered (hash:", vm.toString(circuitHash), ")");
+    }
+
+    // -- Deployment Helpers ---------------------------------------------------------------
+
+    function _deployRemainder(address admin) private returns (RemainderVerifier) {
+        RemainderVerifier impl = new RemainderVerifier();
+        UUPSProxy proxy = new UUPSProxy(address(impl), abi.encodeCall(RemainderVerifier.initialize, (admin)));
+        return RemainderVerifier(address(proxy));
     }
 
     // -- Parsing Helpers ------------------------------------------------------------------

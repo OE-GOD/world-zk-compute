@@ -55,7 +55,7 @@ library SumcheckVerifier {
     /// @return result The verification result with challenges
     function verify(SumcheckProof memory proof, uint256 claimedSum, PoseidonSponge.Sponge memory sponge)
         internal
-        pure
+        view
         returns (SumcheckResult memory result)
     {
         uint256 numRounds = proof.rounds.length;
@@ -101,7 +101,7 @@ library SumcheckVerifier {
     /// @param evals Polynomial evaluations at points 0, 1, ..., d
     /// @param x The point to evaluate at
     /// @return The polynomial value at x
-    function evaluatePolynomial(uint256[] memory evals, uint256 x) internal pure returns (uint256) {
+    function evaluatePolynomial(uint256[] memory evals, uint256 x) internal view returns (uint256) {
         uint256 d = evals.length;
 
         if (d == 1) return evals[0];
@@ -184,21 +184,22 @@ library SumcheckVerifier {
 
     /// @notice Compute modular inverse using Fermat's little theorem
     /// @dev For prime p: a^(-1) = a^(p-2) mod p
-    function modInverse(uint256 a, uint256 p) internal pure returns (uint256) {
+    function modInverse(uint256 a, uint256 p) internal view returns (uint256) {
         return modExp(a, p - 2, p);
     }
 
-    /// @notice Modular exponentiation using binary method
-    function modExp(uint256 base, uint256 exp, uint256 mod_) internal pure returns (uint256) {
-        uint256 result = 1;
-        base = base % mod_;
-        while (exp > 0) {
-            if (exp & 1 == 1) {
-                result = mulmod(result, base, mod_);
-            }
-            exp >>= 1;
-            base = mulmod(base, base, mod_);
+    /// @notice Modular exponentiation via EVM MODEXP precompile (0x05)
+    function modExp(uint256 base, uint256 exponent, uint256 mod_) internal view returns (uint256 result) {
+        assembly {
+            let ptr := mload(0x40)
+            mstore(ptr, 32) // base length
+            mstore(add(ptr, 0x20), 32) // exponent length
+            mstore(add(ptr, 0x40), 32) // modulus length
+            mstore(add(ptr, 0x60), base)
+            mstore(add(ptr, 0x80), exponent)
+            mstore(add(ptr, 0xa0), mod_)
+            if iszero(staticcall(gas(), 0x05, ptr, 0xc0, ptr, 0x20)) { revert(0, 0) }
+            result := mload(ptr)
         }
-        return result;
     }
 }

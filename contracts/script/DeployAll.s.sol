@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Script.sol";
 import "../src/remainder/RemainderVerifier.sol";
+import {UUPSProxy} from "../src/Upgradeable.sol";
 import "../src/remainder/GKRDAGVerifier.sol";
 import "../src/tee/TEEMLVerifier.sol";
 
@@ -35,7 +36,11 @@ contract DeployAll is Script {
             remainder = RemainderVerifier(payable(existingRemainder));
             console.log("Using existing RemainderVerifier:", existingRemainder);
         } else {
-            remainder = new RemainderVerifier(deployer);
+            {
+                RemainderVerifier impl = new RemainderVerifier();
+                UUPSProxy proxy = new UUPSProxy(address(impl), abi.encodeCall(RemainderVerifier.initialize, (deployer)));
+                remainder = RemainderVerifier(address(proxy));
+            }
             console.log("RemainderVerifier deployed at:", address(remainder));
         }
 

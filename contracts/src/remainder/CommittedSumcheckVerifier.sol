@@ -107,7 +107,7 @@ library CommittedSumcheckVerifier {
         uint256[] memory bindings,
         uint256 degree,
         uint256 n
-    ) internal pure returns (uint256[] memory jStar) {
+    ) internal view returns (uint256[] memory jStar) {
         uint256 degreePlusOne = degree + 1;
         jStar = new uint256[](degreePlusOne * n);
 
@@ -196,21 +196,23 @@ library CommittedSumcheckVerifier {
     // ========================================================================
 
     /// @notice Modular inverse via Fermat's little theorem: a^(p-2) mod p
-    function modInverse(uint256 a, uint256 p) internal pure returns (uint256) {
+    function modInverse(uint256 a, uint256 p) internal view returns (uint256) {
         if (a == 0) revert InverseOfZero();
         return modExp(a, p - 2, p);
     }
 
-    /// @notice Modular exponentiation via square-and-multiply
-    function modExp(uint256 base, uint256 exp, uint256 mod) internal pure returns (uint256 result) {
-        result = 1;
-        base = base % mod;
-        while (exp > 0) {
-            if (exp & 1 == 1) {
-                result = mulmod(result, base, mod);
-            }
-            exp >>= 1;
-            base = mulmod(base, base, mod);
+    /// @notice Modular exponentiation via EVM MODEXP precompile (0x05)
+    function modExp(uint256 base, uint256 exponent, uint256 modulus) internal view returns (uint256 result) {
+        assembly {
+            let ptr := mload(0x40)
+            mstore(ptr, 32) // base length
+            mstore(add(ptr, 0x20), 32) // exponent length
+            mstore(add(ptr, 0x40), 32) // modulus length
+            mstore(add(ptr, 0x60), base)
+            mstore(add(ptr, 0x80), exponent)
+            mstore(add(ptr, 0xa0), modulus)
+            if iszero(staticcall(gas(), 0x05, ptr, 0xc0, ptr, 0x20)) { revert(0, 0) }
+            result := mload(ptr)
         }
     }
 }
