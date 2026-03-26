@@ -342,6 +342,7 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
     );
     event ExecutionClaimed(uint256 indexed requestId, address indexed prover);
     event ExecutionCompleted(uint256 indexed requestId, address indexed prover, uint256 payout);
+    event ExecutionCancelled(uint256 indexed requestId);
     event Initialized(uint256 version);
     event ProtocolFeeUpdated(uint256 oldFeeBps, uint256 newFeeBps);
     event FeeRecipientUpdated(address indexed oldRecipient, address indexed newRecipient);
@@ -371,6 +372,7 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
     error DeadlinePassed();
     error EmptySeal();
     error EmptyJournal();
+    error NotRequester();
 
     // ========================================================================
     // MODIFIERS
@@ -572,6 +574,25 @@ contract UpgradeableExecutionEngine is UUPSUpgradeable {
         }
 
         emit ExecutionCompleted(requestId, msg.sender, payout);
+    }
+
+    /// @notice Cancel a pending execution request and reclaim the tip
+    /// @dev Only the original requester can cancel. Only Pending (status=0) requests
+    ///      can be cancelled. Deliberately NOT guarded by whenNotPaused so requesters
+    ///      can recover funds even when the contract is paused.
+    /// @param requestId The request to cancel
+    function cancelExecution(uint256 requestId) external nonReentrant {
+        ExecutionRequest storage req = requests[requestId];
+        if (req.id == 0) revert RequestNotFound();
+        if (req.requester != msg.sender) revert NotRequester();
+        if (req.status != 0) revert NotPending();
+
+        req.status = 4; // Cancelled
+
+        (bool success,) = payable(msg.sender).call{value: req.tip}("");
+        if (!success) revert TransferFailed();
+
+        emit ExecutionCancelled(requestId);
     }
 
     // ========================================================================

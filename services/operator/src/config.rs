@@ -88,6 +88,10 @@ pub struct ConfigFile {
     pub prover_retry_max_delay_secs: Option<u64>,
     /// Bind address for the metrics HTTP server. Default: "127.0.0.1".
     pub metrics_bind_addr: Option<String>,
+    /// Directory containing circuit description JSON files for local pre-verification.
+    pub circuit_desc_dir: Option<String>,
+    /// Base directory for the append-only proof archive.
+    pub proof_archive_dir: Option<String>,
 }
 
 impl ConfigFile {
@@ -197,6 +201,13 @@ pub struct Config {
     /// Prover-specific retry: maximum delay in seconds for exponential backoff cap (default: 300).
     /// Env var: `PROVER_RETRY_MAX_DELAY_SECS`.
     pub prover_retry_max_delay_secs: u64,
+    /// Directory containing circuit description JSON files for local pre-verification.
+    /// Files should be named `<circuit_hash_hex>.json`.
+    /// Env var: `CIRCUIT_DESC_DIR`. Default: "" (disabled).
+    pub circuit_desc_dir: String,
+    /// Base directory for the append-only proof archive.
+    /// Env var: `PROOF_ARCHIVE_DIR`. Default: "" (disabled).
+    pub proof_archive_dir: String,
 }
 
 impl Config {
@@ -425,6 +436,16 @@ impl Config {
 
         let prover_url = std::env::var("PROVER_URL").ok().or(file_cfg.prover_url);
 
+        let circuit_desc_dir = std::env::var("CIRCUIT_DESC_DIR")
+            .ok()
+            .or_else(|| file_cfg.circuit_desc_dir.clone())
+            .unwrap_or_default();
+
+        let proof_archive_dir = std::env::var("PROOF_ARCHIVE_DIR")
+            .ok()
+            .or_else(|| file_cfg.proof_archive_dir.clone())
+            .unwrap_or_default();
+
         let config = Self {
             rpc_url,
             private_key,
@@ -457,6 +478,8 @@ impl Config {
             metrics_port,
             metrics_bind_addr,
             prover_url,
+            circuit_desc_dir,
+            proof_archive_dir,
         };
 
         // Run validation during config loading so issues are caught early.
