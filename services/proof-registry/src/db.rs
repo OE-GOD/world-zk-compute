@@ -3,7 +3,6 @@
 //! Proof bundles are stored via a [`ProofStorage`] backend (for portability
 //! and easy backup), while SQLite indexes metadata for fast search.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -53,7 +52,6 @@ pub struct DbStats {
 /// SQLite-backed proof index with pluggable storage backend for bundles.
 pub struct ProofDb {
     conn: Connection,
-    storage_dir: PathBuf,
     /// Pluggable proof storage backend (local WORM or S3 Object Lock).
     blob_store: Arc<dyn ProofStorage>,
 }
@@ -68,13 +66,12 @@ impl ProofDb {
     pub fn new(db_path: &str, storage_dir: &str) -> Result<Self, String> {
         let local = LocalStorage::new(storage_dir)
             .map_err(|e| format!("failed to create local storage: {e}"))?;
-        Self::with_storage(db_path, storage_dir, Arc::new(local))
+        Self::with_storage(db_path, Arc::new(local))
     }
 
     /// Open or create a proof database with a custom storage backend.
     pub fn with_storage(
         db_path: &str,
-        storage_dir: &str,
         blob_store: Arc<dyn ProofStorage>,
     ) -> Result<Self, String> {
         let conn =
@@ -115,15 +112,7 @@ impl ProofDb {
         )
         .map_err(|e| format!("failed to create schema: {e}"))?;
 
-        let storage_dir = PathBuf::from(storage_dir);
-        std::fs::create_dir_all(&storage_dir)
-            .map_err(|e| format!("failed to create storage dir: {e}"))?;
-
-        Ok(Self {
-            conn,
-            storage_dir,
-            blob_store,
-        })
+        Ok(Self { conn, blob_store })
     }
 
     /// Return a reference to the underlying storage backend.
@@ -432,10 +421,6 @@ impl ProofDb {
         self.conn.query_row("SELECT 1", [], |_| Ok(())).is_ok()
     }
 
-    /// Return the file path for a bundle with the given ID.
-    fn bundle_path(&self, id: &str) -> PathBuf {
-        self.storage_dir.join(format!("{id}.json"))
-    }
 }
 
 #[cfg(test)]

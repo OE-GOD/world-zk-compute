@@ -87,7 +87,57 @@ async fn main() {
         .filter(|s| !s.is_empty())
         .collect();
 
-    let db = ProofDb::new(&db_path, &storage_dir).unwrap_or_else(|e| {
+    // Select storage backend based on environment variables.
+    // If S3_BUCKET is set (and the s3 feature is enabled), use S3 with Object Lock;
+    // otherwise use local filesystem with append-only WORM semantics.
+    let blob_store: Arc<dyn storage::ProofStorage> = {
+        #[cfg(feature = "s3")]
+        {
+            if let Ok(bucket) = env::var("S3_BUCKET") {
+                let region =
+                    env::var("S3_REGION").unwrap_or_else(|_| "us-east-1".to_string());
+                let mode = env::var("S3_RETENTION_MODE")
+                    .unwrap_or_else(|_| "GOVERNANCE".to_string());
+                let years: u32 = env::var("S3_RETENTION_YEARS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(7);
+                let prefix =
+                    env::var("S3_PREFIX").unwrap_or_else(|_| "proofs/".to_string());
+
+                let s3 = s3::S3Storage::new(&bucket, &region, &mode, years, &prefix)
+                    .await
+                    .unwrap_or_else(|e| {
+                        eprintln!("Failed to initialize S3 storage: {e}");
+                        std::process::exit(1);
+                    });
+
+                eprintln!(
+                    "Storage backend: S3 (bucket={bucket}, region={region}, \
+                     mode={mode}, retention={years}y)"
+                );
+                Arc::new(s3) as Arc<dyn storage::ProofStorage>
+            } else {
+                let local = storage::LocalStorage::new(&storage_dir).unwrap_or_else(|e| {
+                    eprintln!("Failed to initialize local storage: {e}");
+                    std::process::exit(1);
+                });
+                eprintln!("Storage backend: local (dir={})", storage_dir);
+                Arc::new(local) as Arc<dyn storage::ProofStorage>
+            }
+        }
+        #[cfg(not(feature = "s3"))]
+        {
+            let local = storage::LocalStorage::new(&storage_dir).unwrap_or_else(|e| {
+                eprintln!("Failed to initialize local storage: {e}");
+                std::process::exit(1);
+            });
+            eprintln!("Storage backend: local (dir={})", storage_dir);
+            Arc::new(local) as Arc<dyn storage::ProofStorage>
+        }
+    };
+
+    let db = ProofDb::with_storage(&db_path, blob_store).unwrap_or_else(|e| {
         eprintln!("Failed to initialize database: {e}");
         std::process::exit(1);
     });

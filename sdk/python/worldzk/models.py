@@ -3,9 +3,62 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 
+# ---------------------------------------------------------------------------
+# Gateway / WorldZK models
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ProofResult:
+    """Result returned by ``WorldZK.prove()``."""
+
+    proof_id: str
+    model_hash: str
+    circuit_hash: str
+    output: str
+
+
+@dataclass
+class VerificationResult:
+    """Result returned by ``WorldZK.verify()``."""
+
+    verified: bool
+    receipt_id: Optional[str] = None
+
+
+@dataclass
+class Receipt:
+    """Verification receipt returned by ``WorldZK.get_receipt()``."""
+
+    receipt_id: str
+    proof_id: str
+    verified: bool
+    verified_at: str
+    signature: str
+
+
+@dataclass
+class GatewayHealth:
+    """Aggregated health response from the gateway.
+
+    Returned by ``WorldZK.health()``.
+    """
+
+    status: str
+    services: List[Dict[str, Any]] = field(default_factory=list)
+    healthy_count: int = 0
+    total_count: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Legacy direct-service models (used by Client)
+# ---------------------------------------------------------------------------
+
+
 @dataclass
 class ProofBundle:
     """A self-contained proof bundle."""
+
     proof_hex: str
     gens_hex: str
     dag_circuit_description: Dict[str, Any]
@@ -31,16 +84,9 @@ class ProofBundle:
 
 
 @dataclass
-class VerificationResult:
-    """Result of proof verification."""
-    verified: bool
-    circuit_hash: str = ""
-    error: Optional[str] = None
-
-
-@dataclass
 class ProofReceipt:
-    """Receipt from the proof registry."""
+    """Receipt from the proof registry (legacy)."""
+
     id: str
     content_hash: str
     submitted_at: int = 0

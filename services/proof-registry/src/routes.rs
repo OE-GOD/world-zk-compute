@@ -551,7 +551,7 @@ mod tests {
         body_json(resp).await
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_health() {
         let state = make_test_state();
         let app = build_test_app(state);
@@ -565,7 +565,7 @@ mod tests {
         assert_eq!(json["db_healthy"], true);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_stats_empty() {
         let state = make_test_state();
         let app = build_test_app(state);
@@ -582,7 +582,7 @@ mod tests {
         assert_eq!(json["total_storage_bytes"], 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_submit_and_get_proof() {
         let state = make_test_state();
         let app = build_test_app(state);
@@ -612,7 +612,7 @@ mod tests {
         assert!(!json["created_at"].as_str().unwrap().is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_get_nonexistent_proof() {
         let state = make_test_state();
         let app = build_test_app(state);
@@ -627,7 +627,7 @@ mod tests {
         assert!(json["error"].as_str().unwrap().contains("not found"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_delete_proof() {
         let state = make_test_state();
         let app = build_test_app(state);
@@ -658,7 +658,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_search_proofs() {
         let state = make_test_state();
         let app = build_test_app(state);
