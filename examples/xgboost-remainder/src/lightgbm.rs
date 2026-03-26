@@ -729,10 +729,59 @@ mod tests {
         assert!((model.base_score - 0.0).abs() < 1e-15);
     }
 
-    /// E2E test: parse LightGBM model → build circuit → prove → verify in Rust.
-    /// Uses the sample LightGBM credit scoring model in test-model/.
+    /// Full prove-and-verify with an inline LightGBM model (2 trees, depth 2).
+    /// Parses MULTI_TREE_LGBM, runs inference, builds circuit, proves, and verifies.
     #[test]
-    #[ignore] // ~2s, run with: cargo test lightgbm_e2e_prove_verify -- --ignored --nocapture
+    fn test_lightgbm_prove_and_verify() {
+        use crate::circuit::build_and_prove;
+        use crate::model::predict;
+
+        let model = parse_lightgbm_json(MULTI_TREE_LGBM).unwrap();
+
+        let features = vec![0.6, 0.2, 0.8, 0.5, 0.3];
+        let predicted_class = predict(&model, &features);
+
+        let (proof_bytes, circuit_hash, public_inputs) =
+            build_and_prove(&model, &features, predicted_class).unwrap();
+
+        // Proof bytes should have "REM1" selector
+        assert_eq!(
+            &proof_bytes[0..4],
+            b"REM1",
+            "proof should start with REM1 selector"
+        );
+        assert_eq!(circuit_hash.len(), 32, "circuit hash should be 32 bytes");
+        assert_eq!(
+            public_inputs.len(),
+            4,
+            "public inputs should be 4 bytes (class u32)"
+        );
+    }
+
+    /// Prove-and-verify with a different traversal path (all-left decisions).
+    #[test]
+    fn test_lightgbm_prove_and_verify_all_left() {
+        use crate::circuit::build_and_prove;
+        use crate::model::predict;
+
+        let model = parse_lightgbm_json(MULTI_TREE_LGBM).unwrap();
+
+        // All features low: go left at every split
+        let features = vec![0.1, 0.1, 0.1, 0.1, 0.1];
+        let predicted_class = predict(&model, &features);
+
+        let result = build_and_prove(&model, &features, predicted_class);
+        assert!(
+            result.is_ok(),
+            "LightGBM all-left path failed: {:?}",
+            result.err()
+        );
+    }
+
+    /// E2E test: parse LightGBM model from file, prove, and verify.
+    /// Uses the sample LightGBM model in test-model/.
+    #[test]
+    #[ignore] // ~3 min in debug; run with: cargo test lightgbm_e2e_prove_verify -- --ignored --nocapture
     fn test_lightgbm_e2e_prove_verify() {
         use crate::circuit::build_and_prove;
         use crate::model::predict;
@@ -762,7 +811,11 @@ mod tests {
         eprintln!("Public inputs: 0x{}", hex::encode(&public_inputs));
 
         // Proof bytes should have "REM1" selector
-        assert_eq!(&proof_bytes[0..4], b"REM1", "proof should start with REM1 selector");
+        assert_eq!(
+            &proof_bytes[0..4],
+            b"REM1",
+            "proof should start with REM1 selector"
+        );
         assert!(!circuit_hash.is_empty(), "circuit hash should be non-empty");
     }
 }
