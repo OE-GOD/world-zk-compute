@@ -142,9 +142,8 @@ impl NitroAttestor {
     ) -> B256 {
         match inference_result {
             Some(result) => {
-                let mut preimage = Vec::with_capacity(
-                    result.len() + 32 + nonce.map_or(0, |n| n.len()),
-                );
+                let mut preimage =
+                    Vec::with_capacity(result.len() + 32 + nonce.map_or(0, |n| n.len()));
                 preimage.extend_from_slice(result);
                 preimage.extend_from_slice(model_hash.as_slice());
                 if let Some(n) = nonce {
@@ -185,7 +184,7 @@ impl NitroAttestor {
             {
                 let _ = (enclave_address, user_data, nonce);
                 return Err(
-                    "Nitro enabled but binary not compiled with 'nitro' feature".to_string(),
+                    "Nitro enabled but binary not compiled with 'nitro' feature".to_string()
                 );
             }
         }
@@ -513,8 +512,7 @@ mod tests {
         assert_eq!(doc.pcr0.len(), 96); // 48 bytes = 96 hex chars
 
         // Verify we can decode the base64 document
-        let decoded = base64::engine::general_purpose::STANDARD
-            .decode(&doc.document)?;
+        let decoded = base64::engine::general_purpose::STANDARD.decode(&doc.document)?;
         assert!(!decoded.is_empty());
         Ok(())
     }
@@ -531,8 +529,7 @@ mod tests {
             .ok_or("attestation document is None")?;
 
         // Decode base64 -> CBOR -> verify COSE_Sign1 structure
-        let decoded = base64::engine::general_purpose::STANDARD
-            .decode(&doc.document)?;
+        let decoded = base64::engine::general_purpose::STANDARD.decode(&doc.document)?;
         let cose: serde_cbor::Value = serde_cbor::from_slice(&decoded)?;
 
         // COSE_Sign1 is a 4-element array
@@ -630,8 +627,7 @@ mod tests {
         assert!(!doc.is_nitro);
 
         // Verify the nonce is embedded in the CBOR payload
-        let decoded = base64::engine::general_purpose::STANDARD
-            .decode(&doc.document)?;
+        let decoded = base64::engine::general_purpose::STANDARD.decode(&doc.document)?;
         let cose: serde_cbor::Value = serde_cbor::from_slice(&decoded)?;
 
         let items = match cose {
@@ -669,8 +665,7 @@ mod tests {
             .ok_or("attestation document is None")?;
 
         // Verify the nonce is null when not provided
-        let decoded = base64::engine::general_purpose::STANDARD
-            .decode(&doc.document)?;
+        let decoded = base64::engine::general_purpose::STANDARD.decode(&doc.document)?;
         let cose: serde_cbor::Value = serde_cbor::from_slice(&decoded)?;
 
         let items = match cose {
@@ -694,7 +689,8 @@ mod tests {
     }
 
     #[test]
-    fn test_refresh_nitro_enabled_without_feature_fails() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_refresh_nitro_enabled_without_feature_fails() -> Result<(), Box<dyn std::error::Error>>
+    {
         let addr = address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
         let model_hash = B256::ZERO;
 
@@ -738,8 +734,7 @@ mod tests {
         let nonce = b"abc123";
 
         // Inference-bound: user_data = keccak256(result || model_hash || nonce)
-        let ud =
-            NitroAttestor::compute_user_data(model_hash, Some(inference_result), Some(nonce));
+        let ud = NitroAttestor::compute_user_data(model_hash, Some(inference_result), Some(nonce));
 
         let mut expected_preimage = Vec::new();
         expected_preimage.extend_from_slice(inference_result);
@@ -774,21 +769,21 @@ mod tests {
         let ud2 = NitroAttestor::compute_user_data(model_hash, Some(b"result_b"), None);
         let ud_basic = NitroAttestor::compute_user_data(model_hash, None, None);
 
-        assert_ne!(ud1, ud2, "Different inference results must produce different user_data");
+        assert_ne!(
+            ud1, ud2,
+            "Different inference results must produce different user_data"
+        );
         assert_ne!(ud1, ud_basic, "Inference-bound must differ from basic");
     }
 
     #[test]
-    fn test_mock_attestation_user_data_matches_compute() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn test_mock_attestation_user_data_matches_compute() -> Result<(), Box<dyn std::error::Error>> {
         let addr = address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
         let model_hash = alloy_primitives::keccak256(b"test model");
 
-        let attestor = NitroAttestor::new(false, addr, model_hash)
-            .map_err(|e| format!("failed: {}", e))?;
-        let doc = attestor
-            .attestation_document()
-            .ok_or("no doc")?;
+        let attestor =
+            NitroAttestor::new(false, addr, model_hash).map_err(|e| format!("failed: {}", e))?;
+        let doc = attestor.attestation_document().ok_or("no doc")?;
 
         let user_data_bytes = NitroAttestor::extract_user_data_from_doc(doc)
             .map_err(|e| format!("extract: {}", e))?;
@@ -810,8 +805,8 @@ mod tests {
         let inference_result = b"[0.9, 0.1]";
         let nonce = b"challenge-nonce";
 
-        let mut attestor = NitroAttestor::new(false, addr, model_hash)
-            .map_err(|e| format!("failed: {}", e))?;
+        let mut attestor =
+            NitroAttestor::new(false, addr, model_hash).map_err(|e| format!("failed: {}", e))?;
 
         // Refresh with inference binding
         attestor
@@ -867,8 +862,8 @@ mod tests {
         let addr = address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
         let model_hash = B256::ZERO;
 
-        let mut attestor = NitroAttestor::new(false, addr, model_hash)
-            .map_err(|e| format!("failed: {}", e))?;
+        let mut attestor =
+            NitroAttestor::new(false, addr, model_hash).map_err(|e| format!("failed: {}", e))?;
 
         let ts_before = attestor.last_refresh_timestamp();
 
@@ -926,10 +921,7 @@ mod tests {
 
         assert!(doc.is_nitro, "attestation should be marked as Nitro");
         assert_eq!(doc.pcr0.len(), 96, "PCR0 should be 48 bytes (96 hex chars)");
-        assert!(
-            !doc.document.is_empty(),
-            "document should not be empty"
-        );
+        assert!(!doc.document.is_empty(), "document should not be empty");
 
         // Verify the document is valid base64
         let decoded = base64::engine::general_purpose::STANDARD

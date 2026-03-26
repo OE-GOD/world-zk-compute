@@ -97,12 +97,14 @@ impl MetricsState {
 
     /// Record a dispute resolved via the Stylus verification path.
     pub fn record_stylus_dispute_resolved(&self) {
-        self.stylus_disputes_resolved.fetch_add(1, Ordering::Relaxed);
+        self.stylus_disputes_resolved
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record a dispute resolved via the Solidity verification path.
     pub fn record_solidity_dispute_resolved(&self) {
-        self.solidity_disputes_resolved.fetch_add(1, Ordering::Relaxed);
+        self.solidity_disputes_resolved
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record a finalization.
@@ -635,7 +637,9 @@ mod tests {
         state.total_disputes_resolved.store(1, Ordering::Relaxed);
         state.total_disputes_failed.store(3, Ordering::Relaxed);
         state.stylus_disputes_resolved.store(8, Ordering::Relaxed);
-        state.solidity_disputes_resolved.store(11, Ordering::Relaxed);
+        state
+            .solidity_disputes_resolved
+            .store(11, Ordering::Relaxed);
         state.total_finalizations.store(4, Ordering::Relaxed);
         state.total_errors.store(7, Ordering::Relaxed);
         state.active_disputes.store(2, Ordering::Relaxed);
@@ -679,7 +683,9 @@ mod tests {
         state.total_disputes_resolved.store(3, Ordering::Relaxed);
         state.total_disputes_failed.store(1, Ordering::Relaxed);
         state.stylus_disputes_resolved.store(7, Ordering::Relaxed);
-        state.solidity_disputes_resolved.store(12, Ordering::Relaxed);
+        state
+            .solidity_disputes_resolved
+            .store(12, Ordering::Relaxed);
         state.total_errors.store(2, Ordering::Relaxed);
         state.total_finalizations.store(8, Ordering::Relaxed);
         state.active_disputes.store(4, Ordering::Relaxed);

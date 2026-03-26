@@ -34,8 +34,8 @@
 //! - `results`       -- indexed inference results (for the Storage trait)
 //! - `indexer_state`  -- key-value bookkeeping (last indexed block, etc.)
 
-use anyhow::Context as _;
 use crate::{ResultFilter, ResultRow, StatsResponse, Storage};
+use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use sqlx::Row;
@@ -150,14 +150,8 @@ impl PgStorageConfig {
     pub fn from_env() -> Self {
         let defaults = Self::default();
         Self {
-            max_connections: Self::parse_env_u32(
-                "DB_MAX_CONNECTIONS",
-                defaults.max_connections,
-            ),
-            min_connections: Self::parse_env_u32(
-                "DB_MIN_CONNECTIONS",
-                defaults.min_connections,
-            ),
+            max_connections: Self::parse_env_u32("DB_MAX_CONNECTIONS", defaults.max_connections),
+            min_connections: Self::parse_env_u32("DB_MIN_CONNECTIONS", defaults.min_connections),
             acquire_timeout: Duration::from_secs(Self::parse_env_u64(
                 "DB_ACQUIRE_TIMEOUT_SECS",
                 defaults.acquire_timeout.as_secs(),
@@ -180,7 +174,10 @@ impl PgStorageConfig {
                 Err(e) => {
                     tracing::warn!(
                         "Failed to parse {}={:?}: {} -- using default {}",
-                        name, val, e, default,
+                        name,
+                        val,
+                        e,
+                        default,
                     );
                     default
                 }
@@ -196,7 +193,10 @@ impl PgStorageConfig {
                 Err(e) => {
                     tracing::warn!(
                         "Failed to parse {}={:?}: {} -- using default {}",
-                        name, val, e, default,
+                        name,
+                        val,
+                        e,
+                        default,
                     );
                     default
                 }
@@ -704,9 +704,7 @@ impl PgStorage {
             .fetch_one(&self.pool)
             .await;
 
-        row.ok()
-            .and_then(|(c,)| u64::try_from(c).ok())
-            .unwrap_or(0)
+        row.ok().and_then(|(c,)| u64::try_from(c).ok()).unwrap_or(0)
     }
 }
 

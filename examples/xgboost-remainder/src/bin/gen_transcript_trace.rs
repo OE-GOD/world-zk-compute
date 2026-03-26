@@ -336,10 +336,9 @@ fn main() -> Result<()> {
         );
 
         // Decompress and compare
-        let compressed_bytes =
-            hex::decode(hex_str).expect("compressed hex must be valid hex");
-        let (x_be, y_be) = abi_encode::decompress_point(&compressed_bytes)
-            .expect("failed to decompress EC point");
+        let compressed_bytes = hex::decode(hex_str).expect("compressed hex must be valid hex");
+        let (x_be, y_be) =
+            abi_encode::decompress_point(&compressed_bytes).expect("failed to decompress EC point");
         let decompressed_x_hex = format!("0x{}", hex::encode(x_be));
         let decompressed_y_hex = format!("0x{}", hex::encode(y_be));
         eprintln!("  decompressed x: {}", decompressed_x_hex);

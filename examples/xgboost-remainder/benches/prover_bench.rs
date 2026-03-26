@@ -114,8 +114,12 @@ fn bench_witness_generation(c: &mut Criterion) {
 
     c.bench_function("witness_compute_comparison_witness", |b| {
         b.iter(|| {
-            let result =
-                model::compute_comparison_witness(&mdl, &features, max_depth, model::DEFAULT_DECOMP_K);
+            let result = model::compute_comparison_witness(
+                &mdl,
+                &features,
+                max_depth,
+                model::DEFAULT_DECOMP_K,
+            );
             criterion::black_box(result);
         });
     });
@@ -161,8 +165,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
     group.sample_size(10);
     group.bench_function("build_and_prove_sample_model", |b| {
         b.iter(|| {
-            let result =
-                xgboost_remainder::circuit::build_and_prove(&mdl, &features, predicted);
+            let result = xgboost_remainder::circuit::build_and_prove(&mdl, &features, predicted);
             assert!(result.is_ok(), "build_and_prove failed: {:?}", result.err());
             criterion::black_box(result);
         });
@@ -174,8 +177,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
     let mut group = c.benchmark_group("warm_prover");
     group.sample_size(10);
 
-    let cached_prover =
-        xgboost_remainder::circuit::CachedProver::new(mdl.clone());
+    let cached_prover = xgboost_remainder::circuit::CachedProver::new(mdl.clone());
 
     group.bench_function("cached_prover_prove", |b| {
         b.iter(|| {

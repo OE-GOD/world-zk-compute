@@ -867,8 +867,16 @@ async fn main() -> anyhow::Result<()> {
     info!("  max_ws_connections: {}", broadcaster.max_connections());
     info!("  max_ws_per_ip:    {}", broadcaster.max_per_ip());
     info!("  rate_limit_per_ip: {} req/min", config.rate_limit_per_ip);
-    info!("  trusted_proxies: {}", std::env::var("TRUSTED_PROXIES").unwrap_or_else(|_| "(none -- XFF headers ignored)".to_string()));
-    if std::env::var("API_KEY").ok().filter(|k| !k.is_empty()).is_some() {
+    info!(
+        "  trusted_proxies: {}",
+        std::env::var("TRUSTED_PROXIES")
+            .unwrap_or_else(|_| "(none -- XFF headers ignored)".to_string())
+    );
+    if std::env::var("API_KEY")
+        .ok()
+        .filter(|k| !k.is_empty())
+        .is_some()
+    {
         info!("  api_key_auth:   enabled");
     } else {
         info!("  api_key_auth:   disabled (set API_KEY to enable)");
@@ -878,7 +886,12 @@ async fn main() -> anyhow::Result<()> {
         max_requests: config.rate_limit_per_ip,
         window: std::time::Duration::from_secs(60),
     };
-    let app = build_app_with_rate_limit(storage.clone(), broadcaster.clone(), rl_config, config.trusted_proxies.clone());
+    let app = build_app_with_rate_limit(
+        storage.clone(),
+        broadcaster.clone(),
+        rl_config,
+        config.trusted_proxies.clone(),
+    );
 
     // Spawn the event polling loop with shutdown support and circuit breaker.
     //
@@ -906,7 +919,8 @@ async fn main() -> anyhow::Result<()> {
             let multiplier = if consecutive_failures == 0 {
                 1u64
             } else {
-                2u64.saturating_pow(consecutive_failures).min(MAX_BACKOFF_MULTIPLIER)
+                2u64.saturating_pow(consecutive_failures)
+                    .min(MAX_BACKOFF_MULTIPLIER)
             };
             let sleep_dur = base.saturating_mul(multiplier as u32);
 
@@ -1399,7 +1413,8 @@ mod tests {
         if consecutive_failures == 0 {
             1u64
         } else {
-            2u64.saturating_pow(consecutive_failures).min(MAX_BACKOFF_MULTIPLIER)
+            2u64.saturating_pow(consecutive_failures)
+                .min(MAX_BACKOFF_MULTIPLIER)
         }
     }
 
@@ -1466,7 +1481,7 @@ mod tests {
         assert_eq!(failures, u32::MAX);
         failures = failures.saturating_add(1);
         assert_eq!(failures, u32::MAX); // saturates, does not wrap
-        // Even at u32::MAX, multiplier is capped at 60
+                                        // Even at u32::MAX, multiplier is capped at 60
         assert_eq!(backoff_multiplier(failures), 60);
     }
 }

@@ -212,8 +212,8 @@ impl TestContext {
         let mut proxy_deploy_data = proxy_code.to_vec();
         proxy_deploy_data.extend_from_slice(&proxy_constructor_args);
 
-        let proxy_tx = alloy::rpc::types::TransactionRequest::default()
-            .with_deploy_code(proxy_deploy_data);
+        let proxy_tx =
+            alloy::rpc::types::TransactionRequest::default().with_deploy_code(proxy_deploy_data);
         let proxy_receipt = provider
             .send_transaction(proxy_tx)
             .await
@@ -305,9 +305,8 @@ async fn build_attestation(
         keccak256("TEEMLResult(bytes32 modelHash,bytes32 inputHash,bytes32 resultHash)");
 
     // structHash = keccak256(abi.encode(RESULT_TYPEHASH, modelHash, inputHash, resultHash))
-    let struct_hash = keccak256(
-        (result_typehash, model_hash, input_hash, result_hash).abi_encode_params(),
-    );
+    let struct_hash =
+        keccak256((result_typehash, model_hash, input_hash, result_hash).abi_encode_params());
 
     // domainSeparator
     let domain_separator = compute_domain_separator(chain_id, verifying_contract);
@@ -352,8 +351,14 @@ async fn setup_submitted_result(ctx: &TestContext) -> B256 {
     let input_hash = B256::from([0x02u8; 32]);
     let result_data = b"test-result-data";
     let attestation = build_attestation(
-        USER_KEY, model_hash, input_hash, result_data, ANVIL_CHAIN_ID, ctx.contract_addr,
-    ).await;
+        USER_KEY,
+        model_hash,
+        input_hash,
+        result_data,
+        ANVIL_CHAIN_ID,
+        ctx.contract_addr,
+    )
+    .await;
     let stake = U256::from(100_000_000_000_000_000u128);
 
     let receipt = admin
@@ -386,10 +391,7 @@ async fn test_deploy_and_initial_state() {
 
     // Admin should be the deployer address
     let admin_addr = contract.admin().call().await.unwrap();
-    assert_eq!(
-        admin_addr, ctx.admin_addr,
-        "Admin should be the deployer"
-    );
+    assert_eq!(admin_addr, ctx.admin_addr, "Admin should be the deployer");
 
     // Contract should not be paused
     let paused = contract.paused().call().await.unwrap();
@@ -484,8 +486,14 @@ async fn test_submit_result_with_stake() {
     let input_hash = B256::from([0x02u8; 32]);
     let result_data = b"prediction:class_0";
     let attestation = build_attestation(
-        USER_KEY, model_hash, input_hash, result_data, ANVIL_CHAIN_ID, ctx.contract_addr,
-    ).await;
+        USER_KEY,
+        model_hash,
+        input_hash,
+        result_data,
+        ANVIL_CHAIN_ID,
+        ctx.contract_addr,
+    )
+    .await;
     let stake = U256::from(100_000_000_000_000_000u128);
 
     let receipt = admin
@@ -524,8 +532,14 @@ async fn test_submit_result_with_stake() {
 
     // Insufficient stake should revert (use .call() to check)
     let attestation2 = build_attestation(
-        USER_KEY, B256::from([0x03u8; 32]), input_hash, result_data, ANVIL_CHAIN_ID, ctx.contract_addr,
-    ).await;
+        USER_KEY,
+        B256::from([0x03u8; 32]),
+        input_hash,
+        result_data,
+        ANVIL_CHAIN_ID,
+        ctx.contract_addr,
+    )
+    .await;
     let result = admin
         .submitResult(
             B256::from([0x03u8; 32]),
@@ -753,8 +767,14 @@ async fn test_pause_unpause_flow() {
     let input_hash = B256::from([0x80u8; 32]);
     let result_data = b"pause-test";
     let attestation = build_attestation(
-        USER_KEY, model_hash, input_hash, result_data, ANVIL_CHAIN_ID, ctx.contract_addr,
-    ).await;
+        USER_KEY,
+        model_hash,
+        input_hash,
+        result_data,
+        ANVIL_CHAIN_ID,
+        ctx.contract_addr,
+    )
+    .await;
     let submit = admin
         .submitResult(
             model_hash,
@@ -887,8 +907,14 @@ async fn test_revoke_enclave() {
     let input_hash = B256::from([0xA0u8; 32]);
     let result_data = b"revoked-test";
     let attestation = build_attestation(
-        USER_KEY, model_hash, input_hash, result_data, ANVIL_CHAIN_ID, ctx.contract_addr,
-    ).await;
+        USER_KEY,
+        model_hash,
+        input_hash,
+        result_data,
+        ANVIL_CHAIN_ID,
+        ctx.contract_addr,
+    )
+    .await;
     let submit = admin
         .submitResult(
             model_hash,

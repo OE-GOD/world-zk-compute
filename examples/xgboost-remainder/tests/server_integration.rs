@@ -122,7 +122,10 @@ async fn test_prove_wrong_feature_count() {
     assert_eq!(resp.status(), 400);
 
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert!(body["error"].as_str().unwrap().contains("Expected 5 features"));
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("Expected 5 features"));
 }
 
 #[tokio::test]
@@ -335,7 +338,7 @@ async fn test_rate_limiting_blocks_excess_requests() {
     let config = ServerConfig {
         port,
         rate_limit: 2,       // 2 per minute
-        rate_limit_burst: 0,  // no burst
+        rate_limit_burst: 0, // no burst
         ..ServerConfig::default()
     };
     let base_url = start_server(config).await;
@@ -393,5 +396,8 @@ async fn test_batch_with_mixed_feature_counts() {
     assert_eq!(resp.status(), 400);
 
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert!(body["error"].as_str().unwrap().contains("Expected 5 features"));
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("Expected 5 features"));
 }

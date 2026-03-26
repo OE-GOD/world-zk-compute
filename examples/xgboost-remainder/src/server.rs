@@ -526,8 +526,10 @@ async fn prove_bundle_handler(
 
     let predicted_class = model::predict(&state.prover.model, &req.features);
     let start = Instant::now();
-    let (proof_bytes, circuit_hash, public_inputs) =
-        state.prover.prove(&req.features, predicted_class).map_err(|e| {
+    let (proof_bytes, circuit_hash, public_inputs) = state
+        .prover
+        .prove(&req.features, predicted_class)
+        .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {

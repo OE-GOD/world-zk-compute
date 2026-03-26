@@ -127,9 +127,9 @@ impl RateLimitState {
         let rpm = self.resolve_rpm(client_id);
         let mut buckets = self.buckets.lock().await;
 
-        let bucket = buckets.entry(client_id.to_string()).or_insert_with(|| {
-            TokenBucket::new(rpm)
-        });
+        let bucket = buckets
+            .entry(client_id.to_string())
+            .or_insert_with(|| TokenBucket::new(rpm));
 
         // If the tenant's rate limit changed, recreate the bucket.
         if (bucket.max_tokens - rpm as f64).abs() > 0.5 {
@@ -265,7 +265,10 @@ mod tests {
 
         // Third should be denied (tenant limit is 2)
         let (allowed, _, _) = state.check(&client_id).await;
-        assert!(!allowed, "third request should be denied (per-tenant limit)");
+        assert!(
+            !allowed,
+            "third request should be denied (per-tenant limit)"
+        );
 
         // Non-tenant client should still get 100 requests
         let (allowed, _, _) = state.check("ip:1.2.3.4").await;
@@ -301,10 +304,7 @@ mod tests {
         let state = RateLimitState::new(100).with_tenant_store(store);
 
         // Tenant key should resolve to tenant's RPM
-        assert_eq!(
-            state.resolve_rpm(&format!("key:{}", tenant.api_key)),
-            500
-        );
+        assert_eq!(state.resolve_rpm(&format!("key:{}", tenant.api_key)), 500);
 
         // Unknown key should resolve to default
         assert_eq!(state.resolve_rpm("key:unknown"), 100);

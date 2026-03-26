@@ -56,21 +56,36 @@ fn decode_circuit_description(data: &[u8]) -> DAGCircuitDescription {
     let oracle_result_idxs = read_usize_array(&mut dec);
     let oracle_expr_coeffs = read_u256_array(&mut dec);
     DAGCircuitDescription {
-        num_compute_layers, num_input_layers, layer_types, num_sumcheck_rounds,
-        atom_offsets, atom_target_layers, atom_commit_idxs, pt_offsets, pt_data,
-        input_is_committed, oracle_product_offsets, oracle_result_idxs, oracle_expr_coeffs,
+        num_compute_layers,
+        num_input_layers,
+        layer_types,
+        num_sumcheck_rounds,
+        atom_offsets,
+        atom_target_layers,
+        atom_commit_idxs,
+        pt_offsets,
+        pt_data,
+        input_is_committed,
+        oracle_product_offsets,
+        oracle_result_idxs,
+        oracle_expr_coeffs,
     }
 }
 
 fn read_usize_from(dec: &mut ProofDecoder) -> usize {
     let v = dec.read_u256_public();
-    assert!(v.0[1] == 0 && v.0[2] == 0 && v.0[3] == 0, "value too large for usize");
+    assert!(
+        v.0[1] == 0 && v.0[2] == 0 && v.0[3] == 0,
+        "value too large for usize"
+    );
     v.0[0] as usize
 }
 
 fn read_u8_array(dec: &mut ProofDecoder) -> Vec<u8> {
     let len = read_usize_from(dec);
-    (0..len).map(|_| dec.read_u256_public().0[0] as u8).collect()
+    (0..len)
+        .map(|_| dec.read_u256_public().0[0] as u8)
+        .collect()
 }
 
 fn read_usize_array(dec: &mut ProofDecoder) -> Vec<usize> {
@@ -85,7 +100,9 @@ fn read_u64_array(dec: &mut ProofDecoder) -> Vec<u64> {
 
 fn read_bool_array(dec: &mut ProofDecoder) -> Vec<bool> {
     let len = read_usize_from(dec);
-    (0..len).map(|_| !dec.read_u256_public().is_zero()).collect()
+    (0..len)
+        .map(|_| !dec.read_u256_public().is_zero())
+        .collect()
 }
 
 fn read_u256_array(dec: &mut ProofDecoder) -> Vec<U256> {
@@ -95,12 +112,18 @@ fn read_u256_array(dec: &mut ProofDecoder) -> Vec<U256> {
 
 /// Verify a DAG GKR proof end-to-end.
 pub fn verify_dag_proof_inner(
-    proof_data: &[u8], _public_inputs: &[u8], gens_data: &[u8], circuit_desc_data: &[u8],
+    proof_data: &[u8],
+    _public_inputs: &[u8],
+    gens_data: &[u8],
+    circuit_desc_data: &[u8],
 ) -> bool {
     assert!(proof_data.len() >= 4, "proof data too short for selector");
     assert!(&proof_data[0..4] == b"REM1", "invalid selector");
     let proof_bytes = &proof_data[4..];
-    assert!(proof_bytes.len() >= 32, "proof body too short for circuit hash");
+    assert!(
+        proof_bytes.len() >= 32,
+        "proof body too short for circuit hash"
+    );
     let mut circuit_hash = [0u8; 32];
     circuit_hash.copy_from_slice(&proof_bytes[0..32]);
     let mut decoder = ProofDecoder::new(proof_bytes);
@@ -116,21 +139,36 @@ pub fn verify_dag_proof_inner(
             input_commit_coords.push(row.y);
         }
     }
-    let mut sponge = transcript::setup_transcript(&circuit_hash, &embedded_fqs, &input_commit_coords);
+    let mut sponge =
+        transcript::setup_transcript(&circuit_hash, &embedded_fqs, &input_commit_coords);
     let ctx = gkr::verify_compute_layers(&gkr_proof, &desc, &gens, &mut sponge);
-    hyrax::verify_input_layers(&gkr_proof, &desc, &gens, &ctx, &mut sponge,
-        &embedded_pub_inputs, &dag_input_proofs, &public_value_claims);
+    hyrax::verify_input_layers(
+        &gkr_proof,
+        &desc,
+        &gens,
+        &ctx,
+        &mut sponge,
+        &embedded_pub_inputs,
+        &dag_input_proofs,
+        &public_value_claims,
+    );
     true
 }
 
 /// Hybrid DAG GKR verification.
 pub fn verify_dag_proof_hybrid_inner(
-    proof_data: &[u8], _public_inputs: &[u8], gens_data: &[u8], circuit_desc_data: &[u8],
+    proof_data: &[u8],
+    _public_inputs: &[u8],
+    gens_data: &[u8],
+    circuit_desc_data: &[u8],
 ) -> gkr::FrOutputCollector {
     assert!(proof_data.len() >= 4, "proof data too short for selector");
     assert!(&proof_data[0..4] == b"REM1", "invalid selector");
     let proof_bytes = &proof_data[4..];
-    assert!(proof_bytes.len() >= 32, "proof body too short for circuit hash");
+    assert!(
+        proof_bytes.len() >= 32,
+        "proof body too short for circuit hash"
+    );
     let mut circuit_hash = [0u8; 32];
     circuit_hash.copy_from_slice(&proof_bytes[0..32]);
     let mut decoder = ProofDecoder::new(proof_bytes);
@@ -146,10 +184,20 @@ pub fn verify_dag_proof_hybrid_inner(
             input_commit_coords.push(row.y);
         }
     }
-    let mut sponge = transcript::setup_transcript(&circuit_hash, &embedded_fqs, &input_commit_coords);
-    let (ctx, compute_fr) = gkr::verify_compute_layers_hybrid(&gkr_proof, &desc, &gens, &mut sponge);
-    let _input_fr = hyrax::verify_input_layers_hybrid(&gkr_proof, &desc, &gens, &ctx, &mut sponge,
-        &embedded_pub_inputs, &dag_input_proofs, &public_value_claims);
+    let mut sponge =
+        transcript::setup_transcript(&circuit_hash, &embedded_fqs, &input_commit_coords);
+    let (ctx, compute_fr) =
+        gkr::verify_compute_layers_hybrid(&gkr_proof, &desc, &gens, &mut sponge);
+    let _input_fr = hyrax::verify_input_layers_hybrid(
+        &gkr_proof,
+        &desc,
+        &gens,
+        &ctx,
+        &mut sponge,
+        &embedded_pub_inputs,
+        &dag_input_proofs,
+        &public_value_claims,
+    );
     compute_fr
 }
 
@@ -158,14 +206,26 @@ pub fn encode_hybrid_fr_outputs(result: &HybridVerificationResult) -> Vec<u8> {
     let mut buf = Vec::new();
     let n = result.compute_fr.rlc_betas.len();
     buf.extend_from_slice(&U256::from_u64(n as u64).to_be_bytes());
-    for b in &result.compute_fr.rlc_betas { buf.extend_from_slice(&b.to_be_bytes()); }
-    for z in &result.compute_fr.z_dot_j_stars { buf.extend_from_slice(&z.to_be_bytes()); }
+    for b in &result.compute_fr.rlc_betas {
+        buf.extend_from_slice(&b.to_be_bytes());
+    }
+    for z in &result.compute_fr.z_dot_j_stars {
+        buf.extend_from_slice(&z.to_be_bytes());
+    }
     buf.extend_from_slice(&U256::from_u64(result.input_fr.z_dot_rs.len() as u64).to_be_bytes());
-    buf.extend_from_slice(&U256::from_u64(result.input_fr.l_tensor_flat.len() as u64).to_be_bytes());
-    for v in &result.input_fr.l_tensor_flat { buf.extend_from_slice(&v.to_be_bytes()); }
-    for v in &result.input_fr.z_dot_rs { buf.extend_from_slice(&v.to_be_bytes()); }
+    buf.extend_from_slice(
+        &U256::from_u64(result.input_fr.l_tensor_flat.len() as u64).to_be_bytes(),
+    );
+    for v in &result.input_fr.l_tensor_flat {
+        buf.extend_from_slice(&v.to_be_bytes());
+    }
+    for v in &result.input_fr.z_dot_rs {
+        buf.extend_from_slice(&v.to_be_bytes());
+    }
     buf.extend_from_slice(&U256::from_u64(result.input_fr.mle_evals.len() as u64).to_be_bytes());
-    for v in &result.input_fr.mle_evals { buf.extend_from_slice(&v.to_be_bytes()); }
+    for v in &result.input_fr.mle_evals {
+        buf.extend_from_slice(&v.to_be_bytes());
+    }
     buf
 }
 
@@ -425,26 +485,44 @@ pub fn verify_hybrid(bundle: &ProofBundle) -> Result<HybridVerificationResult> {
         return Err(VerifyError::InvalidProof("proof too short".to_string()));
     }
     if &proof_data[0..4] != b"REM1" {
-        return Err(VerifyError::InvalidProof("invalid selector (expected REM1)".to_string()));
+        return Err(VerifyError::InvalidProof(
+            "invalid selector (expected REM1)".to_string(),
+        ));
     }
     let _public_inputs = bundle.public_inputs_data()?;
     let gens_data = bundle.gens_data()?;
-    let circuit_desc_data = test_utils::encode_circuit_desc_from_json(&bundle.dag_circuit_description);
+    let circuit_desc_data =
+        test_utils::encode_circuit_desc_from_json(&bundle.dag_circuit_description);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let proof_bytes = &proof_data[4..];
         let mut ch = [0u8; 32];
         ch.copy_from_slice(&proof_bytes[0..32]);
         let mut decoder = ProofDecoder::new(proof_bytes);
-        let (gkr_proof, embedded_pub_inputs, dag_input_proofs, public_value_claims) = decoder.decode_proof_for_dag();
+        let (gkr_proof, embedded_pub_inputs, dag_input_proofs, public_value_claims) =
+            decoder.decode_proof_for_dag();
         let embedded_fqs: Vec<Fq> = embedded_pub_inputs.iter().map(|u| Fq(*u)).collect();
         let gens = ProofDecoder::decode_pedersen_gens(&gens_data);
         let desc = decode_circuit_description(&circuit_desc_data);
         let mut icc: Vec<U256> = Vec::new();
-        for dp in &dag_input_proofs { for row in &dp.commitment_rows { icc.push(row.x); icc.push(row.y); } }
+        for dp in &dag_input_proofs {
+            for row in &dp.commitment_rows {
+                icc.push(row.x);
+                icc.push(row.y);
+            }
+        }
         let mut sponge = transcript::setup_transcript(&ch, &embedded_fqs, &icc);
-        let (ctx, compute_fr) = gkr::verify_compute_layers_hybrid(&gkr_proof, &desc, &gens, &mut sponge);
-        let input_fr = hyrax::verify_input_layers_hybrid(&gkr_proof, &desc, &gens, &ctx, &mut sponge,
-            &embedded_pub_inputs, &dag_input_proofs, &public_value_claims);
+        let (ctx, compute_fr) =
+            gkr::verify_compute_layers_hybrid(&gkr_proof, &desc, &gens, &mut sponge);
+        let input_fr = hyrax::verify_input_layers_hybrid(
+            &gkr_proof,
+            &desc,
+            &gens,
+            &ctx,
+            &mut sponge,
+            &embedded_pub_inputs,
+            &dag_input_proofs,
+            &public_value_claims,
+        );
         let digest_fq = sponge.squeeze();
         let mut td = [0u8; 32];
         td.copy_from_slice(&digest_fq.0.to_be_bytes());
@@ -452,12 +530,19 @@ pub fn verify_hybrid(bundle: &ProofBundle) -> Result<HybridVerificationResult> {
     }));
     match result {
         Ok((ch, td, compute_fr, input_fr)) => Ok(HybridVerificationResult {
-            circuit_hash: ch, transcript_digest: td, compute_fr, input_fr,
+            circuit_hash: ch,
+            transcript_digest: td,
+            compute_fr,
+            input_fr,
         }),
         Err(e) => {
-            let msg = if let Some(s) = e.downcast_ref::<&str>() { s.to_string() }
-                      else if let Some(s) = e.downcast_ref::<String>() { s.clone() }
-                      else { "unknown verification panic".to_string() };
+            let msg = if let Some(s) = e.downcast_ref::<&str>() {
+                s.to_string()
+            } else if let Some(s) = e.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "unknown verification panic".to_string()
+            };
             Err(VerifyError::VerificationFailed(msg))
         }
     }
@@ -492,13 +577,24 @@ mod tests {
 
     fn build_minimal_circuit_desc_bytes() -> Vec<u8> {
         let mut buf = Vec::new();
-        for _ in 0..4 { push_usize(&mut buf, 0); }
-        push_usize(&mut buf, 1); push_usize(&mut buf, 0);
-        for _ in 0..3 { push_usize(&mut buf, 0); }
-        push_usize(&mut buf, 1); push_usize(&mut buf, 0);
-        for _ in 0..2 { push_usize(&mut buf, 0); }
-        push_usize(&mut buf, 1); push_usize(&mut buf, 0);
-        for _ in 0..2 { push_usize(&mut buf, 0); }
+        for _ in 0..4 {
+            push_usize(&mut buf, 0);
+        }
+        push_usize(&mut buf, 1);
+        push_usize(&mut buf, 0);
+        for _ in 0..3 {
+            push_usize(&mut buf, 0);
+        }
+        push_usize(&mut buf, 1);
+        push_usize(&mut buf, 0);
+        for _ in 0..2 {
+            push_usize(&mut buf, 0);
+        }
+        push_usize(&mut buf, 1);
+        push_usize(&mut buf, 0);
+        for _ in 0..2 {
+            push_usize(&mut buf, 0);
+        }
         buf
     }
 
@@ -537,11 +633,26 @@ mod tests {
 
     #[test]
     fn test_error_api() {
-        assert_eq!(format!("{}", VerifyError::InvalidProof("test".into())), "invalid proof: test");
-        assert_eq!(format!("{}", VerifyError::InvalidFormat("fmt".into())), "invalid proof format: fmt");
-        assert_eq!(format!("{}", VerifyError::BundleParse("bad".into())), "bundle parse error: bad");
-        assert_eq!(format!("{}", VerifyError::VerificationFailed("x".into())), "verification failed: x");
-        assert_eq!(format!("{}", VerifyError::DecodeError("dec".into())), "decode error: dec");
+        assert_eq!(
+            format!("{}", VerifyError::InvalidProof("test".into())),
+            "invalid proof: test"
+        );
+        assert_eq!(
+            format!("{}", VerifyError::InvalidFormat("fmt".into())),
+            "invalid proof format: fmt"
+        );
+        assert_eq!(
+            format!("{}", VerifyError::BundleParse("bad".into())),
+            "bundle parse error: bad"
+        );
+        assert_eq!(
+            format!("{}", VerifyError::VerificationFailed("x".into())),
+            "verification failed: x"
+        );
+        assert_eq!(
+            format!("{}", VerifyError::DecodeError("dec".into())),
+            "decode error: dec"
+        );
     }
 
     #[test]
@@ -585,13 +696,22 @@ mod tests {
     #[test]
     #[ignore]
     fn test_verify_dag_proof_e2e() {
-        let fixture_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../contracts/test/fixtures/phase1a_dag_fixture.json");
+        let fixture_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../contracts/test/fixtures/phase1a_dag_fixture.json"
+        );
         let fixture_str = std::fs::read_to_string(fixture_path).expect("failed to read fixture");
         let fixture: serde_json::Value = serde_json::from_str(&fixture_str).unwrap();
         let proof_data = hex::decode(&fixture["proof_hex"].as_str().unwrap()[2..]).unwrap();
-        let public_inputs = hex::decode(&fixture["public_inputs_hex"].as_str().unwrap()[2..]).unwrap_or_default();
+        let public_inputs =
+            hex::decode(&fixture["public_inputs_hex"].as_str().unwrap()[2..]).unwrap_or_default();
         let gens_data = hex::decode(&fixture["gens_hex"].as_str().unwrap()[2..]).unwrap();
         let circuit_desc_data = encode_circuit_desc_from_json(&fixture["dag_circuit_description"]);
-        assert!(verify_dag_proof_inner(&proof_data, &public_inputs, &gens_data, &circuit_desc_data));
+        assert!(verify_dag_proof_inner(
+            &proof_data,
+            &public_inputs,
+            &gens_data,
+            &circuit_desc_data
+        ));
     }
 }

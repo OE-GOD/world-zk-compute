@@ -301,9 +301,9 @@ pub fn validate_url_ssrf(url: &str) -> Result<(), SsrfError> {
 
     // 4. Parse the URL to extract scheme and host.
     //    We use a simple manual parser to avoid adding the `url` crate dependency.
-    let (scheme, rest) = url.split_once("://").ok_or_else(|| {
-        SsrfError::ParseError("missing '://' separator".to_string())
-    })?;
+    let (scheme, rest) = url
+        .split_once("://")
+        .ok_or_else(|| SsrfError::ParseError("missing '://' separator".to_string()))?;
 
     // 5. Scheme check
     let scheme_lower = scheme.to_lowercase();
@@ -418,8 +418,7 @@ mod tests {
 
     #[test]
     fn test_blocks_data_scheme() {
-        let err =
-            validate_url_ssrf("data:text/html,<script>alert(1)</script>").unwrap_err();
+        let err = validate_url_ssrf("data:text/html,<script>alert(1)</script>").unwrap_err();
         // data: has no "://" so it will fail as a parse error
         assert!(
             matches!(err, SsrfError::ParseError(_)),
@@ -487,8 +486,7 @@ mod tests {
     #[test]
     fn test_blocks_link_local_169_254() {
         // AWS metadata endpoint
-        let err =
-            validate_url_ssrf("https://169.254.169.254/latest/meta-data/").unwrap_err();
+        let err = validate_url_ssrf("https://169.254.169.254/latest/meta-data/").unwrap_err();
         assert!(matches!(err, SsrfError::PrivateIp(_)));
     }
 
@@ -730,26 +728,23 @@ mod tests {
 
     #[test]
     fn test_blocks_aws_metadata_http() {
-        let err =
-            validate_url_ssrf("http://169.254.169.254/latest/meta-data/iam/").unwrap_err();
+        let err = validate_url_ssrf("http://169.254.169.254/latest/meta-data/iam/").unwrap_err();
         assert!(matches!(err, SsrfError::PrivateIp(_)));
     }
 
     #[test]
     fn test_blocks_gce_metadata() {
         // GCE metadata uses 169.254.169.254 with Metadata-Flavor header
-        let err =
-            validate_url_ssrf("http://169.254.169.254/computeMetadata/v1/").unwrap_err();
+        let err = validate_url_ssrf("http://169.254.169.254/computeMetadata/v1/").unwrap_err();
         assert!(matches!(err, SsrfError::PrivateIp(_)));
     }
 
     #[test]
     fn test_blocks_azure_metadata() {
         // Azure metadata: 169.254.169.254
-        let err = validate_url_ssrf(
-            "http://169.254.169.254/metadata/instance?api-version=2021-02-01",
-        )
-        .unwrap_err();
+        let err =
+            validate_url_ssrf("http://169.254.169.254/metadata/instance?api-version=2021-02-01")
+                .unwrap_err();
         assert!(matches!(err, SsrfError::PrivateIp(_)));
     }
 

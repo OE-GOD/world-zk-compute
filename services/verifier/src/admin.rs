@@ -192,9 +192,7 @@ pub async fn create_tenant(
 }
 
 /// GET /admin/tenants -- List all tenants.
-pub async fn list_tenants(
-    State(store): State<Arc<TenantStore>>,
-) -> Json<TenantListResponse> {
+pub async fn list_tenants(State(store): State<Arc<TenantStore>>) -> Json<TenantListResponse> {
     let tenants = store.list();
     let total = tenants.len();
     let active = tenants.iter().filter(|t| t.active).count();

@@ -180,8 +180,9 @@ fn resolve_point_template(
 
 fn parse_template_entry(entry: &str) -> u64 {
     if let Some(rest) = entry.strip_prefix('B') {
-        rest.parse::<u64>()
-            .unwrap_or_else(|e| panic!("invalid binding index in template entry '{}': {}", entry, e))
+        rest.parse::<u64>().unwrap_or_else(|e| {
+            panic!("invalid binding index in template entry '{}': {}", entry, e)
+        })
     } else if let Some(rest) = entry.strip_prefix('F') {
         20000
             + rest.parse::<u64>().unwrap_or_else(|e| {

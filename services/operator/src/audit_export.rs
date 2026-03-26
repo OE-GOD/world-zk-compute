@@ -159,11 +159,7 @@ impl From<&ProofArchiveEntry> for AuditRecord {
 /// where the directory date is between `from` and `to` (inclusive, YYYY-MM-DD format).
 ///
 /// Returns `AuditRecord`s sorted by timestamp (ascending).
-pub fn scan_archive(
-    archive_dir: &Path,
-    from: &str,
-    to: &str,
-) -> std::io::Result<Vec<AuditRecord>> {
+pub fn scan_archive(archive_dir: &Path, from: &str, to: &str) -> std::io::Result<Vec<AuditRecord>> {
     let mut records = Vec::new();
 
     // Read date directories
@@ -195,8 +191,7 @@ pub fn scan_archive(
             let file_entry = file_entry?;
             let file_path = file_entry.path();
             if let Some(name) = file_path.file_name().and_then(|n| n.to_str()) {
-                if name.starts_with("proof-") && name.ends_with(".json") && !name.starts_with('.')
-                {
+                if name.starts_with("proof-") && name.ends_with(".json") && !name.starts_with('.') {
                     match std::fs::read_to_string(&file_path) {
                         Ok(contents) => {
                             match serde_json::from_str::<ProofArchiveEntry>(&contents) {
@@ -214,11 +209,7 @@ pub fn scan_archive(
                             }
                         }
                         Err(e) => {
-                            eprintln!(
-                                "Warning: could not read {}: {}",
-                                file_path.display(),
-                                e
-                            );
+                            eprintln!("Warning: could not read {}: {}", file_path.display(), e);
                         }
                     }
                 }
@@ -431,8 +422,14 @@ mod tests {
     fn test_format_from_str() {
         assert_eq!(ExportFormat::from_str("csv"), Some(ExportFormat::Csv));
         assert_eq!(ExportFormat::from_str("JSON"), Some(ExportFormat::Json));
-        assert_eq!(ExportFormat::from_str("jsonl"), Some(ExportFormat::JsonLines));
-        assert_eq!(ExportFormat::from_str("ndjson"), Some(ExportFormat::JsonLines));
+        assert_eq!(
+            ExportFormat::from_str("jsonl"),
+            Some(ExportFormat::JsonLines)
+        );
+        assert_eq!(
+            ExportFormat::from_str("ndjson"),
+            Some(ExportFormat::JsonLines)
+        );
         assert_eq!(ExportFormat::from_str("xml"), None);
     }
 
@@ -629,7 +626,13 @@ mod tests {
         for (date, entries) in [
             (
                 "2026-01-15",
-                vec![make_archive_entry("jan1", "2026-01-15", "0xmodelA", true, false)],
+                vec![make_archive_entry(
+                    "jan1",
+                    "2026-01-15",
+                    "0xmodelA",
+                    true,
+                    false,
+                )],
             ),
             (
                 "2026-02-10",
@@ -640,18 +643,20 @@ mod tests {
             ),
             (
                 "2026-03-20",
-                vec![make_archive_entry("mar1", "2026-03-20", "0xmodelA", false, false)],
+                vec![make_archive_entry(
+                    "mar1",
+                    "2026-03-20",
+                    "0xmodelA",
+                    false,
+                    false,
+                )],
             ),
         ] {
             let date_dir = dir.join(date);
             std::fs::create_dir_all(&date_dir).unwrap();
             for entry in entries {
                 let json = serde_json::to_string_pretty(&entry).unwrap();
-                std::fs::write(
-                    date_dir.join(format!("proof-{}.json", entry.id)),
-                    json,
-                )
-                .unwrap();
+                std::fs::write(date_dir.join(format!("proof-{}.json", entry.id)), json).unwrap();
             }
         }
 
@@ -692,7 +697,11 @@ mod tests {
 
     #[test]
     fn test_scan_archive_nonexistent_dir() {
-        let result = scan_archive(Path::new("/tmp/nonexistent-audit-dir-xyz"), "2026-01-01", "2026-12-31");
+        let result = scan_archive(
+            Path::new("/tmp/nonexistent-audit-dir-xyz"),
+            "2026-01-01",
+            "2026-12-31",
+        );
         assert!(result.is_err());
     }
 

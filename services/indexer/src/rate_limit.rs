@@ -204,7 +204,10 @@ impl RateLimitLayer {
     /// Create a layer without spawning the background cleanup task.
     /// Useful for tests where a tokio runtime may not be available at
     /// construction time.
-    pub fn new_without_cleanup(config: RateLimitConfig, trusted_proxies: TrustedProxyConfig) -> Self {
+    pub fn new_without_cleanup(
+        config: RateLimitConfig,
+        trusted_proxies: TrustedProxyConfig,
+    ) -> Self {
         Self {
             state: RateLimitState::new(config, trusted_proxies),
         }
@@ -289,17 +292,14 @@ fn rate_limit_response(info: &RateLimitInfo) -> Response<Body> {
         "retry_after_seconds": info.reset_secs,
     });
 
-    let body_str = serde_json::to_string(&body).unwrap_or_else(|_| {
-        r#"{"error":"Too many requests. Please retry later."}"#.to_string()
-    });
+    let body_str = serde_json::to_string(&body)
+        .unwrap_or_else(|_| r#"{"error":"Too many requests. Please retry later."}"#.to_string());
     let mut resp = Response::builder()
         .status(StatusCode::TOO_MANY_REQUESTS)
         .header("content-type", "application/json")
         .header("retry-after", info.reset_secs.to_string())
         .body(Body::from(body_str))
-        .unwrap_or_else(|_| {
-            Response::new(Body::from("Too many requests"))
-        });
+        .unwrap_or_else(|_| Response::new(Body::from("Too many requests")));
     set_rate_limit_headers(&mut resp, info);
     resp
 }
@@ -358,10 +358,13 @@ mod tests {
 
     #[test]
     fn test_allows_requests_under_limit() {
-        let state = RateLimitState::new(RateLimitConfig {
-            max_requests: 5,
-            window: Duration::from_secs(60),
-        }, TrustedProxyConfig::default());
+        let state = RateLimitState::new(
+            RateLimitConfig {
+                max_requests: 5,
+                window: Duration::from_secs(60),
+            },
+            TrustedProxyConfig::default(),
+        );
 
         let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         for i in 0..5u32 {
@@ -373,10 +376,13 @@ mod tests {
 
     #[test]
     fn test_blocks_requests_over_limit() {
-        let state = RateLimitState::new(RateLimitConfig {
-            max_requests: 3,
-            window: Duration::from_secs(60),
-        }, TrustedProxyConfig::default());
+        let state = RateLimitState::new(
+            RateLimitConfig {
+                max_requests: 3,
+                window: Duration::from_secs(60),
+            },
+            TrustedProxyConfig::default(),
+        );
 
         let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         for _ in 0..3 {
@@ -394,10 +400,13 @@ mod tests {
 
     #[test]
     fn test_different_ips_tracked_separately() {
-        let state = RateLimitState::new(RateLimitConfig {
-            max_requests: 2,
-            window: Duration::from_secs(60),
-        }, TrustedProxyConfig::default());
+        let state = RateLimitState::new(
+            RateLimitConfig {
+                max_requests: 2,
+                window: Duration::from_secs(60),
+            },
+            TrustedProxyConfig::default(),
+        );
 
         let ip1 = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         let ip2 = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
@@ -415,10 +424,13 @@ mod tests {
 
     #[test]
     fn test_cleanup_removes_expired() {
-        let state = RateLimitState::new(RateLimitConfig {
-            max_requests: 100,
-            window: Duration::from_secs(0), // instant expiry for testing
-        }, TrustedProxyConfig::default());
+        let state = RateLimitState::new(
+            RateLimitConfig {
+                max_requests: 100,
+                window: Duration::from_secs(0), // instant expiry for testing
+            },
+            TrustedProxyConfig::default(),
+        );
 
         let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         state.check(ip).ok();
@@ -585,10 +597,13 @@ mod tests {
 
     #[test]
     fn test_rate_limit_info_on_success() {
-        let state = RateLimitState::new(RateLimitConfig {
-            max_requests: 10,
-            window: Duration::from_secs(60),
-        }, TrustedProxyConfig::default());
+        let state = RateLimitState::new(
+            RateLimitConfig {
+                max_requests: 10,
+                window: Duration::from_secs(60),
+            },
+            TrustedProxyConfig::default(),
+        );
 
         let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
 

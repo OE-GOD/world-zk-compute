@@ -32,7 +32,9 @@ fn main() {
 fn print_usage() {
     eprintln!("Usage:");
     eprintln!("  zkml-verifier verify <proof_bundle.json> [--hybrid] [--json]");
-    eprintln!("  zkml-verifier bundle --proof <file> --gens <file> --desc <file> [-o <output.json>]");
+    eprintln!(
+        "  zkml-verifier bundle --proof <file> --gens <file> --desc <file> [-o <output.json>]"
+    );
     eprintln!();
     eprintln!("Commands:");
     eprintln!("  verify   Verify a proof bundle JSON file");
@@ -72,7 +74,10 @@ fn cmd_verify(args: &[String]) {
                     println!("{}", serde_json::to_string_pretty(&out).unwrap());
                 } else {
                     println!("circuit_hash: 0x{}", hex::encode(result.circuit_hash));
-                    println!("transcript_digest: 0x{}", hex::encode(result.transcript_digest));
+                    println!(
+                        "transcript_digest: 0x{}",
+                        hex::encode(result.transcript_digest)
+                    );
                     println!(
                         "compute_layers: {} rlc_betas, {} z_dot_j_stars",
                         result.compute_fr.rlc_betas.len(),
@@ -223,9 +228,7 @@ fn read_hex_file(path: &str) -> String {
     // Check if file is already hex-encoded text
     if let Ok(text) = std::str::from_utf8(&data) {
         let trimmed = text.trim();
-        if trimmed.starts_with("0x")
-            && trimmed[2..].chars().all(|c| c.is_ascii_hexdigit())
-        {
+        if trimmed.starts_with("0x") && trimmed[2..].chars().all(|c| c.is_ascii_hexdigit()) {
             return trimmed.to_string();
         }
     }

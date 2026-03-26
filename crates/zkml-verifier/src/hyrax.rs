@@ -1,8 +1,5 @@
 /// Input layer verification (Hyrax PODP + public input MLE).
 /// Ported from GKRDAGVerifier.sol input layer functions.
-
-
-
 use crate::ec::{ec_add, ec_mul, G1Point, PODPProof, PedersenGens};
 use crate::field::{Fr, U256};
 use crate::gkr::{

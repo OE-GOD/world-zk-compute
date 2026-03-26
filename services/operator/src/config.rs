@@ -2319,8 +2319,9 @@ rpc_url = "https://rpc.example.com"
     #[test]
     fn test_validate_valid_config_with_0x_private_key() {
         let mut config = make_valid_config();
-        config.private_key =
-            "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890".to_string().into();
+        config.private_key = "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+            .to_string()
+            .into();
         assert!(config.validate().is_ok());
     }
 
@@ -2365,8 +2366,9 @@ rpc_url = "https://rpc.example.com"
     #[test]
     fn test_validate_invalid_private_key_non_hex() {
         let mut config = make_valid_config();
-        config.private_key =
-            "zzzzzz1234567890abcdef1234567890abcdef1234567890abcdef1234567890".to_string().into();
+        config.private_key = "zzzzzz1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+            .to_string()
+            .into();
         let errors = config.validate().unwrap_err();
         assert!(errors.iter().any(|e| e.contains("private_key")));
     }
@@ -2842,7 +2844,9 @@ rpc_url = "https://rpc.example.com"
         config.prover_url = Some("http://10.0.0.1:8080/prove".to_string());
         let errors = config.validate().unwrap_err();
         assert!(
-            errors.iter().any(|e| e.contains("prover_url") && e.contains("SSRF")),
+            errors
+                .iter()
+                .any(|e| e.contains("prover_url") && e.contains("SSRF")),
             "Expected SSRF error for prover_url, got: {:?}",
             errors
         );
@@ -2854,7 +2858,9 @@ rpc_url = "https://rpc.example.com"
         config.prover_url = Some("http://localhost:8080/prove".to_string());
         let errors = config.validate().unwrap_err();
         assert!(
-            errors.iter().any(|e| e.contains("prover_url") && e.contains("SSRF")),
+            errors
+                .iter()
+                .any(|e| e.contains("prover_url") && e.contains("SSRF")),
             "Expected SSRF error for prover_url with localhost, got: {:?}",
             errors
         );
@@ -2866,7 +2872,9 @@ rpc_url = "https://rpc.example.com"
         config.prover_url = Some("http://169.254.169.254/latest/meta-data/".to_string());
         let errors = config.validate().unwrap_err();
         assert!(
-            errors.iter().any(|e| e.contains("prover_url") && e.contains("SSRF")),
+            errors
+                .iter()
+                .any(|e| e.contains("prover_url") && e.contains("SSRF")),
             "Expected SSRF error for AWS metadata endpoint, got: {:?}",
             errors
         );
@@ -2878,7 +2886,9 @@ rpc_url = "https://rpc.example.com"
         config.prover_url = Some("http://[::1]:8080/prove".to_string());
         let errors = config.validate().unwrap_err();
         assert!(
-            errors.iter().any(|e| e.contains("prover_url") && e.contains("SSRF")),
+            errors
+                .iter()
+                .any(|e| e.contains("prover_url") && e.contains("SSRF")),
             "Expected SSRF error for IPv6 loopback, got: {:?}",
             errors
         );
@@ -2901,7 +2911,9 @@ rpc_url = "https://rpc.example.com"
         config.webhook_url = Some("https://192.168.1.1/webhook".to_string());
         let errors = config.validate().unwrap_err();
         assert!(
-            errors.iter().any(|e| e.contains("webhook_url") && e.contains("SSRF")),
+            errors
+                .iter()
+                .any(|e| e.contains("webhook_url") && e.contains("SSRF")),
             "Expected SSRF error for webhook_url, got: {:?}",
             errors
         );
@@ -2913,7 +2925,9 @@ rpc_url = "https://rpc.example.com"
         config.webhook_url = Some("https://hooks.internal/notify".to_string());
         let errors = config.validate().unwrap_err();
         assert!(
-            errors.iter().any(|e| e.contains("webhook_url") && e.contains("SSRF")),
+            errors
+                .iter()
+                .any(|e| e.contains("webhook_url") && e.contains("SSRF")),
             "Expected SSRF error for .internal hostname, got: {:?}",
             errors
         );

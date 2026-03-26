@@ -173,17 +173,12 @@ async fn get_circuit(
     store: &CircuitStore,
     circuit_id: &str,
 ) -> Result<CircuitConfig, (StatusCode, Json<ErrorResponse>)> {
-    let config = store
-        .read()
-        .await
-        .get(circuit_id)
-        .cloned()
-        .ok_or_else(|| {
-            err(
-                StatusCode::NOT_FOUND,
-                format!("circuit '{circuit_id}' not registered"),
-            )
-        })?;
+    let config = store.read().await.get(circuit_id).cloned().ok_or_else(|| {
+        err(
+            StatusCode::NOT_FOUND,
+            format!("circuit '{circuit_id}' not registered"),
+        )
+    })?;
 
     let ttl = circuit_ttl();
     if ttl > 0 && config.registered_at.elapsed().as_secs() > ttl {
@@ -239,7 +234,7 @@ async fn warm_verify_hybrid(
             StatusCode::NOT_FOUND,
             format!("circuit '{circuit_id}' not registered or expired"),
         )
-        })?;
+    })?;
 
     let bundle = ProofBundle {
         proof_hex: req.proof_hex,
@@ -358,10 +353,10 @@ fn build_app_with_config(config: ServiceConfig) -> Router {
     });
 
     // Auth and rate limiting are tenant-aware when a tenant store is present.
-    let auth_state = AuthState::new(config.api_keys.clone())
-        .with_tenant_store(tenant_store.clone());
-    let rate_limit_state = RateLimitState::new(config.rate_limit_rpm)
-        .with_tenant_store(tenant_store.clone());
+    let auth_state =
+        AuthState::new(config.api_keys.clone()).with_tenant_store(tenant_store.clone());
+    let rate_limit_state =
+        RateLimitState::new(config.rate_limit_rpm).with_tenant_store(tenant_store.clone());
 
     // Protected endpoints: auth + rate limit layers applied.
     let protected = Router::new()
@@ -1114,7 +1109,10 @@ mod tests {
         assert_eq!(json["name"], "Beta Inc");
         // Auto-generated ID should contain "beta-inc"
         let id = json["id"].as_str().unwrap();
-        assert!(id.starts_with("beta-inc"), "id should start with 'beta-inc', got: {id}");
+        assert!(
+            id.starts_with("beta-inc"),
+            "id should start with 'beta-inc', got: {id}"
+        );
         // Default rate limit should be 60
         assert_eq!(json["rate_limit_rpm"], 60);
     }
@@ -1209,7 +1207,8 @@ mod tests {
         let app = build_app_with_admin("admin-secret");
 
         // Create tenant
-        let body = serde_json::json!({ "id": "usage-test", "name": "UsageTenant", "rate_limit_rpm": 100 });
+        let body =
+            serde_json::json!({ "id": "usage-test", "name": "UsageTenant", "rate_limit_rpm": 100 });
         let req = Request::post("/admin/tenants")
             .header("content-type", "application/json")
             .header("x-admin-key", "admin-secret")
@@ -1251,9 +1250,7 @@ mod tests {
         let app = build_app_with_admin("admin-secret");
 
         // Missing admin key
-        let req = Request::get("/admin/tenants")
-            .body(Body::empty())
-            .unwrap();
+        let req = Request::get("/admin/tenants").body(Body::empty()).unwrap();
         let resp = app.clone().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 

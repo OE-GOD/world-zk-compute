@@ -97,9 +97,8 @@ impl ProofArchive {
         let filename = format!("proof-{}.json", &entry.id);
         let path = date_dir.join(&filename);
 
-        let json = serde_json::to_string_pretty(entry).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-        })?;
+        let json = serde_json::to_string_pretty(entry)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
 
         // Write atomically: write to temp, then rename
         let tmp_path = date_dir.join(format!(".proof-{}.json.tmp", &entry.id));
@@ -139,9 +138,8 @@ impl ProofArchive {
     /// Read a proof entry by its path.
     pub async fn read(&self, path: impl AsRef<Path>) -> std::io::Result<ProofArchiveEntry> {
         let data = tokio::fs::read_to_string(path).await?;
-        serde_json::from_str(&data).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-        })
+        serde_json::from_str(&data)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))
     }
 
     /// Count total archived proofs.
@@ -345,7 +343,9 @@ pub fn default_ttl_days() -> u32 {
 
 /// Default cold-storage archive directory (read from `PROOF_ARCHIVE_DIR` env var).
 pub fn default_archive_dir() -> Option<String> {
-    std::env::var("PROOF_ARCHIVE_DIR").ok().filter(|s| !s.is_empty())
+    std::env::var("PROOF_ARCHIVE_DIR")
+        .ok()
+        .filter(|s| !s.is_empty())
 }
 
 /// Compute the cutoff date string for a given TTL.
@@ -640,7 +640,9 @@ mod tests {
         // Create an old date directory manually
         let old_dir = tmp.join("2020-01-01");
         tokio::fs::create_dir_all(&old_dir).await.unwrap();
-        tokio::fs::write(old_dir.join("proof-old.json"), "{}").await.unwrap();
+        tokio::fs::write(old_dir.join("proof-old.json"), "{}")
+            .await
+            .unwrap();
 
         // Store a current entry
         let entry = ProofArchiveEntry {
@@ -667,18 +669,12 @@ mod tests {
         // Create an old date directory (well past any TTL)
         let old_dir = tmp.join("2020-06-15");
         tokio::fs::create_dir_all(&old_dir).await.unwrap();
-        tokio::fs::write(
-            old_dir.join("proof-expired1.json"),
-            r#"{"id":"expired1"}"#,
-        )
-        .await
-        .unwrap();
-        tokio::fs::write(
-            old_dir.join("proof-expired2.json"),
-            r#"{"id":"expired2"}"#,
-        )
-        .await
-        .unwrap();
+        tokio::fs::write(old_dir.join("proof-expired1.json"), r#"{"id":"expired1"}"#)
+            .await
+            .unwrap();
+        tokio::fs::write(old_dir.join("proof-expired2.json"), r#"{"id":"expired2"}"#)
+            .await
+            .unwrap();
 
         // Store a current entry (today)
         let entry = ProofArchiveEntry {
@@ -775,12 +771,9 @@ mod tests {
         // Create an old date directory with a proof
         let old_dir = tmp.join("2018-06-01");
         tokio::fs::create_dir_all(&old_dir).await.unwrap();
-        tokio::fs::write(
-            old_dir.join("proof-dryrun.json"),
-            r#"{"id":"dryrun"}"#,
-        )
-        .await
-        .unwrap();
+        tokio::fs::write(old_dir.join("proof-dryrun.json"), r#"{"id":"dryrun"}"#)
+            .await
+            .unwrap();
 
         // Dry-run should report the file but not move it
         let archived = archive.archive_expired(30, &cold, true).await.unwrap();

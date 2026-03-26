@@ -29,6 +29,7 @@ use rand::thread_rng;
 use remainder::layer::product::{new_with_values, PostSumcheckLayer};
 use remainder::layer::{LayerDescription, LayerId};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use shared_types::config::{
     global_config::global_claim_agg_strategy, ClaimAggregationStrategy, GKRCircuitProverConfig,
     GKRCircuitVerifierConfig,
@@ -41,11 +42,9 @@ use shared_types::{
     perform_function_under_prover_config, perform_function_under_verifier_config, Bn256Point, Fq,
     Fr,
 };
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::ops::Neg;
 use std::path::PathBuf;
-
 
 // ============================================================================
 // Utility functions
@@ -426,11 +425,7 @@ fn msm_t(ec: &mut ECCollector, points: &[Bn256Point], scalars: &[Fr]) -> Bn256Po
 }
 
 /// MSM over Pedersen generators (truncated to match z_vector length)
-fn msm_gens_t(
-    ec: &mut ECCollector,
-    gens: &[Bn256Point],
-    scalars: &[Fr],
-) -> Bn256Point {
+fn msm_gens_t(ec: &mut ECCollector, gens: &[Bn256Point], scalars: &[Fr]) -> Bn256Point {
     let n = scalars.len().min(gens.len());
     msm_t(ec, &gens[..n], &scalars[..n])
 }
@@ -592,15 +587,15 @@ fn group_claims_by_r_half(
 /// Record PODP EC operations (Check 1 + Check 2)
 fn record_podp_ec_ops(
     ec: &mut ECCollector,
-    com_x: &Bn256Point,      // alpha (for compute) or MSM result (for input)
-    com_y: &Bn256Point,      // dot_product (for compute) or com_eval (for input)
-    challenge: &Fr,           // PODP challenge c
+    com_x: &Bn256Point, // alpha (for compute) or MSM result (for input)
+    com_y: &Bn256Point, // dot_product (for compute) or com_eval (for input)
+    challenge: &Fr,     // PODP challenge c
     commit_d: &Bn256Point,
     commit_d_dot_a: &Bn256Point,
     z_vector: &[Fr],
     z_delta: &Fr,
     z_beta: &Fr,
-    z_dot_a: &Fr,            // inner_product(z_vector, a_vector) — Fr, computed outside
+    z_dot_a: &Fr, // inner_product(z_vector, a_vector) — Fr, computed outside
     message_gens: &[Bn256Point],
     scalar_gen: &Bn256Point,
     blinding_gen: &Bn256Point,
@@ -869,8 +864,7 @@ fn main() -> Result<()> {
     }
     let mut layer_podp_commits: Vec<PodpCommits> = Vec::new();
 
-    for (proof_idx, (layer_id, layer_proof)) in
-        proof.circuit_proof.layer_proofs.iter().enumerate()
+    for (proof_idx, (layer_id, layer_proof)) in proof.circuit_proof.layer_proofs.iter().enumerate()
     {
         let layer_desc = desc
             .intermediate_layers
@@ -883,7 +877,10 @@ fn main() -> Result<()> {
 
         eprintln!(
             "  Layer {} (rounds={}, degree={}, claims={})",
-            proof_idx, num_rounds, degree, layer_claims_vec.len()
+            proof_idx,
+            num_rounds,
+            degree,
+            layer_claims_vec.len()
         );
 
         // Store claim evaluation commitments (G1 points)
@@ -1214,14 +1211,13 @@ fn main() -> Result<()> {
     let mut z_dot_jstars: Vec<Fr> = Vec::new();
 
     for (i, le) in layer_extracts.iter().enumerate() {
-        let rlc_beta: Fr = le
-            .claim_points
-            .iter()
-            .zip(le.rlc_coefficients.iter())
-            .fold(Fr::zero(), |acc, (cp, rc)| {
+        let rlc_beta: Fr = le.claim_points.iter().zip(le.rlc_coefficients.iter()).fold(
+            Fr::zero(),
+            |acc, (cp, rc)| {
                 let beta = compute_beta_fr(&le.bindings, cp);
                 acc + beta * rc
-            });
+            },
+        );
         rlc_betas.push(rlc_beta);
 
         let z_dot_jstar: Fr = le
@@ -1469,10 +1465,7 @@ fn main() -> Result<()> {
     // Extract generator points
     // ================================================================
 
-    let gen_points: Vec<serde_json::Value> = message_gens
-        .iter()
-        .map(point_to_json)
-        .collect();
+    let gen_points: Vec<serde_json::Value> = message_gens.iter().map(point_to_json).collect();
 
     // ================================================================
     // Compute circuit hash
@@ -1736,8 +1729,9 @@ mod tests {
                 layer_claims.iter().map(|c| c.evaluation).collect();
 
             let random_coefficients = match global_claim_agg_strategy() {
-                ClaimAggregationStrategy::RLC => t
-                    .get_scalar_field_challenges("RLC Claim Agg Coefficients", layer_claims.len()),
+                ClaimAggregationStrategy::RLC => {
+                    t.get_scalar_field_challenges("RLC Claim Agg Coefficients", layer_claims.len())
+                }
                 _ => vec![Fr::one()],
             };
 
@@ -1767,13 +1761,11 @@ mod tests {
                 "Proof of sumcheck RLC coefficients for batching columns",
                 n,
             );
-            let j_star = ProofOfSumcheck::<Bn256Point>::calculate_j_star(
-                &bindings, &rhos, &gammas, degree,
-            );
+            let j_star =
+                ProofOfSumcheck::<Bn256Point>::calculate_j_star(&bindings, &rhos, &gammas, degree);
 
             let claim_points: Vec<Vec<Fr>> = layer_claims.iter().map(|c| c.point.clone()).collect();
-            let claim_points_refs: Vec<&[Fr]> =
-                claim_points.iter().map(|v| v.as_slice()).collect();
+            let claim_points_refs: Vec<&[Fr]> = claim_points.iter().map(|v| v.as_slice()).collect();
             let psl_desc = layer_desc.get_post_sumcheck_layer(
                 &bindings,
                 &claim_points_refs,
@@ -1819,8 +1811,7 @@ mod tests {
             let dot_product = ec_add_t(&mut ec, &sum_scaled, &oracle_scaled);
 
             // PODP
-            let podp_json =
-                serde_json::to_value(&layer_proof.proof_of_sumcheck.podp).unwrap();
+            let podp_json = serde_json::to_value(&layer_proof.proof_of_sumcheck.podp).unwrap();
             let podp_commit_d: Bn256Point = parse_point_from_json(&podp_json["commit_d"]);
             let podp_commit_d_dot_a: Bn256Point =
                 parse_point_from_json(&podp_json["commit_d_dot_a"]);
@@ -1844,10 +1835,7 @@ mod tests {
                 "Blinding factor for blinded vector commitment",
                 podp_z_delta,
             );
-            t.append_scalar_field_elem(
-                "Blinding factor for blinded inner product",
-                podp_z_beta,
-            );
+            t.append_scalar_field_elem("Blinding factor for blinded inner product", podp_z_beta);
 
             let z_dot_a: Fr = podp_z_vector
                 .iter()
@@ -1933,8 +1921,7 @@ mod tests {
             for claim in &new_claims {
                 let target_idx = *layer_id_to_idx.get(&claim.to_layer_id).unwrap();
                 atom_targets.push(target_idx);
-                let template_strs =
-                    resolve_point_template(&claim.point, &bindings, &claim_points);
+                let template_strs = resolve_point_template(&claim.point, &bindings, &claim_points);
                 let template: Vec<u64> = template_strs
                     .iter()
                     .map(|s| parse_template_entry(s))
@@ -2074,7 +2061,11 @@ mod tests {
         let d2 = compute_ops_digest(&ops);
         assert_eq!(d1, d2, "digest must be deterministic");
         assert!(d1.starts_with("0x"), "digest must be hex-prefixed");
-        assert_eq!(d1.len(), 2 + 64, "SHA-256 digest is 32 bytes = 64 hex chars");
+        assert_eq!(
+            d1.len(),
+            2 + 64,
+            "SHA-256 digest is 32 bytes = 64 hex chars"
+        );
     }
 
     #[test]

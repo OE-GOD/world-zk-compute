@@ -65,16 +65,15 @@ pub const ANVIL: NetworkConfig = NetworkConfig {
 };
 
 /// All known networks.
-pub const ALL_NETWORKS: &[&NetworkConfig] = &[
-    &SEPOLIA,
-    &WORLD_CHAIN_SEPOLIA,
-    &WORLD_CHAIN_MAINNET,
-    &ANVIL,
-];
+pub const ALL_NETWORKS: &[&NetworkConfig] =
+    &[&SEPOLIA, &WORLD_CHAIN_SEPOLIA, &WORLD_CHAIN_MAINNET, &ANVIL];
 
 /// Look up a network configuration by chain ID.
 pub fn from_chain_id(chain_id: u64) -> Option<&'static NetworkConfig> {
-    ALL_NETWORKS.iter().copied().find(|n| n.chain_id == chain_id)
+    ALL_NETWORKS
+        .iter()
+        .copied()
+        .find(|n| n.chain_id == chain_id)
 }
 
 #[cfg(test)]

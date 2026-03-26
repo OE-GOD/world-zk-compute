@@ -103,10 +103,7 @@ impl TenantStore {
     /// Look up a tenant by API key. Returns None if not found or inactive.
     pub fn get_by_key(&self, api_key: &str) -> Option<Tenant> {
         let tenants = self.tenants_by_key.read().ok()?;
-        tenants
-            .get(api_key)
-            .filter(|t| t.active)
-            .cloned()
+        tenants.get(api_key).filter(|t| t.active).cloned()
     }
 
     /// Look up a tenant by ID (regardless of active status).
@@ -301,10 +298,7 @@ impl TenantStore {
 
     /// Return the number of tenants in the store.
     pub fn count(&self) -> usize {
-        self.tenants_by_key
-            .read()
-            .map(|t| t.len())
-            .unwrap_or(0)
+        self.tenants_by_key.read().map(|t| t.len()).unwrap_or(0)
     }
 
     /// Return the number of active tenants.
@@ -582,9 +576,7 @@ mod tests {
             let store = TenantStore::load(&path_str);
             store.create_with_id("acme", "Acme Corp", 100).unwrap();
             store.create_with_id("beta", "Beta Inc", 50).unwrap();
-            store.record_request(
-                &store.get_by_id("acme").unwrap().api_key,
-            );
+            store.record_request(&store.get_by_id("acme").unwrap().api_key);
             // save_to_file is called by create_with_id, but let's also save after recording
             store.save_to_file();
         }

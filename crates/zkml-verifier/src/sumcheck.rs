@@ -1,8 +1,5 @@
 /// Committed sumcheck verification.
 /// Ported from CommittedSumcheckVerifier.sol
-
-
-
 use crate::ec::{
     ec_add, ec_mul, msm_with_truncated_gens, multi_scalar_mul, G1Point, PODPProof, PedersenGens,
 };
@@ -100,11 +97,7 @@ pub fn verify_hybrid(
 ///
 /// Performs the same transcript absorb/squeeze as `verify_podp_with_transcript`,
 /// but skips EC verification equations. Returns the Fr scalar z_dot_j_star.
-fn verify_podp_hybrid(
-    podp: &PODPProof,
-    a_vector: &[U256],
-    sponge: &mut PoseidonSponge,
-) -> U256 {
+fn verify_podp_hybrid(podp: &PODPProof, a_vector: &[U256], sponge: &mut PoseidonSponge) -> U256 {
     // Absorb commit_d and commit_d_dot_a (same as full verifier)
     sponge.absorb_u256(&podp.commit_d.x);
     sponge.absorb_u256(&podp.commit_d.y);

@@ -33,11 +33,12 @@ pub unsafe extern "C" fn zkml_verify_json(
 
     let result = panic::catch_unwind(|| {
         let c_str = unsafe { CStr::from_ptr(json_ptr) };
-        let json = c_str.to_str().map_err(|e| format!("invalid UTF-8: {}", e))?;
-        let bundle = crate::ProofBundle::from_json(json)
-            .map_err(|e| format!("parse error: {}", e))?;
-        let result = crate::verify(&bundle)
-            .map_err(|e| format!("verify error: {}", e))?;
+        let json = c_str
+            .to_str()
+            .map_err(|e| format!("invalid UTF-8: {}", e))?;
+        let bundle =
+            crate::ProofBundle::from_json(json).map_err(|e| format!("parse error: {}", e))?;
+        let result = crate::verify(&bundle).map_err(|e| format!("verify error: {}", e))?;
         Ok::<bool, String>(result.verified)
     });
 
@@ -123,11 +124,12 @@ pub unsafe extern "C" fn zkml_verify_file(
 
     let result = panic::catch_unwind(|| {
         let c_str = unsafe { CStr::from_ptr(path_ptr) };
-        let path = c_str.to_str().map_err(|e| format!("invalid UTF-8: {}", e))?;
-        let bundle = crate::ProofBundle::from_file(path)
-            .map_err(|e| format!("load error: {}", e))?;
-        let result = crate::verify(&bundle)
-            .map_err(|e| format!("verify error: {}", e))?;
+        let path = c_str
+            .to_str()
+            .map_err(|e| format!("invalid UTF-8: {}", e))?;
+        let bundle =
+            crate::ProofBundle::from_file(path).map_err(|e| format!("load error: {}", e))?;
+        let result = crate::verify(&bundle).map_err(|e| format!("verify error: {}", e))?;
         Ok::<bool, String>(result.verified)
     });
 

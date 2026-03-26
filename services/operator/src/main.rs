@@ -21,8 +21,8 @@ use tracing::Instrument;
 use uuid::Uuid;
 
 use config::{Config, ModelConfig};
-use secrecy::ExposeSecret;
 use prover::ProofManager;
+use secrecy::ExposeSecret;
 use store::StateStore;
 use tee_operator::alerting::{AlertConfig, AlertManager, AlertSeverity};
 use tee_operator::audit;
@@ -43,8 +43,7 @@ struct CachedAttestation {
 /// Uses `tokio::sync::Mutex` so the lock can be held across async
 /// operations, eliminating the TOCTOU race that existed when
 /// `std::sync::Mutex` was dropped before the async fetch.
-static ATTESTATION_CACHE: OnceLock<tokio::sync::Mutex<Option<CachedAttestation>>> =
-    OnceLock::new();
+static ATTESTATION_CACHE: OnceLock<tokio::sync::Mutex<Option<CachedAttestation>>> = OnceLock::new();
 
 #[derive(Parser)]
 #[command(name = "tee-operator", about = "TEE ML Operator Service")]
@@ -213,13 +212,29 @@ async fn main() -> anyhow::Result<()> {
             format,
             output,
             archive_dir,
-        } => cmd_export_audit(&config, &from, &to, &format, &output, archive_dir.as_deref()),
+        } => cmd_export_audit(
+            &config,
+            &from,
+            &to,
+            &format,
+            &output,
+            archive_dir.as_deref(),
+        ),
         Commands::RotateProofs {
             ttl_days,
             archive_dir,
             proofs_dir,
             dry_run,
-        } => cmd_rotate_proofs(&config, ttl_days, archive_dir.as_deref(), proofs_dir.as_deref(), dry_run).await,
+        } => {
+            cmd_rotate_proofs(
+                &config,
+                ttl_days,
+                archive_dir.as_deref(),
+                proofs_dir.as_deref(),
+                dry_run,
+            )
+            .await
+        }
     }
 }
 
@@ -477,21 +492,30 @@ fn cmd_export_audit(
     output: &str,
     archive_dir: Option<&str>,
 ) -> anyhow::Result<()> {
-    use tee_operator::audit_export::{scan_archive, export_records, ExportFormat};
+    use tee_operator::audit_export::{export_records, scan_archive, ExportFormat};
 
     // Validate date format (basic check)
     for (label, date) in [("from", from), ("to", to)] {
         if date.len() != 10 || date.chars().filter(|c| *c == '-').count() != 2 {
-            anyhow::bail!("Invalid {} date '{}': expected YYYY-MM-DD format", label, date);
+            anyhow::bail!(
+                "Invalid {} date '{}': expected YYYY-MM-DD format",
+                label,
+                date
+            );
         }
     }
 
     if from > to {
-        anyhow::bail!("--from date ({}) must not be after --to date ({})", from, to);
+        anyhow::bail!(
+            "--from date ({}) must not be after --to date ({})",
+            from,
+            to
+        );
     }
 
-    let fmt = ExportFormat::from_str(format)
-        .ok_or_else(|| anyhow::anyhow!("Unsupported format '{}'. Use csv, json, or jsonl.", format))?;
+    let fmt = ExportFormat::from_str(format).ok_or_else(|| {
+        anyhow::anyhow!("Unsupported format '{}'. Use csv, json, or jsonl.", format)
+    })?;
 
     // Determine archive directory: CLI override > config > error
     let dir = archive_dir
@@ -560,9 +584,7 @@ async fn cmd_rotate_proofs(
         .or_else(|| std::env::var("PROOFS_DIR").ok())
         .unwrap_or_else(|| config.proof_archive_dir.clone());
     if src_dir.is_empty() {
-        anyhow::bail!(
-            "No proofs directory specified. Use --proofs-dir or set PROOFS_DIR."
-        );
+        anyhow::bail!("No proofs directory specified. Use --proofs-dir or set PROOFS_DIR.");
     }
 
     let src_path = std::path::Path::new(&src_dir);

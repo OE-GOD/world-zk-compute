@@ -198,7 +198,8 @@ impl Attestor {
         let result_hash = keccak256(result_bytes);
 
         // Compute EIP-712 struct hash: keccak256(abi.encode(RESULT_TYPEHASH, modelHash, inputHash, resultHash))
-        let result_typehash: B256 = keccak256(b"TEEMLResult(bytes32 modelHash,bytes32 inputHash,bytes32 resultHash)");
+        let result_typehash: B256 =
+            keccak256(b"TEEMLResult(bytes32 modelHash,bytes32 inputHash,bytes32 resultHash)");
         let struct_hash = keccak256(Self::abi_encode_struct(
             result_typehash,
             model_hash,
@@ -719,17 +720,15 @@ mod tests {
         assert_eq!(attestation.signature.len(), 65);
 
         // Reconstruct the EIP-712 digest (same as contract would compute)
-        let result_typehash = keccak256(
-            b"TEEMLResult(bytes32 modelHash,bytes32 inputHash,bytes32 resultHash)",
-        );
+        let result_typehash =
+            keccak256(b"TEEMLResult(bytes32 modelHash,bytes32 inputHash,bytes32 resultHash)");
         let struct_hash = keccak256(Attestor::abi_encode_struct(
             result_typehash,
             model_hash,
             input_hash,
             attestation.result_hash,
         ));
-        let domain_sep =
-            Attestor::compute_domain_separator(31337, verifier_address);
+        let domain_sep = Attestor::compute_domain_separator(31337, verifier_address);
         let mut digest_input = Vec::new();
         digest_input.extend_from_slice(b"\x19\x01");
         digest_input.extend_from_slice(domain_sep.as_slice());
@@ -737,8 +736,7 @@ mod tests {
         let digest = keccak256(&digest_input);
 
         // Recover signer from the EIP-712 digest (no EIP-191 prefix)
-        let sig =
-            alloy_primitives::Signature::try_from(attestation.signature.as_slice()).unwrap();
+        let sig = alloy_primitives::Signature::try_from(attestation.signature.as_slice()).unwrap();
         let recovered = sig.recover_address_from_prehash(&digest).unwrap();
         assert_eq!(recovered, expected_addr, "EIP-712 signer recovery failed");
     }
@@ -754,6 +752,9 @@ mod tests {
 
         // Different chain ID → different separator
         let ds3 = Attestor::compute_domain_separator(2, addr);
-        assert_ne!(ds1, ds3, "Different chain IDs should give different separators");
+        assert_ne!(
+            ds1, ds3,
+            "Different chain IDs should give different separators"
+        );
     }
 }

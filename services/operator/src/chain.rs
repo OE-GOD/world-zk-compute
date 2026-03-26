@@ -203,8 +203,7 @@ mod tests {
 
     /// Build a `ChainClient` in normal (non-dry-run) mode.
     fn make_normal_client() -> ChainClient {
-        ChainClient::new(FAKE_RPC, FAKE_KEY, FAKE_ADDR)
-            .expect("should construct with valid inputs")
+        ChainClient::new(FAKE_RPC, FAKE_KEY, FAKE_ADDR).expect("should construct with valid inputs")
     }
 
     // ---------------------------------------------------------------------------
@@ -229,27 +228,37 @@ mod tests {
     #[test]
     fn test_new_constructs_with_valid_inputs() {
         let client = ChainClient::new(FAKE_RPC, FAKE_KEY, FAKE_ADDR);
-        assert!(client.is_ok(), "ChainClient::new should succeed with valid inputs");
+        assert!(
+            client.is_ok(),
+            "ChainClient::new should succeed with valid inputs"
+        );
     }
 
     #[test]
     fn test_new_returns_non_dry_run_client() {
         let client = make_normal_client();
-        assert!(!client.is_dry_run(), "ChainClient::new should produce a non-dry-run client");
+        assert!(
+            !client.is_dry_run(),
+            "ChainClient::new should produce a non-dry-run client"
+        );
     }
 
     #[test]
     fn test_new_with_dry_run_true() {
-        let client =
-            ChainClient::new_with_dry_run(FAKE_RPC, FAKE_KEY, FAKE_ADDR, true).unwrap();
-        assert!(client.is_dry_run(), "dry_run=true should be reflected by is_dry_run()");
+        let client = ChainClient::new_with_dry_run(FAKE_RPC, FAKE_KEY, FAKE_ADDR, true).unwrap();
+        assert!(
+            client.is_dry_run(),
+            "dry_run=true should be reflected by is_dry_run()"
+        );
     }
 
     #[test]
     fn test_new_with_dry_run_false() {
-        let client =
-            ChainClient::new_with_dry_run(FAKE_RPC, FAKE_KEY, FAKE_ADDR, false).unwrap();
-        assert!(!client.is_dry_run(), "dry_run=false should be reflected by is_dry_run()");
+        let client = ChainClient::new_with_dry_run(FAKE_RPC, FAKE_KEY, FAKE_ADDR, false).unwrap();
+        assert!(
+            !client.is_dry_run(),
+            "dry_run=false should be reflected by is_dry_run()"
+        );
     }
 
     #[test]
@@ -257,7 +266,10 @@ mod tests {
         // Private key without the "0x" prefix should also be accepted.
         let bare_key = &FAKE_KEY[2..]; // strip "0x"
         let result = ChainClient::new(FAKE_RPC, bare_key, FAKE_ADDR);
-        assert!(result.is_ok(), "Private key without 0x prefix should be accepted");
+        assert!(
+            result.is_ok(),
+            "Private key without 0x prefix should be accepted"
+        );
     }
 
     #[test]
@@ -319,7 +331,11 @@ mod tests {
 
     #[test]
     fn test_new_rejects_non_hex_private_key() {
-        let result = ChainClient::new(FAKE_RPC, "not-a-hex-key-at-all-this-is-garbage-text", FAKE_ADDR);
+        let result = ChainClient::new(
+            FAKE_RPC,
+            "not-a-hex-key-at-all-this-is-garbage-text",
+            FAKE_ADDR,
+        );
         assert!(result.is_err(), "Non-hex private key should be rejected");
     }
 
@@ -376,19 +392,28 @@ mod tests {
     #[test]
     fn test_new_with_dry_run_propagates_rpc_error() {
         let result = ChainClient::new_with_dry_run("", FAKE_KEY, FAKE_ADDR, true);
-        assert!(result.is_err(), "new_with_dry_run should propagate RPC URL errors");
+        assert!(
+            result.is_err(),
+            "new_with_dry_run should propagate RPC URL errors"
+        );
     }
 
     #[test]
     fn test_new_with_dry_run_propagates_key_error() {
         let result = ChainClient::new_with_dry_run(FAKE_RPC, "bad", FAKE_ADDR, false);
-        assert!(result.is_err(), "new_with_dry_run should propagate private key errors");
+        assert!(
+            result.is_err(),
+            "new_with_dry_run should propagate private key errors"
+        );
     }
 
     #[test]
     fn test_new_with_dry_run_propagates_address_error() {
         let result = ChainClient::new_with_dry_run(FAKE_RPC, FAKE_KEY, "bad", true);
-        assert!(result.is_err(), "new_with_dry_run should propagate address errors");
+        assert!(
+            result.is_err(),
+            "new_with_dry_run should propagate address errors"
+        );
     }
 
     // ---------------------------------------------------------------------------
@@ -399,7 +424,13 @@ mod tests {
     async fn test_dry_run_submit_result_returns_zero_hash() {
         let client = make_dry_run_client();
         let tx = client
-            .submit_result(B256::ZERO, B256::ZERO, b"result-data", b"attestation", U256::ZERO)
+            .submit_result(
+                B256::ZERO,
+                B256::ZERO,
+                b"result-data",
+                b"attestation",
+                U256::ZERO,
+            )
             .await
             .expect("dry-run submit_result should succeed");
         assert_eq!(tx, B256::ZERO, "dry-run should return B256::ZERO");
@@ -620,6 +651,9 @@ mod tests {
     fn test_new_accepts_zero_address_as_contract() {
         let zero_addr = "0x0000000000000000000000000000000000000000";
         let result = ChainClient::new(FAKE_RPC, FAKE_KEY, zero_addr);
-        assert!(result.is_ok(), "Zero address should be parseable (even if useless)");
+        assert!(
+            result.is_ok(),
+            "Zero address should be parseable (even if useless)"
+        );
     }
 }

@@ -17,7 +17,10 @@ pub fn encode_circuit_desc_from_json(desc: &serde_json::Value) -> Vec<u8> {
         assert_eq!(decoded.len(), 32, "oracleExprCoeff must be 32 bytes");
         buf.extend_from_slice(&decoded);
     }
-    push_usize(&mut buf, desc["numComputeLayers"].as_u64().unwrap() as usize);
+    push_usize(
+        &mut buf,
+        desc["numComputeLayers"].as_u64().unwrap() as usize,
+    );
     push_usize(&mut buf, desc["numInputLayers"].as_u64().unwrap() as usize);
     for key in &[
         "layerTypes",

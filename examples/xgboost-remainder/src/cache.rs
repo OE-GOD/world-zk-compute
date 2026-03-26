@@ -147,9 +147,7 @@ impl ProofCache {
         // the borrow checker (we cannot hold an immutable ref into `entries`
         // while also mutating `inner.stats`).
         let status = match inner.entries.get(key) {
-            Some(entry) if entry.inserted_at.elapsed() < self.ttl => {
-                Some(entry.proof.clone())
-            }
+            Some(entry) if entry.inserted_at.elapsed() < self.ttl => Some(entry.proof.clone()),
             Some(_) => None, // expired
             None => {
                 inner.stats.misses += 1;
@@ -379,8 +377,14 @@ mod tests {
         // Insert k4 -- should evict k2 (now the LRU), not k1.
         cache.insert(k4, dummy_proof(4));
 
-        assert!(cache.get(&k1).is_some(), "k1 was promoted and should survive");
-        assert!(cache.get(&k2).is_none(), "k2 should have been evicted as LRU");
+        assert!(
+            cache.get(&k1).is_some(),
+            "k1 was promoted and should survive"
+        );
+        assert!(
+            cache.get(&k2).is_none(),
+            "k2 should have been evicted as LRU"
+        );
         assert!(cache.get(&k3).is_some(), "k3 should still be present");
         assert!(cache.get(&k4).is_some(), "k4 should be present");
     }
@@ -430,7 +434,11 @@ mod tests {
         assert_eq!(cache.stats().misses, 1);
 
         // The expired entry should have been removed from the map.
-        assert_eq!(cache.stats().current_size, 0, "Expired entry should be removed");
+        assert_eq!(
+            cache.stats().current_size,
+            0,
+            "Expired entry should be removed"
+        );
     }
 
     #[test]
@@ -618,14 +626,20 @@ mod tests {
     fn test_make_key_different_models() {
         let k1 = ProofCache::make_key(b"model_a", &[1.0, 2.0]);
         let k2 = ProofCache::make_key(b"model_b", &[1.0, 2.0]);
-        assert_ne!(k1, k2, "Different model hashes should produce different keys");
+        assert_ne!(
+            k1, k2,
+            "Different model hashes should produce different keys"
+        );
     }
 
     #[test]
     fn test_make_key_empty_features() {
         let k1 = ProofCache::make_key(b"model_a", &[]);
         let k2 = ProofCache::make_key(b"model_a", &[]);
-        assert_eq!(k1, k2, "Empty features should still produce a consistent key");
+        assert_eq!(
+            k1, k2,
+            "Empty features should still produce a consistent key"
+        );
     }
 
     // ---------------------------------------------------------------
@@ -642,7 +656,11 @@ mod tests {
 
         let result = cache.get(&key).expect("Key should exist");
         assert_eq!(result.predicted_class, 2, "Should return updated proof");
-        assert_eq!(cache.stats().current_size, 1, "Duplicate should not increase size");
+        assert_eq!(
+            cache.stats().current_size,
+            1,
+            "Duplicate should not increase size"
+        );
     }
 
     #[test]
@@ -652,7 +670,10 @@ mod tests {
         let key = ProofCache::make_key(b"m", &[1.0]);
 
         cache.insert(key, dummy_proof(1));
-        assert!(cache.get(&key).is_none(), "Zero-capacity cache should hold nothing");
+        assert!(
+            cache.get(&key).is_none(),
+            "Zero-capacity cache should hold nothing"
+        );
     }
 
     #[test]

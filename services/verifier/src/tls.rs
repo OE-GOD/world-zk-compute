@@ -40,9 +40,7 @@ impl TlsConfig {
 
         let key_path = std::env::var("VERIFIER_TLS_KEY")
             .map(PathBuf::from)
-            .map_err(|_| {
-                "VERIFIER_TLS_CERT is set but VERIFIER_TLS_KEY is missing".to_string()
-            })?;
+            .map_err(|_| "VERIFIER_TLS_CERT is set but VERIFIER_TLS_KEY is missing".to_string())?;
 
         if key_path.as_os_str().is_empty() {
             return Err("VERIFIER_TLS_KEY must not be empty when VERIFIER_TLS_CERT is set".into());
@@ -216,7 +214,9 @@ mod tests {
     async fn test_rustls_config_basic_tls() {
         // Generate self-signed cert for testing
         let params = rcgen::CertificateParams::new(vec!["localhost".to_string()]).unwrap();
-        let cert = params.self_signed(&rcgen::KeyPair::generate().unwrap()).unwrap();
+        let cert = params
+            .self_signed(&rcgen::KeyPair::generate().unwrap())
+            .unwrap();
         let key_pair = rcgen::KeyPair::generate().unwrap();
         let cert2 = rcgen::CertificateParams::new(vec!["localhost".to_string()])
             .unwrap()
@@ -239,7 +239,11 @@ mod tests {
         };
 
         let result = tls_config.into_rustls_config().await;
-        assert!(result.is_ok(), "failed to build rustls config: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "failed to build rustls config: {:?}",
+            result.err()
+        );
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);
@@ -280,7 +284,11 @@ mod tests {
 
         assert!(tls_config.is_mtls());
         let result = tls_config.into_rustls_config().await;
-        assert!(result.is_ok(), "failed to build mTLS config: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "failed to build mTLS config: {:?}",
+            result.err()
+        );
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);

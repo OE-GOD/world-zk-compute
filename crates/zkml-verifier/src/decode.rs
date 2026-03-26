@@ -133,13 +133,16 @@ impl<'a> ProofDecoder<'a> {
 
     /// Safely advance offset, checking bounds.
     fn try_advance(&mut self, n: usize) -> Result<()> {
-        let new_offset = self.offset.checked_add(n).ok_or_else(|| {
-            VerifyError::DecodeError("offset overflow".to_string())
-        })?;
+        let new_offset = self
+            .offset
+            .checked_add(n)
+            .ok_or_else(|| VerifyError::DecodeError("offset overflow".to_string()))?;
         if new_offset > self.data.len() {
             return Err(VerifyError::DecodeError(format!(
                 "advance: out of bounds (offset {} + {} > data len {})",
-                self.offset, n, self.data.len()
+                self.offset,
+                n,
+                self.data.len()
             )));
         }
         self.offset = new_offset;
@@ -181,7 +184,14 @@ impl<'a> ProofDecoder<'a> {
         let z4 = self.try_read_u256()?;
         let z5 = self.try_read_u256()?;
         Ok(ProofOfProduct {
-            alpha, beta, delta, z1, z2, z3, z4, z5,
+            alpha,
+            beta,
+            delta,
+            z1,
+            z2,
+            z3,
+            z4,
+            z5,
         })
     }
 
@@ -194,7 +204,11 @@ impl<'a> ProofDecoder<'a> {
             messages.push(self.try_read_g1()?);
         }
         let podp = self.try_decode_podp()?;
-        let sumcheck_proof = CommittedSumcheckProof { sum, messages, podp };
+        let sumcheck_proof = CommittedSumcheckProof {
+            sum,
+            messages,
+            podp,
+        };
 
         let num_commits = self.try_read_usize()?;
         let mut commitments = Vec::with_capacity(num_commits);
@@ -211,9 +225,11 @@ impl<'a> ProofDecoder<'a> {
         let has_agg = self.try_read_usize()?;
         if has_agg == 1 {
             let num_coeffs = self.try_read_usize()?;
-            self.try_advance(num_coeffs.checked_mul(64).ok_or_else(|| {
-                VerifyError::DecodeError("overflow in coeffs size".to_string())
-            })?)?;
+            self.try_advance(
+                num_coeffs.checked_mul(64).ok_or_else(|| {
+                    VerifyError::DecodeError("overflow in coeffs size".to_string())
+                })?,
+            )?;
             let num_openings = self.try_read_usize()?;
             self.try_advance(num_openings.checked_mul(128).ok_or_else(|| {
                 VerifyError::DecodeError("overflow in openings size".to_string())
@@ -261,9 +277,11 @@ impl<'a> ProofDecoder<'a> {
             let blinding = self.try_read_u256()?;
             let commitment = self.try_read_g1()?;
             let num_point = self.try_read_usize()?;
-            self.try_advance(num_point.checked_mul(32).ok_or_else(|| {
-                VerifyError::DecodeError("overflow in point size".to_string())
-            })?)?;
+            self.try_advance(
+                num_point.checked_mul(32).ok_or_else(|| {
+                    VerifyError::DecodeError("overflow in point size".to_string())
+                })?,
+            )?;
             claims.push(PublicValueClaim {
                 value,
                 blinding,

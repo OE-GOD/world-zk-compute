@@ -584,10 +584,7 @@ mod tests {
         // Should be capped at MAX_PROCESSED_IDS
         assert_eq!(tracker.len(), MAX_PROCESSED_IDS);
         // Oldest 100 entries should have been evicted
-        assert!(
-            !tracker.contains("evt-0"),
-            "evt-0 should have been evicted"
-        );
+        assert!(!tracker.contains("evt-0"), "evt-0 should have been evicted");
         assert!(
             !tracker.contains("evt-99"),
             "evt-99 should have been evicted"

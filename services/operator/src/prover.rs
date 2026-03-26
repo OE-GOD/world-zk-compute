@@ -516,7 +516,6 @@ impl ProofManager {
     pub fn has_proof(&self, result_id: &str) -> bool {
         self.proofs_dir.join(format!("{}.json", result_id)).exists()
     }
-
 }
 
 #[cfg(test)]
@@ -531,7 +530,8 @@ mod tests {
         let _lock = ENV_MUTEX.lock().unwrap();
         std::env::remove_var("PROVER_URL");
         std::env::remove_var("PROVER_TIMEOUT_SECS");
-        let pm = ProofManager::new("precompute_proof", "./model.json", "/tmp/proofs", 3, 10).unwrap();
+        let pm =
+            ProofManager::new("precompute_proof", "./model.json", "/tmp/proofs", 3, 10).unwrap();
         assert_eq!(pm.precompute_bin, "precompute_proof");
         assert_eq!(pm.model_path, "./model.json");
         assert!(matches!(pm.mode, ProverMode::Subprocess));
@@ -637,7 +637,8 @@ mod tests {
         let _lock = ENV_MUTEX.lock().unwrap();
         std::env::remove_var("PROVER_URL");
         std::env::remove_var("PROVER_TIMEOUT_SECS");
-        let pm = ProofManager::with_retry_config("x", "y", "/tmp/test", 5, 10, 2000, 60000).unwrap();
+        let pm =
+            ProofManager::with_retry_config("x", "y", "/tmp/test", 5, 10, 2000, 60000).unwrap();
         assert_eq!(pm.max_retries, 5);
         assert_eq!(pm.retry_delay_secs, 10);
         assert_eq!(pm.retry_base_delay_ms, 2000);
@@ -668,7 +669,8 @@ mod tests {
         let _lock = ENV_MUTEX.lock().unwrap();
         std::env::remove_var("PROVER_URL");
         std::env::remove_var("PROVER_TIMEOUT_SECS");
-        let pm = ProofManager::with_retry_config("x", "y", "/tmp/test", 10, 1, 1000, 30000).unwrap();
+        let pm =
+            ProofManager::with_retry_config("x", "y", "/tmp/test", 10, 1, 1000, 30000).unwrap();
         assert_eq!(pm.compute_retry_delay_ms(1), 1000);
         assert_eq!(pm.compute_retry_delay_ms(2), 2000);
         assert_eq!(pm.compute_retry_delay_ms(3), 4000);
@@ -682,7 +684,8 @@ mod tests {
         let _lock = ENV_MUTEX.lock().unwrap();
         std::env::remove_var("PROVER_URL");
         std::env::remove_var("PROVER_TIMEOUT_SECS");
-        let pm = ProofManager::with_retry_config("x", "y", "/tmp/test", 10, 1, 5000, 10000).unwrap();
+        let pm =
+            ProofManager::with_retry_config("x", "y", "/tmp/test", 10, 1, 5000, 10000).unwrap();
         assert_eq!(pm.compute_retry_delay_ms(1), 5000);
         assert_eq!(pm.compute_retry_delay_ms(2), 10000);
         assert_eq!(pm.compute_retry_delay_ms(3), 10000);
@@ -694,7 +697,8 @@ mod tests {
         let _lock = ENV_MUTEX.lock().unwrap();
         std::env::remove_var("PROVER_URL");
         std::env::remove_var("PROVER_TIMEOUT_SECS");
-        let pm = ProofManager::with_retry_config("x", "y", "/tmp/test", 100, 1, 60000, 600000).unwrap();
+        let pm =
+            ProofManager::with_retry_config("x", "y", "/tmp/test", 100, 1, 60000, 600000).unwrap();
         assert_eq!(pm.compute_retry_delay_ms(21), 600000);
         assert_eq!(pm.compute_retry_delay_ms(100), 600000);
     }

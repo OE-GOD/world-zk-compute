@@ -81,8 +81,7 @@ fn bench_bundle_parse(c: &mut Criterion) {
 
     c.bench_function("parse_bundle_json", |b| {
         b.iter(|| {
-            let _bundle: zkml_verifier::ProofBundle =
-                serde_json::from_str(&json_str).unwrap();
+            let _bundle: zkml_verifier::ProofBundle = serde_json::from_str(&json_str).unwrap();
         })
     });
 }

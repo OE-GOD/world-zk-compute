@@ -48,7 +48,10 @@ fn test_offchain_verify_roundtrip() {
     // Verify
     let result = verify(&bundle).expect("verification should succeed");
     assert!(result.verified, "88-layer XGBoost proof should verify");
-    assert_ne!(result.circuit_hash, [0u8; 32], "circuit hash should be non-zero");
+    assert_ne!(
+        result.circuit_hash, [0u8; 32],
+        "circuit hash should be non-zero"
+    );
 }
 
 /// Bundle metadata survives serialization roundtrip.
@@ -88,8 +91,12 @@ fn test_tampered_proof_fails() {
 
     // Flip a byte in the middle of the proof
     let mut proof_bytes = hex::decode(
-        bundle.proof_hex.strip_prefix("0x").unwrap_or(&bundle.proof_hex)
-    ).unwrap();
+        bundle
+            .proof_hex
+            .strip_prefix("0x")
+            .unwrap_or(&bundle.proof_hex),
+    )
+    .unwrap();
     let mid = proof_bytes.len() / 2;
     proof_bytes[mid] ^= 0xff;
     bundle.proof_hex = format!("0x{}", hex::encode(&proof_bytes));

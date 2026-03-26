@@ -36,8 +36,7 @@ contract VerifyOnTestnet is Script {
     function run() external {
         uint256 deployerKey = vm.envUint("DEPLOYER_KEY");
         string memory verifyMode = vm.envOr("VERIFY_MODE", string("direct"));
-        string memory fixturePath =
-            vm.envOr("FIXTURE_PATH", string("test/fixtures/phase1a_dag_fixture.json"));
+        string memory fixturePath = vm.envOr("FIXTURE_PATH", string("test/fixtures/phase1a_dag_fixture.json"));
 
         console.log("=== Testnet E2E Verification ===");
         console.log("Mode:    ", verifyMode);
@@ -73,11 +72,10 @@ contract VerifyOnTestnet is Script {
 
     // ── Resolve or deploy verifier ────────────────────────────────────────────
 
-    function _resolveVerifier(
-        uint256 deployerKey,
-        Fixture memory f,
-        GKRDAGVerifier.DAGCircuitDescription memory desc
-    ) private returns (RemainderVerifier verifier) {
+    function _resolveVerifier(uint256 deployerKey, Fixture memory f, GKRDAGVerifier.DAGCircuitDescription memory desc)
+        private
+        returns (RemainderVerifier verifier)
+    {
         address existingAddr = vm.envOr("REMAINDER_VERIFIER", address(0));
 
         if (existingAddr != address(0)) {
@@ -89,9 +87,7 @@ contract VerifyOnTestnet is Script {
             if (!isActive) {
                 console.log("Circuit not registered. Registering...");
                 bytes32 gensHash = keccak256(f.gensHex);
-                verifier.registerDAGCircuit(
-                    f.circuitHash, abi.encode(desc), "XGBoost-Phase1a", gensHash
-                );
+                verifier.registerDAGCircuit(f.circuitHash, abi.encode(desc), "XGBoost-Phase1a", gensHash);
                 console.log("Circuit registered");
             } else {
                 console.log("Circuit already registered and active");
@@ -102,24 +98,19 @@ contract VerifyOnTestnet is Script {
         }
     }
 
-    function _deployFresh(
-        uint256 deployerKey,
-        Fixture memory f,
-        GKRDAGVerifier.DAGCircuitDescription memory desc
-    ) private returns (RemainderVerifier verifier) {
+    function _deployFresh(uint256 deployerKey, Fixture memory f, GKRDAGVerifier.DAGCircuitDescription memory desc)
+        private
+        returns (RemainderVerifier verifier)
+    {
         RemainderVerifier verifierImpl = new RemainderVerifier();
-        UUPSProxy verifierProxy = new UUPSProxy(
-            address(verifierImpl),
-            abi.encodeCall(RemainderVerifier.initialize, (vm.addr(deployerKey)))
-        );
+        UUPSProxy verifierProxy =
+            new UUPSProxy(address(verifierImpl), abi.encodeCall(RemainderVerifier.initialize, (vm.addr(deployerKey))));
         verifier = RemainderVerifier(address(verifierProxy));
         console.log("  Implementation:", address(verifierImpl));
         console.log("  Proxy:         ", address(verifier));
 
         bytes32 gensHash = keccak256(f.gensHex);
-        verifier.registerDAGCircuit(
-            f.circuitHash, abi.encode(desc), "XGBoost-Phase1a", gensHash
-        );
+        verifier.registerDAGCircuit(f.circuitHash, abi.encode(desc), "XGBoost-Phase1a", gensHash);
         console.log("  Circuit registered");
     }
 
@@ -128,9 +119,7 @@ contract VerifyOnTestnet is Script {
     function _runDirectVerify(RemainderVerifier verifier, Fixture memory f) private {
         console.log("Running direct DAG verification...");
         uint256 gasBefore = gasleft();
-        bool valid = verifier.verifyDAGProof(
-            f.proofHex, f.circuitHash, f.publicInputsHex, f.gensHex
-        );
+        bool valid = verifier.verifyDAGProof(f.proofHex, f.circuitHash, f.publicInputsHex, f.gensHex);
         uint256 gasUsed = gasBefore - gasleft();
 
         console.log("  Result:   ", valid ? "VALID" : "INVALID");
@@ -141,32 +130,23 @@ contract VerifyOnTestnet is Script {
 
     // ── Batch verification ───────────────────────────────────────────────────
 
-    function _runBatchVerify(
-        RemainderVerifier verifier,
-        Fixture memory f,
-        uint256 numComputeLayers
-    ) private {
+    function _runBatchVerify(RemainderVerifier verifier, Fixture memory f, uint256 numComputeLayers) private {
         console.log("Running batch DAG verification...");
         uint256 totalGas = 0;
 
         // Step 1: Start
         uint256 gasBefore = gasleft();
-        bytes32 sessionId = verifier.startDAGBatchVerify(
-            f.proofHex, f.circuitHash, f.publicInputsHex, f.gensHex
-        );
+        bytes32 sessionId = verifier.startDAGBatchVerify(f.proofHex, f.circuitHash, f.publicInputsHex, f.gensHex);
         uint256 startGas = gasBefore - gasleft();
         totalGas += startGas;
         console.log("  Start gas:  ", startGas);
         console.log("  Session:    ", vm.toString(sessionId));
 
         // Step 2: Continue batches
-        uint256 numBatches =
-            (numComputeLayers + LAYERS_PER_BATCH - 1) / LAYERS_PER_BATCH;
+        uint256 numBatches = (numComputeLayers + LAYERS_PER_BATCH - 1) / LAYERS_PER_BATCH;
         for (uint256 b = 0; b < numBatches; b++) {
             gasBefore = gasleft();
-            verifier.continueDAGBatchVerify(
-                sessionId, f.proofHex, f.publicInputsHex, f.gensHex
-            );
+            verifier.continueDAGBatchVerify(sessionId, f.proofHex, f.publicInputsHex, f.gensHex);
             uint256 batchGas = gasBefore - gasleft();
             totalGas += batchGas;
             console.log("  Continue batch", b, "gas:", batchGas);
@@ -177,9 +157,7 @@ contract VerifyOnTestnet is Script {
         bool done = false;
         while (!done) {
             gasBefore = gasleft();
-            done = verifier.finalizeDAGBatchVerify(
-                sessionId, f.proofHex, f.publicInputsHex, f.gensHex
-            );
+            done = verifier.finalizeDAGBatchVerify(sessionId, f.proofHex, f.publicInputsHex, f.gensHex);
             uint256 finGas = gasBefore - gasleft();
             totalGas += finGas;
             finalizeCount++;
@@ -196,11 +174,7 @@ contract VerifyOnTestnet is Script {
 
     // ── Fixture loading ──────────────────────────────────────────────────────
 
-    function _loadFixture(string memory fixturePath)
-        private
-        view
-        returns (Fixture memory f)
-    {
+    function _loadFixture(string memory fixturePath) private view returns (Fixture memory f) {
         string memory json = vm.readFile(fixturePath);
         f.proofHex = vm.parseJsonBytes(json, ".proof_hex");
         f.gensHex = vm.parseJsonBytes(json, ".gens_hex");
@@ -214,41 +188,24 @@ contract VerifyOnTestnet is Script {
         returns (GKRDAGVerifier.DAGCircuitDescription memory desc)
     {
         string memory json = vm.readFile(fixturePath);
-        desc.numComputeLayers =
-            vm.parseJsonUint(json, ".dag_circuit_description.numComputeLayers");
-        desc.numInputLayers =
-            vm.parseJsonUint(json, ".dag_circuit_description.numInputLayers");
-        desc.layerTypes =
-            _parseUint8Array(json, ".dag_circuit_description.layerTypes");
-        desc.numSumcheckRounds =
-            vm.parseJsonUintArray(json, ".dag_circuit_description.numSumcheckRounds");
-        desc.atomOffsets =
-            vm.parseJsonUintArray(json, ".dag_circuit_description.atomOffsets");
-        desc.atomTargetLayers =
-            vm.parseJsonUintArray(json, ".dag_circuit_description.atomTargetLayers");
-        desc.atomCommitIdxs =
-            vm.parseJsonUintArray(json, ".dag_circuit_description.atomCommitIdxs");
-        desc.ptOffsets =
-            vm.parseJsonUintArray(json, ".dag_circuit_description.ptOffsets");
-        desc.ptData =
-            vm.parseJsonUintArray(json, ".dag_circuit_description.ptData");
-        desc.inputIsCommitted =
-            _parseBoolArray(json, ".dag_circuit_description.inputIsCommitted");
-        desc.oracleProductOffsets =
-            vm.parseJsonUintArray(json, ".dag_circuit_description.oracleProductOffsets");
-        desc.oracleResultIdxs =
-            vm.parseJsonUintArray(json, ".dag_circuit_description.oracleResultIdxs");
-        desc.oracleExprCoeffs =
-            _parseUint256Array(json, ".dag_circuit_description.oracleExprCoeffs");
+        desc.numComputeLayers = vm.parseJsonUint(json, ".dag_circuit_description.numComputeLayers");
+        desc.numInputLayers = vm.parseJsonUint(json, ".dag_circuit_description.numInputLayers");
+        desc.layerTypes = _parseUint8Array(json, ".dag_circuit_description.layerTypes");
+        desc.numSumcheckRounds = vm.parseJsonUintArray(json, ".dag_circuit_description.numSumcheckRounds");
+        desc.atomOffsets = vm.parseJsonUintArray(json, ".dag_circuit_description.atomOffsets");
+        desc.atomTargetLayers = vm.parseJsonUintArray(json, ".dag_circuit_description.atomTargetLayers");
+        desc.atomCommitIdxs = vm.parseJsonUintArray(json, ".dag_circuit_description.atomCommitIdxs");
+        desc.ptOffsets = vm.parseJsonUintArray(json, ".dag_circuit_description.ptOffsets");
+        desc.ptData = vm.parseJsonUintArray(json, ".dag_circuit_description.ptData");
+        desc.inputIsCommitted = _parseBoolArray(json, ".dag_circuit_description.inputIsCommitted");
+        desc.oracleProductOffsets = vm.parseJsonUintArray(json, ".dag_circuit_description.oracleProductOffsets");
+        desc.oracleResultIdxs = vm.parseJsonUintArray(json, ".dag_circuit_description.oracleResultIdxs");
+        desc.oracleExprCoeffs = _parseUint256Array(json, ".dag_circuit_description.oracleExprCoeffs");
     }
 
     // ── Parsing helpers ──────────────────────────────────────────────────────
 
-    function _parseUint8Array(string memory json, string memory key)
-        private
-        pure
-        returns (uint8[] memory result)
-    {
+    function _parseUint8Array(string memory json, string memory key) private pure returns (uint8[] memory result) {
         uint256[] memory raw = vm.parseJsonUintArray(json, key);
         result = new uint8[](raw.length);
         for (uint256 i = 0; i < raw.length; i++) {
@@ -256,20 +213,12 @@ contract VerifyOnTestnet is Script {
         }
     }
 
-    function _parseBoolArray(string memory json, string memory key)
-        private
-        pure
-        returns (bool[] memory result)
-    {
+    function _parseBoolArray(string memory json, string memory key) private pure returns (bool[] memory result) {
         bytes memory raw = vm.parseJson(json, key);
         result = abi.decode(raw, (bool[]));
     }
 
-    function _parseUint256Array(string memory json, string memory key)
-        private
-        pure
-        returns (uint256[] memory result)
-    {
+    function _parseUint256Array(string memory json, string memory key) private pure returns (uint256[] memory result) {
         bytes memory raw = vm.parseJson(json, key);
         bytes32[] memory parsed = abi.decode(raw, (bytes32[]));
         result = new uint256[](parsed.length);

@@ -126,7 +126,9 @@ impl ProofPreVerifier {
             }
         }
 
-        let path = self.circuit_desc_dir.join(format!("{}.json", circuit_hash_hex));
+        let path = self
+            .circuit_desc_dir
+            .join(format!("{}.json", circuit_hash_hex));
         let desc = load_circuit_desc_file(&path)?;
 
         if let Ok(mut cache) = self.cache.write() {
@@ -205,6 +207,10 @@ mod tests {
         };
 
         let result = verifier.pre_verify(&proof);
-        assert!(matches!(result, PreVerifyResult::Failed(_)), "expected Failed, got: {:?}", result);
+        assert!(
+            matches!(result, PreVerifyResult::Failed(_)),
+            "expected Failed, got: {:?}",
+            result
+        );
     }
 }

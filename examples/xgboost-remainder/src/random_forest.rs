@@ -346,7 +346,10 @@ mod tests {
         // Node 1: left leaf (all class-0 votes → prob of class 1 = 0)
         let leaf_left = &tree.nodes[1];
         assert!(leaf_left.is_leaf);
-        assert!((leaf_left.leaf_value).abs() < 1.0, "left leaf: prob class1 ≈ 0");
+        assert!(
+            (leaf_left.leaf_value).abs() < 1.0,
+            "left leaf: prob class1 ≈ 0"
+        );
 
         // Node 2: right leaf (all class-1 votes → prob of class 1 = 1.0 * SCALE)
         let leaf_right = &tree.nodes[2];
@@ -432,7 +435,12 @@ mod tests {
         let counts = vec![0.0f64, 50.0];
         let val = compute_leaf_value(&counts, 2, 0, 0).unwrap();
         let expected = FIXED_POINT_SCALE as f64;
-        assert!((val - expected).abs() < 1.0, "expected {}, got {}", expected, val);
+        assert!(
+            (val - expected).abs() < 1.0,
+            "expected {}, got {}",
+            expected,
+            val
+        );
     }
 
     #[test]
@@ -441,7 +449,12 @@ mod tests {
         let counts = vec![25.0f64, 25.0];
         let val = compute_leaf_value(&counts, 2, 0, 0).unwrap();
         let expected = (FIXED_POINT_SCALE / 2) as f64;
-        assert!((val - expected).abs() < 1.0, "expected ~{}, got {}", expected, val);
+        assert!(
+            (val - expected).abs() < 1.0,
+            "expected ~{}, got {}",
+            expected,
+            val
+        );
     }
 
     #[test]
@@ -450,7 +463,12 @@ mod tests {
         let counts = vec![30.0f64, 20.0];
         let val = compute_leaf_value(&counts, 2, 0, 0).unwrap();
         let expected = (0.4 * FIXED_POINT_SCALE as f64).round();
-        assert!((val - expected).abs() < 1.0, "expected {}, got {}", expected, val);
+        assert!(
+            (val - expected).abs() < 1.0,
+            "expected {}, got {}",
+            expected,
+            val
+        );
     }
 
     #[test]
@@ -459,7 +477,12 @@ mod tests {
         let counts = vec![10.0f64, 30.0, 20.0];
         let val = compute_leaf_value(&counts, 3, 0, 0).unwrap();
         let expected = (0.5 * FIXED_POINT_SCALE as f64).round();
-        assert!((val - expected).abs() < 1.0, "expected {}, got {}", expected, val);
+        assert!(
+            (val - expected).abs() < 1.0,
+            "expected {}, got {}",
+            expected,
+            val
+        );
     }
 
     #[test]
@@ -540,11 +563,19 @@ mod tests {
 
         // feature[0] = 3.0 < 5.0 → left leaf → prob(class1) ≈ 0
         let val_left = traverse_tree(&model.trees[0], &[3.0, 0.0]);
-        assert!(val_left < (FIXED_POINT_SCALE as f64 / 2.0), "left branch: {}", val_left);
+        assert!(
+            val_left < (FIXED_POINT_SCALE as f64 / 2.0),
+            "left branch: {}",
+            val_left
+        );
 
         // feature[0] = 7.0 >= 5.0 → right leaf → prob(class1) ≈ SCALE
         let val_right = traverse_tree(&model.trees[0], &[7.0, 0.0]);
-        assert!(val_right > (FIXED_POINT_SCALE as f64 / 2.0), "right branch: {}", val_right);
+        assert!(
+            val_right > (FIXED_POINT_SCALE as f64 / 2.0),
+            "right branch: {}",
+            val_right
+        );
     }
 
     #[test]
@@ -554,7 +585,11 @@ mod tests {
         let model = parse_random_forest_json(SAMPLE_RANDOM_FOREST_JSON).unwrap();
         let features = vec![4.0f64, 2.0, 1.0, 0.3];
         let class_pred = predict(&model, &features);
-        assert!(class_pred < 2, "predicted class should be 0 or 1, got {}", class_pred);
+        assert!(
+            class_pred < 2,
+            "predicted class should be 0 or 1, got {}",
+            class_pred
+        );
     }
 
     #[test]
@@ -621,8 +656,7 @@ mod tests {
         eprintln!("Predicted class: {}", predicted_class);
 
         let (proof_bytes, circuit_hash, public_inputs) =
-            build_and_prove(&model, &features, predicted_class)
-                .expect("build_and_prove failed");
+            build_and_prove(&model, &features, predicted_class).expect("build_and_prove failed");
 
         eprintln!("Proof size: {} bytes", proof_bytes.len());
         eprintln!("Circuit hash: 0x{}", hex::encode(&circuit_hash));

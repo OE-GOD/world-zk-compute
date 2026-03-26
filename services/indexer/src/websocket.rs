@@ -369,7 +369,10 @@ impl EventBroadcaster {
             return false;
         }
 
-        let mut map = self.per_ip_connections.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = self
+            .per_ip_connections
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let count = map.entry(ip).or_insert(0);
         if *count >= self.max_per_ip {
             // Release the global slot we just acquired
@@ -383,7 +386,10 @@ impl EventBroadcaster {
     /// Release a per-IP connection slot and the corresponding global slot.
     fn release_slot_for_ip(&self, ip: IpAddr) {
         self.release_slot();
-        let mut map = self.per_ip_connections.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = self
+            .per_ip_connections
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if let Some(count) = map.get_mut(&ip) {
             *count = count.saturating_sub(1);
             if *count == 0 {
@@ -394,7 +400,10 @@ impl EventBroadcaster {
 
     /// Returns the current number of connections from the given IP.
     pub fn connections_for_ip(&self, ip: IpAddr) -> usize {
-        let map = self.per_ip_connections.lock().unwrap_or_else(|e| e.into_inner());
+        let map = self
+            .per_ip_connections
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         map.get(&ip).copied().unwrap_or(0)
     }
 
@@ -444,7 +453,11 @@ pub async fn ws_handler(
 /// 1. Every `HEARTBEAT_INTERVAL` (30s), send a ping frame.
 /// 2. After sending the ping, wait up to `PONG_TIMEOUT` (10s) for a pong.
 /// 3. If no pong arrives within the timeout, disconnect the client.
-async fn handle_ws_connection(socket: WebSocket, broadcaster: Arc<EventBroadcaster>, peer_ip: IpAddr) {
+async fn handle_ws_connection(
+    socket: WebSocket,
+    broadcaster: Arc<EventBroadcaster>,
+    peer_ip: IpAddr,
+) {
     let (mut ws_sender, mut ws_receiver) = socket.split();
     let mut event_rx = broadcaster.subscribe();
     let mut filter: Option<HashSet<String>> = None;

@@ -19,9 +19,8 @@ contract TEEMLVerifierProxyTest is Test, DeployTEEMLVerifierHelper {
 
     function setUp() public {
         implementation = new TEEMLVerifier();
-        UUPSProxy proxy = new UUPSProxy(
-            address(implementation), abi.encodeCall(TEEMLVerifier.initialize, (admin, remainderAddr))
-        );
+        UUPSProxy proxy =
+            new UUPSProxy(address(implementation), abi.encodeCall(TEEMLVerifier.initialize, (admin, remainderAddr)));
         verifier = TEEMLVerifier(payable(address(proxy)));
     }
 

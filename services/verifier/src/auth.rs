@@ -202,10 +202,7 @@ mod tests {
         assert!(!state.is_open());
 
         // Legacy key works
-        assert_eq!(
-            state.validate_key("legacy-key"),
-            Some("legacy".to_string())
-        );
+        assert_eq!(state.validate_key("legacy-key"), Some("legacy".to_string()));
 
         // Tenant key works
         assert_eq!(

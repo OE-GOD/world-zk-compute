@@ -229,9 +229,7 @@ pub fn predict(model: &XgboostModel, features: &[f64]) -> u32 {
         scores
             .iter()
             .enumerate()
-            .max_by(|(_, a), (_, b)| {
-                a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
-            })
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
             .map(|(idx, _)| idx as u32)
             .unwrap_or(0)
     }
