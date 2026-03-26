@@ -27,7 +27,7 @@ pub unsafe extern "C" fn zkml_verify_json(
     json_ptr: *const c_char,
     error_out: *mut *mut c_char,
 ) -> i32 {
-    if error_out.is_null().not() {
+    if !error_out.is_null() {
         unsafe { *error_out = std::ptr::null_mut() };
     }
 
@@ -173,16 +173,6 @@ fn write_error(error_out: *mut *mut c_char, msg: &str) {
         if let Ok(c_string) = CString::new(msg) {
             unsafe { *error_out = c_string.into_raw() };
         }
-    }
-}
-
-// Helper trait to make `is_null().not()` work
-trait Not {
-    fn not(self) -> bool;
-}
-impl Not for bool {
-    fn not(self) -> bool {
-        !self
     }
 }
 

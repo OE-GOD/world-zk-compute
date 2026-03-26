@@ -215,6 +215,75 @@ async fn warm_verify_hybrid(
     }
 }
 
+// -- Batch types --
+
+#[derive(Deserialize)]
+struct BatchVerifyRequest {
+    bundles: Vec<ProofBundle>,
+}
+
+#[derive(Serialize)]
+struct BatchVerifyResponse {
+    results: Vec<BatchResultEntry>,
+    total: usize,
+    valid: usize,
+}
+
+#[derive(Serialize)]
+struct BatchResultEntry {
+    index: usize,
+    verified: bool,
+    circuit_hash: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+async fn verify_batch(
+    Json(req): Json<BatchVerifyRequest>,
+) -> Result<Json<BatchVerifyResponse>, (StatusCode, Json<ErrorResponse>)> {
+    if req.bundles.is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "bundles array is empty".into()));
+    }
+    if req.bundles.len() > 100 {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "maximum 100 bundles per batch".into(),
+        ));
+    }
+
+    let bundles = req.bundles;
+    let results = tokio::task::spawn_blocking(move || {
+        bundles
+            .iter()
+            .enumerate()
+            .map(|(i, bundle)| match verify(bundle) {
+                Ok(r) => BatchResultEntry {
+                    index: i,
+                    verified: r.verified,
+                    circuit_hash: format!("0x{}", hex::encode(r.circuit_hash)),
+                    error: None,
+                },
+                Err(e) => BatchResultEntry {
+                    index: i,
+                    verified: false,
+                    circuit_hash: String::new(),
+                    error: Some(e.to_string()),
+                },
+            })
+            .collect::<Vec<_>>()
+    })
+    .await
+    .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let total = results.len();
+    let valid = results.iter().filter(|r| r.verified).count();
+    Ok(Json(BatchVerifyResponse {
+        results,
+        total,
+        valid,
+    }))
+}
+
 fn err(code: StatusCode, msg: String) -> (StatusCode, Json<ErrorResponse>) {
     (code, Json(ErrorResponse { error: msg }))
 }
@@ -224,6 +293,7 @@ fn build_app() -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/verify", post(verify_proof))
+        .route("/verify/batch", post(verify_batch))
         .route("/verify/hybrid", post(verify_hybrid_proof))
         .route("/circuits", get(list_circuits))
         .route("/circuits", post(register_circuit))
@@ -336,5 +406,44 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_verify_batch_empty() {
+        let app = build_app();
+        let body = serde_json::json!({ "bundles": [] });
+        let req = Request::post("/verify/batch")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_verify_batch_invalid_proofs() {
+        let app = build_app();
+        let body = serde_json::json!({
+            "bundles": [
+                { "proof_hex": "0xdead", "gens_hex": "0x00", "dag_circuit_description": {} },
+                { "proof_hex": "0xbeef", "gens_hex": "0x00", "dag_circuit_description": {} }
+            ]
+        });
+        let req = Request::post("/verify/batch")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["total"], 2);
+        assert_eq!(json["valid"], 0);
+        assert_eq!(json["results"].as_array().unwrap().len(), 2);
+        // Each result should have an error
+        for r in json["results"].as_array().unwrap() {
+            assert_eq!(r["verified"], false);
+            assert!(r["error"].is_string());
+        }
     }
 }
