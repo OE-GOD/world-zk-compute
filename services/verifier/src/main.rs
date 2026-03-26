@@ -789,6 +789,8 @@ mod tests {
             rate_limit_rpm: 10000, // high limit so rate limiting doesn't interfere
             port: 3000,
             circuit_ttl_secs: 0,
+            admin_key: String::new(),
+            tenant_file: String::new(),
         })
     }
 
@@ -919,6 +921,8 @@ mod tests {
             rate_limit_rpm: 3, // very low limit
             port: 3000,
             circuit_ttl_secs: 0,
+            admin_key: String::new(),
+            tenant_file: String::new(),
         });
         let bundle = serde_json::json!({
             "proof_hex": "0xdead",
@@ -967,6 +971,8 @@ mod tests {
             rate_limit_rpm: 100,
             port: 3000,
             circuit_ttl_secs: 0,
+            admin_key: String::new(),
+            tenant_file: String::new(),
         });
         let bundle = serde_json::json!({
             "proof_hex": "0xdead",
@@ -991,6 +997,8 @@ mod tests {
             rate_limit_rpm: 2, // very low limit
             port: 3000,
             circuit_ttl_secs: 0,
+            admin_key: String::new(),
+            tenant_file: String::new(),
         });
         let bundle = serde_json::json!({
             "proof_hex": "0xdead",
@@ -1035,6 +1043,8 @@ mod tests {
             rate_limit_rpm: 1,
             port: 3000,
             circuit_ttl_secs: 0,
+            admin_key: String::new(),
+            tenant_file: String::new(),
         });
 
         // Health should work unlimited times regardless of rate limit
