@@ -25,3 +25,8 @@ name = "zkml-verifier"
 path = "src/main.rs"
 
 [dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "verify_bench"
+harness = false

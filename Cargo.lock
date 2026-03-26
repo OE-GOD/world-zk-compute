@@ -6496,6 +6496,7 @@ dependencies = [
 name = "zkml-verifier"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "hex",
  "serde",
  "serde_json",
