@@ -47,7 +47,7 @@ constructor() {
 ```
 Note: `RemainderVerifierUpgradeable.sol` already does this correctly (line 42-43). The base `RemainderVerifier` and `TEEMLVerifier` do not.
 
-**Status**: Requires fix.
+**Status**: FIXED. Added `constructor() { _initialized = type(uint8).max; }` to both `RemainderVerifier.sol` and `TEEMLVerifier.sol`. Tests updated and passing (1166/1166).
 
 ---
 
@@ -80,7 +80,7 @@ Note: `RemainderVerifierUpgradeable.sol` already does this correctly (line 42-43
 
 **Recommendation**: Add `if (_remainderVerifier == address(0)) revert ZeroAddress();` in `initialize()`.
 
-**Status**: Requires fix.
+**Status**: FIXED. Added zero-address check in `TEEMLVerifier.initialize()`. Tests updated (4 test call sites changed from `address(0)` to `address(0xDEAD)`). All tests passing.
 
 ### M-2: Missing Zero-Address Check in setTimelock (Upgradeable.sol)
 
@@ -108,7 +108,7 @@ However, the `nonReentrant` guard prevents re-entering any `nonReentrant` functi
 
 **Recommendation**: Move the `reputation.recordFailure()` call after the state changes (checks-effects-interactions pattern), or wrap it in try/catch as done elsewhere.
 
-**Status**: Low practical risk but violates CEI pattern. Should fix.
+**Status**: FIXED. State changes (`req.status`, `req.claimedBy`, etc.) now occur before the `reputation.recordFailure()` external call.
 
 ### M-4: Reentrancy in ExecutionEngine.claimExecution (ExecutionEngine.sol)
 
@@ -120,7 +120,7 @@ However, the `nonReentrant` guard prevents re-entering any `nonReentrant` functi
 
 **Recommendation**: Move `reputation.recordAbandon()` call after state updates.
 
-**Status**: Low practical risk but violates CEI pattern. Should fix.
+**Status**: FIXED. `reputation.recordAbandon()` now called after state updates (`req.status`, `req.claimedBy`, `req.claimDeadline`). Previous claimant address saved to local variable before state changes.
 
 ### M-5: TEEMLVerifier resultId Collision Risk (TEEMLVerifier.sol)
 
@@ -181,15 +181,27 @@ The `cleanupDAGBatchSession()` function must be called by the session creator af
 
 | Severity | Count | Fixed | Accepted |
 |----------|-------|-------|----------|
-| High | 2 | 0 | 1 (H-2, standard UUPS) |
-| Medium | 5 | 0 | 1 (M-2, by design) |
+| High | 2 | 1 (H-1) | 1 (H-2, standard UUPS) |
+| Medium | 5 | 3 (M-1, M-3, M-4) | 1 (M-2, by design) |
 | Low | 9 | 0 | 9 (all accepted) |
 | Informational | 5 | N/A | N/A |
 
-### Recommended Priority Actions
+### Fixes Applied
 
-1. **H-1**: Add `_initialized = type(uint8).max` constructor to `RemainderVerifier` and `TEEMLVerifier` (prevents implementation initialization attack)
-2. **M-1**: Add zero-address check for `_remainderVerifier` in `TEEMLVerifier.initialize()`
-3. **M-3/M-4**: Reorder state changes before external calls in `ExecutionEngine.reportBadProof()` and `claimExecution()`
-4. **H-2**: Ensure timelock is always configured before mainnet deployment
-5. **M-5**: Consider adding `resultHash` to `resultId` derivation to prevent front-running griefing
+1. **H-1 FIXED**: Added `constructor() { _initialized = type(uint8).max; }` to `RemainderVerifier.sol` and `TEEMLVerifier.sol`
+2. **M-1 FIXED**: Added `if (_remainderVerifier == address(0)) revert ZeroAddress()` in `TEEMLVerifier.initialize()`
+3. **M-3 FIXED**: Reordered `reportBadProof()` to update state before `reputation.recordFailure()` call
+4. **M-4 FIXED**: Reordered `claimExecution()` to update state before `reputation.recordAbandon()` call
+
+### Remaining Action Items
+
+1. **H-2**: Ensure timelock is always configured before mainnet deployment (accepted UUPS risk)
+2. **M-2**: Document that `setTimelock(address(0))` disables timelock protection (accepted by design)
+3. **M-5**: Consider adding `resultHash` to `resultId` derivation to prevent front-running griefing
+
+### Test Results After Fixes
+
+All 1166 tests passing (0 failures, 0 skipped). Three tests were updated to accommodate the new security checks:
+- `RemainderVerifierUpgradeableTest.test_implementationCannotBeInitializedDirectly` (updated expectations)
+- `TEEMLVerifierSecurityTest.setUp` (updated to use non-zero remainderVerifier)
+- `SystemIntegrationTest.setUp` (updated to use non-zero remainderVerifier)
