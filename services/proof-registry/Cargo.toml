@@ -9,6 +9,10 @@ description = "Proof registry service — store, index, search, and verify proof
 name = "proof-registry"
 path = "src/main.rs"
 
+[features]
+default = []
+s3 = ["aws-sdk-s3", "aws-config"]
+
 [dependencies]
 zkml-verifier = { path = "../../crates/zkml-verifier" }
 axum = { workspace = true }
@@ -25,6 +29,9 @@ tracing-subscriber = "0.3"
 k256 = { version = "0.13", features = ["ecdsa"] }
 sha2 = { workspace = true }
 rand_core = { version = "0.6", features = ["getrandom"] }
+async-trait = "0.1"
+aws-sdk-s3 = { version = "1", optional = true }
+aws-config = { version = "1", features = ["behavior-version-latest"], optional = true }
 
 [dev-dependencies]
 tower = "0.5"

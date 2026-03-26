@@ -1,9 +1,10 @@
 //! SQLite-backed proof storage and indexing.
 //!
-//! Proof bundles are stored as JSON files on the filesystem (for portability
+//! Proof bundles are stored via a [`ProofStorage`] backend (for portability
 //! and easy backup), while SQLite indexes metadata for fast search.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -11,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use zkml_verifier::ProofBundle;
 
 use crate::receipt::VerificationReceipt;
+use crate::storage::{LocalStorage, ProofStorage};
 
 /// A stored proof record combining metadata index and filesystem location.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,17 +50,33 @@ pub struct DbStats {
     pub total_storage_bytes: u64,
 }
 
-/// SQLite-backed proof index with filesystem storage for bundles.
+/// SQLite-backed proof index with pluggable storage backend for bundles.
 pub struct ProofDb {
     conn: Connection,
     storage_dir: PathBuf,
+    /// Pluggable proof storage backend (local WORM or S3 Object Lock).
+    blob_store: Arc<dyn ProofStorage>,
 }
 
 impl ProofDb {
     /// Open or create a proof database at `db_path` with bundles stored in `storage_dir`.
     ///
+    /// Uses the default [`LocalStorage`] backend. For S3 storage, use
+    /// [`ProofDb::with_storage`] instead.
+    ///
     /// Creates the schema if it doesn't exist.
     pub fn new(db_path: &str, storage_dir: &str) -> Result<Self, String> {
+        let local = LocalStorage::new(storage_dir)
+            .map_err(|e| format!("failed to create local storage: {e}"))?;
+        Self::with_storage(db_path, storage_dir, Arc::new(local))
+    }
+
+    /// Open or create a proof database with a custom storage backend.
+    pub fn with_storage(
+        db_path: &str,
+        storage_dir: &str,
+        blob_store: Arc<dyn ProofStorage>,
+    ) -> Result<Self, String> {
         let conn =
             Connection::open(db_path).map_err(|e| format!("failed to open database: {e}"))?;
 
@@ -101,10 +119,23 @@ impl ProofDb {
         std::fs::create_dir_all(&storage_dir)
             .map_err(|e| format!("failed to create storage dir: {e}"))?;
 
-        Ok(Self { conn, storage_dir })
+        Ok(Self {
+            conn,
+            storage_dir,
+            blob_store,
+        })
+    }
+
+    /// Return a reference to the underlying storage backend.
+    pub fn storage(&self) -> &dyn ProofStorage {
+        self.blob_store.as_ref()
     }
 
     /// Store a proof bundle and its metadata. Returns the proof ID.
+    ///
+    /// The bundle is written through the configured [`ProofStorage`] backend
+    /// (immutable — will fail if the ID already exists) and metadata is
+    /// indexed in SQLite.
     pub fn store(
         &self,
         id: &str,
@@ -113,18 +144,34 @@ impl ProofDb {
     ) -> Result<(), String> {
         let now = Utc::now().to_rfc3339();
 
-        // Write bundle to filesystem.
-        let bundle_path = self.bundle_path(id);
+        // Serialize bundle to JSON bytes.
         let json = serde_json::to_string(bundle)
             .map_err(|e| format!("failed to serialize bundle: {e}"))?;
         let size = json.len();
 
-        // Atomic write: temp file then rename.
-        let tmp_path = self.storage_dir.join(format!(".{id}.tmp"));
-        std::fs::write(&tmp_path, &json)
-            .map_err(|e| format!("failed to write bundle file: {e}"))?;
-        std::fs::rename(&tmp_path, &bundle_path)
-            .map_err(|e| format!("failed to rename bundle file: {e}"))?;
+        // Write bundle via the storage backend (immutable — rejects overwrites).
+        // We use block_on here because ProofDb methods are synchronous.
+        // In a Tokio context this is safe because ProofDb is behind a Mutex
+        // and callers already hold the lock from an async context.
+        // For LocalStorage, the async impl is just wrapping sync fs ops anyway.
+        // For production S3, consider making ProofDb async or using spawn_blocking.
+        let rt = tokio::runtime::Handle::try_current();
+        match rt {
+            Ok(handle) => {
+                // We are inside a Tokio runtime — use block_in_place.
+                tokio::task::block_in_place(|| {
+                    handle.block_on(self.blob_store.store(id, json.as_bytes()))
+                })
+                .map_err(|e| format!("storage backend error: {e}"))?;
+            }
+            Err(_) => {
+                // No Tokio runtime (e.g. in sync tests) — create a temporary one.
+                tokio::runtime::Runtime::new()
+                    .map_err(|e| format!("failed to create runtime: {e}"))?
+                    .block_on(self.blob_store.store(id, json.as_bytes()))
+                    .map_err(|e| format!("storage backend error: {e}"))?;
+            }
+        }
 
         // Insert metadata into SQLite.
         self.conn
@@ -360,12 +407,24 @@ impl ProofDb {
         })
     }
 
-    /// Load a proof bundle from the filesystem.
+    /// Load a proof bundle from the storage backend.
     pub fn load_bundle(&self, id: &str) -> Result<ProofBundle, String> {
-        let path = self.bundle_path(id);
-        let data =
-            std::fs::read_to_string(&path).map_err(|e| format!("failed to read bundle: {e}"))?;
-        serde_json::from_str(&data).map_err(|e| format!("failed to parse bundle: {e}"))
+        let data = {
+            let rt = tokio::runtime::Handle::try_current();
+            match rt {
+                Ok(handle) => tokio::task::block_in_place(|| {
+                    handle.block_on(self.blob_store.get(id))
+                }),
+                Err(_) => tokio::runtime::Runtime::new()
+                    .map_err(|e| format!("failed to create runtime: {e}"))?
+                    .block_on(self.blob_store.get(id)),
+            }
+        }
+        .map_err(|e| format!("failed to read bundle: {e}"))?;
+
+        let text = String::from_utf8(data)
+            .map_err(|e| format!("bundle is not valid UTF-8: {e}"))?;
+        serde_json::from_str(&text).map_err(|e| format!("failed to parse bundle: {e}"))
     }
 
     /// Check if the database is healthy (can execute a simple query).
@@ -567,11 +626,12 @@ mod tests {
         // Soft-delete it.
         db.soft_delete("del-1").unwrap();
 
-        // Proof no longer visible.
+        // Proof no longer visible via DB index.
         assert!(db.get("del-1").unwrap().is_none());
 
-        // Bundle file still exists on disk.
-        assert!(db.bundle_path("del-1").exists());
+        // Bundle data still exists in the storage backend (immutable — no delete).
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        assert!(rt.block_on(db.storage().exists("del-1")).unwrap());
     }
 
     #[test]

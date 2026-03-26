@@ -14,7 +14,10 @@
 mod db;
 pub mod receipt;
 mod routes;
+#[cfg(feature = "s3")]
+pub mod s3;
 pub mod sign;
+pub mod storage;
 mod transparency;
 
 use std::env;

@@ -449,3 +449,259 @@ pub async fn auth_middleware(
             .into_response(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::middleware as mw;
+    use axum::routing::{delete, get, post};
+    use axum::Router;
+    use tower::ServiceExt;
+
+    /// Build a test router wired to all route handlers.
+    fn build_test_app(state: Arc<AppState>) -> Router {
+        let protected = Router::new()
+            .route("/proofs", post(submit_proof))
+            .route("/proofs", get(search_proofs))
+            .route("/proofs/:id", get(get_proof))
+            .route("/proofs/:id/verify", post(verify_proof))
+            .route("/proofs/:id/receipt", get(get_receipt))
+            .route("/proofs/:id", delete(delete_proof))
+            .route("/stats", get(stats))
+            .route("/transparency/root", get(transparency_root))
+            .route("/transparency/proof/:index", get(transparency_proof))
+            .route("/transparency/verify", post(transparency_verify))
+            .route("/transparency/entries", get(transparency_entries))
+            .route_layer(mw::from_fn_with_state(state.clone(), auth_middleware))
+            .with_state(state.clone());
+
+        let health_router = Router::new()
+            .route("/health", get(health))
+            .with_state(state);
+
+        Router::new().merge(health_router).merge(protected)
+    }
+
+    /// Create a test state backed by temporary SQLite databases.
+    fn make_test_state() -> Arc<AppState> {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("test.db");
+        let storage_dir = tmp.path().join("bundles");
+        let tlog_path = tmp.path().join("transparency.db");
+        let db = crate::db::ProofDb::new(
+            db_path.to_str().unwrap(),
+            storage_dir.to_str().unwrap(),
+        )
+        .unwrap();
+        let tlog = TransparencyLog::new(tlog_path.to_str().unwrap()).unwrap();
+        let signing_key = SigningKey::from_slice(&[42u8; 32]).unwrap();
+
+        // Leak the tempdir so the files remain alive for the test duration.
+        std::mem::forget(tmp);
+
+        Arc::new(AppState {
+            db: Mutex::new(db),
+            transparency_log: Mutex::new(tlog),
+            signing_key,
+            api_keys: vec![],
+        })
+    }
+
+    /// Build a minimal proof bundle JSON payload for submission.
+    fn make_test_bundle_json() -> serde_json::Value {
+        let proof_data: Vec<u8> = (0..256).map(|i| (i % 256) as u8).collect();
+        let gens_data: Vec<u8> = (0..128).map(|i| ((i * 7) % 256) as u8).collect();
+
+        serde_json::json!({
+            "proof_hex": format!("0x{}", hex::encode(&proof_data)),
+            "public_inputs_hex": "",
+            "gens_hex": format!("0x{}", hex::encode(&gens_data)),
+            "dag_circuit_description": {
+                "num_compute_layers": 4,
+                "layer_types": [0, 1, 0, 1],
+            },
+            "model_hash": "0xabcdef1234567890",
+            "timestamp": 1700000000u64,
+            "prover_version": "0.1.0-test",
+            "circuit_hash": "0xdeadbeef",
+        })
+    }
+
+    /// Helper: read a response body as JSON.
+    async fn body_json(resp: axum::http::Response<Body>) -> serde_json::Value {
+        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    /// Helper: submit a proof bundle and return the JSON response.
+    async fn submit_bundle(app: &Router, bundle: &serde_json::Value) -> serde_json::Value {
+        let req = Request::builder()
+            .method("POST")
+            .uri("/proofs")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(bundle).unwrap()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        body_json(resp).await
+    }
+
+    #[tokio::test]
+    async fn test_health() {
+        let state = make_test_state();
+        let app = build_test_app(state);
+
+        let req = Request::get("/health").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp).await;
+        assert_eq!(json["status"], "ok");
+        assert_eq!(json["db_healthy"], true);
+    }
+
+    #[tokio::test]
+    async fn test_stats_empty() {
+        let state = make_test_state();
+        let app = build_test_app(state);
+
+        let req = Request::get("/stats").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp).await;
+        assert_eq!(json["total_proofs"], 0);
+        assert_eq!(json["active_proofs"], 0);
+        assert_eq!(json["verified_count"], 0);
+        assert_eq!(json["failed_count"], 0);
+        assert_eq!(json["total_storage_bytes"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_submit_and_get_proof() {
+        let state = make_test_state();
+        let app = build_test_app(state);
+
+        let bundle_json = make_test_bundle_json();
+
+        // Submit a proof.
+        let submit_resp = submit_bundle(&app, &bundle_json).await;
+        assert_eq!(submit_resp["status"], "stored");
+        let proof_id = submit_resp["id"].as_str().unwrap().to_string();
+        assert!(!proof_id.is_empty());
+        // Transparency log fields should be present.
+        assert!(submit_resp["transparency_index"].is_number());
+        assert!(submit_resp["proof_hash"].as_str().unwrap().len() == 64);
+
+        // Retrieve the proof by ID.
+        let req = Request::get(&format!("/proofs/{proof_id}"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp).await;
+        assert_eq!(json["id"], proof_id);
+        assert_eq!(json["model_hash"], "0xabcdef1234567890");
+        assert_eq!(json["circuit_hash"], "0xdeadbeef");
+        assert!(!json["created_at"].as_str().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_nonexistent_proof() {
+        let state = make_test_state();
+        let app = build_test_app(state);
+
+        let req = Request::get("/proofs/nonexistent-id-12345")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let json = body_json(resp).await;
+        assert!(json["error"].as_str().unwrap().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_delete_proof() {
+        let state = make_test_state();
+        let app = build_test_app(state);
+
+        let bundle_json = make_test_bundle_json();
+
+        // Submit a proof.
+        let submit_resp = submit_bundle(&app, &bundle_json).await;
+        let proof_id = submit_resp["id"].as_str().unwrap().to_string();
+
+        // Delete it.
+        let req = Request::builder()
+            .method("DELETE")
+            .uri(format!("/proofs/{proof_id}"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp).await;
+        assert_eq!(json["id"], proof_id);
+        assert_eq!(json["status"], "deleted");
+
+        // Verify it is now gone (soft-deleted).
+        let req = Request::get(&format!("/proofs/{proof_id}"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_search_proofs() {
+        let state = make_test_state();
+        let app = build_test_app(state);
+
+        // Submit two proofs with the same circuit_hash.
+        let bundle1 = make_test_bundle_json();
+        submit_bundle(&app, &bundle1).await;
+        submit_bundle(&app, &bundle1).await;
+
+        // Submit one proof with a different model_hash.
+        let mut bundle2 = make_test_bundle_json();
+        bundle2["model_hash"] = serde_json::json!("0xother_model");
+        bundle2["circuit_hash"] = serde_json::json!("0xothercircuit");
+        submit_bundle(&app, &bundle2).await;
+
+        // Search all proofs (no filter).
+        let req = Request::get("/proofs?limit=50").body(Body::empty()).unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp).await;
+        assert_eq!(json["count"], 3);
+        assert_eq!(json["proofs"].as_array().unwrap().len(), 3);
+
+        // Search by model_hash matching the first two.
+        let req = Request::get("/proofs?model=0xabcdef1234567890")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp).await;
+        assert_eq!(json["count"], 2);
+        for proof in json["proofs"].as_array().unwrap() {
+            assert_eq!(proof["model_hash"], "0xabcdef1234567890");
+        }
+
+        // Search with model_hash that matches one proof.
+        let req = Request::get("/proofs?model=0xother_model")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp).await;
+        assert_eq!(json["count"], 1);
+        assert_eq!(json["proofs"][0]["circuit_hash"], "0xothercircuit");
+    }
+}
