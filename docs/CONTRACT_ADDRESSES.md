@@ -151,6 +151,63 @@ World Chain Sepolia testnet. Target for production deployment.
 
 ---
 
+## Arbitrum One Mainnet (chainId: 42161)
+
+Production deployment target on Arbitrum One. Supports large contracts (200KB+
+code size) and high gas limits needed for GKR DAG verification.
+
+### Solidity Contracts
+
+| Contract              | Address                                      |
+|-----------------------|----------------------------------------------|
+| RemainderVerifier     | `TBD` (UUPS proxy)                           |
+| ProgramRegistry       | `TBD`                                        |
+| ProverReputation      | `TBD`                                        |
+| ProverRegistry        | `TBD`                                        |
+| ExecutionEngine       | `TBD`                                        |
+| TEEMLVerifier         | `TBD` (UUPS proxy)                           |
+
+**Deployment script:** `scripts/deploy-mainnet.sh`
+
+**Deploy:**
+```bash
+DEPLOYER_PRIVATE_KEY=0x... \
+ADMIN_ADDRESS=0x... \
+RISC_ZERO_VERIFIER=0x... \
+FEE_RECIPIENT=0x... \
+  bash scripts/deploy-mainnet.sh
+```
+
+**Dry run (simulation only, no broadcast):**
+```bash
+DEPLOYER_PRIVATE_KEY=0x... \
+ADMIN_ADDRESS=0x... \
+RISC_ZERO_VERIFIER=0x... \
+FEE_RECIPIENT=0x... \
+  bash scripts/deploy-mainnet.sh --dry-run
+```
+
+**Verify:**
+```bash
+bash scripts/deploy-mainnet.sh --verify-only
+```
+
+**Notes:**
+- Uses `DeployMainnet.s.sol` with chain ID 42161 validation.
+- Requires separate `ADMIN_ADDRESS` (multisig/timelock); deployer cannot be admin.
+- 2-step ownership transfer: admin must call `acceptOwnership()` on Ownable2Step
+  contracts (ProgramRegistry, ProverReputation, ExecutionEngine, ProverRegistry).
+- UUPS proxy contracts (RemainderVerifier, TEEMLVerifier) use `changeAdmin()` for
+  immediate admin transfer.
+- After deployment, set timelock via `setTimelock()` on UUPS contracts.
+- Deployment addresses saved to `deployments/arbitrum-mainnet.json`.
+
+**Block explorer:** <https://arbiscan.io>
+
+**RPC:** `https://arb1.arbitrum.io/rpc`
+
+---
+
 ## Deployment Workflow
 
 ### Deploy to a new chain
@@ -191,9 +248,11 @@ This checks bytecode presence, ownership, pause state, and contract wiring.
 | `contracts/script/DeployAll.s.sol`       | Basic deployment script                  |
 | `contracts/script/DeployTestnet.s.sol`   | Full testnet stack deployment (Solidity) |
 | `contracts/script/DeployFullStack.s.sol` | Full stack deployment                    |
-| `contracts/script/DeployWorldChainMainnet.s.sol` | Production mainnet deployment    |
+| `contracts/script/DeployMainnet.s.sol`   | Arbitrum One mainnet deployment          |
+| `contracts/script/DeployWorldChainMainnet.s.sol` | World Chain mainnet deployment   |
 | `contracts/script/StylusSepoliaDeploy.s.sol` | Solidity adapter for Stylus verifier |
 | `contracts/stylus/gkr-verifier/deploy-testnet.sh` | Stylus WASM verifier deploy    |
+| `scripts/deploy-mainnet.sh`              | Arbitrum One mainnet deploy + extraction |
 | `scripts/deploy-testnet.sh`              | Testnet deploy + address extraction      |
 | `scripts/deploy-sepolia.sh`             | Arbitrum Sepolia deploy (legacy)         |
 | `scripts/stylus-sepolia-deploy.sh`      | Full Stylus + adapter deployment         |
