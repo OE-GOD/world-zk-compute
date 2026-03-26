@@ -90,11 +90,9 @@ impl ModelRegistry {
         sorted.sort_by(|a, b| a.created_at.cmp(&b.created_at));
 
         for meta in sorted {
-            let entry = names
-                .entry(meta.name.clone())
-                .or_insert_with(|| NameEntry {
-                    versions: Vec::new(),
-                });
+            let entry = names.entry(meta.name.clone()).or_insert_with(|| NameEntry {
+                versions: Vec::new(),
+            });
             let version = entry.versions.len() as u32 + 1;
             entry.versions.push(VersionEntry {
                 id: meta.id.clone(),
@@ -241,9 +239,9 @@ impl ModelRegistry {
         // Deactivate all other versions of this name, activate this one.
         {
             let mut names = self.names.write().await;
-            let entry = names
-                .get_mut(&model.name)
-                .ok_or_else(|| anyhow::anyhow!("Model name not found in registry: {}", model.name))?;
+            let entry = names.get_mut(&model.name).ok_or_else(|| {
+                anyhow::anyhow!("Model name not found in registry: {}", model.name)
+            })?;
 
             for ve in &mut entry.versions {
                 if ve.id == id {
@@ -463,7 +461,10 @@ mod tests {
 
         let result = reg.upload("my-model".into(), json, None).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("identical model hash"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("identical model hash"));
     }
 
     #[tokio::test]

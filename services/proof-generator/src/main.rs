@@ -588,9 +588,11 @@ async fn main() -> anyhow::Result<()> {
 
     let model_store = ModelStore::new(cli.model_dir.into()).await?;
     let model_count = model_store.list_models().await.len();
+    let registry = ModelRegistry::new(model_store.clone()).await;
 
     let state = Arc::new(AppState {
         model_store,
+        registry,
         mock_mode: cli.mock,
         start_time: Instant::now(),
     });
@@ -624,8 +626,10 @@ mod tests {
     async fn test_app() -> (Router, tempfile::TempDir) {
         let tmp = tempfile::TempDir::new().unwrap();
         let store = ModelStore::new(tmp.path().to_path_buf()).await.unwrap();
+        let registry = ModelRegistry::new(store.clone()).await;
         let state = Arc::new(AppState {
             model_store: store,
+            registry,
             mock_mode: true,
             start_time: Instant::now(),
         });
@@ -1017,5 +1021,232 @@ mod tests {
             proof_hexes[0], proof_hexes[1],
             "Mock proof should be deterministic"
         );
+    }
+
+    // ----- Versioning integration tests -----
+
+    /// Helper: upload a model with a specific name and unique JSON content.
+    async fn upload_named_model(app: &Router, name: &str, unique_key: &str) -> String {
+        let body = serde_json::json!({
+            "name": name,
+            "model_json": {"learner": {"gradient_booster": {"model": {"trees": [], "id": unique_key}}}},
+            "format": "auto"
+        });
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/models")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let upload_resp: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        upload_resp["model_id"].as_str().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn test_upload_same_model_creates_v1_and_v2() {
+        let (app, _tmp) = test_app().await;
+
+        let v1_id = upload_named_model(&app, "credit-model", "v1-content").await;
+        let v2_id = upload_named_model(&app, "credit-model", "v2-content").await;
+
+        assert_ne!(v1_id, v2_id);
+
+        // List versions
+        let req = axum::http::Request::builder()
+            .uri("/models/credit-model/versions")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let versions: ListVersionsResponse = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(versions.versions.len(), 2);
+        assert_eq!(versions.versions[0].version, 1);
+        assert_eq!(versions.versions[1].version, 2);
+
+        // v1 is deactivated, v2 is active.
+        assert!(!versions.versions[0].is_active);
+        assert!(versions.versions[1].is_active);
+    }
+
+    #[tokio::test]
+    async fn test_activate_v2_prove_uses_v2() {
+        let (app, _tmp) = test_app().await;
+
+        let v1_id = upload_named_model(&app, "prove-model", "p1").await;
+        let v2_id = upload_named_model(&app, "prove-model", "p2").await;
+
+        // v2 is active by default. Prove should work.
+        let body = serde_json::json!({
+            "model_id": v2_id,
+            "features": [1.0, 2.0, 3.0]
+        });
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/prove")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // v1 is deactivated — prove should fail.
+        let body = serde_json::json!({
+            "model_id": v1_id,
+            "features": [1.0, 2.0, 3.0]
+        });
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/prove")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_rollback_activates_v1() {
+        let (app, _tmp) = test_app().await;
+
+        let v1_id = upload_named_model(&app, "rollback-model", "rb1").await;
+        let v2_id = upload_named_model(&app, "rollback-model", "rb2").await;
+
+        // Rollback should activate v1.
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/models/rollback-model/rollback")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let rolled: VersionSummary = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(rolled.id, v1_id);
+        assert_eq!(rolled.version, 1);
+        assert!(rolled.is_active);
+
+        // v2 should now be deactivated.
+        let req = axum::http::Request::builder()
+            .uri(&format!("/models/{}", v2_id))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let model: ModelSummary = serde_json::from_slice(&body_bytes).unwrap();
+        assert!(!model.active);
+
+        // Prove with v1 should work now.
+        let body = serde_json::json!({
+            "model_id": v1_id,
+            "features": [1.0, 2.0]
+        });
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/prove")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_deactivated_model_rejects_prove() {
+        let (app, _tmp) = test_app().await;
+        let model_id = upload_named_model(&app, "deact-prove", "dp1").await;
+
+        // Deactivate via POST /models/:id/deactivate
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri(&format!("/models/{}/deactivate", model_id))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let info: VersionSummary = serde_json::from_slice(&body_bytes).unwrap();
+        assert!(!info.is_active);
+
+        // Prove should be rejected.
+        let body = serde_json::json!({
+            "model_id": model_id,
+            "features": [1.0, 2.0]
+        });
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/prove")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_activate_and_deactivate_via_endpoints() {
+        let (app, _tmp) = test_app().await;
+
+        let v1_id = upload_named_model(&app, "ad-model", "ad1").await;
+        let v2_id = upload_named_model(&app, "ad-model", "ad2").await;
+
+        // v2 is active. Activate v1.
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri(&format!("/models/{}/activate", v1_id))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let info: VersionSummary = serde_json::from_slice(&body_bytes).unwrap();
+        assert!(info.is_active);
+        assert_eq!(info.version, 1);
+
+        // Check v2 is deactivated.
+        let req = axum::http::Request::builder()
+            .uri(&format!("/models/{}", v2_id))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let model: ModelSummary = serde_json::from_slice(&body_bytes).unwrap();
+        assert!(!model.active);
+    }
+
+    #[tokio::test]
+    async fn test_list_versions_not_found() {
+        let (app, _tmp) = test_app().await;
+
+        let req = axum::http::Request::builder()
+            .uri("/models/nonexistent-name/versions")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_rollback_single_version_fails() {
+        let (app, _tmp) = test_app().await;
+        upload_named_model(&app, "single-ver", "sv1").await;
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/models/single-ver/rollback")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 }

@@ -21,7 +21,6 @@ tower-http = { workspace = true, features = ["cors"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
-sha2 = { workspace = true }
 tracing-subscriber = "0.3"
 
 [dev-dependencies]

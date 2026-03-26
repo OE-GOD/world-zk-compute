@@ -3,7 +3,7 @@
 //! Proof bundles are stored as JSON files on the filesystem (for portability
 //! and easy backup), while SQLite indexes metadata for fast search.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -377,10 +377,6 @@ impl ProofDb {
         self.storage_dir.join(format!("{id}.json"))
     }
 
-    /// Return the storage directory path.
-    pub fn storage_dir(&self) -> &Path {
-        &self.storage_dir
-    }
 }
 
 #[cfg(test)]
