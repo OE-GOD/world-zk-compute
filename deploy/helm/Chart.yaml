@@ -1,0 +1,14 @@
+apiVersion: v2
+name: world-zk-compute
+description: Verifiable AI inference platform — proof generation, verification, and registry
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - zkml
+  - zero-knowledge
+  - machine-learning
+  - verification
+maintainers:
+  - name: World ZK Compute
+    url: https://github.com/OE-GOD/world-zk-compute

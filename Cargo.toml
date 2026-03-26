@@ -10,6 +10,7 @@ members = [
     "services/indexer",
     "services/health-aggregator",
     "services/proof-registry",
+    "services/proof-generator",
     "services/verifier",
     "tee/enclave",
     "tests/chaos",

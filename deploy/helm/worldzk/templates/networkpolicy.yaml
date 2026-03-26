@@ -52,3 +52,36 @@ spec:
         - port: 3000
           protocol: TCP
 {{- end }}
+---
+{{- if and .Values.networkPolicy.enabled .Values.verifier.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "worldzk.verifier.fullname" . }}-netpol
+  labels:
+    {{- include "worldzk.verifier.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "worldzk.verifier.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Egress
+    - Ingress
+  ingress:
+    # Allow inbound HTTP traffic for verification requests
+    - ports:
+        - port: {{ .Values.verifier.port }}
+          protocol: TCP
+  egress:
+    # DNS resolution (kube-dns)
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+{{- end }}

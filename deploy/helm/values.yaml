@@ -1,0 +1,70 @@
+# Default values for world-zk-compute Helm chart.
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/oe-god/world-zk-compute
+  pullPolicy: IfNotPresent
+  tag: "0.1.0"
+
+verifier:
+  enabled: true
+  port: 3000
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+proofRegistry:
+  enabled: true
+  port: 3001
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+proofGenerator:
+  enabled: false
+  port: 3002
+  resources:
+    requests:
+      cpu: "1"
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+
+healthAggregator:
+  enabled: true
+  port: 8090
+  pollIntervalSecs: 30
+
+service:
+  type: ClusterIP
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: zkml.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+
+monitoring:
+  enabled: false
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+
+persistence:
+  enabled: false
+  storageClass: ""
+  size: 10Gi
