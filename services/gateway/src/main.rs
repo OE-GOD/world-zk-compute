@@ -40,7 +40,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
@@ -245,7 +245,7 @@ async fn proxy_handler(
 // Health endpoints
 // ---------------------------------------------------------------------------
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 struct ServiceHealth {
     name: String,
     healthy: bool,
@@ -255,7 +255,7 @@ struct ServiceHealth {
     error: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct AggregateHealthResponse {
     status: String,
     services: Vec<ServiceHealth>,
@@ -263,7 +263,7 @@ struct AggregateHealthResponse {
     total_count: usize,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct SingleServiceHealthResponse {
     name: String,
     healthy: bool,
@@ -418,27 +418,20 @@ fn err_response(status: StatusCode, msg: &str) -> (StatusCode, Json<ErrorRespons
 // ---------------------------------------------------------------------------
 
 fn build_app(state: GatewayState) -> Router {
-    // Health routes are mounted explicitly so they take priority over the
-    // catch-all fallback.
-    let health_routes = Router::new()
+    // Health routes take priority over the fallback proxy.
+    // Auth middleware is applied as a layer (not route_layer) so it covers
+    // the fallback handler too. The middleware itself exempts /health paths.
+    Router::new()
         .route("/health", get(health_aggregate))
-        .route("/health/{service}", get(health_single))
-        .with_state(state.clone());
-
-    // All other routes go through the proxy, behind optional auth.
-    let proxy_routes = Router::new()
+        .route("/health/:service", get(health_single))
         .fallback(proxy_handler)
-        .route_layer(middleware::from_fn_with_state(
+        .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
         ))
-        .with_state(state);
-
-    Router::new()
-        .merge(health_routes)
-        .merge(proxy_routes)
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
+        .with_state(state)
 }
 
 fn build_state(config: GatewayConfig) -> GatewayState {
