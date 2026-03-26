@@ -50,7 +50,6 @@ pub fn verifying_key(signing_key: &SigningKey) -> VerifyingKey {
 
 /// Encode a verifying key as a hex string (compressed SEC1 format, 33 bytes).
 pub fn verifying_key_hex(vk: &VerifyingKey) -> String {
-    use k256::elliptic_curve::sec1::ToEncodedPoint;
     let point = vk.to_encoded_point(true);
     hex::encode(point.as_bytes())
 }

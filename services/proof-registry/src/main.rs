@@ -40,6 +40,22 @@ fn build_app_with_state(state: Arc<AppState>) -> Router {
         .route("/proofs/:id/receipt", get(routes::get_receipt))
         .route("/proofs/:id", delete(routes::delete_proof))
         .route("/stats", get(routes::stats))
+        .route(
+            "/transparency/root",
+            get(routes::transparency_root),
+        )
+        .route(
+            "/transparency/proof/:index",
+            get(routes::transparency_proof),
+        )
+        .route(
+            "/transparency/verify",
+            post(routes::transparency_verify),
+        )
+        .route(
+            "/transparency/entries",
+            get(routes::transparency_entries),
+        )
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             routes::auth_middleware,

@@ -267,6 +267,125 @@ pub async fn stats(
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))
 }
 
+// -- Transparency log handlers --
+
+/// GET /transparency/root — current Merkle root and tree size.
+pub async fn transparency_root(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<transparency::RootResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let tlog = state.transparency_log.lock().await;
+    let root = tlog
+        .root()
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let tree_size = tlog
+        .size()
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    Ok(Json(transparency::RootResponse {
+        root: hex::encode(root),
+        tree_size,
+    }))
+}
+
+/// GET /transparency/proof/:index — Merkle inclusion proof for a leaf.
+pub async fn transparency_proof(
+    State(state): State<Arc<AppState>>,
+    Path(index): Path<u64>,
+) -> Result<Json<transparency::InclusionProof>, (StatusCode, Json<ErrorResponse>)> {
+    let tlog = state.transparency_log.lock().await;
+
+    let leaf = tlog
+        .get_leaf(index)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, format!("leaf {index} not found")))?;
+
+    let proof = tlog
+        .inclusion_proof(index)
+        .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+
+    let root = tlog
+        .root()
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let tree_size = tlog
+        .size()
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    Ok(Json(transparency::InclusionProof {
+        index,
+        leaf_hash: hex::encode(leaf),
+        proof: proof.iter().map(hex::encode).collect(),
+        root: hex::encode(root),
+        tree_size,
+    }))
+}
+
+/// POST /transparency/verify — verify a Merkle inclusion proof.
+pub async fn transparency_verify(
+    Json(req): Json<transparency::VerifyRequest>,
+) -> Result<Json<transparency::VerifyResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let root: [u8; 32] = hex::decode(&req.root)
+        .map_err(|e| err(StatusCode::BAD_REQUEST, format!("invalid root hex: {e}")))?
+        .try_into()
+        .map_err(|_| err(StatusCode::BAD_REQUEST, "root must be 32 bytes".to_string()))?;
+
+    let leaf: [u8; 32] = hex::decode(&req.leaf_hash)
+        .map_err(|e| err(StatusCode::BAD_REQUEST, format!("invalid leaf_hash hex: {e}")))?
+        .try_into()
+        .map_err(|_| {
+            err(
+                StatusCode::BAD_REQUEST,
+                "leaf_hash must be 32 bytes".to_string(),
+            )
+        })?;
+
+    let proof: Vec<[u8; 32]> = req
+        .proof
+        .iter()
+        .map(|h| {
+            hex::decode(h)
+                .map_err(|e| err(StatusCode::BAD_REQUEST, format!("invalid proof hex: {e}")))
+                .and_then(|b| {
+                    b.try_into().map_err(|_| {
+                        err(
+                            StatusCode::BAD_REQUEST,
+                            "proof element must be 32 bytes".to_string(),
+                        )
+                    })
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let valid =
+        transparency::verify_inclusion(&root, &leaf, req.index, &proof, req.tree_size);
+
+    Ok(Json(transparency::VerifyResponse { valid }))
+}
+
+#[derive(Deserialize)]
+pub struct EntriesParams {
+    pub from: Option<u64>,
+    pub count: Option<u64>,
+}
+
+/// GET /transparency/entries — list transparency log entries.
+pub async fn transparency_entries(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<EntriesParams>,
+) -> Result<Json<transparency::EntriesResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let from = params.from.unwrap_or(0);
+    let count = params.count.unwrap_or(100).min(1000);
+
+    let tlog = state.transparency_log.lock().await;
+    let total = tlog
+        .size()
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let entries = tlog
+        .list_entries(from, count)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    Ok(Json(transparency::EntriesResponse { entries, total }))
+}
+
 /// Simple API key auth middleware.
 pub async fn auth_middleware(
     State(state): State<Arc<AppState>>,
