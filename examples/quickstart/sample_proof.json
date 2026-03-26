@@ -1,0 +1,25 @@
+{
+  "_comment": "Minimal sample proof bundle for API testing. This proof is structurally valid but will NOT pass cryptographic verification. For a real proof, use contracts/test/fixtures/phase1a_dag_fixture.json.",
+  "proof_hex": "0x52454d310000000000000000000000000000000000000000000000000000000000000000",
+  "public_inputs_hex": "",
+  "gens_hex": "0x00",
+  "dag_circuit_description": {
+    "num_compute_layers": 0,
+    "num_input_layers": 0,
+    "layer_types": [],
+    "num_sumcheck_rounds": [],
+    "atom_offsets": [0],
+    "atom_target_layers": [],
+    "atom_commit_idxs": [],
+    "pt_offsets": [0],
+    "pt_data": [],
+    "input_is_committed": [],
+    "oracle_product_offsets": [0],
+    "oracle_result_idxs": [],
+    "oracle_expr_coeffs": []
+  },
+  "model_hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+  "timestamp": 1711500000,
+  "prover_version": "0.1.0-sample",
+  "circuit_hash": "0x0000000000000000000000000000000000000000000000000000000000000000"
+}
