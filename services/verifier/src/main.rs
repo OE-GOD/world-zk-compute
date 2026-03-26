@@ -1,6 +1,8 @@
+mod admin;
 mod auth;
 mod config;
 mod rate_limit;
+mod tenant;
 mod tls;
 
 use std::collections::HashMap;
@@ -10,7 +12,7 @@ use axum::{
     extract::{Json, Path, State},
     http::StatusCode,
     middleware,
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
 use serde::{Deserialize, Serialize};
@@ -18,9 +20,11 @@ use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
 use zkml_verifier::{verify, verify_hybrid, ProofBundle};
 
+use admin::{admin_auth_middleware, AdminAuthState};
 use auth::{auth_middleware, AuthState};
 use config::ServiceConfig;
 use rate_limit::{rate_limit_middleware, RateLimitState};
+use tenant::TenantStore;
 
 // -- Shared state for warm circuits --
 
@@ -344,11 +348,21 @@ fn build_app() -> Router {
 }
 
 fn build_app_with_config(config: ServiceConfig) -> Router {
-    let store: CircuitStore = Arc::new(RwLock::new(HashMap::new()));
-    let auth_state = AuthState::new(config.api_keys.clone());
-    let rate_limit_state = RateLimitState::new(config.rate_limit_rpm);
+    let circuit_store: CircuitStore = Arc::new(RwLock::new(HashMap::new()));
 
-    // Health endpoint: public, no auth or rate limiting.
+    // Initialize tenant store (file-backed or in-memory).
+    let tenant_store = Arc::new(if config.tenant_persistence_enabled() {
+        TenantStore::load(&config.tenant_file)
+    } else {
+        TenantStore::new()
+    });
+
+    // Auth and rate limiting are tenant-aware when a tenant store is present.
+    let auth_state = AuthState::new(config.api_keys.clone())
+        .with_tenant_store(tenant_store.clone());
+    let rate_limit_state = RateLimitState::new(config.rate_limit_rpm)
+        .with_tenant_store(tenant_store.clone());
+
     // Protected endpoints: auth + rate limit layers applied.
     let protected = Router::new()
         .route("/verify", post(verify_proof))
@@ -366,15 +380,30 @@ fn build_app_with_config(config: ServiceConfig) -> Router {
             rate_limit_middleware,
         ))
         .route_layer(middleware::from_fn_with_state(auth_state, auth_middleware))
-        .with_state(store.clone());
+        .with_state(circuit_store.clone());
 
+    // Admin endpoints: protected by separate admin key.
+    let admin_state = AdminAuthState::new(config.admin_key.clone());
+    let admin_router = Router::new()
+        .route("/admin/tenants", post(admin::create_tenant))
+        .route("/admin/tenants", get(admin::list_tenants))
+        .route("/admin/tenants/:id", delete(admin::revoke_tenant))
+        .route("/admin/tenants/:id/usage", get(admin::tenant_usage))
+        .route_layer(middleware::from_fn_with_state(
+            admin_state,
+            admin_auth_middleware,
+        ))
+        .with_state(tenant_store);
+
+    // Health endpoint: public, no auth or rate limiting.
     let health_router = Router::new()
         .route("/health", get(health))
-        .with_state(store);
+        .with_state(circuit_store);
 
     Router::new()
         .merge(health_router)
         .merge(protected)
+        .merge(admin_router)
         .layer(CorsLayer::permissive())
 }
 
@@ -390,13 +419,26 @@ async fn main() {
 
     if config.auth_enabled() {
         eprintln!(
-            "API key auth enabled ({} key(s) configured)",
+            "API key auth enabled ({} legacy key(s) configured)",
             config.api_keys.len()
         );
     } else {
-        eprintln!("API key auth disabled (no VERIFIER_API_KEYS set)");
+        eprintln!("Legacy API key auth disabled (no VERIFIER_API_KEYS set)");
     }
-    eprintln!("Rate limit: {} requests/minute", config.rate_limit_rpm);
+    if config.admin_enabled() {
+        eprintln!("Admin API enabled (VERIFIER_ADMIN_KEY set)");
+    } else {
+        eprintln!("Admin API disabled (no VERIFIER_ADMIN_KEY set)");
+    }
+    if config.tenant_persistence_enabled() {
+        eprintln!("Tenant persistence: {}", config.tenant_file);
+    } else {
+        eprintln!("Tenant persistence: in-memory only");
+    }
+    eprintln!(
+        "Default rate limit: {} requests/minute",
+        config.rate_limit_rpm
+    );
 
     let app = build_app_with_config(config);
 
