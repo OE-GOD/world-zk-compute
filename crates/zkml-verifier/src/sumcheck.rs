@@ -88,9 +88,7 @@ pub fn verify_hybrid(
     // Step 5: Skip dot_product computation (pure EC)
 
     // Step 6: Replay PODP transcript and compute z_dot_j_star
-    let z_dot_j_star = verify_podp_hybrid(&proof.podp, &j_star, sponge);
-
-    z_dot_j_star
+    verify_podp_hybrid(&proof.podp, &j_star, sponge)
 }
 
 /// Replay PODP transcript operations and compute z_dot_j_star = inner_product(z_vector, j_star).

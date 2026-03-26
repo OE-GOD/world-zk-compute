@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Metadata about the proof (model, prover version, etc.).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProofMetadata {
     /// Hash (hex) of the model used to generate the proof.
     #[serde(default)]
@@ -19,14 +19,4 @@ pub struct ProofMetadata {
     /// Prover software version string.
     #[serde(default)]
     pub prover_version: String,
-}
-
-impl Default for ProofMetadata {
-    fn default() -> Self {
-        Self {
-            model_hash: String::new(),
-            timestamp: 0,
-            prover_version: String::new(),
-        }
-    }
 }
