@@ -5,7 +5,7 @@
 
 use axum::{
     extract::{Path, Request, State},
-    http::{HeaderMap, StatusCode},
+    http::StatusCode,
     middleware::Next,
     response::{IntoResponse, Response},
     Json,
