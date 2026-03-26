@@ -1,81 +1,244 @@
+# ===============================================================================
 # Off-Chain Production Stack
 #
-# Full proof generation, verification, and registry pipeline.
-# No blockchain required — purely off-chain proof lifecycle.
+# Full proof generation, verification, and registry pipeline behind a
+# single API gateway. No blockchain required -- purely off-chain proof
+# lifecycle management.
 #
 # Usage:
 #   docker compose -f docker-compose.offchain.yml up
+#   docker compose -f docker-compose.offchain.yml up --build
+#   docker compose -f docker-compose.offchain.yml down -v
+#
+# With monitoring (Grafana dashboard):
+#   docker compose -f docker-compose.offchain.yml --profile monitoring up
 #
 # Services:
-#   - verifier-api (port 3000): Verify proofs
-#   - proof-registry (port 3001): Store and search proofs
-#   - proof-generator (port 3002): Generate proofs from models
-#   - health-aggregator (port 8090): Unified health dashboard
+#   - gateway          (port 8080): Unified API gateway (reverse-proxy)
+#   - verifier         (port 3000): ZKML proof verification
+#   - registry         (port 3001): Proof storage and search
+#   - generator        (port 3002): Proof generation from models (mock by default)
+#   - prometheus       (port 9090): Metrics collection
+#   - grafana          (port 3001, monitoring profile): Dashboards
+#
+# Gateway routes:
+#   /prove, /models  -> generator
+#   /proofs, /stats  -> registry
+#   /verify, /circuits -> verifier
+#   /health          -> aggregated health
+# ===============================================================================
 
 services:
-  verifier-api:
+  # -- API Gateway ---------------------------------------------------------------
+  # Unified entry point that reverse-proxies requests to the appropriate
+  # backend service based on URL prefix. Exposes aggregated health checks.
+  gateway:
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile
+    ports:
+      - "${GATEWAY_PORT:-8080}:8080"
+    environment:
+      VERIFIER_URL: http://verifier:3000
+      REGISTRY_URL: http://registry:3001
+      GENERATOR_URL: http://generator:3002
+      GATEWAY_PORT: "8080"
+      RUST_LOG: "${RUST_LOG:-info}"
+    depends_on:
+      verifier:
+        condition: service_healthy
+      registry:
+        condition: service_healthy
+      generator:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    # Security hardening
+    read_only: true
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    pids_limit: 50
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    networks:
+      - frontend
+      - backend
+
+  # -- Verifier API --------------------------------------------------------------
+  # REST API for off-chain ZKML proof verification. Stateless service that can
+  # be scaled horizontally behind a load balancer.
+  verifier:
     build:
       context: .
       dockerfile: services/verifier/Dockerfile
-    ports:
-      - "${VERIFIER_PORT:-3000}:3000"
+    expose:
+      - "3000"
     environment:
-      - PORT=3000
-      - RUST_LOG=${RUST_LOG:-info}
+      PORT: "3000"
+      RUST_LOG: "${RUST_LOG:-info}"
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:3000/health"]
-      interval: 10s
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 15s
       timeout: 5s
       retries: 3
+      start_period: 10s
     restart: unless-stopped
+    # Security hardening
+    read_only: true
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    pids_limit: 50
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    networks:
+      - backend
 
-  proof-registry:
+  # -- Proof Registry ------------------------------------------------------------
+  # Stores and indexes generated proofs. Persists data to a named volume.
+  registry:
     build:
       context: .
       dockerfile: services/proof-registry/Dockerfile
-    ports:
-      - "${REGISTRY_PORT:-3001}:3001"
+    expose:
+      - "3001"
     environment:
-      - PORT=3001
-      - RUST_LOG=${RUST_LOG:-info}
+      PORT: "3001"
+      PROOF_DB_PATH: /data/proofs.db
+      PROOF_STORAGE_DIR: /data/proof-store/
+      RUST_LOG: "${RUST_LOG:-info}"
+    volumes:
+      - proof-data:/data
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:3001/health"]
-      interval: 10s
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 15s
       timeout: 5s
       retries: 3
+      start_period: 10s
     restart: unless-stopped
+    # Security hardening
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    pids_limit: 50
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    networks:
+      - backend
 
-  proof-generator:
+  # -- Proof Generator -----------------------------------------------------------
+  # Generates proofs from uploaded ML models. Runs in --mock mode by default
+  # so the service can be tested without heavy circuit construction. Remove
+  # the command override to enable real proof generation.
+  generator:
     build:
       context: .
       dockerfile: services/proof-generator/Dockerfile
-    ports:
-      - "${GENERATOR_PORT:-3002}:3002"
+    expose:
+      - "3002"
+    command: ["--mock", "--host", "0.0.0.0", "--port", "3002", "--model-dir", "/app/data/models"]
     environment:
-      - PORT=3002
-      - RUST_LOG=${RUST_LOG:-info}
+      RUST_LOG: "${RUST_LOG:-info}"
+    volumes:
+      - model-data:/app/data/models
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:3002/health"]
-      interval: 10s
+      test: ["CMD", "curl", "-f", "http://localhost:3002/health"]
+      interval: 15s
       timeout: 5s
       retries: 3
+      start_period: 10s
     restart: unless-stopped
+    # Security hardening
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    pids_limit: 100
+    mem_limit: 1g
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    networks:
+      - backend
 
-  health-aggregator:
-    build:
-      context: .
-      dockerfile: services/health-aggregator/Dockerfile
+  # -- Prometheus ----------------------------------------------------------------
+  # Metrics collection from all offchain services. Uses Docker Compose service
+  # names for target resolution within the backend network.
+  prometheus:
+    image: prom/prometheus:v2.53.0
     ports:
-      - "${HEALTH_PORT:-8090}:8090"
-    environment:
-      - PORT=8090
-      - SERVICES=verifier=http://verifier-api:3000,registry=http://proof-registry:3001,generator=http://proof-generator:3002
-      - POLL_INTERVAL_SECS=15
-    depends_on:
-      verifier-api:
-        condition: service_healthy
-      proof-registry:
-        condition: service_healthy
-      proof-generator:
-        condition: service_healthy
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=7d'
     restart: unless-stopped
+    read_only: true
+    security_opt:
+      - "no-new-privileges:true"
+    networks:
+      - backend
+
+  # -- Grafana (monitoring profile only) -----------------------------------------
+  # Dashboards for service metrics. Only starts when using:
+  #   docker compose -f docker-compose.offchain.yml --profile monitoring up
+  grafana:
+    image: grafana/grafana:11.1.0
+    ports:
+      - "${GRAFANA_PORT:-3030}:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_PASSWORD:-admin}"
+    profiles:
+      - monitoring
+    restart: unless-stopped
+    security_opt:
+      - "no-new-privileges:true"
+    networks:
+      - backend
+
+networks:
+  frontend:
+    driver: bridge
+  backend:
+    driver: bridge
+
+volumes:
+  proof-data:
+  model-data:
+  prometheus-data:
+  grafana-data:
