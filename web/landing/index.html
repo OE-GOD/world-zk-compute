@@ -4,140 +4,170 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>World ZK Compute — Verifiable AI Inference</title>
+    <meta name="description" content="Cryptographic proof that the right model ran on the right data and produced the right output. On-chain verification for ML inference.">
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <header>
-        <nav>
-            <div class="logo">World ZK Compute</div>
+
+    <nav>
+        <div class="nav-inner">
+            <span class="logo">World ZK Compute</span>
             <div class="nav-links">
-                <a href="#features">Features</a>
-                <a href="#demo">Demo</a>
-                <a href="#docs">Docs</a>
-                <a href="https://github.com/OE-GOD/world-zk-compute" target="_blank">GitHub</a>
+                <a href="#how-it-works">How It Works</a>
+                <a href="#use-cases">Use Cases</a>
+                <a href="#sdk">SDK</a>
+                <a href="https://github.com/OE-GOD/world-zk-compute" target="_blank" rel="noopener">GitHub</a>
             </div>
-        </nav>
-    </header>
+        </div>
+    </nav>
 
     <main>
+
+        <!-- Hero -->
         <section class="hero">
             <h1>Verifiable AI Inference</h1>
-            <p class="tagline">Prove your ML model ran correctly — on-chain, in zero knowledge.</p>
-            <div class="cta-group">
-                <a href="#demo" class="btn btn-primary">Try the Demo</a>
-                <a href="https://github.com/OE-GOD/world-zk-compute" class="btn btn-secondary">View Source</a>
+            <p class="hero-sub">Cryptographic proof that the right model ran on the right data and produced the right output.</p>
+            <div class="hero-actions">
+                <a href="../index.html" class="btn btn-primary">Try Live Demo</a>
+                <a href="https://github.com/OE-GOD/world-zk-compute" class="btn btn-outline" target="_blank" rel="noopener">View on GitHub</a>
             </div>
         </section>
 
-        <section id="features" class="features">
-            <h2>How It Works</h2>
-            <div class="feature-grid">
-                <div class="feature-card">
-                    <h3>TEE Attestation</h3>
-                    <p>Run inference in a Trusted Execution Environment. The enclave signs the result with an ECDSA attestation — no one can tamper with the output.</p>
-                    <code>POST /infer → attestation</code>
-                </div>
-                <div class="feature-card">
-                    <h3>ZK Dispute Resolution</h3>
-                    <p>If a result is challenged, prove correctness with a GKR+Hyrax zero-knowledge proof. The on-chain verifier settles the dispute in one transaction.</p>
-                    <code>~3-6M gas on Arbitrum</code>
-                </div>
-                <div class="feature-card">
-                    <h3>Multi-Model Support</h3>
-                    <p>XGBoost, LightGBM, Random Forest, and Logistic Regression. Load any scikit-learn or XGBoost model and prove its inference.</p>
-                    <code>--model-format auto</code>
-                </div>
-                <div class="feature-card">
-                    <h3>Off-Chain Verification</h3>
-                    <p>Verify proofs without a blockchain. Use the REST API, Python, JavaScript, or Rust SDK. Batch verify hundreds of proofs per second.</p>
-                    <code>POST /verify → {verified: true}</code>
+        <!-- Problem -->
+        <section class="section-dark">
+            <div class="section-inner">
+                <h2>The Problem</h2>
+                <p class="section-text">AI makes decisions. Nobody can verify them.</p>
+                <p class="section-detail">Credit approvals, fraud scores, insurance risk assessments &mdash; regulated institutions deploy ML models that affect millions of people. Regulators, auditors, and counterparties have no way to confirm that the declared model actually ran, that the input data was not tampered with, or that the output was not fabricated.</p>
+            </div>
+        </section>
+
+        <!-- Solution -->
+        <section class="section-light">
+            <div class="section-inner">
+                <h2>The Solution</h2>
+                <p class="section-text">Cryptographic proof that the right model ran on the right data and produced the right output.</p>
+                <p class="section-detail">World ZK Compute generates a zero-knowledge proof of ML inference. The proof is non-interactive, publicly verifiable, and can be checked on-chain or off-chain in milliseconds. The model weights and input data stay private.</p>
+            </div>
+        </section>
+
+        <!-- How It Works -->
+        <section id="how-it-works" class="section-dark">
+            <div class="section-inner">
+                <h2>How It Works</h2>
+                <div class="steps">
+                    <div class="step">
+                        <div class="step-number">1</div>
+                        <h3>Run Inference</h3>
+                        <p>Execute your ML model (XGBoost, LightGBM, Random Forest, Logistic Regression) inside a TEE or the ZK prover. The computation is recorded as an arithmetic circuit.</p>
+                    </div>
+                    <div class="step">
+                        <div class="step-number">2</div>
+                        <h3>Generate Proof</h3>
+                        <p>The GKR+Hyrax protocol produces a cryptographic proof that the circuit was evaluated correctly. A Groth16 wrapper compresses EC checks for efficient on-chain verification.</p>
+                    </div>
+                    <div class="step">
+                        <div class="step-number">3</div>
+                        <h3>Verify Anywhere</h3>
+                        <p>Check the proof on Ethereum, Arbitrum, in a browser, or via REST API. Verification is fast (&lt;1s off-chain, ~3-6M gas on-chain) and requires no trust in the prover.</p>
+                    </div>
                 </div>
             </div>
         </section>
 
-        <section id="demo" class="demo">
-            <h2>Live Demo</h2>
-            <p>Verify an XGBoost credit scoring proof in your browser:</p>
-            <div class="demo-box">
-                <pre id="demo-output">Loading...</pre>
-                <button id="demo-btn" class="btn btn-primary" onclick="runDemo()">Verify Proof</button>
+        <!-- Live Demo -->
+        <section class="section-accent">
+            <div class="section-inner center">
+                <h2>See It In Action</h2>
+                <p class="section-detail">Verify an XGBoost credit scoring proof in your browser. The WASM verifier runs the same GKR+Hyrax cryptographic checks as the on-chain Solidity contract. No backend required.</p>
+                <a href="../index.html" class="btn btn-primary btn-large">Launch Live Demo</a>
             </div>
         </section>
 
-        <section id="docs" class="docs">
-            <h2>Get Started</h2>
-            <div class="doc-grid">
-                <a href="https://github.com/OE-GOD/world-zk-compute/blob/main/docs/QUICKSTART.md" class="doc-card">
-                    <h3>Quickstart</h3>
-                    <p>Verify your first proof in 5 minutes</p>
-                </a>
-                <a href="https://github.com/OE-GOD/world-zk-compute/blob/main/docs/API_REFERENCE.md" class="doc-card">
-                    <h3>API Reference</h3>
-                    <p>Complete contract and service API docs</p>
-                </a>
-                <a href="https://github.com/OE-GOD/world-zk-compute/blob/main/docs/INTEGRATION_GUIDE.md" class="doc-card">
-                    <h3>Integration Guide</h3>
-                    <p>End-to-end integration patterns</p>
-                </a>
-                <a href="https://github.com/OE-GOD/world-zk-compute/blob/main/docs/SECURITY_MODEL.md" class="doc-card">
-                    <h3>Security Model</h3>
-                    <p>Defense-in-depth architecture</p>
-                </a>
+        <!-- Use Cases -->
+        <section id="use-cases" class="section-dark">
+            <div class="section-inner">
+                <h2>Use Cases</h2>
+                <div class="use-case-grid">
+                    <div class="use-case">
+                        <h3>Credit Scoring</h3>
+                        <p>Prove to regulators that the approved model produced each credit decision. Audit trail without exposing proprietary model weights.</p>
+                    </div>
+                    <div class="use-case">
+                        <h3>Fraud Detection</h3>
+                        <p>Demonstrate to counterparties that transaction risk scores were computed by the declared model, not overridden manually.</p>
+                    </div>
+                    <div class="use-case">
+                        <h3>Insurance Claims</h3>
+                        <p>Verify that automated claims decisions followed the registered model. Reduce dispute resolution from weeks to seconds.</p>
+                    </div>
+                    <div class="use-case">
+                        <h3>AML Compliance</h3>
+                        <p>Provide cryptographic evidence that AML screening models ran on the correct data. Satisfy cross-border regulatory requirements without sharing raw data.</p>
+                    </div>
+                </div>
             </div>
         </section>
 
-        <section class="install">
-            <h2>Install</h2>
-            <div class="install-grid">
-                <div>
-                    <h4>Python</h4>
-                    <code>pip install zkml-verifier</code>
+        <!-- SDK -->
+        <section id="sdk" class="section-light">
+            <div class="section-inner">
+                <h2>Get Started</h2>
+                <p class="section-detail center">Install the verifier SDK in your language of choice.</p>
+                <div class="sdk-grid">
+                    <div class="sdk-card">
+                        <span class="sdk-lang">Python</span>
+                        <code>pip install zkml-verifier</code>
+                    </div>
+                    <div class="sdk-card">
+                        <span class="sdk-lang">JavaScript</span>
+                        <code>npm install @worldzk/verifier</code>
+                    </div>
+                    <div class="sdk-card">
+                        <span class="sdk-lang">Rust</span>
+                        <code>cargo add zkml-verifier</code>
+                    </div>
                 </div>
-                <div>
-                    <h4>JavaScript</h4>
-                    <code>npm install @worldzk/verifier</code>
-                </div>
-                <div>
-                    <h4>Rust</h4>
-                    <code>cargo add zkml-verifier</code>
-                </div>
-                <div>
-                    <h4>Docker</h4>
-                    <code>docker pull ghcr.io/oe-god/zkml-verifier</code>
+                <div class="sdk-extra">
+                    <p>Or run the full stack with Docker:</p>
+                    <code class="code-block">docker compose -f docker-compose.bank-demo.yml up -d</code>
                 </div>
             </div>
         </section>
+
+        <!-- Architecture summary -->
+        <section class="section-dark">
+            <div class="section-inner">
+                <h2>Architecture</h2>
+                <div class="arch-grid">
+                    <div class="arch-item">
+                        <h3>TEE Happy Path</h3>
+                        <p>AWS Nitro Enclave runs inference and signs the result. Cost: ~$0.0001 per inference. Latency: milliseconds.</p>
+                    </div>
+                    <div class="arch-item">
+                        <h3>ZK Dispute Resolution</h3>
+                        <p>If challenged, a GKR+Hyrax proof settles the dispute on-chain. Groth16 wrapper keeps gas under 6M on Arbitrum Stylus.</p>
+                    </div>
+                    <div class="arch-item">
+                        <h3>On-Chain Verifier</h3>
+                        <p>Solidity + Stylus (WASM) contracts on Ethereum and Arbitrum. Upgradeable via UUPS proxy. Pausable for emergency response.</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
     </main>
 
     <footer>
-        <p>Apache-2.0 License &middot; <a href="https://github.com/OE-GOD/world-zk-compute">GitHub</a></p>
+        <div class="footer-inner">
+            <p>Apache-2.0 License</p>
+            <div class="footer-links">
+                <a href="https://github.com/OE-GOD/world-zk-compute" target="_blank" rel="noopener">GitHub</a>
+                <a href="https://github.com/OE-GOD/world-zk-compute/blob/main/docs/SECURITY_MODEL.md" target="_blank" rel="noopener">Security Model</a>
+                <a href="https://github.com/OE-GOD/world-zk-compute/blob/main/docs/API_REFERENCE.md" target="_blank" rel="noopener">API Docs</a>
+            </div>
+        </div>
     </footer>
 
-    <script>
-    async function runDemo() {
-        const btn = document.getElementById('demo-btn');
-        const output = document.getElementById('demo-output');
-        btn.disabled = true;
-        output.textContent = 'Verifying proof...';
-
-        try {
-            const resp = await fetch('/verify', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    proof_hex: '0x52454d31',
-                    gens_hex: '0x00',
-                    dag_circuit_description: {}
-                })
-            });
-            const result = await resp.json();
-            output.textContent = JSON.stringify(result, null, 2);
-        } catch (e) {
-            output.textContent = `Demo requires verifier API.\nStart: docker compose -f docker-compose.bank-demo.yml up -d`;
-        }
-        btn.disabled = false;
-    }
-    document.getElementById('demo-output').textContent = 'Click "Verify Proof" to test the API.';
-    </script>
 </body>
 </html>
