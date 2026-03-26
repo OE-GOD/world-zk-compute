@@ -93,8 +93,15 @@ contract DeployWorldChain is Script {
             new ExecutionEngine(deployer, address(programRegistry), address(remainder), feeRecipient);
         console.log("[5/6] ExecutionEngine:     ", address(engine));
 
-        // -- 6. Deploy TEEMLVerifier ------------------------------------------------------
-        TEEMLVerifier teeVerifier = new TEEMLVerifier(deployer, address(remainder));
+        // -- 6. Deploy TEEMLVerifier (UUPS proxy) ------------------------------------------
+        TEEMLVerifier teeVerifier;
+        {
+            TEEMLVerifier teeImpl = new TEEMLVerifier();
+            UUPSProxy teeProxy = new UUPSProxy(
+                address(teeImpl), abi.encodeCall(TEEMLVerifier.initialize, (deployer, address(remainder)))
+            );
+            teeVerifier = TEEMLVerifier(payable(address(teeProxy)));
+        }
         console.log("[6/6] TEEMLVerifier:       ", address(teeVerifier));
 
         // -- Wiring -----------------------------------------------------------------------
@@ -131,9 +138,8 @@ contract DeployWorldChain is Script {
             reputation.transferOwnership(adminAddr);
             proverRegistry.transferOwnership(adminAddr);
             engine.transferOwnership(adminAddr);
-            teeVerifier.transferOwnership(adminAddr);
-            console.log("  Ownership transfer initiated to:", adminAddr);
-            console.log("  NOTE: New admin must call acceptOwnership() on all 6 contracts");
+            teeVerifier.changeAdmin(adminAddr);
+            console.log("  Admin transfer completed for all contracts to:", adminAddr);
         }
 
         vm.stopBroadcast();

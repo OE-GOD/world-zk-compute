@@ -34,6 +34,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            target
             prover/target
             examples/xgboost-remainder/target
           key: bench-${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
@@ -56,6 +57,14 @@ jobs:
             -- --sample-size 10 --output-format bencher \
             | tee xgboost-bench-results.txt
 
+      - name: Run zkml-verifier benchmarks
+        run: |
+          cargo bench \
+            -p zkml-verifier \
+            --bench verify_bench \
+            -- --sample-size 10 --output-format bencher \
+            | tee verifier-bench-results.txt
+
       - name: Upload benchmark results
         uses: actions/upload-artifact@v4
         if: always()
@@ -64,6 +73,8 @@ jobs:
           path: |
             prover-bench-results.txt
             xgboost-bench-results.txt
+            verifier-bench-results.txt
             prover/target/criterion/
             examples/xgboost-remainder/target/criterion/
+            target/criterion/
           retention-days: 90

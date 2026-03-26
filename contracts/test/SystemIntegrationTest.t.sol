@@ -10,6 +10,7 @@ import "../src/mocks/MockRiscZeroVerifier.sol";
 import "../src/tee/TEEMLVerifier.sol";
 import "../src/RiscZeroVerifierRouter.sol";
 import "../src/RiscZeroVerifierAdapter.sol";
+import {DeployTEEMLVerifierHelper} from "./helpers/DeployTEEMLVerifier.sol";
 
 /// @dev Minimal ERC20 for ProverRegistry staking in tests
 contract StakeToken {
@@ -79,7 +80,7 @@ contract GasGuzzlingCallback is IExecutionCallback {
 /// @title SystemIntegrationTest
 /// @notice Tests the full system stack: ProgramRegistry + ProverRegistry + ExecutionEngine + TEEMLVerifier
 /// @dev Verifies cross-contract wiring and end-to-end flows that unit tests don't cover
-contract SystemIntegrationTest is Test {
+contract SystemIntegrationTest is Test, DeployTEEMLVerifierHelper {
     // Re-declare events for expectEmit
     event ExecutionRequested(
         uint256 indexed requestId,
@@ -131,7 +132,7 @@ contract SystemIntegrationTest is Test {
         proverRegistry = new ProverRegistry(address(stakeToken), 100 ether, 500); // 100 STK min, 5% slash
         reputation = new ProverReputation();
         engine = new ExecutionEngine(admin, address(programRegistry), address(mockVerifier), address(0xFEE));
-        teeVerifier = new TEEMLVerifier(admin, address(0)); // no remainder verifier for happy-path tests
+        teeVerifier = _deployTEEMLVerifier(admin, address(0)); // no remainder verifier for happy-path tests
 
         // Wire up
         engine.setReputation(address(reputation));
@@ -607,11 +608,9 @@ contract SystemIntegrationTest is Test {
         engine.acceptOwnership();
         assertEq(engine.owner(), newAdmin);
 
-        // Transfer TEEMLVerifier ownership (Ownable2Step)
-        teeVerifier.transferOwnership(newAdmin);
-        vm.prank(newAdmin);
-        teeVerifier.acceptOwnership();
-        assertEq(teeVerifier.owner(), newAdmin);
+        // Transfer TEEMLVerifier admin (UUPSUpgradeable single-step)
+        teeVerifier.changeAdmin(newAdmin);
+        assertEq(teeVerifier.admin(), newAdmin);
 
         // Transfer ProgramRegistry ownership (Ownable2Step)
         programRegistry.transferOwnership(newAdmin);

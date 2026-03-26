@@ -3,7 +3,8 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
 import "../src/tee/TEEMLVerifier.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {UUPSUpgradeable} from "../src/Upgradeable.sol";
+import {DeployTEEMLVerifierHelper} from "./helpers/DeployTEEMLVerifier.sol";
 
 /// @dev Mock RemainderVerifier that tracks which verification function was called
 ///      via lastCalled string. Used to verify Stylus vs Solidity routing logic.
@@ -28,7 +29,7 @@ contract MockStylusRemainderVerifier {
 
 /// @title TEEMLVerifierStylusTest
 /// @notice Tests for Stylus routing in TEEMLVerifier.resolveDispute()
-contract TEEMLVerifierStylusTest is Test {
+contract TEEMLVerifierStylusTest is Test, DeployTEEMLVerifierHelper {
     // Re-declare events for expectEmit (solc 0.8.20 compat)
     event StylusVerifierToggled(bool enabled);
     event DisputeResolved(bytes32 indexed resultId, bool proverWon);
@@ -54,7 +55,7 @@ contract TEEMLVerifierStylusTest is Test {
     function setUp() public {
         enclaveAddr = vm.addr(enclavePrivateKey);
         mockVerifier = new MockStylusRemainderVerifier();
-        verifier = new TEEMLVerifier(admin, address(mockVerifier));
+        verifier = _deployTEEMLVerifier(admin, address(mockVerifier));
 
         // Register the test enclave
         verifier.registerEnclave(enclaveAddr, imageHash);
@@ -166,7 +167,7 @@ contract TEEMLVerifierStylusTest is Test {
         address nonOwner = address(0xBEEF);
 
         vm.prank(nonOwner);
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, nonOwner));
+        vm.expectRevert(UUPSUpgradeable.NotAdmin.selector);
         verifier.setUseStylusVerifier(true);
     }
 

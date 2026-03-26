@@ -3,8 +3,9 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
 import "../src/tee/TEEMLVerifier.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {UUPSUpgradeable} from "../src/Upgradeable.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {DeployTEEMLVerifierHelper} from "./helpers/DeployTEEMLVerifier.sol";
 
 /// @dev Mock RemainderVerifier that returns a configurable result for verifyDAGProof
 contract MockRemainderVerifier {
@@ -42,7 +43,7 @@ contract ReentrantAttacker {
     }
 }
 
-contract TEEMLVerifierTest is Test {
+contract TEEMLVerifierTest is Test, DeployTEEMLVerifierHelper {
     // Re-declare events for expectEmit (solc 0.8.20 compat)
     event ResultSubmitted(
         bytes32 indexed resultId, bytes32 indexed modelHash, bytes32 inputHash, address indexed submitter
@@ -78,7 +79,7 @@ contract TEEMLVerifierTest is Test {
     function setUp() public {
         enclaveAddr = vm.addr(enclavePrivateKey);
         mockVerifier = new MockRemainderVerifier();
-        verifier = new TEEMLVerifier(admin, address(mockVerifier));
+        verifier = _deployTEEMLVerifier(admin, address(mockVerifier));
 
         // Register the test enclave
         verifier.registerEnclave(enclaveAddr, imageHash);
@@ -368,14 +369,14 @@ contract TEEMLVerifierTest is Test {
     function test_registerEnclave_onlyAdmin() public {
         address nonAdmin = address(0xBEEF);
         vm.prank(nonAdmin);
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, nonAdmin));
+        vm.expectRevert(UUPSUpgradeable.NotAdmin.selector);
         verifier.registerEnclave(address(0x1234), imageHash);
     }
 
     function test_revokeEnclave_onlyAdmin() public {
         address nonAdmin = address(0xBEEF);
         vm.prank(nonAdmin);
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, nonAdmin));
+        vm.expectRevert(UUPSUpgradeable.NotAdmin.selector);
         verifier.revokeEnclave(enclaveAddr);
     }
 
@@ -661,29 +662,21 @@ contract TEEMLVerifierTest is Test {
         assertFalse(r.finalized, "result should not be finalized after failed reentrancy attack");
     }
 
-    // ─── NEW: Ownable2Step ──────────────────────────────────────────────────
+    // ─── NEW: Admin Transfer ──────────────────────────────────────────────
 
-    function test_ownershipTransfer_twoStep() public {
-        address newOwner = address(0xAE01);
+    function test_adminTransfer() public {
+        address newAdmin = address(0xAE01);
 
-        // Step 1: current owner initiates transfer
-        verifier.transferOwnership(newOwner);
-        // Owner hasn't changed yet
-        assertEq(verifier.owner(), admin);
-        assertEq(verifier.pendingOwner(), newOwner);
-
-        // Step 2: new owner accepts
-        vm.prank(newOwner);
-        verifier.acceptOwnership();
-        assertEq(verifier.owner(), newOwner);
-        assertEq(verifier.pendingOwner(), address(0));
+        // Admin changes immediately with changeAdmin
+        verifier.changeAdmin(newAdmin);
+        assertEq(verifier.admin(), newAdmin);
 
         // Old admin can no longer call admin functions
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, admin));
+        vm.expectRevert(UUPSUpgradeable.NotAdmin.selector);
         verifier.registerEnclave(address(0x9999), imageHash);
 
-        // New owner can call admin functions
-        vm.prank(newOwner);
+        // New admin can call admin functions
+        vm.prank(newAdmin);
         verifier.registerEnclave(address(0x9999), imageHash);
     }
 
@@ -1011,13 +1004,13 @@ contract TEEMLVerifierTest is Test {
 
     function test_setChallengeWindow_nonOwnerReverts() public {
         vm.prank(address(0x9999));
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, address(0x9999)));
+        vm.expectRevert(UUPSUpgradeable.NotAdmin.selector);
         verifier.setChallengeWindow(30 minutes);
     }
 
     function test_setDisputeWindow_nonOwnerReverts() public {
         vm.prank(address(0x9999));
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, address(0x9999)));
+        vm.expectRevert(UUPSUpgradeable.NotAdmin.selector);
         verifier.setDisputeWindow(48 hours);
     }
 

@@ -34,11 +34,34 @@ sol! {
     }
 }
 
+sol! {
+    #[sol(rpc)]
+    contract RemainderVerifier {
+        function admin() external view returns (address);
+        function timelock() external view returns (address);
+        function paused() external view returns (bool);
+        function implementation() external view returns (address);
+
+        function pause() external;
+        function unpause() external;
+        function changeAdmin(address newAdmin) external;
+        function setTimelock(address _timelock) external;
+
+        function registerDAGCircuit(bytes32 circuitHash, bytes calldata descData, string calldata name, bytes32 gensHash) external;
+        function deactivateCircuit(bytes32 circuitHash) external;
+        function reactivateCircuit(bytes32 circuitHash) external;
+        function deactivateDAGCircuit(bytes32 circuitHash) external;
+        function reactivateDAGCircuit(bytes32 circuitHash) external;
+
+        function getCircuitHashes() external view returns (bytes32[]);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // CLI definition
 // ---------------------------------------------------------------------------
 
-/// Admin CLI for TEEMLVerifier contract management.
+/// Admin CLI for TEEMLVerifier and RemainderVerifier contract management.
 #[derive(Parser, Debug)]
 #[command(name = "admin-cli", version, about)]
 struct Cli {
@@ -49,6 +72,10 @@ struct Cli {
     /// Contract address of the TEEMLVerifier.
     #[arg(long, env = "CONTRACT_ADDRESS")]
     contract: String,
+
+    /// Contract address of the RemainderVerifier (required for remainder-* commands).
+    #[arg(long, env = "REMAINDER_ADDRESS")]
+    remainder_address: Option<String>,
 
     /// Private key for write operations (hex, with or without 0x prefix).
     /// Not required for read-only commands like `status`.
@@ -114,6 +141,43 @@ enum Command {
 
     /// Accept pending ownership transfer (must be called by pending owner).
     AcceptOwnership,
+
+    // ----- RemainderVerifier commands -----
+    /// Print RemainderVerifier status: admin, timelock, paused, implementation.
+    RemainderStatus,
+
+    /// Pause the RemainderVerifier (admin only).
+    RemainderPause,
+
+    /// Unpause the RemainderVerifier (admin only).
+    RemainderUnpause,
+
+    /// Change the RemainderVerifier admin address.
+    RemainderChangeAdmin {
+        /// Address of the new admin.
+        new_admin: String,
+    },
+
+    /// Set the RemainderVerifier timelock address.
+    RemainderSetTimelock {
+        /// Address of the timelock contract.
+        timelock_address: String,
+    },
+
+    /// Deactivate a circuit in the RemainderVerifier.
+    RemainderDeactivateCircuit {
+        /// Circuit hash (bytes32 hex).
+        circuit_hash: String,
+    },
+
+    /// Reactivate a circuit in the RemainderVerifier.
+    RemainderReactivateCircuit {
+        /// Circuit hash (bytes32 hex).
+        circuit_hash: String,
+    },
+
+    /// List all registered circuit hashes in the RemainderVerifier.
+    RemainderListCircuits,
 }
 
 // ---------------------------------------------------------------------------
@@ -141,6 +205,29 @@ fn require_private_key(cli: &Cli) -> Result<&str> {
     cli.private_key
         .as_deref()
         .with_context(|| "write commands require --private-key")
+}
+
+fn require_remainder_address(cli: &Cli) -> Result<Address> {
+    let addr_str = cli
+        .remainder_address
+        .as_deref()
+        .with_context(|| "remainder-* commands require --remainder-address")?;
+    parse_address(addr_str)
+}
+
+/// Returns true if the command targets the RemainderVerifier contract.
+fn is_remainder_command(cmd: &Command) -> bool {
+    matches!(
+        cmd,
+        Command::RemainderStatus
+            | Command::RemainderPause
+            | Command::RemainderUnpause
+            | Command::RemainderChangeAdmin { .. }
+            | Command::RemainderSetTimelock { .. }
+            | Command::RemainderDeactivateCircuit { .. }
+            | Command::RemainderReactivateCircuit { .. }
+            | Command::RemainderListCircuits
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -200,6 +287,177 @@ async fn run_status(cli: &Cli) -> Result<()> {
         format_ether(bond)
     );
     println!("  remainderVerifier:  {verifier}");
+
+    Ok(())
+}
+
+async fn run_remainder_status(cli: &Cli) -> Result<()> {
+    let contract_addr = require_remainder_address(cli)?;
+    let rpc_url = cli.rpc_url.parse()?;
+
+    let provider = ProviderBuilder::new().connect_http(rpc_url);
+    let contract = RemainderVerifier::new(contract_addr, &provider);
+
+    let admin = contract
+        .admin()
+        .call()
+        .await
+        .context("admin() call failed")?;
+    let timelock = contract
+        .timelock()
+        .call()
+        .await
+        .context("timelock() call failed")?;
+    let is_paused = contract
+        .paused()
+        .call()
+        .await
+        .context("paused() call failed")?;
+    let impl_addr = contract
+        .implementation()
+        .call()
+        .await
+        .context("implementation() call failed")?;
+
+    println!("RemainderVerifier @ {contract_addr}");
+    println!("  admin:          {admin}");
+    println!("  timelock:       {timelock}");
+    println!("  paused:         {is_paused}");
+    println!("  implementation: {impl_addr}");
+
+    Ok(())
+}
+
+async fn run_remainder_list_circuits(cli: &Cli) -> Result<()> {
+    let contract_addr = require_remainder_address(cli)?;
+    let rpc_url = cli.rpc_url.parse()?;
+
+    let provider = ProviderBuilder::new().connect_http(rpc_url);
+    let contract = RemainderVerifier::new(contract_addr, &provider);
+
+    let hashes = contract
+        .getCircuitHashes()
+        .call()
+        .await
+        .context("getCircuitHashes() call failed")?;
+
+    println!("RemainderVerifier @ {contract_addr}");
+    println!("  registered circuits: {}", hashes.len());
+    for (i, h) in hashes.iter().enumerate() {
+        println!("  [{i}] {h}");
+    }
+
+    Ok(())
+}
+
+async fn run_remainder_write_command(cli: &Cli) -> Result<()> {
+    let pk_str = require_private_key(cli)?;
+    let contract_addr = require_remainder_address(cli)?;
+    let rpc_url: Url = cli.rpc_url.parse()?;
+
+    let signer: PrivateKeySigner = pk_str.parse().context("invalid private key")?;
+    let sender = signer.address();
+
+    let provider = ProviderBuilder::new()
+        .wallet(alloy::network::EthereumWallet::from(signer))
+        .connect_http(rpc_url);
+
+    let contract = RemainderVerifier::new(contract_addr, &provider);
+
+    match &cli.command {
+        Command::RemainderPause => {
+            println!("Pausing RemainderVerifier as {sender} ...");
+            if cli.dry_run {
+                let _gas = contract.pause().estimate_gas().await?;
+                println!("[dry-run] estimated gas: {_gas}");
+                return Ok(());
+            }
+            let receipt = contract.pause().send().await?.get_receipt().await?;
+            println!("tx: {}", receipt.transaction_hash);
+        }
+
+        Command::RemainderUnpause => {
+            println!("Unpausing RemainderVerifier as {sender} ...");
+            if cli.dry_run {
+                let _gas = contract.unpause().estimate_gas().await?;
+                println!("[dry-run] estimated gas: {_gas}");
+                return Ok(());
+            }
+            let receipt = contract.unpause().send().await?.get_receipt().await?;
+            println!("tx: {}", receipt.transaction_hash);
+        }
+
+        Command::RemainderChangeAdmin { new_admin } => {
+            let addr = parse_address(new_admin)?;
+            println!("Changing RemainderVerifier admin to {addr} ...");
+            if cli.dry_run {
+                let _gas = contract.changeAdmin(addr).estimate_gas().await?;
+                println!("[dry-run] estimated gas: {_gas}");
+                return Ok(());
+            }
+            let receipt = contract
+                .changeAdmin(addr)
+                .send()
+                .await?
+                .get_receipt()
+                .await?;
+            println!("tx: {}", receipt.transaction_hash);
+        }
+
+        Command::RemainderSetTimelock { timelock_address } => {
+            let addr = parse_address(timelock_address)?;
+            println!("Setting RemainderVerifier timelock to {addr} ...");
+            if cli.dry_run {
+                let _gas = contract.setTimelock(addr).estimate_gas().await?;
+                println!("[dry-run] estimated gas: {_gas}");
+                return Ok(());
+            }
+            let receipt = contract
+                .setTimelock(addr)
+                .send()
+                .await?
+                .get_receipt()
+                .await?;
+            println!("tx: {}", receipt.transaction_hash);
+        }
+
+        Command::RemainderDeactivateCircuit { circuit_hash } => {
+            let hash = parse_b256(circuit_hash)?;
+            println!("Deactivating circuit {hash} ...");
+            if cli.dry_run {
+                // Try DAG variant first, fall back to legacy
+                let _gas = contract.deactivateDAGCircuit(hash).estimate_gas().await?;
+                println!("[dry-run] estimated gas: {_gas}");
+                return Ok(());
+            }
+            let receipt = contract
+                .deactivateDAGCircuit(hash)
+                .send()
+                .await?
+                .get_receipt()
+                .await?;
+            println!("tx: {}", receipt.transaction_hash);
+        }
+
+        Command::RemainderReactivateCircuit { circuit_hash } => {
+            let hash = parse_b256(circuit_hash)?;
+            println!("Reactivating circuit {hash} ...");
+            if cli.dry_run {
+                let _gas = contract.reactivateDAGCircuit(hash).estimate_gas().await?;
+                println!("[dry-run] estimated gas: {_gas}");
+                return Ok(());
+            }
+            let receipt = contract
+                .reactivateDAGCircuit(hash)
+                .send()
+                .await?
+                .get_receipt()
+                .await?;
+            println!("tx: {}", receipt.transaction_hash);
+        }
+
+        _ => bail!("unexpected command in remainder write handler"),
+    }
 
     Ok(())
 }
@@ -366,6 +624,10 @@ async fn run_write_command(cli: &Cli) -> Result<()> {
         Command::Status => {
             bail!("status is handled separately");
         }
+
+        _ => {
+            bail!("command is handled separately");
+        }
     }
 
     Ok(())
@@ -381,6 +643,9 @@ async fn main() -> Result<()> {
 
     match &cli.command {
         Command::Status => run_status(&cli).await,
+        Command::RemainderStatus => run_remainder_status(&cli).await,
+        Command::RemainderListCircuits => run_remainder_list_circuits(&cli).await,
+        cmd if is_remainder_command(cmd) => run_remainder_write_command(&cli).await,
         _ => run_write_command(&cli).await,
     }
 }
@@ -739,5 +1004,272 @@ mod tests {
 
         let pk = require_private_key(&cli).unwrap();
         assert!(pk.starts_with("0x"));
+    }
+
+    // ----- RemainderVerifier command tests -----
+
+    #[test]
+    fn test_remainder_status_command() {
+        let cli = try_parse(&[
+            "admin-cli",
+            "--rpc-url",
+            "http://localhost:8545",
+            "--contract",
+            "0x0000000000000000000000000000000000000001",
+            "--remainder-address",
+            "0x0000000000000000000000000000000000000002",
+            "remainder-status",
+        ])
+        .unwrap();
+
+        assert!(matches!(cli.command, Command::RemainderStatus));
+        assert_eq!(
+            cli.remainder_address.as_deref(),
+            Some("0x0000000000000000000000000000000000000002")
+        );
+    }
+
+    #[test]
+    fn test_remainder_pause_command() {
+        let cli = try_parse(&[
+            "admin-cli",
+            "--rpc-url",
+            "http://localhost:8545",
+            "--contract",
+            "0x0000000000000000000000000000000000000001",
+            "--remainder-address",
+            "0x0000000000000000000000000000000000000002",
+            "--private-key",
+            "0xaa",
+            "remainder-pause",
+        ])
+        .unwrap();
+
+        assert!(matches!(cli.command, Command::RemainderPause));
+    }
+
+    #[test]
+    fn test_remainder_unpause_command() {
+        let cli = try_parse(&[
+            "admin-cli",
+            "--rpc-url",
+            "http://localhost:8545",
+            "--contract",
+            "0x0000000000000000000000000000000000000001",
+            "--remainder-address",
+            "0x0000000000000000000000000000000000000002",
+            "--private-key",
+            "0xaa",
+            "remainder-unpause",
+        ])
+        .unwrap();
+
+        assert!(matches!(cli.command, Command::RemainderUnpause));
+    }
+
+    #[test]
+    fn test_remainder_change_admin_command() {
+        let cli = try_parse(&[
+            "admin-cli",
+            "--rpc-url",
+            "http://localhost:8545",
+            "--contract",
+            "0x0000000000000000000000000000000000000001",
+            "--remainder-address",
+            "0x0000000000000000000000000000000000000002",
+            "--private-key",
+            "0xaa",
+            "remainder-change-admin",
+            "0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+        ])
+        .unwrap();
+
+        match &cli.command {
+            Command::RemainderChangeAdmin { new_admin } => {
+                assert_eq!(new_admin, "0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB");
+            }
+            _ => panic!("expected RemainderChangeAdmin"),
+        }
+    }
+
+    #[test]
+    fn test_remainder_set_timelock_command() {
+        let cli = try_parse(&[
+            "admin-cli",
+            "--rpc-url",
+            "http://localhost:8545",
+            "--contract",
+            "0x0000000000000000000000000000000000000001",
+            "--remainder-address",
+            "0x0000000000000000000000000000000000000002",
+            "--private-key",
+            "0xaa",
+            "remainder-set-timelock",
+            "0xCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+        ])
+        .unwrap();
+
+        match &cli.command {
+            Command::RemainderSetTimelock { timelock_address } => {
+                assert_eq!(
+                    timelock_address,
+                    "0xCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+                );
+            }
+            _ => panic!("expected RemainderSetTimelock"),
+        }
+    }
+
+    #[test]
+    fn test_remainder_deactivate_circuit_command() {
+        let cli = try_parse(&[
+            "admin-cli",
+            "--rpc-url",
+            "http://localhost:8545",
+            "--contract",
+            "0x0000000000000000000000000000000000000001",
+            "--remainder-address",
+            "0x0000000000000000000000000000000000000002",
+            "--private-key",
+            "0xaa",
+            "remainder-deactivate-circuit",
+            "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        ])
+        .unwrap();
+
+        match &cli.command {
+            Command::RemainderDeactivateCircuit { circuit_hash } => {
+                assert_eq!(
+                    circuit_hash,
+                    "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                );
+            }
+            _ => panic!("expected RemainderDeactivateCircuit"),
+        }
+    }
+
+    #[test]
+    fn test_remainder_reactivate_circuit_command() {
+        let cli = try_parse(&[
+            "admin-cli",
+            "--rpc-url",
+            "http://localhost:8545",
+            "--contract",
+            "0x0000000000000000000000000000000000000001",
+            "--remainder-address",
+            "0x0000000000000000000000000000000000000002",
+            "--private-key",
+            "0xaa",
+            "remainder-reactivate-circuit",
+            "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        ])
+        .unwrap();
+
+        match &cli.command {
+            Command::RemainderReactivateCircuit { circuit_hash } => {
+                assert_eq!(
+                    circuit_hash,
+                    "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                );
+            }
+            _ => panic!("expected RemainderReactivateCircuit"),
+        }
+    }
+
+    #[test]
+    fn test_remainder_list_circuits_command() {
+        let cli = try_parse(&[
+            "admin-cli",
+            "--rpc-url",
+            "http://localhost:8545",
+            "--contract",
+            "0x0000000000000000000000000000000000000001",
+            "--remainder-address",
+            "0x0000000000000000000000000000000000000002",
+            "remainder-list-circuits",
+        ])
+        .unwrap();
+
+        assert!(matches!(cli.command, Command::RemainderListCircuits));
+    }
+
+    #[test]
+    fn test_remainder_address_optional_for_tee_commands() {
+        // remainder-address should NOT be required for TEE commands
+        let cli = try_parse(&[
+            "admin-cli",
+            "--rpc-url",
+            "http://localhost:8545",
+            "--contract",
+            "0x0000000000000000000000000000000000000001",
+            "status",
+        ])
+        .unwrap();
+
+        assert!(cli.remainder_address.is_none());
+        assert!(matches!(cli.command, Command::Status));
+    }
+
+    #[test]
+    fn test_require_remainder_address_missing() {
+        let cli = try_parse(&[
+            "admin-cli",
+            "--rpc-url",
+            "http://localhost:8545",
+            "--contract",
+            "0x0000000000000000000000000000000000000001",
+            "remainder-status",
+        ])
+        .unwrap();
+
+        let result = require_remainder_address(&cli);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_require_remainder_address_present() {
+        let cli = try_parse(&[
+            "admin-cli",
+            "--rpc-url",
+            "http://localhost:8545",
+            "--contract",
+            "0x0000000000000000000000000000000000000001",
+            "--remainder-address",
+            "0x0000000000000000000000000000000000000002",
+            "remainder-status",
+        ])
+        .unwrap();
+
+        let addr = require_remainder_address(&cli).unwrap();
+        assert_eq!(
+            format!("{addr}"),
+            "0x0000000000000000000000000000000000000002"
+        );
+    }
+
+    #[test]
+    fn test_is_remainder_command() {
+        assert!(is_remainder_command(&Command::RemainderStatus));
+        assert!(is_remainder_command(&Command::RemainderPause));
+        assert!(is_remainder_command(&Command::RemainderUnpause));
+        assert!(is_remainder_command(&Command::RemainderChangeAdmin {
+            new_admin: "0x00".to_string(),
+        }));
+        assert!(is_remainder_command(&Command::RemainderSetTimelock {
+            timelock_address: "0x00".to_string(),
+        }));
+        assert!(is_remainder_command(&Command::RemainderDeactivateCircuit {
+            circuit_hash: "0x00".to_string(),
+        }));
+        assert!(is_remainder_command(&Command::RemainderReactivateCircuit {
+            circuit_hash: "0x00".to_string(),
+        }));
+        assert!(is_remainder_command(&Command::RemainderListCircuits));
+
+        // TEE commands should NOT be remainder commands
+        assert!(!is_remainder_command(&Command::Status));
+        assert!(!is_remainder_command(&Command::Pause));
+        assert!(!is_remainder_command(&Command::Unpause));
+        assert!(!is_remainder_command(&Command::AcceptOwnership));
     }
 }

@@ -340,6 +340,45 @@ async fn cmd_submit(
         feats.len(),
     );
 
+    // 3a. Archive the submission (best-effort, non-blocking)
+    if !config.proof_archive_dir.is_empty() {
+        let archive_dir = config.proof_archive_dir.clone();
+        let archive_entry = tee_operator::proof_archive::ProofArchiveEntry {
+            id: request_id.to_string(),
+            archived_at: format!(
+                "{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs()
+            ),
+            result_id: format!("0x{}", hex::encode(tx_hash)),
+            model_hash: response.model_hash.clone(),
+            input_hash: response.input_hash.clone(),
+            result_hash: response.result_hash.clone(),
+            result: response.result.clone(),
+            attestation: response.attestation.clone(),
+            features: feats.clone(),
+            chain_id: 0,
+            enclave_address: String::new(),
+            proof_path: None,
+            disputed: false,
+            finalized: false,
+        };
+        tokio::spawn(async move {
+            match tee_operator::proof_archive::ProofArchive::new(&archive_dir).await {
+                Ok(archive) => {
+                    if let Err(e) = archive.store(&archive_entry).await {
+                        tracing::warn!("Failed to archive proof: {}", e);
+                    } else {
+                        tracing::debug!("Proof archived: {}", archive_entry.id);
+                    }
+                }
+                Err(e) => tracing::warn!("Failed to init proof archive: {}", e),
+            }
+        });
+    }
+
     // 4. Trigger proof pre-computation (best-effort, uses warm prover if PROVER_URL is set)
     let proof_mgr = ProofManager::with_config(
         &config.precompute_bin,
@@ -551,6 +590,21 @@ async fn cmd_watch(config: &Config, metrics_port: u16, dry_run: bool) -> anyhow:
     // Semaphore to limit concurrent proof submissions (T215)
     let proof_semaphore = Arc::new(tokio::sync::Semaphore::new(10));
 
+    // Initialize local proof pre-verifier (if circuit descriptions are available)
+    let pre_verifier: Option<Arc<tee_operator::verify::ProofPreVerifier>> =
+        if !config.circuit_desc_dir.is_empty() {
+            tracing::info!(
+                circuit_desc_dir = %config.circuit_desc_dir,
+                "Local proof pre-verification enabled"
+            );
+            Some(Arc::new(tee_operator::verify::ProofPreVerifier::new(
+                &config.circuit_desc_dir,
+            )))
+        } else {
+            tracing::debug!("Local proof pre-verification disabled (no CIRCUIT_DESC_DIR)");
+            None
+        };
+
     let shutdown = Arc::new(ShutdownState::new());
 
     // Initialize metrics state before shutdown handler so it can be marked
@@ -726,13 +780,14 @@ async fn cmd_watch(config: &Config, metrics_port: u16, dry_run: bool) -> anyhow:
                             let am = alert_manager.clone();
                             let ms = metrics_state.clone();
                             let cb = chain_cb.clone();
+                            let pv = pre_verifier.clone();
                             shutdown.track_task_start();
                             let sd = shutdown.clone();
                             let mut cancel_rx = shutdown.subscribe_cancel();
                             tokio::spawn(
                                 async move {
                                     tokio::select! {
-                                        _ = handle_challenge(&chain, &pm, rid, &am, &ms, &cb) => {},
+                                        _ = handle_challenge(&chain, &pm, rid, &am, &ms, &cb, pv.as_deref()) => {},
                                         _ = cancel_rx.changed() => {
                                             tracing::info!(
                                                 result_id = %rid,
@@ -1017,12 +1072,48 @@ async fn handle_challenge(
     alert_manager: &AlertManager,
     metrics: &metrics::MetricsState,
     chain_cb: &CircuitBreaker,
+    pre_verifier: Option<&tee_operator::verify::ProofPreVerifier>,
 ) {
     let rid_hex = format!("0x{}", hex::encode(result_id));
+
+    // Local pre-verification helper: returns true if proof should be submitted,
+    // false if pre-verification failed (bad proof, don't waste gas).
+    // Converts the binary crate's StoredProof to the library crate's StoredProof
+    // since they are compiled as separate crate types.
+    let pre_verify_proof = |proof: &store::StoredProof, rid: &str| -> bool {
+        if let Some(pv) = pre_verifier {
+            let lib_proof = tee_operator::store::StoredProof {
+                proof_hex: proof.proof_hex.clone(),
+                circuit_hash: proof.circuit_hash.clone(),
+                public_inputs_hex: proof.public_inputs_hex.clone(),
+                gens_hex: proof.gens_hex.clone(),
+            };
+            match pv.pre_verify(&lib_proof) {
+                tee_operator::verify::PreVerifyResult::Verified => {
+                    tracing::info!("Pre-verification passed for {}", rid);
+                    true
+                }
+                tee_operator::verify::PreVerifyResult::Failed(reason) => {
+                    tracing::error!("Pre-verification FAILED for {}: {}", rid, reason);
+                    false
+                }
+                tee_operator::verify::PreVerifyResult::Skipped(reason) => {
+                    tracing::debug!("Pre-verification skipped for {}: {}", rid, reason);
+                    true
+                }
+            }
+        } else {
+            true
+        }
+    };
 
     let resolve_result = match proof_mgr.read_proof(&rid_hex) {
         Ok(Some(proof)) => {
             tracing::info!("Found pre-computed proof for {}", rid_hex);
+            if !pre_verify_proof(&proof, &rid_hex) {
+                metrics.record_dispute_failed();
+                return;
+            }
             resolve_with_proof(chain, result_id, &proof, metrics).await
         }
         Ok(None) => {
@@ -1033,6 +1124,10 @@ async fn handle_challenge(
             match proof_mgr.wait_for_proof(&rid_hex, 60).await {
                 Ok(true) => {
                     if let Ok(Some(proof)) = proof_mgr.read_proof(&rid_hex) {
+                        if !pre_verify_proof(&proof, &rid_hex) {
+                            metrics.record_dispute_failed();
+                            return;
+                        }
                         resolve_with_proof(chain, result_id, &proof, metrics).await
                     } else {
                         Err(anyhow::anyhow!("Proof disappeared after wait"))

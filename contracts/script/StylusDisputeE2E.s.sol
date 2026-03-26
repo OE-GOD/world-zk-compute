@@ -90,7 +90,13 @@ contract StylusDisputeE2E is Script {
         remainder.registerDAGCircuit(fix.circuitHash, fix.descData, "XGBoost-Phase1a", fix.gensHash);
         remainder.setDAGStylusVerifier(fix.circuitHash, k.stylusVerifierAddr);
 
-        tee = new TEEMLVerifier(k.deployer, address(remainder));
+        {
+            TEEMLVerifier teeImpl = new TEEMLVerifier();
+            UUPSProxy teeProxy = new UUPSProxy(
+                address(teeImpl), abi.encodeCall(TEEMLVerifier.initialize, (k.deployer, address(remainder)))
+            );
+            tee = TEEMLVerifier(payable(address(teeProxy)));
+        }
         tee.setUseStylusVerifier(true);
         console.log("  TEEMLVerifier:", address(tee));
 

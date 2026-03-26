@@ -66,8 +66,15 @@ contract StylusSepoliaDeploy is Script {
             console.log("  Input count:", ecGroth16InputCount);
         }
 
-        // Deploy TEEMLVerifier pointing to RemainderVerifier with Stylus enabled
-        TEEMLVerifier teeVerifier = new TEEMLVerifier(vm.addr(deployerKey), address(verifier));
+        // Deploy TEEMLVerifier (UUPS proxy) pointing to RemainderVerifier with Stylus enabled
+        TEEMLVerifier teeVerifier;
+        {
+            TEEMLVerifier teeImpl = new TEEMLVerifier();
+            UUPSProxy teeProxy = new UUPSProxy(
+                address(teeImpl), abi.encodeCall(TEEMLVerifier.initialize, (vm.addr(deployerKey), address(verifier)))
+            );
+            teeVerifier = TEEMLVerifier(payable(address(teeProxy)));
+        }
         teeVerifier.setUseStylusVerifier(true);
         console.log("TEEMLVerifier deployed at:", address(teeVerifier));
         console.log("  Stylus routing: enabled");

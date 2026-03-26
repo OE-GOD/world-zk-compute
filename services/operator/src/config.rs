@@ -2283,6 +2283,8 @@ rpc_url = "https://rpc.example.com"
             metrics_port: 9090,
             metrics_bind_addr: "127.0.0.1".to_string(),
             dry_run: false,
+            circuit_desc_dir: String::new(),
+            proof_archive_dir: String::new(),
         }
     }
 

@@ -43,129 +43,143 @@ import "../src/tee/TEEMLVerifier.sol";
 contract DeployWorldChainMainnet is Script {
     uint256 constant EXPECTED_CHAIN_ID = 480;
 
+    struct DeployParams {
+        uint256 deployerKey;
+        address deployer;
+        address adminAddr;
+        address stakingToken;
+        address feeRecipient;
+        uint256 minStake;
+        uint256 slashBps;
+        bool skipCircuit;
+    }
+
+    struct Contracts {
+        RemainderVerifier remainder;
+        ProgramRegistry programRegistry;
+        ProverReputation reputation;
+        ProverRegistry proverRegistry;
+        ExecutionEngine engine;
+        TEEMLVerifier teeVerifier;
+    }
+
     function run() external {
-        // ── Required Parameters ──────────────────────────────────────────────
-        uint256 deployerKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
-        address deployer = vm.addr(deployerKey);
-        address adminAddr = vm.envAddress("ADMIN_ADDRESS");
-        address stakingToken = vm.envAddress("STAKING_TOKEN");
-        address feeRecipient = vm.envAddress("FEE_RECIPIENT");
+        DeployParams memory p;
+        p.deployerKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
+        p.deployer = vm.addr(p.deployerKey);
+        p.adminAddr = vm.envAddress("ADMIN_ADDRESS");
+        p.stakingToken = vm.envAddress("STAKING_TOKEN");
+        p.feeRecipient = vm.envAddress("FEE_RECIPIENT");
+        p.minStake = vm.envOr("MIN_STAKE", uint256(100 ether));
+        p.slashBps = vm.envOr("SLASH_BPS", uint256(500));
+        p.skipCircuit = vm.envOr("SKIP_CIRCUIT_REGISTRATION", false);
 
-        // ── Optional Parameters ──────────────────────────────────────────────
-        uint256 minStake = vm.envOr("MIN_STAKE", uint256(100 ether));
-        uint256 slashBps = vm.envOr("SLASH_BPS", uint256(500));
-        bool skipCircuit = vm.envOr("SKIP_CIRCUIT_REGISTRATION", false);
+        _validateParams(p);
 
-        // ── Safety Checks ────────────────────────────────────────────────────
+        vm.startBroadcast(p.deployerKey);
+
+        Contracts memory c = _deployAll(p);
+        _wireContracts(c);
+        _optionalSetup(c, p);
+        _transferOwnership(c, p.adminAddr);
+
+        vm.stopBroadcast();
+
+        _printSummary(c);
+    }
+
+    function _validateParams(DeployParams memory p) private view {
         require(block.chainid == EXPECTED_CHAIN_ID, "Expected World Chain Mainnet (chainId 480)");
-        require(adminAddr != address(0), "ADMIN_ADDRESS must be set for mainnet");
-        require(adminAddr != deployer, "ADMIN_ADDRESS must differ from deployer (use multisig/timelock)");
-        require(stakingToken != address(0), "STAKING_TOKEN must be set for mainnet");
-        require(feeRecipient != address(0), "FEE_RECIPIENT must be set for mainnet");
+        require(p.adminAddr != address(0), "ADMIN_ADDRESS must be set for mainnet");
+        require(p.adminAddr != p.deployer, "ADMIN_ADDRESS must differ from deployer (use multisig/timelock)");
+        require(p.stakingToken != address(0), "STAKING_TOKEN must be set for mainnet");
+        require(p.feeRecipient != address(0), "FEE_RECIPIENT must be set for mainnet");
 
-        // Verify staking token has code deployed
-        uint256 tokenCodeSize;
-        assembly {
-            tokenCodeSize := extcodesize(stakingToken)
-        }
-        require(tokenCodeSize > 0, "STAKING_TOKEN has no code deployed");
+        require(p.stakingToken.code.length > 0, "STAKING_TOKEN has no code deployed");
 
         console.log("=== WORLD CHAIN MAINNET DEPLOYMENT ===");
         console.log("Chain ID:       ", block.chainid);
-        console.log("Deployer:       ", deployer);
-        console.log("Admin (owner):  ", adminAddr);
-        console.log("Fee Recipient:  ", feeRecipient);
-        console.log("Staking Token:  ", stakingToken);
-        console.log("Min Stake:      ", minStake);
-        console.log("Slash BPS:      ", slashBps);
+        console.log("Deployer:       ", p.deployer);
+        console.log("Admin (owner):  ", p.adminAddr);
+        console.log("Fee Recipient:  ", p.feeRecipient);
+        console.log("Staking Token:  ", p.stakingToken);
+        console.log("Min Stake:      ", p.minStake);
+        console.log("Slash BPS:      ", p.slashBps);
         console.log("");
+    }
 
-        vm.startBroadcast(deployerKey);
+    function _deployAll(DeployParams memory p) private returns (Contracts memory c) {
+        c.remainder = _deployRemainder(p.deployer);
+        console.log("[1/6] RemainderVerifier:   ", address(c.remainder));
 
-        // ── 1. Deploy RemainderVerifier ──────────────────────────────────────
-        RemainderVerifier remainder = _deployRemainder(deployer);
-        console.log("[1/6] RemainderVerifier:   ", address(remainder));
+        c.programRegistry = new ProgramRegistry(p.deployer);
+        console.log("[2/6] ProgramRegistry:     ", address(c.programRegistry));
 
-        // ── 2. Deploy ProgramRegistry ────────────────────────────────────────
-        ProgramRegistry programRegistry = new ProgramRegistry(deployer);
-        console.log("[2/6] ProgramRegistry:     ", address(programRegistry));
+        c.reputation = new ProverReputation();
+        console.log("[3/6] ProverReputation:    ", address(c.reputation));
 
-        // ── 3. Deploy ProverReputation ───────────────────────────────────────
-        ProverReputation reputation = new ProverReputation();
-        console.log("[3/6] ProverReputation:    ", address(reputation));
+        c.proverRegistry = new ProverRegistry(p.stakingToken, p.minStake, p.slashBps);
+        console.log("[4/6] ProverRegistry:      ", address(c.proverRegistry));
 
-        // ── 4. Deploy ProverRegistry ─────────────────────────────────────────
-        ProverRegistry proverRegistry = new ProverRegistry(stakingToken, minStake, slashBps);
-        console.log("[4/6] ProverRegistry:      ", address(proverRegistry));
+        c.engine = new ExecutionEngine(p.deployer, address(c.programRegistry), address(c.remainder), p.feeRecipient);
+        console.log("[5/6] ExecutionEngine:     ", address(c.engine));
 
-        // ── 5. Deploy ExecutionEngine ────────────────────────────────────────
-        ExecutionEngine engine =
-            new ExecutionEngine(deployer, address(programRegistry), address(remainder), feeRecipient);
-        console.log("[5/6] ExecutionEngine:     ", address(engine));
+        c.teeVerifier = _deployTEE(p.deployer, address(c.remainder));
+        console.log("[6/6] TEEMLVerifier:       ", address(c.teeVerifier));
+    }
 
-        // ── 6. Deploy TEEMLVerifier ──────────────────────────────────────────
-        TEEMLVerifier teeVerifier = new TEEMLVerifier(deployer, address(remainder));
-        console.log("[6/6] TEEMLVerifier:       ", address(teeVerifier));
-
-        // ── Wiring ───────────────────────────────────────────────────────────
+    function _wireContracts(Contracts memory c) private {
         console.log("");
         console.log("Wiring contracts...");
 
-        engine.setReputation(address(reputation));
-        reputation.authorizeReporter(address(engine));
+        c.engine.setReputation(address(c.reputation));
+        c.reputation.authorizeReporter(address(c.engine));
         console.log("  Engine <-> Reputation: linked");
 
-        proverRegistry.setSlasher(address(engine), true);
+        c.proverRegistry.setSlasher(address(c.engine), true);
         console.log("  Engine -> ProverRegistry: slasher authorized");
+    }
 
-        // ── Optional: Register DAG circuit ───────────────────────────────────
-        if (!skipCircuit) {
-            _registerDAGCircuit(remainder);
+    function _optionalSetup(Contracts memory c, DeployParams memory p) private {
+        if (!p.skipCircuit) {
+            _registerDAGCircuit(c.remainder);
         } else {
             console.log("  Skipping DAG circuit registration");
         }
 
-        // ── Optional: Register TEE enclave ───────────────────────────────────
         address enclaveKey = vm.envOr("ENCLAVE_KEY", address(0));
         if (enclaveKey != address(0)) {
             bytes32 imageHash = vm.envOr("ENCLAVE_IMAGE_HASH", bytes32(0));
-            teeVerifier.registerEnclave(enclaveKey, imageHash);
+            c.teeVerifier.registerEnclave(enclaveKey, imageHash);
             console.log("  Enclave registered:     ", enclaveKey);
         }
+    }
 
-        // ── Transfer Ownership (2-step) ──────────────────────────────────────
+    function _transferOwnership(Contracts memory c, address adminAddr) private {
         console.log("");
         console.log("Transferring ownership to admin...");
 
-        remainder.changeAdmin(adminAddr);
-        programRegistry.transferOwnership(adminAddr);
-        reputation.transferOwnership(adminAddr);
-        proverRegistry.transferOwnership(adminAddr);
-        engine.transferOwnership(adminAddr);
-        teeVerifier.transferOwnership(adminAddr);
+        c.remainder.changeAdmin(adminAddr);
+        c.programRegistry.transferOwnership(adminAddr);
+        c.reputation.transferOwnership(adminAddr);
+        c.proverRegistry.transferOwnership(adminAddr);
+        c.engine.transferOwnership(adminAddr);
+        c.teeVerifier.changeAdmin(adminAddr);
 
         console.log("  Ownership transfer initiated for all 6 contracts");
-        console.log("  Admin must call acceptOwnership() on each contract:");
-        console.log("    - RemainderVerifier:  ", address(remainder));
-        console.log("    - ProgramRegistry:    ", address(programRegistry));
-        console.log("    - ProverReputation:   ", address(reputation));
-        console.log("    - ProverRegistry:     ", address(proverRegistry));
-        console.log("    - ExecutionEngine:    ", address(engine));
-        console.log("    - TEEMLVerifier:      ", address(teeVerifier));
+    }
 
-        vm.stopBroadcast();
-
-        // ── Summary ──────────────────────────────────────────────────────────
+    function _printSummary(Contracts memory c) private pure {
         console.log("");
         console.log("=== WORLD CHAIN MAINNET DEPLOYMENT COMPLETE ===");
         console.log("");
         console.log("Contract Addresses (save these!):");
-        console.log("  RemainderVerifier:", address(remainder));
-        console.log("  ProgramRegistry:  ", address(programRegistry));
-        console.log("  ProverReputation: ", address(reputation));
-        console.log("  ProverRegistry:   ", address(proverRegistry));
-        console.log("  ExecutionEngine:  ", address(engine));
-        console.log("  TEEMLVerifier:    ", address(teeVerifier));
+        console.log("  RemainderVerifier:", address(c.remainder));
+        console.log("  ProgramRegistry:  ", address(c.programRegistry));
+        console.log("  ProverReputation: ", address(c.reputation));
+        console.log("  ProverRegistry:   ", address(c.proverRegistry));
+        console.log("  ExecutionEngine:  ", address(c.engine));
+        console.log("  TEEMLVerifier:    ", address(c.teeVerifier));
         console.log("");
         console.log("Post-deployment checklist:");
         console.log("  1. Admin calls acceptOwnership() on all 6 contracts");
@@ -183,7 +197,17 @@ contract DeployWorldChainMainnet is Script {
         bytes memory gensHex = vm.parseJsonBytes(json, ".gens_hex");
         bytes32 circuitHash = vm.parseJsonBytes32(json, ".circuit_hash_raw");
 
-        GKRDAGVerifier.DAGCircuitDescription memory desc;
+        GKRDAGVerifier.DAGCircuitDescription memory desc = _parseDAGDesc(json);
+
+        console.log("  DAG fixture loaded:");
+        console.log("    Compute layers:", desc.numComputeLayers);
+        console.log("    Input layers:  ", desc.numInputLayers);
+
+        verifier.registerDAGCircuit(circuitHash, abi.encode(desc), "XGBoost-Phase1a", keccak256(gensHex));
+        console.log("  DAG circuit registered (hash:", vm.toString(circuitHash), ")");
+    }
+
+    function _parseDAGDesc(string memory json) private pure returns (GKRDAGVerifier.DAGCircuitDescription memory desc) {
         desc.numComputeLayers = vm.parseJsonUint(json, ".dag_circuit_description.numComputeLayers");
         desc.numInputLayers = vm.parseJsonUint(json, ".dag_circuit_description.numInputLayers");
         desc.layerTypes = _parseUint8Array(json, ".dag_circuit_description.layerTypes");
@@ -197,15 +221,6 @@ contract DeployWorldChainMainnet is Script {
         desc.oracleProductOffsets = vm.parseJsonUintArray(json, ".dag_circuit_description.oracleProductOffsets");
         desc.oracleResultIdxs = vm.parseJsonUintArray(json, ".dag_circuit_description.oracleResultIdxs");
         desc.oracleExprCoeffs = _parseUint256Array(json, ".dag_circuit_description.oracleExprCoeffs");
-
-        console.log("  DAG fixture loaded:");
-        console.log("    Compute layers:", desc.numComputeLayers);
-        console.log("    Input layers:  ", desc.numInputLayers);
-
-        bytes32 gensHash = keccak256(gensHex);
-        bytes memory descData = abi.encode(desc);
-        verifier.registerDAGCircuit(circuitHash, descData, "XGBoost-Phase1a", gensHash);
-        console.log("  DAG circuit registered (hash:", vm.toString(circuitHash), ")");
     }
 
     // ── Deployment Helpers ──────────────────────────────────────────────────
@@ -214,6 +229,13 @@ contract DeployWorldChainMainnet is Script {
         RemainderVerifier impl = new RemainderVerifier();
         UUPSProxy proxy = new UUPSProxy(address(impl), abi.encodeCall(RemainderVerifier.initialize, (admin)));
         return RemainderVerifier(address(proxy));
+    }
+
+    function _deployTEE(address admin, address remainderAddr) private returns (TEEMLVerifier) {
+        TEEMLVerifier impl = new TEEMLVerifier();
+        UUPSProxy proxy =
+            new UUPSProxy(address(impl), abi.encodeCall(TEEMLVerifier.initialize, (admin, remainderAddr)));
+        return TEEMLVerifier(payable(address(proxy)));
     }
 
     // ── Parsing Helpers ──────────────────────────────────────────────────────

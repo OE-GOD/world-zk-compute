@@ -8,6 +8,7 @@ import "../src/ProverReputation.sol";
 import "../src/ExecutionEngine.sol";
 import "../src/mocks/MockRiscZeroVerifier.sol";
 import "../src/tee/TEEMLVerifier.sol";
+import {UUPSProxy} from "../src/Upgradeable.sol";
 
 /// @dev Minimal ERC20 for ProverRegistry staking in local deployments
 contract DeployToken {
@@ -105,8 +106,15 @@ contract DeployFullStack is Script {
             new ExecutionEngine(deployer, address(programRegistry), address(mockVerifier), feeRecipient);
         console.log("[5/7] ExecutionEngine:     ", address(engine));
 
-        // ── 6. Deploy TEEMLVerifier ────────────────────────────────────────────
-        TEEMLVerifier teeVerifier = new TEEMLVerifier(deployer, remainderAddr);
+        // ── 6. Deploy TEEMLVerifier (UUPS proxy) ──────────────────────────────
+        TEEMLVerifier teeVerifier;
+        {
+            TEEMLVerifier teeImpl = new TEEMLVerifier();
+            UUPSProxy teeProxy = new UUPSProxy(
+                address(teeImpl), abi.encodeCall(TEEMLVerifier.initialize, (deployer, remainderAddr))
+            );
+            teeVerifier = TEEMLVerifier(payable(address(teeProxy)));
+        }
         console.log("[6/7] TEEMLVerifier:       ", address(teeVerifier));
 
         // ── 7. Wire contracts together ─────────────────────────────────────────

@@ -7,6 +7,7 @@ import "../src/ExecutionEngine.sol";
 import "../src/ProgramRegistry.sol";
 import "../src/mocks/MockRiscZeroVerifier.sol";
 import {IProofVerifier} from "../src/IProofVerifier.sol";
+import {DeployTEEMLVerifierHelper} from "./helpers/DeployTEEMLVerifier.sol";
 
 /// @dev Mock RemainderVerifier that returns a configurable result for verifyDAGProof
 contract GasMockRemainderVerifier {
@@ -44,7 +45,7 @@ contract MockCallbackForGas is IExecutionCallback {
 ///
 ///         Run with:  forge test --match-contract GasProfileTest -vv --gas-report
 ///         Snapshot:  forge snapshot --match-contract GasProfileTest
-contract GasProfileTest is Test {
+contract GasProfileTest is Test, DeployTEEMLVerifierHelper {
     // ========================================================================
     // TEEMLVerifier state
     // ========================================================================
@@ -93,7 +94,7 @@ contract GasProfileTest is Test {
         // --- TEEMLVerifier setup ---
         enclaveAddr = vm.addr(enclavePrivateKey);
         mockRemainderVerifier = new GasMockRemainderVerifier();
-        teeVerifier = new TEEMLVerifier(admin, address(mockRemainderVerifier));
+        teeVerifier = _deployTEEMLVerifier(admin, address(mockRemainderVerifier));
 
         // Pre-register enclave (most tests need it)
         teeVerifier.registerEnclave(enclaveAddr, imageHash);

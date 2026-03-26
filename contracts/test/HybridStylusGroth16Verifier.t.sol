@@ -7,8 +7,8 @@ import "../src/remainder/RemainderVerifier.sol";
 import "../src/remainder/GKRDAGVerifier.sol";
 import "../src/tee/TEEMLVerifier.sol";
 import {UUPSUpgradeable, UUPSProxy} from "../src/Upgradeable.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {DeployRemainderVerifierHelper} from "./helpers/DeployRemainderVerifier.sol";
+import {DeployTEEMLVerifierHelper} from "./helpers/DeployTEEMLVerifier.sol";
 
 /// @dev Mock Stylus verifier that returns configurable results for hybrid mode
 contract MockStylusHybridVerifier {
@@ -581,7 +581,7 @@ contract HybridStylusGroth16VerifierTest is Test {
 // TEST: TEEMLVerifier hybrid routing
 // =============================================================================
 
-contract TEEMLVerifierHybridTest is Test {
+contract TEEMLVerifierHybridTest is Test, DeployTEEMLVerifierHelper {
     event StylusGroth16Toggled(bool enabled);
     event DisputeResolved(bytes32 indexed resultId, bool proverWon);
 
@@ -605,7 +605,7 @@ contract TEEMLVerifierHybridTest is Test {
     function setUp() public {
         enclaveAddr = vm.addr(enclavePrivateKey);
         mockVerifier = new MockHybridRemainderVerifier();
-        verifier = new TEEMLVerifier(admin, address(mockVerifier));
+        verifier = _deployTEEMLVerifier(admin, address(mockVerifier));
         verifier.registerEnclave(enclaveAddr, imageHash);
     }
 
@@ -658,7 +658,7 @@ contract TEEMLVerifierHybridTest is Test {
     function test_setUseStylusGroth16_onlyOwner() public {
         address nonOwner = address(0xBEEF);
         vm.prank(nonOwner);
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, nonOwner));
+        vm.expectRevert(UUPSUpgradeable.NotAdmin.selector);
         verifier.setUseStylusGroth16(true);
     }
 

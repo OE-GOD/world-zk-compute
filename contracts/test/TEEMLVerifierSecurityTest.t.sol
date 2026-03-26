@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
 import "../src/tee/TEEMLVerifier.sol";
+import {DeployTEEMLVerifierHelper} from "./helpers/DeployTEEMLVerifier.sol";
 
 /// @dev Malicious contract that attempts reentrancy on finalize
 contract ReentrantFinalizer {
@@ -92,7 +93,7 @@ contract ETHRejecter {
 
 /// @title TEEMLVerifierSecurityTest
 /// @notice Security-focused tests: reentrancy, timing attacks, edge cases, griefing
-contract TEEMLVerifierSecurityTest is Test {
+contract TEEMLVerifierSecurityTest is Test, DeployTEEMLVerifierHelper {
     TEEMLVerifier public verifier;
 
     address admin = address(this);
@@ -107,7 +108,7 @@ contract TEEMLVerifierSecurityTest is Test {
 
     function setUp() public {
         enclaveKey = vm.addr(enclavePrivateKey);
-        verifier = new TEEMLVerifier(admin, address(0));
+        verifier = _deployTEEMLVerifier(admin, address(0));
         verifier.registerEnclave(enclaveKey, bytes32(uint256(0xBEEF)));
 
         vm.deal(submitter, 100 ether);
@@ -683,7 +684,7 @@ contract TEEMLVerifierSecurityTest is Test {
         vm.chainId(originalChainId + 1);
 
         // Deploy a second verifier on chain B
-        TEEMLVerifier verifierB = new TEEMLVerifier(admin, address(0));
+        TEEMLVerifier verifierB = _deployTEEMLVerifier(admin, address(0));
         verifierB.registerEnclave(enclaveKey, bytes32(uint256(0xBEEF)));
 
         // Try to replay chain A's attestation on chain B -- should fail
@@ -698,7 +699,7 @@ contract TEEMLVerifierSecurityTest is Test {
 
     function test_eip712_crossContractReplayBlocked() public {
         // Deploy two verifiers on the SAME chain but at different addresses
-        TEEMLVerifier verifier2 = new TEEMLVerifier(admin, address(0));
+        TEEMLVerifier verifier2 = _deployTEEMLVerifier(admin, address(0));
         verifier2.registerEnclave(enclaveKey, bytes32(uint256(0xBEEF)));
 
         // Create attestation targeting verifier (first contract)

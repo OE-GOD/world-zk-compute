@@ -13,6 +13,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {GKRDAGVerifier} from "../src/remainder/GKRDAGVerifier.sol";
 import {DeployRemainderVerifierHelper} from "./helpers/DeployRemainderVerifier.sol";
+import {DeployTEEMLVerifierHelper} from "./helpers/DeployTEEMLVerifier.sol";
 
 // ========================================================================
 // MOCKS
@@ -296,7 +297,7 @@ contract IntegrationE2E_EnginePipelineTest is IntegrationFixtureBase {
 // TEST 2: TEE Happy Path + ZK Dispute
 // ========================================================================
 
-contract IntegrationE2E_TEEDisputeTest is Test {
+contract IntegrationE2E_TEEDisputeTest is Test, DeployTEEMLVerifierHelper {
     TEEMLVerifier teeVerifier;
     MockRemainderForTEE mockVerifier;
 
@@ -317,7 +318,7 @@ contract IntegrationE2E_TEEDisputeTest is Test {
     function setUp() public {
         enclaveAddr = vm.addr(enclavePrivateKey);
         mockVerifier = new MockRemainderForTEE();
-        teeVerifier = new TEEMLVerifier(admin, address(mockVerifier));
+        teeVerifier = _deployTEEMLVerifier(admin, address(mockVerifier));
         teeVerifier.registerEnclave(enclaveAddr, imageHash);
 
         vm.deal(address(this), 10 ether);

@@ -3,7 +3,8 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
 import "../src/tee/TEEMLVerifier.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {UUPSUpgradeable} from "../src/Upgradeable.sol";
+import {DeployTEEMLVerifierHelper} from "./helpers/DeployTEEMLVerifier.sol";
 
 /// @dev Mock RemainderVerifier that returns a configurable result for verifyDAGProof
 contract FuzzMockRemainderVerifier {
@@ -18,7 +19,7 @@ contract FuzzMockRemainderVerifier {
     }
 }
 
-contract TEEMLVerifierFuzzTest is Test {
+contract TEEMLVerifierFuzzTest is Test, DeployTEEMLVerifierHelper {
     TEEMLVerifier verifier;
     FuzzMockRemainderVerifier mockVerifier;
 
@@ -40,7 +41,7 @@ contract TEEMLVerifierFuzzTest is Test {
     function setUp() public {
         enclaveAddr = vm.addr(enclavePrivateKey);
         mockVerifier = new FuzzMockRemainderVerifier();
-        verifier = new TEEMLVerifier(admin, address(mockVerifier));
+        verifier = _deployTEEMLVerifier(admin, address(mockVerifier));
 
         // Register the test enclave
         verifier.registerEnclave(enclaveAddr, imageHash);
@@ -195,14 +196,14 @@ contract TEEMLVerifierFuzzTest is Test {
         }
     }
 
-    /// @notice Non-owner calling setChallengeBondAmount should always revert
-    ///         with OwnableUnauthorizedAccount regardless of the amount.
+    /// @notice Non-admin calling setChallengeBondAmount should always revert
+    ///         with NotAdmin regardless of the amount.
     function testFuzz_setChallengeBondAmount_nonOwner(uint256 amount, address caller) public {
         vm.assume(caller != admin);
         vm.assume(caller != address(0));
 
         vm.prank(caller);
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, caller));
+        vm.expectRevert(UUPSUpgradeable.NotAdmin.selector);
         verifier.setChallengeBondAmount(amount);
     }
 
@@ -225,14 +226,14 @@ contract TEEMLVerifierFuzzTest is Test {
         }
     }
 
-    /// @notice Non-owner calling setProverStake should always revert
-    ///         with OwnableUnauthorizedAccount regardless of the amount.
+    /// @notice Non-admin calling setProverStake should always revert
+    ///         with NotAdmin regardless of the amount.
     function testFuzz_setProverStake_nonOwner(uint256 amount, address caller) public {
         vm.assume(caller != admin);
         vm.assume(caller != address(0));
 
         vm.prank(caller);
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, caller));
+        vm.expectRevert(UUPSUpgradeable.NotAdmin.selector);
         verifier.setProverStake(amount);
     }
 

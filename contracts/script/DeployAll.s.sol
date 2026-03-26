@@ -44,8 +44,15 @@ contract DeployAll is Script {
             console.log("RemainderVerifier deployed at:", address(remainder));
         }
 
-        // ── 2. Deploy TEEMLVerifier ──────────────────────────────────────────
-        TEEMLVerifier tee = new TEEMLVerifier(deployer, address(remainder));
+        // ── 2. Deploy TEEMLVerifier (UUPS proxy) ──────────────────────────────
+        TEEMLVerifier tee;
+        {
+            TEEMLVerifier teeImpl = new TEEMLVerifier();
+            UUPSProxy teeProxy = new UUPSProxy(
+                address(teeImpl), abi.encodeCall(TEEMLVerifier.initialize, (deployer, address(remainder)))
+            );
+            tee = TEEMLVerifier(payable(address(teeProxy)));
+        }
         console.log("TEEMLVerifier deployed at:", address(tee));
 
         // ── 3. Register DAG circuit ──────────────────────────────────────────
@@ -58,10 +65,10 @@ contract DeployAll is Script {
         // ── 4. Post-deploy verification ────────────────────────────────────
         console.log("");
         console.log("Post-deploy verification:");
-        address teeOwner = tee.owner();
-        console.log("  TEE owner():", teeOwner);
-        require(teeOwner == deployer, "owner() mismatch: expected deployer");
-        console.log("  owner matches deployer: OK");
+        address teeAdmin = tee.admin();
+        console.log("  TEE admin():", teeAdmin);
+        require(teeAdmin == deployer, "admin() mismatch: expected deployer");
+        console.log("  admin matches deployer: OK");
         console.log("  remainderVerifier():", tee.remainderVerifier());
         require(tee.remainderVerifier() == address(remainder), "remainderVerifier mismatch");
         console.log("  remainderVerifier matches: OK");
@@ -69,9 +76,8 @@ contract DeployAll is Script {
         // ── 5. Optional ownership transfer ─────────────────────────────────
         address adminAddr = vm.envOr("ADMIN_ADDRESS", address(0));
         if (adminAddr != address(0) && adminAddr != deployer) {
-            tee.transferOwnership(adminAddr);
-            console.log("  transferOwnership initiated to:", adminAddr);
-            console.log("  NOTE: New admin must call acceptOwnership() to complete transfer");
+            tee.changeAdmin(adminAddr);
+            console.log("  changeAdmin completed to:", adminAddr);
         }
 
         vm.stopBroadcast();

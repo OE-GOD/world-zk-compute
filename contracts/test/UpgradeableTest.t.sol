@@ -631,6 +631,88 @@ contract UpgradeableTest is Test {
     }
 
     // ========================================================================
+    // 14b. cancelExecution (fund recovery)
+    // ========================================================================
+
+    event ExecutionCancelled(uint256 indexed requestId);
+
+    function test_cancelExecution_refundsTip() public {
+        bytes32 imageId = bytes32(uint256(1));
+        vm.deal(user1, 1 ether);
+        vm.prank(user1);
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, bytes32(0), "url", address(0), 3600);
+
+        uint256 balBefore = user1.balance;
+        vm.prank(user1);
+        engine.cancelExecution(requestId);
+
+        assertEq(user1.balance - balBefore, 0.1 ether, "tip not refunded");
+        UpgradeableExecutionEngine.ExecutionRequest memory req = engine.getRequest(requestId);
+        assertEq(req.status, 4, "status should be Cancelled");
+    }
+
+    function test_cancelExecution_emitsEvent() public {
+        bytes32 imageId = bytes32(uint256(1));
+        vm.deal(user1, 1 ether);
+        vm.prank(user1);
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, bytes32(0), "url", address(0), 3600);
+
+        vm.expectEmit(true, false, false, false);
+        emit ExecutionCancelled(requestId);
+        vm.prank(user1);
+        engine.cancelExecution(requestId);
+    }
+
+    function test_cancelExecution_notRequester_reverts() public {
+        bytes32 imageId = bytes32(uint256(1));
+        vm.deal(user1, 1 ether);
+        vm.prank(user1);
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, bytes32(0), "url", address(0), 3600);
+
+        vm.prank(user2);
+        vm.expectRevert(UpgradeableExecutionEngine.NotRequester.selector);
+        engine.cancelExecution(requestId);
+    }
+
+    function test_cancelExecution_notPending_reverts() public {
+        bytes32 imageId = bytes32(uint256(1));
+        vm.deal(user1, 1 ether);
+        vm.prank(user1);
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, bytes32(0), "url", address(0), 3600);
+
+        // Claim it first
+        vm.prank(user2);
+        engine.claimExecution(requestId);
+
+        // Now cancel should fail (status = Claimed, not Pending)
+        vm.prank(user1);
+        vm.expectRevert(UpgradeableExecutionEngine.NotPending.selector);
+        engine.cancelExecution(requestId);
+    }
+
+    function test_cancelExecution_worksWhilePaused() public {
+        bytes32 imageId = bytes32(uint256(1));
+        vm.deal(user1, 1 ether);
+        vm.prank(user1);
+        uint256 requestId =
+            engine.requestExecution{value: 0.1 ether}(imageId, bytes32(0), "url", address(0), 3600);
+
+        // Pause the contract
+        engine.pause();
+
+        // Cancel should still work (no whenNotPaused guard)
+        vm.prank(user1);
+        engine.cancelExecution(requestId);
+
+        UpgradeableExecutionEngine.ExecutionRequest memory req = engine.getRequest(requestId);
+        assertEq(req.status, 4, "cancel should work while paused");
+    }
+
+    // ========================================================================
     // 15. Reentrancy guard on submitProof
     // ========================================================================
 

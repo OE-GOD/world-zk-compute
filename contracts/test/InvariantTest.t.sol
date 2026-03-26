@@ -10,6 +10,7 @@ import "../src/mocks/MockRiscZeroVerifier.sol";
 import "../src/ProverRegistry.sol";
 import "../src/ProverReputation.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {DeployTEEMLVerifierHelper} from "./helpers/DeployTEEMLVerifier.sol";
 
 // =============================================================================
 // Mock Remainder Verifier (configurable per-result)
@@ -461,7 +462,7 @@ contract ExecutionEngineHandler is Test {
 // Invariant Test: TEEMLVerifier Fund Accounting
 // =============================================================================
 
-contract TEEMLVerifierInvariantTest is Test {
+contract TEEMLVerifierInvariantTest is Test, DeployTEEMLVerifierHelper {
     TEEMLVerifier public verifier;
     InvariantMockRemainderVerifier public mockVerifier;
     TEEMLVerifierHandler public handler;
@@ -475,7 +476,7 @@ contract TEEMLVerifierInvariantTest is Test {
     function setUp() public {
         enclaveAddr = vm.addr(enclavePrivateKey);
         mockVerifier = new InvariantMockRemainderVerifier();
-        verifier = new TEEMLVerifier(address(this), address(mockVerifier));
+        verifier = _deployTEEMLVerifier(address(this), address(mockVerifier));
         verifier.registerEnclave(enclaveAddr, keccak256("test-enclave-image"));
 
         handler = new TEEMLVerifierHandler(verifier, mockVerifier);

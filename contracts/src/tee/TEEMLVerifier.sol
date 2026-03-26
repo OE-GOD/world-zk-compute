@@ -3,7 +3,7 @@ pragma solidity ^0.8.20;
 
 import {ITEEMLVerifier} from "./ITEEMLVerifier.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
-import {Ownable2Step, Ownable} from "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {UUPSUpgradeable} from "../Upgradeable.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
@@ -17,7 +17,7 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 ///      Storage is packed for gas efficiency:
 ///      - PackedEnclaveInfo: 2 slots (was 3) — registered+active+registeredAt packed with address key
 ///      - PackedMLResult: saves 4 slots per result via uint40 timestamps and bool packing
-contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuard {
+contract TEEMLVerifier is ITEEMLVerifier, UUPSUpgradeable, Pausable, ReentrancyGuard {
     using ECDSA for bytes32;
 
     // ─── EIP-712 Constants ──────────────────────────────────────────────────
@@ -132,16 +132,30 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
     /// @notice Initialize the verifier with an admin and RemainderVerifier address
     /// @param _admin Address that will own and administer this contract
     /// @param _remainderVerifier Address of the RemainderVerifier for ZK dispute resolution
-    constructor(address _admin, address _remainderVerifier) Ownable(_admin) {
+    /// @notice Initialize the contract (called once via proxy)
+    /// @param _admin Admin address for access control and upgrades
+    /// @param _remainderVerifier Address of the RemainderVerifier for ZK dispute resolution
+    function initialize(address _admin, address _remainderVerifier) external initializer {
+        _setAdmin(_admin);
         remainderVerifier = _remainderVerifier;
+        // Set default values explicitly (storage defaults don't apply behind a proxy)
+        challengeWindow = 1 hours;
+        disputeWindow = 24 hours;
+        challengeBondAmount = 0.1 ether;
+        proverStake = 0.1 ether;
         _cachedChainId = block.chainid;
         _cachedDomainSeparator = _computeDomainSeparator();
+    }
+
+    /// @notice Authorization hook for upgrades
+    function _authorizeUpgrade(address newImplementation) internal override {
+        if (newImplementation.code.length == 0) revert InvalidImplementation();
     }
 
     // ─── Admin ───────────────────────────────────────────────────────────────
 
     /// @inheritdoc ITEEMLVerifier
-    function registerEnclave(address enclaveKey, bytes32 enclaveImageHash) external onlyOwner {
+    function registerEnclave(address enclaveKey, bytes32 enclaveImageHash) external onlyAdmin {
         if (enclaveKey == address(0)) revert ZeroEnclaveKey();
         if (_enclaves[enclaveKey].registered) revert AlreadyRegistered();
 
@@ -157,7 +171,7 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
     }
 
     /// @inheritdoc ITEEMLVerifier
-    function revokeEnclave(address enclaveKey) external onlyOwner {
+    function revokeEnclave(address enclaveKey) external onlyAdmin {
         if (!_enclaves[enclaveKey].registered) revert NotRegistered();
         if (!_enclaves[enclaveKey].active) revert AlreadyRevoked();
 
@@ -180,7 +194,7 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
     }
 
     /// @inheritdoc ITEEMLVerifier
-    function setRemainderVerifier(address _verifier) external onlyOwner {
+    function setRemainderVerifier(address _verifier) external onlyTimelocked {
         if (_verifier == address(0)) revert ZeroAddress();
         address oldVerifier = remainderVerifier;
         remainderVerifier = _verifier;
@@ -188,7 +202,7 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
     }
 
     /// @inheritdoc ITEEMLVerifier
-    function setChallengeBondAmount(uint256 _amount) external onlyOwner {
+    function setChallengeBondAmount(uint256 _amount) external onlyTimelocked {
         if (_amount == 0) revert ZeroAmount();
         if (_amount > 100 ether) revert AmountTooHigh();
         uint256 oldAmount = challengeBondAmount;
@@ -198,7 +212,7 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
     }
 
     /// @inheritdoc ITEEMLVerifier
-    function setProverStake(uint256 _amount) external onlyOwner {
+    function setProverStake(uint256 _amount) external onlyTimelocked {
         if (_amount == 0) revert ZeroAmount();
         if (_amount > 100 ether) revert AmountTooHigh();
         uint256 oldAmount = proverStake;
@@ -209,7 +223,7 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
 
     /// @notice Update the challenge window duration
     /// @param _duration New challenge window in seconds (min 10 min, max 7 days)
-    function setChallengeWindow(uint256 _duration) external onlyOwner {
+    function setChallengeWindow(uint256 _duration) external onlyAdmin {
         if (_duration < 10 minutes) revert WindowTooShort();
         if (_duration > 7 days) revert WindowTooLong();
         uint256 oldDuration = challengeWindow;
@@ -219,7 +233,7 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
 
     /// @notice Update the dispute window duration
     /// @param _duration New dispute window in seconds (min 1 hour, max 30 days)
-    function setDisputeWindow(uint256 _duration) external onlyOwner {
+    function setDisputeWindow(uint256 _duration) external onlyAdmin {
         if (_duration < 1 hours) revert WindowTooShort();
         if (_duration > 30 days) revert WindowTooLong();
         uint256 oldDuration = disputeWindow;
@@ -228,24 +242,24 @@ contract TEEMLVerifier is ITEEMLVerifier, Ownable2Step, Pausable, ReentrancyGuar
     }
 
     /// @inheritdoc ITEEMLVerifier
-    function setUseStylusVerifier(bool _enabled) external onlyOwner {
+    function setUseStylusVerifier(bool _enabled) external onlyAdmin {
         useStylusVerifier = _enabled;
         emit StylusVerifierToggled(_enabled);
     }
 
     /// @inheritdoc ITEEMLVerifier
-    function setUseStylusGroth16(bool _enabled) external onlyOwner {
+    function setUseStylusGroth16(bool _enabled) external onlyAdmin {
         useStylusGroth16 = _enabled;
         emit StylusGroth16Toggled(_enabled);
     }
 
     /// @inheritdoc ITEEMLVerifier
-    function pause() external onlyOwner {
+    function pause() external onlyAdmin {
         _pause();
     }
 
     /// @inheritdoc ITEEMLVerifier
-    function unpause() external onlyOwner {
+    function unpause() external onlyAdmin {
         _unpause();
     }
 

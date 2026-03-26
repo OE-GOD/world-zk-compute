@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Script.sol";
 import "../src/tee/TEEMLVerifier.sol";
+import {UUPSProxy} from "../src/Upgradeable.sol";
 
 contract DeployTEEMLVerifier is Script {
     function run() external {
@@ -12,24 +13,26 @@ contract DeployTEEMLVerifier is Script {
         // Use existing RemainderVerifier deployment, or address(0) if not yet deployed
         address remainderVerifier = vm.envOr("REMAINDER_VERIFIER", address(0));
 
-        // Optional: transfer ownership to a separate admin address after deploy
+        // Optional: transfer admin to a separate address after deploy
         address adminAddress = vm.envOr("ADMIN_ADDRESS", address(0));
 
         vm.startBroadcast(deployerKey);
 
-        TEEMLVerifier tee = new TEEMLVerifier(deployer, remainderVerifier);
+        TEEMLVerifier teeImpl = new TEEMLVerifier();
+        UUPSProxy teeProxy = new UUPSProxy(
+            address(teeImpl), abi.encodeCall(TEEMLVerifier.initialize, (deployer, remainderVerifier))
+        );
+        TEEMLVerifier tee = TEEMLVerifier(payable(address(teeProxy)));
         console.log("TEEMLVerifier deployed at:", address(tee));
 
         // Post-deploy verification
-        require(tee.owner() == deployer, "owner mismatch after deploy");
-        console.log("Owner verified:", tee.owner());
+        require(tee.admin() == deployer, "admin mismatch after deploy");
+        console.log("Admin verified:", tee.admin());
 
-        // Initiate 2-step ownership transfer if ADMIN_ADDRESS is set
+        // Transfer admin if ADMIN_ADDRESS is set
         if (adminAddress != address(0)) {
-            tee.transferOwnership(adminAddress);
-            console.log("Ownership transfer initiated to:", adminAddress);
-            console.log("Pending owner:", tee.pendingOwner());
-            console.log("NOTE: Admin must call acceptOwnership() to complete transfer");
+            tee.changeAdmin(adminAddress);
+            console.log("Admin changed to:", adminAddress);
         }
 
         vm.stopBroadcast();

@@ -4,9 +4,16 @@
 /// The proof is a flat byte array where every field occupies 32 bytes (big-endian U256).
 /// Variable-length sections are length-prefixed: a U256 count followed by that many items.
 use crate::ec::{G1Point, PODPProof, PedersenGens, ProofOfProduct};
+use crate::error::{Result, VerifyError};
 use crate::field::U256;
 use crate::gkr::{CommittedLayerProof, DAGInputLayerProof, GKRProof, PublicValueClaim};
 use crate::sumcheck::CommittedSumcheckProof;
+
+/// Maximum number of elements allowed in a length-prefixed array.
+/// Prevents OOM from malicious inputs with absurdly large counts.
+/// A proof for an 88-layer XGBoost circuit is ~475KB; 100_000 elements
+/// would require ~3.2MB of 32-byte fields, which is a generous bound.
+const MAX_ARRAY_LEN: usize = 100_000;
 
 // ============================================================
 // ProofDecoder
@@ -79,7 +86,334 @@ impl<'a> ProofDecoder<'a> {
     }
 
     // --------------------------------------------------------
-    // Composite decoders
+    // Safe (Result-returning) primitive readers
+    // --------------------------------------------------------
+
+    /// Read 32 big-endian bytes, returning Err instead of panicking on OOB.
+    pub fn try_read_u256(&mut self) -> Result<U256> {
+        let start = self.offset;
+        let end = start + 32;
+        if end > self.data.len() {
+            return Err(VerifyError::DecodeError(format!(
+                "read_u256: out of bounds at offset {} (data len {})",
+                start,
+                self.data.len()
+            )));
+        }
+        let mut bytes = [0u8; 32];
+        bytes.copy_from_slice(&self.data[start..end]);
+        self.offset = end;
+        Ok(U256::from_be_bytes(&bytes))
+    }
+
+    /// Read a G1 point safely.
+    fn try_read_g1(&mut self) -> Result<G1Point> {
+        let x = self.try_read_u256()?;
+        let y = self.try_read_u256()?;
+        Ok(G1Point { x, y })
+    }
+
+    /// Read a usize safely with bounds checking.
+    fn try_read_usize(&mut self) -> Result<usize> {
+        let v = self.try_read_u256()?;
+        if v.0[1] != 0 || v.0[2] != 0 || v.0[3] != 0 {
+            return Err(VerifyError::DecodeError(
+                "value too large for usize".to_string(),
+            ));
+        }
+        let val = v.0[0] as usize;
+        if val > MAX_ARRAY_LEN {
+            return Err(VerifyError::DecodeError(format!(
+                "array length {} exceeds maximum {}",
+                val, MAX_ARRAY_LEN
+            )));
+        }
+        Ok(val)
+    }
+
+    /// Safely advance offset, checking bounds.
+    fn try_advance(&mut self, n: usize) -> Result<()> {
+        let new_offset = self.offset.checked_add(n).ok_or_else(|| {
+            VerifyError::DecodeError("offset overflow".to_string())
+        })?;
+        if new_offset > self.data.len() {
+            return Err(VerifyError::DecodeError(format!(
+                "advance: out of bounds (offset {} + {} > data len {})",
+                self.offset, n, self.data.len()
+            )));
+        }
+        self.offset = new_offset;
+        Ok(())
+    }
+
+    // --------------------------------------------------------
+    // Safe composite decoders
+    // --------------------------------------------------------
+
+    /// Decode a PODP proof safely.
+    fn try_decode_podp(&mut self) -> Result<PODPProof> {
+        let commit_d = self.try_read_g1()?;
+        let commit_d_dot_a = self.try_read_g1()?;
+        let num_z = self.try_read_usize()?;
+        let mut z_vector = Vec::with_capacity(num_z);
+        for _ in 0..num_z {
+            z_vector.push(self.try_read_u256()?);
+        }
+        let z_delta = self.try_read_u256()?;
+        let z_beta = self.try_read_u256()?;
+        Ok(PODPProof {
+            commit_d,
+            commit_d_dot_a,
+            z_vector,
+            z_delta,
+            z_beta,
+        })
+    }
+
+    /// Decode a ProofOfProduct safely.
+    fn try_decode_pop(&mut self) -> Result<ProofOfProduct> {
+        let alpha = self.try_read_g1()?;
+        let beta = self.try_read_g1()?;
+        let delta = self.try_read_g1()?;
+        let z1 = self.try_read_u256()?;
+        let z2 = self.try_read_u256()?;
+        let z3 = self.try_read_u256()?;
+        let z4 = self.try_read_u256()?;
+        let z5 = self.try_read_u256()?;
+        Ok(ProofOfProduct {
+            alpha, beta, delta, z1, z2, z3, z4, z5,
+        })
+    }
+
+    /// Decode a committed layer proof safely.
+    fn try_decode_committed_layer_proof(&mut self) -> Result<CommittedLayerProof> {
+        let sum = self.try_read_g1()?;
+        let num_messages = self.try_read_usize()?;
+        let mut messages = Vec::with_capacity(num_messages);
+        for _ in 0..num_messages {
+            messages.push(self.try_read_g1()?);
+        }
+        let podp = self.try_decode_podp()?;
+        let sumcheck_proof = CommittedSumcheckProof { sum, messages, podp };
+
+        let num_commits = self.try_read_usize()?;
+        let mut commitments = Vec::with_capacity(num_commits);
+        for _ in 0..num_commits {
+            commitments.push(self.try_read_g1()?);
+        }
+
+        let num_pops = self.try_read_usize()?;
+        let mut pops = Vec::with_capacity(num_pops);
+        for _ in 0..num_pops {
+            pops.push(self.try_decode_pop()?);
+        }
+
+        let has_agg = self.try_read_usize()?;
+        if has_agg == 1 {
+            let num_coeffs = self.try_read_usize()?;
+            self.try_advance(num_coeffs.checked_mul(64).ok_or_else(|| {
+                VerifyError::DecodeError("overflow in coeffs size".to_string())
+            })?)?;
+            let num_openings = self.try_read_usize()?;
+            self.try_advance(num_openings.checked_mul(128).ok_or_else(|| {
+                VerifyError::DecodeError("overflow in openings size".to_string())
+            })?)?;
+            let num_eq = self.try_read_usize()?;
+            self.try_advance(num_eq.checked_mul(96).ok_or_else(|| {
+                VerifyError::DecodeError("overflow in eq proofs size".to_string())
+            })?)?;
+        }
+
+        Ok(CommittedLayerProof {
+            sumcheck_proof,
+            commitments,
+            pops,
+        })
+    }
+
+    /// Decode a DAG input layer proof safely.
+    fn try_decode_dag_input_layer_proof(&mut self) -> Result<DAGInputLayerProof> {
+        let num_rows = self.try_read_usize()?;
+        let mut commitment_rows = Vec::with_capacity(num_rows);
+        for _ in 0..num_rows {
+            commitment_rows.push(self.try_read_g1()?);
+        }
+        let num_evals = self.try_read_usize()?;
+        let mut podps = Vec::with_capacity(num_evals);
+        let mut com_evals = Vec::with_capacity(num_evals);
+        for _ in 0..num_evals {
+            podps.push(self.try_decode_podp()?);
+            com_evals.push(self.try_read_g1()?);
+        }
+        Ok(DAGInputLayerProof {
+            commitment_rows,
+            podps,
+            com_evals,
+        })
+    }
+
+    /// Decode public value claims safely.
+    fn try_decode_public_value_claims(&mut self) -> Result<Vec<PublicValueClaim>> {
+        let num_claims = self.try_read_usize()?;
+        let mut claims = Vec::with_capacity(num_claims);
+        for _ in 0..num_claims {
+            let value = self.try_read_u256()?;
+            let blinding = self.try_read_u256()?;
+            let commitment = self.try_read_g1()?;
+            let num_point = self.try_read_usize()?;
+            self.try_advance(num_point.checked_mul(32).ok_or_else(|| {
+                VerifyError::DecodeError("overflow in point size".to_string())
+            })?)?;
+            claims.push(PublicValueClaim {
+                value,
+                blinding,
+                commitment,
+            });
+        }
+        Ok(claims)
+    }
+
+    /// Skip a claim section safely.
+    fn try_skip_claim(&mut self) -> Result<()> {
+        self.try_advance(32)?; // value
+        self.try_advance(32)?; // blinding
+        self.try_advance(64)?; // commitment (G1)
+        let num_point = self.try_read_usize()?;
+        self.try_advance(num_point.checked_mul(32).ok_or_else(|| {
+            VerifyError::DecodeError("overflow in skip_claim point size".to_string())
+        })?)?;
+        Ok(())
+    }
+
+    /// Decode the common proof prefix safely.
+    fn try_decode_proof_common(&mut self, gkr_proof: &mut GKRProof) -> Result<usize> {
+        self.try_advance(32)?; // circuit hash
+
+        let num_pub_input_sections = self.try_read_usize()?;
+        for _ in 0..num_pub_input_sections {
+            let cnt = self.try_read_usize()?;
+            self.try_advance(cnt.checked_mul(32).ok_or_else(|| {
+                VerifyError::DecodeError("overflow in pub input section size".to_string())
+            })?)?;
+        }
+
+        let num_output_proofs = self.try_read_usize()?;
+        let mut output_claim_commitments = Vec::with_capacity(num_output_proofs);
+        for _ in 0..num_output_proofs {
+            output_claim_commitments.push(self.try_read_g1()?);
+        }
+        gkr_proof.output_claim_commitments = output_claim_commitments;
+
+        let num_layer_proofs = self.try_read_usize()?;
+        let mut layer_proofs = Vec::with_capacity(num_layer_proofs);
+        for _ in 0..num_layer_proofs {
+            layer_proofs.push(self.try_decode_committed_layer_proof()?);
+        }
+        gkr_proof.layer_proofs = layer_proofs;
+
+        let num_fs_claims = self.try_read_usize()?;
+        for _ in 0..num_fs_claims {
+            self.try_skip_claim()?;
+        }
+
+        let pub_claims_offset = self.offset;
+
+        let num_pub_claims = self.try_read_usize()?;
+        for _ in 0..num_pub_claims {
+            self.try_skip_claim()?;
+        }
+
+        Ok(pub_claims_offset)
+    }
+
+    /// Safely extract embedded public inputs.
+    fn try_extract_embedded_public_inputs(data: &[u8]) -> Result<Vec<U256>> {
+        let mut dec = ProofDecoder::new(data);
+        dec.try_advance(32)?; // circuit hash
+
+        let num_sections = dec.try_read_usize()?;
+
+        // First pass: count total elements
+        let saved_offset = dec.offset;
+        let mut total_elements: usize = 0;
+        for _ in 0..num_sections {
+            let cnt = dec.try_read_usize()?;
+            dec.try_advance(cnt.checked_mul(32).ok_or_else(|| {
+                VerifyError::DecodeError("overflow in embedded pub inputs".to_string())
+            })?)?;
+            total_elements = total_elements.checked_add(cnt).ok_or_else(|| {
+                VerifyError::DecodeError("overflow in total elements count".to_string())
+            })?;
+        }
+
+        // Second pass: extract elements
+        dec.offset = saved_offset;
+        let mut result = Vec::with_capacity(total_elements);
+        for _ in 0..num_sections {
+            let cnt = dec.try_read_usize()?;
+            for _ in 0..cnt {
+                result.push(dec.try_read_u256()?);
+            }
+        }
+        Ok(result)
+    }
+
+    /// Decode a full proof for DAG verification, returning Result instead of panicking.
+    pub fn try_decode_proof_for_dag(
+        &mut self,
+    ) -> Result<(
+        GKRProof,
+        Vec<U256>,
+        Vec<DAGInputLayerProof>,
+        Vec<PublicValueClaim>,
+    )> {
+        let embedded = Self::try_extract_embedded_public_inputs(self.data)?;
+
+        let mut gkr_proof = GKRProof {
+            output_claim_commitments: Vec::new(),
+            layer_proofs: Vec::new(),
+        };
+        let pub_claims_offset = self.try_decode_proof_common(&mut gkr_proof)?;
+
+        let mut claims_decoder = ProofDecoder::new(self.data);
+        claims_decoder.set_offset(pub_claims_offset);
+        let public_value_claims = claims_decoder.try_decode_public_value_claims()?;
+
+        let num_input_proofs = self.try_read_usize()?;
+        let mut dag_input_proofs = Vec::with_capacity(num_input_proofs);
+        for _ in 0..num_input_proofs {
+            dag_input_proofs.push(self.try_decode_dag_input_layer_proof()?);
+        }
+
+        Ok((gkr_proof, embedded, dag_input_proofs, public_value_claims))
+    }
+
+    /// Decode Pedersen generators safely.
+    pub fn try_decode_pedersen_gens(data: &[u8]) -> Result<PedersenGens> {
+        if data.is_empty() {
+            return Ok(PedersenGens {
+                message_gens: Vec::new(),
+                scalar_gen: G1Point::INFINITY,
+                blinding_gen: G1Point::INFINITY,
+            });
+        }
+        let mut dec = ProofDecoder::new(data);
+        let num_gens = dec.try_read_usize()?;
+        let mut message_gens = Vec::with_capacity(num_gens);
+        for _ in 0..num_gens {
+            message_gens.push(dec.try_read_g1()?);
+        }
+        let scalar_gen = dec.try_read_g1()?;
+        let blinding_gen = dec.try_read_g1()?;
+        Ok(PedersenGens {
+            message_gens,
+            scalar_gen,
+            blinding_gen,
+        })
+    }
+
+    // --------------------------------------------------------
+    // Composite decoders (panicking, legacy)
     // --------------------------------------------------------
 
     /// Decode a PODP proof.
