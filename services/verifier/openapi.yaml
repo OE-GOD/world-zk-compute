@@ -1,46 +1,107 @@
-openapi: 3.1.0
+openapi: 3.0.3
 info:
-  title: ZKML Verifier API
+  title: World ZK Compute Verifier API
   description: |
-    Stateless REST API for verifying GKR+Hyrax zero-knowledge proofs of ML inference.
-    Supports full verification, hybrid (transcript-only) verification, and batch operations.
+    REST API for zero-knowledge proof verification of ML inference results.
+
+    This service verifies GKR (Goldwasser-Kalai-Rothblum) DAG proofs generated
+    by the Remainder prover for BN254 field arithmetic. It supports full
+    verification (with EC checks), hybrid verification (transcript replay only,
+    for use with on-chain Groth16 finalization), and batch verification.
+
+    ## Authentication
+
+    When API key authentication is enabled (via the `VERIFIER_API_KEYS` environment
+    variable), all endpoints except `/health` require a valid `X-API-Key` header.
+    If no API keys are configured, the service runs in open-access mode.
+
+    ## Rate Limiting
+
+    All endpoints except `/health` are rate-limited using a per-client token bucket.
+    Clients are identified by their `X-API-Key` header value, or by `X-Forwarded-For`
+    IP if no API key is present. The default limit is 100 requests per minute,
+    configurable via the `RATE_LIMIT_RPM` environment variable.
+
+    Rate limit headers are included on **all** responses (both success and error):
+    - `X-RateLimit-Remaining` -- tokens remaining in the current window
+    - `X-RateLimit-Reset` -- seconds until the next token becomes available
+
+    ## Circuit Registration
+
+    Circuits can be pre-registered with their Pedersen generators and DAG circuit
+    description via `POST /circuits`. Once registered, proofs for that circuit can
+    be submitted to the warm verification endpoints
+    (`/circuits/{circuit_id}/verify`) with only the proof data, avoiding repeated
+    transmission of large generator and description payloads.
+
+    Registrations are stored in memory and do not persist across service restarts.
+
+    ## Environment Variables
+
+    | Variable | Default | Description |
+    |---|---|---|
+    | `PORT` | `3000` | Server listen port |
+    | `VERIFIER_API_KEYS` | _(empty)_ | Comma-separated API keys; empty = open access |
+    | `RATE_LIMIT_RPM` | `100` | Requests per minute per client |
+    | `TLS_CERT_PATH` | _(unset)_ | PEM certificate for TLS; unset = plain HTTP |
+    | `TLS_KEY_PATH` | _(unset)_ | PEM private key for TLS |
+    | `TLS_CA_PATH` | _(unset)_ | CA cert for mutual TLS client verification |
   version: 0.1.0
   license:
     name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
 
 servers:
   - url: http://localhost:3000
     description: Local development
+  - url: https://worldzk-verifier.fly.dev
+    description: Hosted demo
+
+security:
+  - ApiKeyAuth: []
+
+tags:
+  - name: health
+    description: Service health and readiness
+  - name: verification
+    description: Proof verification endpoints
+  - name: circuits
+    description: Circuit registration and warm verification
 
 paths:
   /health:
     get:
       summary: Health check
+      description: |
+        Returns service health status and the number of pre-registered circuits.
+        This endpoint requires no authentication and is never rate-limited.
       operationId: health
       tags: [health]
+      security: []
       responses:
         "200":
           description: Service is healthy
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                    example: ok
-                  circuits_loaded:
-                    type: integer
-                    example: 2
+                $ref: "#/components/schemas/HealthResponse"
+              example:
+                status: ok
+                circuits_loaded: 3
 
   /verify:
     post:
       summary: Verify a proof bundle
+      description: |
+        Performs full GKR DAG verification of a proof bundle, including elliptic
+        curve checks (Pedersen commitment openings and Hyrax inner-product
+        arguments).
+
+        The proof must begin with the 4-byte `REM1` selector (`52454d31` in hex)
+        followed by a 32-byte circuit hash, then the serialized GKR proof body.
+        All hex fields accept an optional `0x` prefix.
       operationId: verifyProof
       tags: [verification]
-      description: |
-        Full GKR+Hyrax verification including EC operations.
-        Takes a complete ProofBundle JSON and returns the verification result.
       requestBody:
         required: true
         content:
@@ -49,13 +110,54 @@ paths:
               $ref: "#/components/schemas/ProofBundle"
       responses:
         "200":
-          description: Verification completed (check `verified` field)
+          description: Verification completed (check the `verified` field for result)
+          headers:
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/VerifyResponse"
+              examples:
+                valid:
+                  summary: Valid proof
+                  value:
+                    verified: true
+                    circuit_hash: "0xf85c194e1a8e2c2e38746c6d81c7ac9ddf25848a8dfc049db7f4725b3ab56e33"
+                invalid:
+                  summary: Invalid proof (verification failed)
+                  value:
+                    verified: false
+                    circuit_hash: "0x0000000000000000000000000000000000000000000000000000000000000000"
         "400":
-          description: Invalid proof data
+          description: Invalid proof format, malformed hex encoding, or verification error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                bad_selector:
+                  summary: Wrong proof selector
+                  value:
+                    error: "invalid selector (expected REM1)"
+                too_short:
+                  summary: Proof data too short
+                  value:
+                    error: "invalid proof: proof too short"
+                bad_hex:
+                  summary: Malformed hex encoding
+                  value:
+                    error: "bundle parse error: proof_hex: Invalid character 'x' at position 0"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "415":
+          description: Missing or incorrect Content-Type header (must be `application/json`)
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          description: Internal server error (e.g., blocking task scheduling failure)
           content:
             application/json:
               schema:
@@ -64,46 +166,81 @@ paths:
   /verify/batch:
     post:
       summary: Verify multiple proof bundles
+      description: |
+        Verifies up to 100 proof bundles in a single request. Each bundle is
+        verified independently; a failure in one does not affect others.
+
+        The response includes per-bundle results with index correlation, plus
+        aggregate counts of total and valid proofs.
       operationId: verifyBatch
       tags: [verification]
-      description: |
-        Verify up to 100 proof bundles in a single request.
-        Each bundle is verified independently. Partial failures are reported per-bundle.
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [bundles]
-              properties:
-                bundles:
-                  type: array
-                  maxItems: 100
-                  items:
-                    $ref: "#/components/schemas/ProofBundle"
+              $ref: "#/components/schemas/BatchVerifyRequest"
       responses:
         "200":
-          description: Batch verification results
+          description: Batch verification completed
+          headers:
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/BatchVerifyResponse"
+              example:
+                results:
+                  - index: 0
+                    verified: true
+                    circuit_hash: "0xf85c194e1a8e2c2e38746c6d81c7ac9ddf25848a8dfc049db7f4725b3ab56e33"
+                  - index: 1
+                    verified: false
+                    circuit_hash: ""
+                    error: "invalid selector (expected REM1)"
+                total: 2
+                valid: 1
         "400":
-          description: Empty or oversized batch
+          description: Request validation error (empty array or exceeds batch limit)
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                empty:
+                  summary: Empty bundles array
+                  value:
+                    error: "bundles array is empty"
+                too_many:
+                  summary: Exceeds 100-bundle limit
+                  value:
+                    error: "maximum 100 bundles per batch"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
 
   /verify/hybrid:
     post:
-      summary: Hybrid verification (transcript replay only)
+      summary: Hybrid verification (transcript replay + Fr outputs)
+      description: |
+        Performs hybrid GKR verification: replays the Fiat-Shamir transcript and
+        collects all field-element (Fr) intermediate values, but skips the
+        expensive elliptic curve checks (Pedersen commitment openings, Hyrax
+        inner-product arguments).
+
+        The returned `transcript_digest` and `num_compute_layers` can be used as
+        public inputs to an on-chain Groth16 verifier that checks the EC
+        operations inside a zkSNARK proof.
+
+        This is the off-chain component of the Stylus + Groth16 hybrid
+        verification architecture, where transcript replay runs off-chain (or in
+        a TEE) and only the compact Groth16 proof is verified on-chain.
       operationId: verifyHybrid
       tags: [verification]
-      description: |
-        Performs GKR transcript replay and Fr arithmetic without EC operations.
-        Returns the transcript digest and Fr outputs needed for a separate Groth16 proof.
       requestBody:
         required: true
         content:
@@ -112,235 +249,643 @@ paths:
               $ref: "#/components/schemas/ProofBundle"
       responses:
         "200":
-          description: Hybrid verification result
+          description: Hybrid verification completed
+          headers:
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/HybridResponse"
+              example:
+                circuit_hash: "0xf85c194e1a8e2c2e38746c6d81c7ac9ddf25848a8dfc049db7f4725b3ab56e33"
+                transcript_digest: "0x1a2b3c4d5e6f708192a3b4c5d6e7f80011223344556677889900aabbccddeeff"
+                num_compute_layers: 88
         "400":
-          description: Invalid proof data
+          description: Invalid proof format or verification error
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
 
   /circuits:
     get:
       summary: List registered circuits
+      description: |
+        Returns the IDs of all circuits that have been pre-registered on this
+        service instance. Circuit registrations are stored in memory and do not
+        persist across service restarts.
       operationId: listCircuits
       tags: [circuits]
       responses:
         "200":
-          description: Circuit ID list
+          description: List of registered circuit IDs
+          headers:
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  circuits:
-                    type: array
-                    items:
-                      type: string
+                $ref: "#/components/schemas/CircuitListResponse"
+              example:
+                circuits:
+                  - xgboost-sample-model
+                  - logistic-regression-v2
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
     post:
       summary: Register a circuit for warm verification
+      description: |
+        Pre-registers a circuit's Pedersen generators and DAG circuit description.
+        Once registered, proofs for this circuit can be submitted to the warm
+        verification endpoint (`/circuits/{circuit_id}/verify`) with only the
+        proof data, avoiding repeated transmission of large generator and
+        description payloads.
+
+        If a circuit with the same ID already exists, it is silently overwritten.
       operationId: registerCircuit
       tags: [circuits]
-      description: |
-        Pre-register a circuit's generators and description so that subsequent
-        verify requests only need the proof hex (faster, smaller payloads).
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [circuit_id, gens_hex, dag_circuit_description]
-              properties:
-                circuit_id:
-                  type: string
-                  example: xgboost-credit-v1
-                gens_hex:
-                  type: string
-                  description: Hex-encoded Pedersen generators
-                dag_circuit_description:
-                  type: object
-                  description: DAG circuit topology
+              $ref: "#/components/schemas/RegisterCircuitRequest"
       responses:
         "200":
-          description: Circuit registered
+          description: Circuit registered successfully
+          headers:
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  circuit_id:
-                    type: string
-                  status:
-                    type: string
-                    example: registered
+                $ref: "#/components/schemas/RegisterResponse"
+              example:
+                circuit_id: xgboost-sample-model
+                status: registered
         "400":
-          description: Missing or empty circuit_id
+          description: Validation error (e.g., empty circuit_id)
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "circuit_id is required"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/RateLimited"
 
   /circuits/{circuit_id}/verify:
     post:
-      summary: Warm verify (pre-registered circuit)
+      summary: Verify a proof against a pre-registered circuit
+      description: |
+        Performs full GKR DAG verification using the generators and circuit
+        description that were pre-registered for the given circuit ID. Only the
+        proof data (and optionally public inputs) need to be submitted.
+
+        This is more efficient than `POST /verify` when verifying multiple proofs
+        for the same circuit, as the generators and description do not need to be
+        retransmitted each time.
       operationId: warmVerify
       tags: [circuits]
       parameters:
-        - name: circuit_id
-          in: path
-          required: true
-          schema:
-            type: string
+        - $ref: "#/components/parameters/CircuitId"
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [proof_hex]
-              properties:
-                proof_hex:
-                  type: string
-                public_inputs_hex:
-                  type: string
-                  default: ""
+              $ref: "#/components/schemas/WarmVerifyRequest"
       responses:
         "200":
-          description: Verification result
+          description: Verification completed
+          headers:
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/VerifyResponse"
-        "404":
-          description: Circuit not registered
+        "400":
+          description: Invalid proof format or verification error
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Circuit ID not found in the registry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "circuit 'unknown-circuit' not registered"
+        "429":
+          $ref: "#/components/responses/RateLimited"
 
   /circuits/{circuit_id}/verify/hybrid:
     post:
-      summary: Warm hybrid verify (pre-registered circuit)
+      summary: Hybrid verification against a pre-registered circuit
+      description: |
+        Performs hybrid GKR verification (transcript replay without EC checks)
+        using the generators and circuit description pre-registered for the given
+        circuit ID. This is the warm-circuit variant of `POST /verify/hybrid`.
       operationId: warmVerifyHybrid
       tags: [circuits]
       parameters:
-        - name: circuit_id
-          in: path
-          required: true
-          schema:
-            type: string
+        - $ref: "#/components/parameters/CircuitId"
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [proof_hex]
-              properties:
-                proof_hex:
-                  type: string
-                public_inputs_hex:
-                  type: string
-                  default: ""
+              $ref: "#/components/schemas/WarmVerifyRequest"
       responses:
         "200":
-          description: Hybrid verification result
+          description: Hybrid verification completed
+          headers:
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+            X-RateLimit-Reset:
+              $ref: "#/components/headers/X-RateLimit-Reset"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/HybridResponse"
-        "404":
-          description: Circuit not registered
+        "400":
+          description: Invalid proof format or verification error
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Circuit ID not found in the registry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "circuit 'unknown-circuit' not registered"
+        "429":
+          $ref: "#/components/responses/RateLimited"
 
 components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: |
+        API key for authentication. When the service is configured with
+        `VERIFIER_API_KEYS`, all endpoints except `/health` require this header.
+        If no API keys are configured, authentication is disabled and this
+        header is ignored. Keys are matched by exact string comparison.
+
+  parameters:
+    CircuitId:
+      name: circuit_id
+      in: path
+      required: true
+      description: |
+        Identifier of a pre-registered circuit. Must match a `circuit_id`
+        previously submitted via `POST /circuits`.
+      schema:
+        type: string
+      example: xgboost-sample-model
+
+  headers:
+    X-RateLimit-Remaining:
+      description: Number of requests remaining in the current rate limit window
+      schema:
+        type: integer
+        minimum: 0
+      example: 97
+    X-RateLimit-Reset:
+      description: |
+        Seconds until the next rate limit token becomes available. Returns 0
+        when tokens are still available.
+      schema:
+        type: integer
+        minimum: 0
+      example: 0
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid API key (only when authentication is enabled)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          examples:
+            missing:
+              summary: No API key provided
+              value:
+                error: "Missing X-API-Key header"
+            invalid:
+              summary: Wrong API key
+              value:
+                error: "Invalid API key"
+    RateLimited:
+      description: Rate limit exceeded
+      headers:
+        X-RateLimit-Remaining:
+          $ref: "#/components/headers/X-RateLimit-Remaining"
+        X-RateLimit-Reset:
+          $ref: "#/components/headers/X-RateLimit-Reset"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+          example:
+            error: "Rate limit exceeded"
+
   schemas:
+    HealthResponse:
+      type: object
+      required:
+        - status
+        - circuits_loaded
+      properties:
+        status:
+          type: string
+          description: Service status indicator
+          enum:
+            - ok
+          example: ok
+        circuits_loaded:
+          type: integer
+          description: Number of circuits currently pre-registered in memory
+          minimum: 0
+          example: 3
+
     ProofBundle:
       type: object
-      required: [proof_hex, gens_hex, dag_circuit_description]
+      required:
+        - proof_hex
+        - gens_hex
+        - dag_circuit_description
+      description: |
+        A self-contained proof bundle with everything needed for verification.
+        All binary fields are hex-encoded strings with an optional `0x` prefix.
       properties:
         proof_hex:
           type: string
-          description: Hex-encoded proof blob with REM1 selector prefix
-          example: "0x52454d31..."
-        gens_hex:
-          type: string
-          description: Hex-encoded Pedersen generator points
+          description: |
+            Hex-encoded proof data. Must begin with the 4-byte `REM1` selector
+            (`52454d31` in hex), followed by a 32-byte circuit hash, then the
+            serialized GKR proof body (sumcheck rounds, commitments, evaluation
+            proofs, etc.). Accepts optional `0x` prefix.
+          example: "0x52454d31f85c194e1a8e2c2e38746c6d81c7ac9ddf25848a8dfc049db7f4725b3ab56e33..."
         public_inputs_hex:
           type: string
-          description: Hex-encoded public inputs (optional, verifier uses embedded)
+          description: |
+            Hex-encoded public inputs. May be empty or omitted; the verifier
+            uses public inputs embedded within the proof itself. Provided for
+            compatibility only. Accepts optional `0x` prefix.
           default: ""
+          example: ""
+        gens_hex:
+          type: string
+          description: |
+            Hex-encoded Pedersen generators (commitment parameters). These are
+            the `g` and `h` base points used by the Hyrax polynomial commitment
+            scheme. The encoding contains BN254 G1 affine point coordinates.
+            Accepts optional `0x` prefix.
+          example: "0x0a1b2c3d..."
         dag_circuit_description:
           type: object
-          description: DAG circuit topology (numComputeLayers, layerTypes, etc.)
+          description: |
+            Structured JSON description of the DAG circuit topology. Contains
+            layer types, sumcheck round counts, atom routing tables, point
+            templates, oracle expressions, and input layer configuration.
+
+            This object is ABI-encoded internally before being passed to the
+            verifier core. The structure is circuit-specific and is typically
+            generated alongside the proof by the Remainder prover.
+          properties:
+            num_compute_layers:
+              type: integer
+              description: Number of compute (non-input) layers in the DAG
+              example: 88
+            num_input_layers:
+              type: integer
+              description: Number of input layers (committed + public)
+              example: 41
+            layer_types:
+              type: array
+              description: |
+                Per-layer type code: 0 = Add, 1 = Mul, 2 = Composite.
+                Length equals `num_compute_layers`.
+              items:
+                type: integer
+                enum: [0, 1, 2]
+            num_sumcheck_rounds:
+              type: array
+              description: Number of sumcheck rounds for each compute layer
+              items:
+                type: integer
+            atom_offsets:
+              type: array
+              description: |
+                Start indices into `atom_target_layers` for each layer's atoms.
+                Length equals `num_compute_layers + 1` (last entry is sentinel).
+              items:
+                type: integer
+            atom_target_layers:
+              type: array
+              description: Target layer index for each atom reference
+              items:
+                type: integer
+            atom_commit_idxs:
+              type: array
+              description: |
+                Commitment index within the source layer for each atom. Needed
+                when a layer has composite products where not all products
+                contribute commitments.
+              items:
+                type: integer
+            pt_offsets:
+              type: array
+              description: Start indices into `pt_data` for each layer's point templates
+              items:
+                type: integer
+            pt_data:
+              type: array
+              description: |
+                Flattened point template entries. Values below 1000 are binding
+                references (B(n)), values 20000 and above are fixed values
+                (entry - 20000). For example, 0 = B(0), 20001 = fixed value 1.
+              items:
+                type: integer
+                format: int64
+            input_is_committed:
+              type: array
+              description: |
+                Boolean per input layer: `true` if the layer uses Pedersen
+                commitments (requires Hyrax evaluation proof), `false` for
+                public (uncommitted) inputs.
+              items:
+                type: boolean
+            oracle_product_offsets:
+              type: array
+              description: |
+                Start indices for oracle product expressions per compute layer.
+              items:
+                type: integer
+            oracle_result_idxs:
+              type: array
+              description: Result index within the oracle expression for each entry
+              items:
+                type: integer
+            oracle_expr_coeffs:
+              type: array
+              description: |
+                BN254 scalar field coefficients for oracle expressions, encoded
+                as decimal or hex strings.
+              items:
+                type: string
         model_hash:
           type: string
-          description: Keccak256 of the ML model (metadata)
+          description: |
+            Keccak256 hash (hex) of the ML model used to generate the proof.
+            Optional metadata for indexing and audit trails.
+          example: "0xabcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
         timestamp:
           type: integer
-          description: Unix timestamp when proof was generated (metadata)
+          format: int64
+          description: Unix timestamp (seconds) when the proof was generated. Optional metadata.
+          example: 1711500000
         prover_version:
           type: string
-          description: Prover software version (metadata)
+          description: Version string of the prover software. Optional metadata.
+          example: "0.1.0"
         circuit_hash:
           type: string
-          description: Circuit hash hex for indexing (metadata)
+          description: |
+            Circuit hash (hex, 32 bytes). Redundant with the circuit hash
+            embedded in the proof header, but useful for indexing bundles
+            without decoding the proof blob. Optional metadata.
+          example: "0xf85c194e1a8e2c2e38746c6d81c7ac9ddf25848a8dfc049db7f4725b3ab56e33"
 
     VerifyResponse:
       type: object
+      required:
+        - verified
+        - circuit_hash
       properties:
         verified:
           type: boolean
-          description: Whether the proof passed verification
+          description: Whether the proof passed full verification (including EC checks)
         circuit_hash:
           type: string
-          description: Hex-encoded 32-byte circuit hash from proof header
-          example: "0xabcd..."
+          description: |
+            The 32-byte circuit hash extracted from the proof header,
+            hex-encoded with `0x` prefix.
+          pattern: "^0x[0-9a-f]{64}$"
+          example: "0xf85c194e1a8e2c2e38746c6d81c7ac9ddf25848a8dfc049db7f4725b3ab56e33"
 
     HybridResponse:
       type: object
+      required:
+        - circuit_hash
+        - transcript_digest
+        - num_compute_layers
       properties:
         circuit_hash:
           type: string
+          description: |
+            The 32-byte circuit hash extracted from the proof header,
+            hex-encoded with `0x` prefix.
+          pattern: "^0x[0-9a-f]{64}$"
+          example: "0xf85c194e1a8e2c2e38746c6d81c7ac9ddf25848a8dfc049db7f4725b3ab56e33"
         transcript_digest:
           type: string
-          description: Poseidon sponge digest binding the transcript state
+          description: |
+            Poseidon sponge state digest after all Fiat-Shamir transcript
+            operations (squeeze after compute + input layer verification).
+            This value is used as a public input to the on-chain Groth16
+            verifier, binding the EC-check proof to the transcript state.
+          pattern: "^0x[0-9a-f]{64}$"
+          example: "0x1a2b3c4d5e6f708192a3b4c5d6e7f80011223344556677889900aabbccddeeff"
         num_compute_layers:
           type: integer
+          description: |
+            Number of compute layers processed during transcript replay.
+            Equals the number of RLC beta values in the Fr output collector.
+            For the XGBoost sample model circuit, this is 88.
+          minimum: 0
+          example: 88
+
+    BatchVerifyRequest:
+      type: object
+      required:
+        - bundles
+      properties:
+        bundles:
+          type: array
+          description: |
+            Array of proof bundles to verify. Must contain between 1 and 100
+            bundles (inclusive). Each bundle is verified independently.
+          minItems: 1
+          maxItems: 100
+          items:
+            $ref: "#/components/schemas/ProofBundle"
 
     BatchVerifyResponse:
       type: object
+      required:
+        - results
+        - total
+        - valid
       properties:
         results:
           type: array
+          description: Per-bundle verification results, ordered by input index
           items:
-            type: object
-            properties:
-              index:
-                type: integer
-              verified:
-                type: boolean
-              circuit_hash:
-                type: string
-              error:
-                type: string
-                nullable: true
+            $ref: "#/components/schemas/BatchResultEntry"
         total:
           type: integer
+          description: Total number of bundles submitted in the batch
+          minimum: 1
+          example: 5
         valid:
           type: integer
+          description: Number of bundles that passed full verification
+          minimum: 0
+          example: 4
+
+    BatchResultEntry:
+      type: object
+      required:
+        - index
+        - verified
+        - circuit_hash
+      properties:
+        index:
+          type: integer
+          description: Zero-based index of this bundle in the input `bundles` array
+          minimum: 0
+          example: 0
+        verified:
+          type: boolean
+          description: Whether this individual proof passed verification
+        circuit_hash:
+          type: string
+          description: |
+            Circuit hash extracted from the proof header. Empty string if the
+            proof could not be decoded far enough to extract it.
+          example: "0xf85c194e1a8e2c2e38746c6d81c7ac9ddf25848a8dfc049db7f4725b3ab56e33"
+        error:
+          type: string
+          description: |
+            Error message if verification failed for this bundle. This field is
+            omitted from the JSON response when verification succeeds.
+          example: "invalid selector (expected REM1)"
+
+    RegisterCircuitRequest:
+      type: object
+      required:
+        - circuit_id
+        - gens_hex
+        - dag_circuit_description
+      properties:
+        circuit_id:
+          type: string
+          description: |
+            Unique identifier for this circuit registration. Must be non-empty.
+            If a circuit with this ID already exists, it is overwritten.
+          minLength: 1
+          example: xgboost-sample-model
+        gens_hex:
+          type: string
+          description: |
+            Hex-encoded Pedersen generators for this circuit. Same format as
+            `ProofBundle.gens_hex`.
+          example: "0x0a1b2c3d..."
+        dag_circuit_description:
+          type: object
+          description: |
+            DAG circuit description JSON. Same schema as
+            `ProofBundle.dag_circuit_description`.
+
+    RegisterResponse:
+      type: object
+      required:
+        - circuit_id
+        - status
+      properties:
+        circuit_id:
+          type: string
+          description: The circuit ID that was registered
+          example: xgboost-sample-model
+        status:
+          type: string
+          description: Registration outcome
+          enum:
+            - registered
+          example: registered
+
+    CircuitListResponse:
+      type: object
+      required:
+        - circuits
+      properties:
+        circuits:
+          type: array
+          description: |
+            List of all registered circuit IDs. Order is not guaranteed
+            (backed by a HashMap).
+          items:
+            type: string
+          example:
+            - xgboost-sample-model
+            - logistic-regression-v2
+
+    WarmVerifyRequest:
+      type: object
+      required:
+        - proof_hex
+      properties:
+        proof_hex:
+          type: string
+          description: |
+            Hex-encoded proof data (same format as `ProofBundle.proof_hex`).
+            Must begin with the `REM1` selector. Accepts optional `0x` prefix.
+          example: "0x52454d31f85c194e..."
+        public_inputs_hex:
+          type: string
+          description: |
+            Hex-encoded public inputs. Optional; defaults to empty string.
+            The verifier uses inputs embedded in the proof itself.
+          default: ""
+          example: ""
 
     ErrorResponse:
       type: object
+      required:
+        - error
       properties:
         error:
           type: string
-          description: Error message
+          description: Human-readable error message describing the failure
+          example: "invalid proof: proof too short"
