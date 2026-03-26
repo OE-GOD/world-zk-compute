@@ -61,7 +61,7 @@ impl TenantStore {
     /// Load tenants from a JSON file. If the file doesn't exist, starts empty.
     pub fn load(path: &str) -> Self {
         let file_path = PathBuf::from(path);
-        let mut store = Self {
+        let store = Self {
             tenants_by_key: RwLock::new(HashMap::new()),
             id_to_key: RwLock::new(HashMap::new()),
             file_path: Some(file_path.clone()),
