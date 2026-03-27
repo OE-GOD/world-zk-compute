@@ -33,6 +33,7 @@
 //! | `GATEWAY_API_KEYS` | Comma-separated API keys (optional)      | (none = no auth)         |
 
 mod logging;
+mod metering;
 
 use std::collections::HashMap;
 use std::env;
@@ -118,6 +119,7 @@ impl GatewayConfig {
 struct GatewayState {
     config: Arc<GatewayConfig>,
     client: reqwest::Client,
+    metering: Arc<metering::MeteringStore>,
 }
 
 // ---------------------------------------------------------------------------
@@ -421,9 +423,9 @@ async fn auth_middleware(
         return Ok(next.run(req).await);
     }
 
-    // Health endpoints are always public.
+    // Health and admin endpoints are always public.
     let path = req.uri().path();
-    if path == "/health" || path.starts_with("/health/") {
+    if path == "/health" || path.starts_with("/health/") || path.starts_with("/admin/") {
         return Ok(next.run(req).await);
     }
 
@@ -477,17 +479,26 @@ fn build_app(state: GatewayState) -> Router {
     // stripped before forwarding to backend services.
     //
     // Layer ordering (bottom-up — last `.layer()` call runs first):
-    //   1. request_logger  — outermost: captures total latency including auth
-    //   2. TraceLayer       — tower-http span tracing
-    //   3. CorsLayer        — CORS headers
-    //   4. auth_middleware   — API-key gating
+    //   1. request_logger     — outermost: captures total latency including auth
+    //   2. TraceLayer         — tower-http span tracing
+    //   3. CorsLayer          — CORS headers
+    //   4. metering_middleware — usage counting (after auth, so only authed reqs counted)
+    //   5. auth_middleware     — API-key gating
     Router::new()
         .route("/health", get(health_aggregate))
         .route("/health/:service", get(health_single))
+        .route(
+            "/admin/usage",
+            get(metering::usage_handler).with_state(state.metering.clone()),
+        )
         .fallback(proxy_handler)
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
+        ))
+        .layer(middleware::from_fn_with_state(
+            state.metering.clone(),
+            metering::metering_middleware,
         ))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
@@ -505,6 +516,7 @@ fn build_state(config: GatewayConfig) -> GatewayState {
     GatewayState {
         config: Arc::new(config),
         client,
+        metering: Arc::new(metering::MeteringStore::new()),
     }
 }
 

@@ -28,6 +28,7 @@ pub struct RegistryClient {
     client: reqwest::Client,
 }
 
+#[allow(dead_code)]
 impl RegistryClient {
     /// Create a new registry client pointing at the given base URL.
     pub fn new(url: String) -> Self {

@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "sdk",
+    "cli",
     "crates/watcher",
     "crates/events",
     "crates/zkml-verifier",

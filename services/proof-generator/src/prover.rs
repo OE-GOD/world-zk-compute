@@ -307,6 +307,7 @@ impl ProverManager {
     /// Remove a prover instance for the given model.
     ///
     /// In managed mode, this kills the child process.
+    #[allow(dead_code)]
     pub async fn remove_prover(&self, model_id: &str) {
         if let Some(handle) = self.provers.write().await.remove(model_id) {
             // In managed mode, the child process will be dropped and killed

@@ -63,6 +63,7 @@ impl ProofDb {
     /// [`ProofDb::with_storage`] instead.
     ///
     /// Creates the schema if it doesn't exist.
+    #[allow(dead_code)] // Used in tests
     pub fn new(db_path: &str, storage_dir: &str) -> Result<Self, String> {
         let local = LocalStorage::new(storage_dir)
             .map_err(|e| format!("failed to create local storage: {e}"))?;
@@ -116,6 +117,7 @@ impl ProofDb {
     }
 
     /// Return a reference to the underlying storage backend.
+    #[allow(dead_code)]
     pub fn storage(&self) -> &dyn ProofStorage {
         self.blob_store.as_ref()
     }

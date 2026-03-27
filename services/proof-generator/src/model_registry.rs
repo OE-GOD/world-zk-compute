@@ -67,6 +67,7 @@ pub struct ModelRegistry {
     names: Arc<RwLock<HashMap<String, NameEntry>>>,
 }
 
+#[allow(dead_code)]
 impl ModelRegistry {
     /// Create a new registry wrapping the given store.
     ///
@@ -109,6 +110,7 @@ impl ModelRegistry {
     }
 
     /// Access the underlying store (e.g., for `get_model` to retrieve raw JSON).
+    #[allow(dead_code)]
     pub fn store(&self) -> &ModelStore {
         &self.store
     }
@@ -356,6 +358,7 @@ impl ModelRegistry {
     }
 
     /// Get the currently active model for a given name.
+    #[allow(dead_code)]
     pub async fn get_active_model(&self, name: &str) -> Option<LoadedModel> {
         let names = self.names.read().await;
         let entry = names.get(name)?;
@@ -371,6 +374,7 @@ impl ModelRegistry {
     }
 
     /// Get version info for a specific model ID.
+    #[allow(dead_code)]
     pub async fn get_version_info(&self, id: &str) -> Option<VersionInfo> {
         let model = self.store.get_model(id).await?;
         let names = self.names.read().await;

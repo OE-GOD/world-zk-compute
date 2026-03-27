@@ -52,6 +52,7 @@ pub struct ModelStore {
     models: Arc<RwLock<HashMap<String, LoadedModel>>>,
 }
 
+#[allow(dead_code)]
 impl ModelStore {
     /// Create a new model store rooted at `storage_dir`.
     ///
@@ -124,6 +125,7 @@ impl ModelStore {
     /// The model JSON is written to disk, and the in-memory index is updated.
     /// Format is auto-detected if not provided. The `circuit_hash` is left as
     /// a placeholder until the real prover is integrated.
+    #[allow(dead_code)]
     pub async fn add_model(
         &self,
         name: String,

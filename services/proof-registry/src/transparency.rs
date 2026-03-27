@@ -169,6 +169,7 @@ impl TransparencyLog {
     }
 
     /// Get a log entry by index.
+    #[allow(dead_code)]
     pub fn get_entry(&self, index: u64) -> Result<Option<LogEntry>, String> {
         self.conn
             .query_row(
@@ -246,6 +247,7 @@ impl TransparencyLog {
     }
 
     /// Check if the log database is healthy.
+    #[allow(dead_code)]
     pub fn is_healthy(&self) -> bool {
         self.conn.query_row("SELECT 1", [], |_| Ok(())).is_ok()
     }
