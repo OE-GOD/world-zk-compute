@@ -243,10 +243,7 @@ async fn cmd_models(client: &reqwest::Client, url: &str) -> Result<(), String> {
     let models = result["models"].as_array();
     let count = models.map(|m| m.len()).unwrap_or(0);
 
-    println!(
-        "{}",
-        format!("Models ({count} registered):").cyan().bold()
-    );
+    println!("{}", format!("Models ({count} registered):").cyan().bold());
 
     if let Some(models) = models {
         if models.is_empty() {
@@ -288,10 +285,7 @@ async fn cmd_prove(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    println!(
-        "{}",
-        "Generating proof (this may take a while)...".dimmed()
-    );
+    println!("{}", "Generating proof (this may take a while)...".dimmed());
 
     let body = serde_json::json!({ "model_id": model_id, "features": features });
     let resp = client
@@ -394,10 +388,7 @@ async fn cmd_receipt(client: &reqwest::Client, url: &str, proof_id: &str) -> Res
         "circuit_hash",
         result["circuit_hash"].as_str().unwrap_or("?"),
     );
-    kv(
-        "model_hash",
-        result["model_hash"].as_str().unwrap_or("?"),
-    );
+    kv("model_hash", result["model_hash"].as_str().unwrap_or("?"));
     kv("timestamp", result["timestamp"].as_str().unwrap_or("?"));
     kv("signature", result["signature"].as_str().unwrap_or("?"));
 
@@ -446,7 +437,13 @@ async fn cmd_proofs(
                 None => "pending".yellow().to_string(),
             };
 
-            println!("  {} | model={} | {} | {}", id.bold(), model_hash, status, ts);
+            println!(
+                "  {} | model={} | {} | {}",
+                id.bold(),
+                model_hash,
+                status,
+                ts
+            );
         }
     }
 
