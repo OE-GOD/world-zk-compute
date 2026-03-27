@@ -1,0 +1,32 @@
+app = "worldzk-gateway"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  GATEWAY_PORT = "8080"
+  VERIFIER_URL = "https://worldzk-verifier.fly.dev"
+  REGISTRY_URL = "https://worldzk-registry.fly.dev"
+  GENERATOR_URL = "https://worldzk-generator.fly.dev"
+  RUST_LOG = "info"
+  LOG_FORMAT = "json"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[http_service.checks]]
+  grace_period = "10s"
+  interval = "30s"
+  method = "GET"
+  path = "/health"
+  timeout = "5s"
+
+[vm]
+  memory = "256mb"
+  cpu_kind = "shared"
+  cpus = 1

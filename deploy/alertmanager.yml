@@ -5,43 +5,37 @@
 
 global:
   resolve_timeout: 5m
+  slack_api_url: '${SLACK_WEBHOOK_URL}'
 
 route:
-  receiver: default
-  group_by: ['alertname', 'service']
+  receiver: 'slack-critical'
+  group_by: ['alertname']
   group_wait: 30s
   group_interval: 5m
   repeat_interval: 4h
-
   routes:
     - match:
         severity: critical
-      receiver: pagerduty
-      continue: true
-
+      receiver: 'slack-critical'
     - match:
         severity: warning
-      receiver: slack
+      receiver: 'slack-warning'
 
 receivers:
-  - name: default
+  - name: 'slack-critical'
     slack_configs:
-      - api_url: '${SLACK_WEBHOOK_URL}'
-        channel: '#worldzk-alerts'
+      - channel: '#worldzk-alerts'
         title: '{{ .GroupLabels.alertname }}'
-        text: '{{ range .Alerts }}{{ .Annotations.summary }}{{ end }}'
-
-  - name: slack
-    slack_configs:
-      - api_url: '${SLACK_WEBHOOK_URL}'
-        channel: '#worldzk-alerts'
-        title: '[{{ .Status | toUpper }}] {{ .GroupLabels.alertname }}'
         text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
-
-  - name: pagerduty
+        send_resolved: true
     pagerduty_configs:
       - service_key: '${PAGERDUTY_SERVICE_KEY}'
         description: '{{ .GroupLabels.alertname }}: {{ range .Alerts }}{{ .Annotations.summary }}{{ end }}'
+
+  - name: 'slack-warning'
+    slack_configs:
+      - channel: '#worldzk-warnings'
+        send_resolved: true
 
 # Alert rules (for Prometheus)
 # Save as prometheus-alerts.yml and include in prometheus.yml
@@ -73,3 +67,30 @@ receivers:
 #           severity: warning
 #         annotations:
 #           summary: "Verification latency >10s (p95)"
+#
+#       - alert: HighDisputeRate
+#         expr: rate(operator_challenges_detected[1h]) > 5
+#         for: 5m
+#         labels:
+#           severity: warning
+#         annotations:
+#           summary: "High dispute rate detected"
+#           description: "More than 5 challenges per hour. Investigate for griefing or systemic failures."
+#
+#       - alert: DisputeResolutionFailed
+#         expr: increase(operator_disputes_failed[15m]) > 0
+#         for: 0m
+#         labels:
+#           severity: critical
+#         annotations:
+#           summary: "Dispute resolution failed"
+#           description: "A dispute resolution transaction failed. Stake may be at risk if the 24-hour deadline passes."
+#
+#       - alert: TenantUsageSpike
+#         expr: increase(worldzk_proofs_generated_total[1h]) > 1000
+#         for: 5m
+#         labels:
+#           severity: warning
+#         annotations:
+#           summary: "Unusual proof volume spike"
+#           description: "More than 1000 proofs generated in the last hour. Check for abuse."
