@@ -715,16 +715,19 @@ fn build_router(state: Arc<AppState>, enable_cors: bool) -> Router {
 }
 
 // ---------------------------------------------------------------------------
-// Entry point
+// Structured logging
 // ---------------------------------------------------------------------------
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let log_format = std::env::var("LOG_FORMAT").unwrap_or_else(|_| "json".into());
+/// Initialise the `tracing_subscriber` with structured JSON output.
+///
+/// - `LOG_FORMAT` (default `"json"`) selects between JSON and human-readable output.
+/// - `RUST_LOG` / default `"info"` controls the log level.
+fn init_tracing() {
+    let format = std::env::var("LOG_FORMAT").unwrap_or_else(|_| "json".into());
     let filter =
         tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
 
-    match log_format.as_str() {
+    match format.as_str() {
         "json" => {
             tracing_subscriber::fmt()
                 .json()
@@ -735,6 +738,15 @@ async fn main() -> anyhow::Result<()> {
             tracing_subscriber::fmt().with_env_filter(filter).init();
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    init_tracing();
 
     let cli = Cli::parse();
 

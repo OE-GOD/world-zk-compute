@@ -41,6 +41,14 @@ pub async fn request_logger(req: Request, next: Next) -> Response {
 
     let request_id = uuid::Uuid::new_v4().to_string();
 
+    // Inject the request ID into the request headers so that downstream
+    // handlers (e.g. the proxy) can forward it to backend services.  This
+    // allows end-to-end tracing across gateway -> verifier/registry/generator.
+    let mut req = req;
+    if let Ok(val) = HeaderValue::from_str(&request_id) {
+        req.headers_mut().insert(REQUEST_ID_HEADER, val);
+    }
+
     let start = Instant::now();
     let mut response = next.run(req).await;
     let latency = start.elapsed();
