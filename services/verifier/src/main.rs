@@ -427,37 +427,63 @@ fn build_app_with_config(config: ServiceConfig) -> Router {
         .layer(CorsLayer::permissive())
 }
 
+/// Initialise the `tracing_subscriber` with structured JSON output.
+///
+/// - `LOG_FORMAT` (default `"json"`) selects between JSON and human-readable output.
+/// - `RUST_LOG` / default `"info"` controls the log level.
+fn init_tracing() {
+    let format = std::env::var("LOG_FORMAT").unwrap_or_else(|_| "json".into());
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
+    match format.as_str() {
+        "json" => {
+            tracing_subscriber::fmt()
+                .json()
+                .with_env_filter(filter)
+                .init();
+        }
+        _ => {
+            tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .init();
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
+    init_tracing();
+
     let config = ServiceConfig::from_env();
     let _ = CIRCUIT_TTL.set(config.circuit_ttl_secs);
     let tls_config = tls::TlsConfig::from_env().unwrap_or_else(|e| {
-        eprintln!("TLS configuration error: {e}");
+        tracing::error!("TLS configuration error: {e}");
         std::process::exit(1);
     });
     let addr = format!("0.0.0.0:{}", config.port);
 
     if config.auth_enabled() {
-        eprintln!(
-            "API key auth enabled ({} legacy key(s) configured)",
-            config.api_keys.len()
+        tracing::info!(
+            key_count = config.api_keys.len(),
+            "API key auth enabled (legacy keys configured)"
         );
     } else {
-        eprintln!("Legacy API key auth disabled (no VERIFIER_API_KEYS set)");
+        tracing::info!("Legacy API key auth disabled (no VERIFIER_API_KEYS set)");
     }
     if config.admin_enabled() {
-        eprintln!("Admin API enabled (VERIFIER_ADMIN_KEY set)");
+        tracing::info!("Admin API enabled (VERIFIER_ADMIN_KEY set)");
     } else {
-        eprintln!("Admin API disabled (no VERIFIER_ADMIN_KEY set)");
+        tracing::info!("Admin API disabled (no VERIFIER_ADMIN_KEY set)");
     }
     if config.tenant_persistence_enabled() {
-        eprintln!("Tenant persistence: {}", config.tenant_file);
+        tracing::info!(path = %config.tenant_file, "Tenant persistence enabled");
     } else {
-        eprintln!("Tenant persistence: in-memory only");
+        tracing::info!("Tenant persistence: in-memory only");
     }
-    eprintln!(
-        "Default rate limit: {} requests/minute",
-        config.rate_limit_rpm
+    tracing::info!(
+        rate_limit_rpm = config.rate_limit_rpm,
+        "Default rate limit configured"
     );
 
     let app = build_app_with_config(config);
@@ -465,24 +491,24 @@ async fn main() {
     if let Some(tls) = tls_config {
         let mtls_enabled = tls.is_mtls();
         let rustls_config = tls.into_rustls_config().await.unwrap_or_else(|e| {
-            eprintln!("Failed to load TLS certificates: {e}");
+            tracing::error!("Failed to load TLS certificates: {e}");
             std::process::exit(1);
         });
         if mtls_enabled {
-            eprintln!("TLS enabled with mutual TLS (mTLS) client verification");
+            tracing::info!("TLS enabled with mutual TLS (mTLS) client verification");
         } else {
-            eprintln!("TLS enabled");
+            tracing::info!("TLS enabled");
         }
-        eprintln!("zkml-verifier-service listening on https://{addr}");
+        tracing::info!(addr = %addr, "zkml-verifier-service listening (HTTPS)");
         let addr: std::net::SocketAddr = addr.parse().unwrap();
         axum_server::bind_rustls(addr, rustls_config)
             .serve(app.into_make_service())
             .await
             .unwrap();
     } else {
-        eprintln!("TLS disabled (set VERIFIER_TLS_CERT and VERIFIER_TLS_KEY to enable)");
+        tracing::info!("TLS disabled (set VERIFIER_TLS_CERT and VERIFIER_TLS_KEY to enable)");
         let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-        eprintln!("zkml-verifier-service listening on http://{addr}");
+        tracing::info!(addr = %addr, "zkml-verifier-service listening (HTTP)");
         axum::serve(listener, app).await.unwrap();
     }
 }

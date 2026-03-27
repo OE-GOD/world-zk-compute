@@ -25,7 +25,7 @@ tower-http = { workspace = true, features = ["cors"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 k256 = { version = "0.13", features = ["ecdsa"] }
 sha2 = { workspace = true }
 rand_core = { version = "0.6", features = ["getrandom"] }

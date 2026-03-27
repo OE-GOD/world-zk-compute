@@ -126,7 +126,8 @@ pub fn init_tracing_with_config(config: &TracingConfig) {
     let filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.log_level));
 
-    let json_format = std::env::var("RUST_LOG_FORMAT")
+    let json_format = std::env::var("LOG_FORMAT")
+        .or_else(|_| std::env::var("RUST_LOG_FORMAT"))
         .map(|v| v == "json")
         .unwrap_or(false);
 

@@ -66,9 +66,33 @@ fn build_app_with_state(state: Arc<AppState>) -> Router {
         .layer(CorsLayer::permissive())
 }
 
+/// Initialise the `tracing_subscriber` with structured JSON output.
+///
+/// - `LOG_FORMAT` (default `"json"`) selects between JSON and human-readable output.
+/// - `RUST_LOG` / default `"info"` controls the log level.
+fn init_tracing() {
+    let format = std::env::var("LOG_FORMAT").unwrap_or_else(|_| "json".into());
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
+    match format.as_str() {
+        "json" => {
+            tracing_subscriber::fmt()
+                .json()
+                .with_env_filter(filter)
+                .init();
+        }
+        _ => {
+            tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .init();
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt::init();
+    init_tracing();
 
     let port: u16 = env::var("PORT")
         .ok()
@@ -108,63 +132,66 @@ async fn main() {
                 let s3 = s3::S3Storage::new(&bucket, &region, &mode, years, &prefix)
                     .await
                     .unwrap_or_else(|e| {
-                        eprintln!("Failed to initialize S3 storage: {e}");
+                        tracing::error!("Failed to initialize S3 storage: {e}");
                         std::process::exit(1);
                     });
 
-                eprintln!(
-                    "Storage backend: S3 (bucket={bucket}, region={region}, \
-                     mode={mode}, retention={years}y)"
+                tracing::info!(
+                    bucket = %bucket,
+                    region = %region,
+                    mode = %mode,
+                    retention_years = years,
+                    "Storage backend: S3"
                 );
                 Arc::new(s3) as Arc<dyn storage::ProofStorage>
             } else {
                 let local = storage::LocalStorage::new(&storage_dir).unwrap_or_else(|e| {
-                    eprintln!("Failed to initialize local storage: {e}");
+                    tracing::error!("Failed to initialize local storage: {e}");
                     std::process::exit(1);
                 });
-                eprintln!("Storage backend: local (dir={})", storage_dir);
+                tracing::info!(dir = %storage_dir, "Storage backend: local");
                 Arc::new(local) as Arc<dyn storage::ProofStorage>
             }
         }
         #[cfg(not(feature = "s3"))]
         {
             let local = storage::LocalStorage::new(&storage_dir).unwrap_or_else(|e| {
-                eprintln!("Failed to initialize local storage: {e}");
+                tracing::error!("Failed to initialize local storage: {e}");
                 std::process::exit(1);
             });
-            eprintln!("Storage backend: local (dir={})", storage_dir);
+            tracing::info!(dir = %storage_dir, "Storage backend: local");
             Arc::new(local) as Arc<dyn storage::ProofStorage>
         }
     };
 
     let db = ProofDb::with_storage(&db_path, blob_store).unwrap_or_else(|e| {
-        eprintln!("Failed to initialize database: {e}");
+        tracing::error!("Failed to initialize database: {e}");
         std::process::exit(1);
     });
 
     let tlog_path =
         env::var("TRANSPARENCY_DB_PATH").unwrap_or_else(|_| "./transparency.db".to_string());
     let tlog = transparency::TransparencyLog::new(&tlog_path).unwrap_or_else(|e| {
-        eprintln!("Failed to initialize transparency log: {e}");
+        tracing::error!("Failed to initialize transparency log: {e}");
         std::process::exit(1);
     });
 
     let signing_key_path =
         env::var("REGISTRY_KEY_FILE").unwrap_or_else(|_| "./registry_signing_key.hex".to_string());
     let signing_key = sign::load_or_generate_key(&signing_key_path).unwrap_or_else(|e| {
-        eprintln!("Failed to load signing key: {e}");
+        tracing::error!("Failed to load signing key: {e}");
         std::process::exit(1);
     });
 
     let vk_hex = sign::verifying_key_hex(&sign::verifying_key(&signing_key));
-    eprintln!("Receipt signing public key: {vk_hex}");
+    tracing::info!(public_key = %vk_hex, "Receipt signing key loaded");
 
     if api_keys.is_empty() {
-        eprintln!("API key auth disabled (no REGISTRY_API_KEYS set)");
+        tracing::info!("API key auth disabled (no REGISTRY_API_KEYS set)");
     } else {
-        eprintln!(
-            "API key auth enabled ({} key(s) configured)",
-            api_keys.len()
+        tracing::info!(
+            key_count = api_keys.len(),
+            "API key auth enabled"
         );
     }
 
@@ -177,7 +204,7 @@ async fn main() {
 
     let app = build_app_with_state(state);
     let addr = format!("0.0.0.0:{port}");
-    eprintln!("Proof registry listening on {addr}");
+    tracing::info!(addr = %addr, "Proof registry listening");
 
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();

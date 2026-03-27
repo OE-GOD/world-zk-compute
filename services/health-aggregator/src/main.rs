@@ -126,7 +126,23 @@ fn parse_services(env_val: &str) -> Vec<(String, String)> {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt::init();
+    let log_format = std::env::var("LOG_FORMAT").unwrap_or_else(|_| "json".into());
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
+    match log_format.as_str() {
+        "json" => {
+            tracing_subscriber::fmt()
+                .json()
+                .with_env_filter(filter)
+                .init();
+        }
+        _ => {
+            tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .init();
+        }
+    }
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "8090".to_string());
     let poll_interval: u64 = std::env::var("POLL_INTERVAL_SECS")
