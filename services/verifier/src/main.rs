@@ -357,6 +357,64 @@ async fn verify_batch(
     }))
 }
 
+// -- Self-service onboarding --
+
+#[derive(Deserialize)]
+struct OnboardRequest {
+    /// Company or project name.
+    name: String,
+    /// Contact email.
+    email: String,
+}
+
+#[derive(Serialize)]
+struct OnboardResponse {
+    /// Generated tenant ID.
+    tenant_id: String,
+    /// Generated API key (show once — cannot be retrieved later).
+    api_key: String,
+    /// Quick start instructions.
+    quickstart: String,
+}
+
+/// POST /onboard — self-service tenant signup.
+///
+/// Creates a tenant with default rate limits and returns an API key.
+/// No admin key required — this is the public signup endpoint.
+async fn onboard(
+    State(store): State<Arc<TenantStore>>,
+    Json(req): Json<OnboardRequest>,
+) -> Result<Json<OnboardResponse>, (StatusCode, Json<ErrorResponse>)> {
+    if req.name.trim().is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "name is required".into()));
+    }
+    if req.email.trim().is_empty() || !req.email.contains('@') {
+        return Err(err(StatusCode::BAD_REQUEST, "valid email is required".into()));
+    }
+
+    // Create tenant with default limits (60 RPM)
+    let tenant = store
+        .create(&req.name, 60)
+        .map_err(|e| err(StatusCode::CONFLICT, e))?;
+
+    tracing::info!(
+        tenant_id = %tenant.id,
+        name = %req.name,
+        email = %req.email,
+        "New tenant onboarded"
+    );
+
+    Ok(Json(OnboardResponse {
+        tenant_id: tenant.id.clone(),
+        api_key: tenant.api_key.clone(),
+        quickstart: format!(
+            "curl -X POST {url}/verify \\\n  -H 'Authorization: Bearer {key}' \\\n  -H 'Content-Type: application/json' \\\n  -d @proof_bundle.json",
+            url = "https://api.worldzk.io",
+            key = tenant.api_key,
+        ),
+    }))
+}
+
 // -- OpenAPI / Swagger UI --
 
 /// Serve the OpenAPI spec as JSON.
@@ -485,6 +543,7 @@ fn build_app_with_config(config: ServiceConfig) -> Router {
         AuthState::new(config.api_keys.clone()).with_tenant_store(tenant_store.clone());
     let rate_limit_state =
         RateLimitState::new(config.rate_limit_rpm).with_tenant_store(tenant_store.clone());
+    let tenant_store_for_onboard = tenant_store.clone();
 
     // Protected endpoints: auth + rate limit layers applied.
     let protected = Router::new()
@@ -520,7 +579,11 @@ fn build_app_with_config(config: ServiceConfig) -> Router {
         ))
         .with_state(tenant_store);
 
-    // Health + docs endpoints: public, no auth or rate limiting.
+    // Health + docs + onboarding endpoints: public, no auth or rate limiting.
+    let onboard_router = Router::new()
+        .route("/onboard", post(onboard))
+        .with_state(tenant_store_for_onboard);
+
     let public_router = Router::new()
         .route("/health", get(health))
         .route("/openapi.json", get(openapi_json))
@@ -529,6 +592,7 @@ fn build_app_with_config(config: ServiceConfig) -> Router {
 
     Router::new()
         .merge(public_router)
+        .merge(onboard_router)
         .merge(protected)
         .merge(admin_router)
         .layer(CorsLayer::permissive())
