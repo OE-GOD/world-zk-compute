@@ -357,6 +357,41 @@ async fn verify_batch(
     }))
 }
 
+// -- OpenAPI / Swagger UI --
+
+/// Serve the OpenAPI spec as JSON.
+async fn openapi_json() -> impl axum::response::IntoResponse {
+    let spec = include_str!("../openapi.yaml");
+    (
+        StatusCode::OK,
+        [("content-type", "application/x-yaml")],
+        spec,
+    )
+}
+
+/// Serve a minimal Swagger UI page that loads the spec from /openapi.json.
+async fn swagger_ui() -> impl axum::response::IntoResponse {
+    let html = r#"<!DOCTYPE html>
+<html>
+<head>
+  <title>ZKML Verifier API</title>
+  <link rel="stylesheet" type="text/css" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script>
+    SwaggerUIBundle({ url: '/openapi.json', dom_id: '#swagger-ui' });
+  </script>
+</body>
+</html>"#;
+    (
+        StatusCode::OK,
+        [("content-type", "text/html; charset=utf-8")],
+        html,
+    )
+}
+
 // -- Compare endpoint --
 
 #[derive(Deserialize)]
@@ -485,13 +520,15 @@ fn build_app_with_config(config: ServiceConfig) -> Router {
         ))
         .with_state(tenant_store);
 
-    // Health endpoint: public, no auth or rate limiting.
-    let health_router = Router::new()
+    // Health + docs endpoints: public, no auth or rate limiting.
+    let public_router = Router::new()
         .route("/health", get(health))
+        .route("/openapi.json", get(openapi_json))
+        .route("/docs", get(swagger_ui))
         .with_state(circuit_store);
 
     Router::new()
-        .merge(health_router)
+        .merge(public_router)
         .merge(protected)
         .merge(admin_router)
         .layer(CorsLayer::permissive())

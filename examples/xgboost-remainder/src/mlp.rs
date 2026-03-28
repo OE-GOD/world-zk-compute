@@ -1484,11 +1484,11 @@ mod tests {
             .expect("Failed to generate Hyrax-provable circuit");
 
         let pedersen_committer =
-            PedersenCommitter::new(512, "mlp-circuit Pedersen committer", None);
+            PedersenCommitter::new(512, "mlp-native-circuit Pedersen committer", None);
         let mut blinding_rng = thread_rng();
         let mut vandermonde = VandermondeInverse::new();
         let mut prover_transcript: ECTranscript<Bn256Point, PoseidonSponge<Fq>> =
-            ECTranscript::new("mlp-circuit prover transcript");
+            ECTranscript::new("mlp-native-circuit prover transcript");
 
         let (proof, proof_config) = perform_function_under_prover_config!(
             |w, x, y, z| hyrax_provable.prove(w, x, y, z),
@@ -1504,9 +1504,9 @@ mod tests {
             .expect("Failed to generate Hyrax-verifiable circuit");
 
         let verifier_pedersen_committer =
-            PedersenCommitter::new(512, "mlp-circuit Pedersen committer", None);
+            PedersenCommitter::new(512, "mlp-native-circuit Pedersen committer", None);
         let mut verifier_transcript: ECTranscript<Bn256Point, PoseidonSponge<Fq>> =
-            ECTranscript::new("mlp-circuit prover transcript");
+            ECTranscript::new("mlp-native-circuit prover transcript");
 
         perform_function_under_verifier_config!(
             verify_hyrax_proof,
