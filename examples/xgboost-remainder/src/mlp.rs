@@ -895,13 +895,12 @@ fn sum_per_neuron(
     n_out: usize,
     n_in: usize,
 ) -> NodeRef<Fr> {
-    let out_nv = n_out.trailing_zeros() as usize;
+    let _out_nv = n_out.trailing_zeros() as usize;
     let in_nv = n_in.trailing_zeros() as usize;
 
     // Pairwise reduction within each neuron's block of n_in values
     let mut current = products.clone();
     let mut current_block_size = n_in;
-    let mut current_total_nv = model::next_log2(n_out * n_in);
 
     for _level in (0..in_nv).rev() {
         let half_block = current_block_size / 2;
@@ -925,7 +924,6 @@ fn sum_per_neuron(
         current = builder.add_sector(even.expr() + odd.expr());
 
         current_block_size = half_block;
-        current_total_nv = new_nv;
     }
 
     // current now has n_out values (one dot product per neuron)
@@ -1450,7 +1448,7 @@ mod tests {
 
         // Set committed inputs
         prover_circuit.set_input("features", inputs.features_quantized.clone().into());
-        for (r, layer_idx) in inputs.relu_layer_indices.iter().enumerate() {
+        for (r, _layer_idx) in inputs.relu_layer_indices.iter().enumerate() {
             prover_circuit.set_input(
                 &format!("decomp_bits_{}", r),
                 inputs.relu_decomp_bits[r].clone().into(),
