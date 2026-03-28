@@ -20,6 +20,7 @@ pub mod s3;
 pub mod sign;
 pub mod storage;
 mod transparency;
+pub mod webhook;
 
 use std::env;
 use std::sync::Arc;
@@ -52,6 +53,9 @@ fn build_app_with_state(state: Arc<AppState>) -> Router {
         )
         .route("/transparency/verify", post(routes::transparency_verify))
         .route("/transparency/entries", get(routes::transparency_entries))
+        .route("/webhooks", post(routes::register_webhook))
+        .route("/webhooks", get(routes::list_webhooks))
+        .route("/webhooks/:id", delete(routes::delete_webhook))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             routes::auth_middleware,
@@ -195,6 +199,7 @@ async fn main() {
         transparency_log: Mutex::new(tlog),
         signing_key,
         api_keys,
+        webhooks: webhook::WebhookStore::new(),
     });
 
     let app = build_app_with_state(state);
@@ -231,6 +236,7 @@ mod tests {
             transparency_log: Mutex::new(tlog),
             signing_key,
             api_keys: vec![],
+            webhooks: webhook::WebhookStore::new(),
         })
     }
 
@@ -456,6 +462,7 @@ mod tests {
             transparency_log: Mutex::new(tlog),
             signing_key,
             api_keys: vec!["test-key-123".to_string()],
+            webhooks: webhook::WebhookStore::new(),
         });
 
         let app = build_app_with_state(state);

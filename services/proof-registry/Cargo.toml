@@ -30,6 +30,7 @@ k256 = { version = "0.13", features = ["ecdsa"] }
 sha2 = { workspace = true }
 rand_core = { version = "0.6", features = ["getrandom"] }
 async-trait = "0.1"
+reqwest = { version = "0.12", features = ["json"] }
 aws-sdk-s3 = { version = "1", optional = true }
 aws-config = { version = "1", features = ["behavior-version-latest"], optional = true }
 

@@ -21,6 +21,7 @@ pub struct AppState {
     pub transparency_log: Mutex<TransparencyLog>,
     pub signing_key: SigningKey,
     pub api_keys: Vec<String>,
+    pub webhooks: crate::webhook::WebhookStore,
 }
 
 // -- Request/Response types --
@@ -495,6 +496,50 @@ pub async fn auth_middleware(
     }
 }
 
+// -- Webhook routes --
+
+#[derive(Deserialize)]
+pub struct RegisterWebhookRequest {
+    pub url: String,
+    #[serde(default)]
+    pub events: Vec<String>,
+}
+
+pub async fn register_webhook(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<RegisterWebhookRequest>,
+) -> Result<(StatusCode, Json<serde_json::Value>), (StatusCode, Json<serde_json::Value>)> {
+    if req.url.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "url is required"})),
+        ));
+    }
+    let id = state.webhooks.register(&req.url, req.events);
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({"id": id, "status": "registered"})),
+    ))
+}
+
+pub async fn list_webhooks(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
+    let hooks = state.webhooks.list();
+    Json(serde_json::json!({"webhooks": hooks, "count": hooks.len()}))
+}
+
+pub async fn delete_webhook(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> StatusCode {
+    if state.webhooks.unregister(&id) {
+        StatusCode::OK
+    } else {
+        StatusCode::NOT_FOUND
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -550,6 +595,7 @@ mod tests {
             transparency_log: Mutex::new(tlog),
             signing_key,
             api_keys: vec![],
+            webhooks: crate::webhook::WebhookStore::new(),
         })
     }
 
