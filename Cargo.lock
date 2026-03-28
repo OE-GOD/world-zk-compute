@@ -925,10 +925,13 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "chrono",
+ "hex",
+ "hmac",
  "http-body-util",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "tower",
  "tower-http",

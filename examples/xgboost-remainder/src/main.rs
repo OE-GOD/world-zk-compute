@@ -21,6 +21,7 @@ mod circuit;
 mod detect;
 mod lightgbm;
 mod logistic_regression;
+mod mlp;
 mod model;
 mod proof_abi;
 mod random_forest;
@@ -151,8 +152,9 @@ async fn main() -> Result<()> {
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
             lr.to_xgboost_model()
         }
+        "mlp" => mlp::load_mlp_json(&cli.model).map_err(|e| anyhow::anyhow!("{}", e))?,
         other => anyhow::bail!(
-            "Unknown model format '{}'. Supported: auto, xgboost, lightgbm, random_forest, logistic_regression",
+            "Unknown model format '{}'. Supported: auto, xgboost, lightgbm, random_forest, logistic_regression, mlp",
             other
         ),
     };

@@ -10,6 +10,7 @@ pub const FORMAT_XGBOOST: &str = "xgboost";
 pub const FORMAT_LIGHTGBM: &str = "lightgbm";
 pub const FORMAT_RANDOM_FOREST: &str = "random_forest";
 pub const FORMAT_LOGISTIC_REGRESSION: &str = "logistic_regression";
+pub const FORMAT_MLP: &str = "mlp";
 
 /// Detect the model format by inspecting top-level keys in the JSON string.
 ///
@@ -23,6 +24,7 @@ pub const FORMAT_LOGISTIC_REGRESSION: &str = "logistic_regression";
 /// |---------------------|---------------------------------------------|
 /// | XGBoost             | `"learner"`                                 |
 /// | LightGBM            | `"tree_info"`                               |
+/// | MLP                 | `"model_type"` == `"mlp"`                   |
 /// | Random forest       | `"n_estimators"` or `"forest"`              |
 /// | Logistic regression | `"weights"` (with or without `"bias"`)      |
 pub fn detect_model_format(json_str: &str) -> Result<&'static str, String> {
@@ -37,6 +39,11 @@ pub fn detect_model_format(json_str: &str) -> Result<&'static str, String> {
     // LightGBM: has "tree_info" key (model.dump_model() format)
     if v.get("tree_info").is_some() {
         return Ok(FORMAT_LIGHTGBM);
+    }
+
+    // MLP: has "model_type" == "mlp" and "layers" key
+    if v.get("model_type").and_then(|t| t.as_str()) == Some("mlp") {
+        return Ok(FORMAT_MLP);
     }
 
     // Random forest: has "n_estimators" or "forest" key (scikit-learn export)

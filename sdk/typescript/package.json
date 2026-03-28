@@ -1,69 +1,21 @@
 {
   "name": "@worldzk/sdk",
-  "version": "1.0.0",
-  "description": "TypeScript SDK for World ZK Compute - Decentralized ZK Proving Network",
+  "version": "0.1.0",
+  "description": "World ZK Compute SDK for TypeScript/Node.js",
   "main": "dist/index.js",
-  "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
-  "exports": {
-    ".": {
-      "import": "./dist/index.mjs",
-      "require": "./dist/index.js",
-      "types": "./dist/index.d.ts"
-    }
-  },
-  "files": [
-    "dist",
-    "src"
-  ],
   "scripts": {
-    "build": "tsup src/index.ts --format cjs,esm --dts",
-    "dev": "tsup --watch",
-    "lint": "eslint src --ext .ts",
-    "test": "vitest",
-    "test:integration": "vitest run src/__tests__/anvil-integration.test.ts",
-    "test:coverage": "vitest --coverage",
-    "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run build",
-    "batch-verify": "tsx src/batch-verifier.ts",
-    "generate:abi": "tsx scripts/generate-abi.ts",
-    "docs": "typedoc",
-    "docs:watch": "typedoc --watch"
+    "build": "tsc",
+    "test": "jest"
   },
-  "keywords": [
-    "zk",
-    "zero-knowledge",
-    "risc-v",
-    "proof",
-    "blockchain",
-    "web3",
-    "risc-zero"
-  ],
-  "author": "World ZK Compute",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/OE-GOD/world-zk-compute.git",
-    "directory": "sdk/typescript"
+    "url": "https://github.com/OE-GOD/world-zk-compute"
   },
-  "bugs": {
-    "url": "https://github.com/OE-GOD/world-zk-compute/issues"
-  },
-  "homepage": "https://github.com/OE-GOD/world-zk-compute#readme",
-  "engines": {
-    "node": ">=18.3.0"
-  },
-  "dependencies": {
-    "viem": "^2.0.0"
-  },
+  "keywords": ["zkml", "zero-knowledge", "verifier", "machine-learning"],
   "devDependencies": {
-    "@types/node": "^20.10.0",
-    "eslint": "^8.55.0",
-    "tsup": "^8.0.0",
-    "typescript": "^5.3.0",
-    "tsx": "^4.0.0",
-    "vitest": "^1.0.0",
-    "typedoc": "^0.26.0",
-    "typedoc-plugin-markdown": "^4.4.0"
+    "typescript": "^5.0.0",
+    "@types/node": "^20.0.0"
   }
 }

@@ -32,8 +32,10 @@
 //! | `GATEWAY_PORT`     | Port the gateway listens on              | `8080`                   |
 //! | `GATEWAY_API_KEYS` | Comma-separated API keys (optional)      | (none = no auth)         |
 
+mod docs;
 mod logging;
 mod metering;
+mod webhooks;
 
 use std::collections::HashMap;
 use std::env;
@@ -46,7 +48,7 @@ use axum::{
     http::{header, HeaderMap, StatusCode},
     middleware::{self, Next},
     response::Response,
-    routing::get,
+    routing::{delete, get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
@@ -120,6 +122,7 @@ struct GatewayState {
     config: Arc<GatewayConfig>,
     client: reqwest::Client,
     metering: Arc<metering::MeteringStore>,
+    webhooks: Arc<webhooks::WebhookStore>,
 }
 
 // ---------------------------------------------------------------------------
@@ -290,7 +293,51 @@ async fn proxy_handler(
         )
     })?;
 
-    proxy_request(&state, backend, req).await
+    let response = proxy_request(&state, backend, req).await?;
+
+    // Fire webhook events based on the proxied operation and response status.
+    let status = response.status();
+    if let Some(event) = webhook_event_for_path(&path, status) {
+        let webhooks = state.webhooks.clone();
+        let data = serde_json::json!({
+            "path": path,
+            "status": status.as_u16(),
+        });
+        // Fire-and-forget -- do not block the response on delivery.
+        tokio::spawn(async move {
+            webhooks.fire(&event, data).await;
+        });
+    }
+
+    Ok(response)
+}
+
+/// Map a proxied path + response status to a webhook event name.
+///
+/// Returns `None` if the request does not correspond to a webhook-worthy event.
+fn webhook_event_for_path(path: &str, status: StatusCode) -> Option<String> {
+    let op = metering::classify_path(path);
+    match op {
+        metering::Operation::ProofGenerated => {
+            if status.is_success() {
+                Some("proof.created".to_string())
+            } else if status.is_server_error() {
+                Some("proof.failed".to_string())
+            } else {
+                None
+            }
+        }
+        metering::Operation::ProofVerified => {
+            if status.is_success() {
+                Some("proof.verified".to_string())
+            } else if status.is_server_error() {
+                Some("proof.failed".to_string())
+            } else {
+                None
+            }
+        }
+        metering::Operation::Other => None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -423,9 +470,9 @@ async fn auth_middleware(
         return Ok(next.run(req).await);
     }
 
-    // Health and admin endpoints are always public.
+    // Health, admin, and docs endpoints are always public.
     let path = req.uri().path();
-    if path == "/health" || path.starts_with("/health/") || path.starts_with("/admin/") {
+    if path == "/health" || path.starts_with("/health/") || path.starts_with("/admin/") || path == "/docs" || path.starts_with("/docs/") {
         return Ok(next.run(req).await);
     }
 
@@ -487,9 +534,21 @@ fn build_app(state: GatewayState) -> Router {
     Router::new()
         .route("/health", get(health_aggregate))
         .route("/health/:service", get(health_single))
+        .route("/docs", get(docs::swagger_ui))
+        .route("/docs/openapi.yaml", get(docs::openapi_spec))
         .route(
             "/admin/usage",
             get(metering::usage_handler).with_state(state.metering.clone()),
+        )
+        .route(
+            "/v1/webhooks",
+            post(webhooks::register_handler)
+                .get(webhooks::list_handler)
+                .with_state(state.webhooks.clone()),
+        )
+        .route(
+            "/v1/webhooks/{id}",
+            delete(webhooks::delete_handler).with_state(state.webhooks.clone()),
         )
         .fallback(proxy_handler)
         .layer(middleware::from_fn_with_state(
@@ -517,6 +576,7 @@ fn build_state(config: GatewayConfig) -> GatewayState {
         config: Arc::new(config),
         client,
         metering: Arc::new(metering::MeteringStore::new()),
+        webhooks: Arc::new(webhooks::WebhookStore::new()),
     }
 }
 

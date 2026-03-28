@@ -4,6 +4,7 @@ pub mod circuit;
 pub mod detect;
 pub mod lightgbm;
 pub mod logistic_regression;
+pub mod mlp;
 pub mod model;
 pub mod random_forest;
 pub mod server;

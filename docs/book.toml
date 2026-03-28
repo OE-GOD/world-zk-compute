@@ -1,0 +1,8 @@
+[book]
+title = "World ZK Compute"
+authors = ["OE-GOD"]
+language = "en"
+src = "."
+
+[output.html]
+git-repository-url = "https://github.com/OE-GOD/world-zk-compute"
