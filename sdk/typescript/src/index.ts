@@ -22,6 +22,22 @@
  */
 
 export { Client } from './client';
+export { WorldZK } from './worldzk';
+export type {
+  WorldZKOptions,
+  UploadModelParams,
+  ListProofsParams,
+  HealthCheckResponse,
+  UploadModelResponse,
+  ListModelsResponse,
+  ModelInfo,
+  ProveResponse,
+  VerifyResponse as WorldZKVerifyResponse,
+  ReceiptResponse,
+  ProofInfo,
+  ListProofsResponse,
+  StatsResponse,
+} from './worldzk-types';
 export { BatchVerifier, DAGBatchVerifier, ProgressTracker, BatchVerificationCancelledError } from './batch-verifier';
 export type { DAGBatchSession } from './batch-verifier';
 export { TEEVerifier } from './tee-verifier';
