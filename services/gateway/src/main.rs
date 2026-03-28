@@ -547,7 +547,7 @@ fn build_app(state: GatewayState) -> Router {
                 .with_state(state.webhooks.clone()),
         )
         .route(
-            "/v1/webhooks/{id}",
+            "/v1/webhooks/:id",
             delete(webhooks::delete_handler).with_state(state.webhooks.clone()),
         )
         .fallback(proxy_handler)

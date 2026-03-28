@@ -11,6 +11,7 @@
 //! | `REGISTRY_SIGNING_KEY` | Hex-encoded secp256k1 private key for receipt signing | (auto-gen) |
 //! | `TRANSPARENCY_DB_PATH` | Path to transparency log SQLite database | `./transparency.db` |
 
+pub mod compare;
 mod db;
 pub mod receipt;
 mod routes;
@@ -42,6 +43,7 @@ fn build_app_with_state(state: Arc<AppState>) -> Router {
         .route("/proofs/:id/verify", post(routes::verify_proof))
         .route("/proofs/:id/receipt", get(routes::get_receipt))
         .route("/proofs/:id", delete(routes::delete_proof))
+        .route("/proofs/compare", post(routes::compare_proofs))
         .route("/stats", get(routes::stats))
         .route("/transparency/root", get(routes::transparency_root))
         .route(

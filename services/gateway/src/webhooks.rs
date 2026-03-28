@@ -73,25 +73,25 @@ pub struct RegisterRequest {
 }
 
 /// Response body for `POST /v1/webhooks`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RegisterResponse {
     pub webhook: WebhookRegistration,
 }
 
 /// Response body for `GET /v1/webhooks`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ListResponse {
     pub webhooks: Vec<WebhookRegistration>,
 }
 
 /// Response body for `DELETE /v1/webhooks/{id}`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DeleteResponse {
     pub deleted: bool,
 }
 
 /// Error response body.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct WebhookError {
     pub error: String,
 }
@@ -125,6 +125,7 @@ impl WebhookStore {
     /// Create a new `WebhookStore` with a custom `reqwest::Client` (useful for
     /// testing with mocked servers).
     #[cfg(test)]
+    #[allow(dead_code)]
     pub fn with_client(client: reqwest::Client) -> Self {
         Self {
             hooks: RwLock::new(HashMap::new()),
@@ -388,7 +389,7 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request as HttpRequest;
-    use axum::routing::{delete, get, post};
+    use axum::routing::{delete, post};
     use axum::Router;
     use http_body_util::BodyExt;
     use tower::ServiceExt;
@@ -399,7 +400,7 @@ mod tests {
     fn webhook_app(store: Arc<WebhookStore>) -> Router {
         Router::new()
             .route("/v1/webhooks", post(register_handler).get(list_handler))
-            .route("/v1/webhooks/{id}", delete(delete_handler))
+            .route("/v1/webhooks/:id", delete(delete_handler))
             .with_state(store)
     }
 

@@ -81,6 +81,14 @@ pub struct SubmitRequest {
     pub bundle: ProofBundle,
 }
 
+#[derive(Deserialize)]
+pub struct CompareRequest {
+    /// ID of the first proof to compare.
+    pub proof_a: String,
+    /// ID of the second proof to compare.
+    pub proof_b: String,
+}
+
 // -- Helper --
 
 fn err(code: StatusCode, msg: String) -> (StatusCode, Json<ErrorResponse>) {
@@ -262,6 +270,47 @@ pub async fn delete_proof(
         id,
         status: "deleted",
     }))
+}
+
+/// POST /proofs/compare — compare two proofs for output equivalence.
+pub async fn compare_proofs(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<CompareRequest>,
+) -> Result<Json<crate::compare::ComparisonResult>, (StatusCode, Json<ErrorResponse>)> {
+    let db = state.db.lock().await;
+
+    let proof_a = db
+        .get(&req.proof_a)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or_else(|| {
+            err(
+                StatusCode::NOT_FOUND,
+                format!("proof '{}' not found", req.proof_a),
+            )
+        })?;
+
+    let proof_b = db
+        .get(&req.proof_b)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or_else(|| {
+            err(
+                StatusCode::NOT_FOUND,
+                format!("proof '{}' not found", req.proof_b),
+            )
+        })?;
+
+    // Attempt to load bundles for output comparison.
+    let bundle_a = db.load_bundle(&req.proof_a).ok();
+    let bundle_b = db.load_bundle(&req.proof_b).ok();
+
+    let result = crate::compare::compare_proofs(
+        &proof_a,
+        &proof_b,
+        bundle_a.as_ref(),
+        bundle_b.as_ref(),
+    );
+
+    Ok(Json(result))
 }
 
 /// GET /health — health check with DB status.
@@ -470,6 +519,7 @@ mod tests {
             .route("/proofs/:id/verify", post(verify_proof))
             .route("/proofs/:id/receipt", get(get_receipt))
             .route("/proofs/:id", delete(delete_proof))
+            .route("/proofs/compare", post(compare_proofs))
             .route("/stats", get(stats))
             .route("/transparency/root", get(transparency_root))
             .route("/transparency/proof/:index", get(transparency_proof))

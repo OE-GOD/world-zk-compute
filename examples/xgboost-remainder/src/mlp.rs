@@ -1,21 +1,32 @@
-//! Multi-Layer Perceptron (MLP) model parser and circuit adapter.
+//! Multi-Layer Perceptron (MLP) model parser, native GKR circuit, and tree adapter.
 //!
-//! Parses a simple MLP JSON model, runs forward-pass inference, and converts
-//! the model to the existing [`XgboostModel`] format so it can be proved via
-//! the GKR+Hyrax circuit pipeline without any changes to the circuit code.
+//! This module provides two proving strategies for MLP inference:
 //!
-//! # Conversion strategy
+//! 1. **Native GKR circuit** (`build_mlp_circuit`): Directly encodes matrix
+//!    multiply + bias + ReLU as GKR layers.  This is the primary approach for
+//!    proving neural network inference.
 //!
-//! For a small MLP with `n_features` (up to 8) inputs and `n_classes` outputs,
-//! we build a **complete binary tree of depth `n_features`** per output class.
-//! Each leaf corresponds to one quantized input region: feature 0 is split at
-//! the first level, feature 1 at the second, and so on.  The leaf value is the
-//! MLP's output for the midpoint of that region (pre-computed at parse time).
+//! 2. **XGBoost lookup-tree conversion** (`mlp_to_xgboost`): Converts the MLP
+//!    to a lookup table encoded as a decision tree, reusing the existing
+//!    tree-inference circuit.  Limited to n_features <= 8.
 //!
-//! This lets the existing tree-inference circuit prove that the tree's output
-//! matches the network's output for a given input region.  The proof is exact
-//! for quantized inputs — any feature vector mapped to the same region produces
-//! the same tree output.
+//! # Native GKR Circuit Structure
+//!
+//! For each MLP layer with ReLU activation:
+//!
+//! 1. **Dot products**: For each output neuron j, compute
+//!    `sum_i(weight[j][i] * input[i])` via element-wise multiply + pairwise
+//!    tree reduction.
+//! 2. **Bias addition**: `z[j] = dot_product[j] + bias[j]`
+//! 3. **ReLU verification** (bit decomposition):
+//!    - Witness: `decomp_bits` such that `z[j] + 2^(K-1) = sum(2^i * bits[i])`
+//!    - Sign bit = `decomp_bits[K-1]` (1 if z >= 0, 0 if z < 0)
+//!    - `relu_output[j] = z[j] * sign_bit[j]`
+//!    - Binary checks on all decomp bits
+//!    - Reconstruction residual must be zero
+//!
+//! For the final layer (no ReLU), just dot products + bias.  The output layer
+//! checks that the computed outputs match the claimed values.
 //!
 //! # JSON format
 //!
@@ -46,8 +57,11 @@
 //!   * `biases[i]`: bias for output neuron `i`
 //!   * `activation`: `"relu"`, `"sigmoid"`, or `"none"` / `"linear"`
 
-use crate::model::{DecisionTree, TreeNode, XgboostModel, FIXED_POINT_SCALE};
+use crate::model::{self, DecisionTree, TreeNode, XgboostModel, FIXED_POINT_SCALE};
+use frontend::abstract_expr::AbstractExpression;
+use frontend::layouter::builder::{Circuit, CircuitBuilder, LayerVisibility, NodeRef};
 use serde::{Deserialize, Serialize};
+use shared_types::Fr;
 use std::path::Path;
 
 // ============================================================================
@@ -400,6 +414,535 @@ pub fn build_mlp_circuit_description(mlp: &MLPModel) -> Vec<u8> {
     }
 
     desc
+}
+
+// ============================================================================
+// Native GKR Circuit for MLP Inference
+// ============================================================================
+
+/// Fixed-point scale for quantizing MLP weights and inputs (2^16).
+pub const MLP_FIXED_POINT_SCALE: i64 = 1 << 16;
+
+/// Number of bits for decomposition of pre-activation values.
+/// Products are weight_q * input_q where each is scaled by 2^16, so
+/// products are in 2^32 scale.  With N inputs summed, values can be
+/// up to N * max_product.  48 bits provides ample headroom.
+pub const MLP_DECOMP_K: usize = 48;
+
+/// All prepared circuit inputs for the native MLP GKR circuit.
+pub struct MLPCircuitInputs {
+    /// Quantized input features (committed/private), padded to power of 2.
+    pub features_quantized: Vec<i64>,
+    /// Number of input features padded to next power of 2.
+    pub n_inputs_padded: usize,
+
+    /// Per-layer quantized weights, flattened per neuron row.
+    /// `layer_weights[l]` has shape `[n_out_padded * n_in_padded]` with rows
+    /// for each output neuron, each row padded to `n_in_padded`.
+    pub layer_weights: Vec<Vec<i64>>,
+
+    /// Per-layer quantized biases (one per output neuron, padded).
+    /// Biases are scaled by SCALE^2 to match the product domain.
+    pub layer_biases: Vec<Vec<i64>>,
+
+    /// Per-ReLU-layer decomposition bits for the pre-activation values.
+    /// `relu_decomp_bits[r]` is a flat vector of `n_out_padded * decomp_k`
+    /// bits for the r-th ReLU layer.
+    pub relu_decomp_bits: Vec<Vec<bool>>,
+
+    /// Per-ReLU-layer sign bits (1 if z >= 0, 0 if z < 0).
+    /// `relu_sign_bits[r]` has `n_out_padded` entries.
+    pub relu_sign_bits: Vec<Vec<bool>>,
+
+    /// Expected output values (quantized), padded to power of 2.
+    pub expected_outputs: Vec<i64>,
+
+    /// Number of output neurons padded to next power of 2.
+    pub n_outputs_padded: usize,
+
+    /// Number of decomposition bits.
+    pub decomp_k: usize,
+
+    /// Structural info: (n_in_padded, n_out_padded) per layer.
+    pub layer_dims: Vec<(usize, usize)>,
+
+    /// Which layers have ReLU (indices into layers).
+    pub relu_layer_indices: Vec<usize>,
+}
+
+/// Quantize a float value to fixed-point integer for the MLP circuit.
+fn mlp_quantize(val: f64) -> i64 {
+    (val * MLP_FIXED_POINT_SCALE as f64).round() as i64
+}
+
+/// Prepare circuit inputs from an MLP model and feature vector.
+///
+/// Runs the forward pass in quantized integer arithmetic to compute
+/// intermediate values and witness data (decomp bits for ReLU layers).
+pub fn prepare_mlp_circuit_inputs(
+    mlp: &MLPModel,
+    features: &[f64],
+) -> MLPCircuitInputs {
+    assert_eq!(features.len(), mlp.n_features, "Feature count mismatch");
+
+    let decomp_k = MLP_DECOMP_K;
+
+    // Quantize input features
+    let n_inputs_padded = mlp.n_features.next_power_of_two();
+    let mut features_q: Vec<i64> = features.iter().map(|f| mlp_quantize(*f)).collect();
+    features_q.resize(n_inputs_padded, 0);
+
+    let mut layer_weights = Vec::new();
+    let mut layer_biases = Vec::new();
+    let mut layer_dims = Vec::new();
+    let mut relu_decomp_bits = Vec::new();
+    let mut relu_sign_bits = Vec::new();
+    let mut relu_layer_indices = Vec::new();
+
+    // Current activations in quantized domain
+    let mut current_activations = features_q.clone();
+    let mut current_n_padded = n_inputs_padded;
+
+    // Process each layer
+    for (layer_idx, layer) in mlp.layers.iter().enumerate() {
+        let n_in = layer.weights[0].len();
+        let n_out = layer.weights.len();
+        let n_in_padded = n_in.next_power_of_two();
+        let n_out_padded = n_out.next_power_of_two();
+
+        // Quantize weights: flatten [n_out][n_in] -> [n_out_padded * n_in_padded]
+        let mut weights_flat = vec![0i64; n_out_padded * n_in_padded];
+        for j in 0..n_out {
+            for i in 0..n_in {
+                weights_flat[j * n_in_padded + i] = mlp_quantize(layer.weights[j][i]);
+            }
+        }
+        layer_weights.push(weights_flat.clone());
+
+        // Quantize biases (scaled by SCALE^2 to match w*x domain)
+        let mut biases_q = vec![0i64; n_out_padded];
+        for j in 0..n_out {
+            biases_q[j] = (layer.biases[j]
+                * MLP_FIXED_POINT_SCALE as f64
+                * MLP_FIXED_POINT_SCALE as f64)
+                .round() as i64;
+        }
+        layer_biases.push(biases_q.clone());
+
+        layer_dims.push((n_in_padded, n_out_padded));
+
+        // Compute pre-activation values: z[j] = sum_i(w[j][i] * x[i]) + b[j]
+        // Ensure current_activations is padded to n_in_padded
+        current_activations.resize(n_in_padded, 0);
+
+        let mut z_values = vec![0i64; n_out_padded];
+        for j in 0..n_out {
+            let mut dot: i64 = 0;
+            for i in 0..n_in_padded {
+                dot += weights_flat[j * n_in_padded + i] * current_activations[i];
+            }
+            z_values[j] = dot + biases_q[j];
+        }
+
+        // Apply activation
+        match layer.activation {
+            Activation::Relu => {
+                relu_layer_indices.push(layer_idx);
+
+                // Compute sign bits and decomp bits
+                let mut sign_bits = vec![false; n_out_padded];
+                let mut decomp = vec![false; n_out_padded * decomp_k];
+
+                let offset = 1i128 << (decomp_k - 1);
+
+                for j in 0..n_out_padded {
+                    let z = z_values[j] as i128;
+                    sign_bits[j] = z >= 0;
+
+                    let shifted = z + offset;
+                    assert!(
+                        shifted >= 0,
+                        "Shifted value must be non-negative: z={}, offset={}, shifted={}",
+                        z,
+                        offset,
+                        shifted
+                    );
+
+                    for bit_i in 0..decomp_k {
+                        decomp[j * decomp_k + bit_i] = ((shifted >> bit_i) & 1) != 0;
+                    }
+
+                    // Verify reconstruction
+                    let reconstructed: i128 = (0..decomp_k)
+                        .filter(|&i| decomp[j * decomp_k + i])
+                        .map(|i| 1i128 << i)
+                        .sum();
+                    assert_eq!(
+                        reconstructed, shifted,
+                        "Bit decomposition reconstruction failed for neuron {}: expected {}, got {}",
+                        j, shifted, reconstructed
+                    );
+                }
+
+                relu_decomp_bits.push(decomp);
+                relu_sign_bits.push(sign_bits.clone());
+
+                // ReLU: a[j] = max(0, z[j]) = z[j] if sign >= 0, else 0
+                current_activations = vec![0i64; n_out_padded];
+                for j in 0..n_out_padded {
+                    current_activations[j] = if sign_bits[j] { z_values[j] } else { 0 };
+                }
+            }
+            Activation::None => {
+                // Linear: activations = z_values
+                current_activations = z_values;
+            }
+            Activation::Sigmoid => {
+                // Sigmoid not supported in native circuit yet; fall through as linear
+                current_activations = z_values;
+            }
+        }
+
+        current_n_padded = n_out_padded;
+    }
+
+    // Expected outputs = final activations
+    let n_outputs_padded = current_n_padded;
+    let expected_outputs = current_activations;
+
+    MLPCircuitInputs {
+        features_quantized: features_q,
+        n_inputs_padded,
+        layer_weights,
+        layer_biases,
+        relu_decomp_bits,
+        relu_sign_bits,
+        expected_outputs,
+        n_outputs_padded,
+        decomp_k,
+        layer_dims,
+        relu_layer_indices,
+    }
+}
+
+/// Build a native GKR circuit for MLP inference.
+///
+/// The circuit verifies the full forward pass of a multi-layer perceptron:
+/// matrix multiply + bias + ReLU for each hidden layer, and matrix multiply
+/// + bias for the output layer.  All output entries must be zero for valid
+/// inference.
+///
+/// # Arguments
+///
+/// * `layer_dims` - `(n_in_padded, n_out_padded)` for each layer
+/// * `relu_layer_indices` - which layers have ReLU activation
+/// * `decomp_k` - number of decomposition bits for ReLU sign checks
+pub fn build_mlp_circuit(
+    layer_dims: &[(usize, usize)],
+    relu_layer_indices: &[usize],
+    decomp_k: usize,
+) -> Circuit<Fr> {
+    let num_layers = layer_dims.len();
+    assert!(num_layers >= 1, "MLP must have at least 1 layer");
+    assert!(decomp_k > 0);
+
+    for &(n_in, n_out) in layer_dims {
+        assert!(n_in.is_power_of_two(), "n_in={} must be power of 2", n_in);
+        assert!(
+            n_out.is_power_of_two(),
+            "n_out={} must be power of 2",
+            n_out
+        );
+    }
+
+    let mut builder = CircuitBuilder::<Fr>::new();
+
+    // === Input layers ===
+    let committed = builder.add_input_layer("committed", LayerVisibility::Committed);
+    let public = builder.add_input_layer("public", LayerVisibility::Public);
+
+    // Input features (committed/private)
+    let first_n_in = layer_dims[0].0;
+    let feat_nv = first_n_in.trailing_zeros() as usize;
+    let features = builder.add_input_shred("features", feat_nv, &committed);
+
+    // Per-layer weights (public) and biases (public)
+    let mut weight_shreds = Vec::new();
+    let mut bias_shreds = Vec::new();
+    for (l, &(n_in, n_out)) in layer_dims.iter().enumerate() {
+        let w_size = n_out * n_in;
+        let w_nv = model::next_log2(w_size);
+        let w_shred = builder.add_input_shred(
+            &format!("weights_{}", l),
+            w_nv,
+            &public,
+        );
+        weight_shreds.push(w_shred);
+
+        let b_nv = n_out.trailing_zeros() as usize;
+        let b_shred = builder.add_input_shred(
+            &format!("biases_{}", l),
+            b_nv,
+            &public,
+        );
+        bias_shreds.push(b_shred);
+    }
+
+    // Per-ReLU-layer decomposition bits (committed/private witness)
+    let mut decomp_shreds = Vec::new();
+    let mut sign_shreds = Vec::new();
+    for (relu_idx, &layer_idx) in relu_layer_indices.iter().enumerate() {
+        let (_, n_out) = layer_dims[layer_idx];
+        let decomp_size = n_out * decomp_k;
+        let decomp_nv = model::next_log2(decomp_size);
+        let decomp_shred = builder.add_input_shred(
+            &format!("decomp_bits_{}", relu_idx),
+            decomp_nv,
+            &committed,
+        );
+        decomp_shreds.push(decomp_shred);
+
+        let sign_nv = n_out.trailing_zeros() as usize;
+        let sign_shred = builder.add_input_shred(
+            &format!("sign_bits_{}", relu_idx),
+            sign_nv,
+            &committed,
+        );
+        sign_shreds.push(sign_shred);
+    }
+
+    // Expected outputs (public)
+    let last_n_out = layer_dims[num_layers - 1].1;
+    let out_nv = last_n_out.trailing_zeros() as usize;
+    let expected_outputs = builder.add_input_shred("expected_outputs", out_nv, &public);
+
+    // === Process each layer ===
+    let mut current_activations = features;
+    let mut relu_counter = 0usize;
+    let mut all_checks: Vec<(NodeRef<Fr>, usize)> = Vec::new(); // (check_node, count)
+
+    for (l, &(n_in, n_out)) in layer_dims.iter().enumerate() {
+        let in_nv = n_in.trailing_zeros() as usize;
+        let out_nv_l = n_out.trailing_zeros() as usize;
+
+        // === Matrix multiply: for each output neuron j, compute dot(w[j], x) ===
+        // Strategy: expand weights and inputs so we can do element-wise multiply,
+        // then sum reduce per neuron.
+        //
+        // weights layout: [j * n_in + i] (j = output neuron, i = input)
+        // We need products[j * n_in + i] = weights[j * n_in + i] * inputs[i]
+        //
+        // Expand inputs: replicate each input value for all output neurons
+        let total = n_out * n_in;
+        let total_nv = model::next_log2(total);
+
+        let mut input_expand_gates = Vec::new();
+        for j in 0..n_out {
+            for i in 0..n_in {
+                input_expand_gates.push(((j * n_in + i) as u32, i as u32));
+            }
+        }
+        let inputs_expanded = builder.add_identity_gate_node(
+            &current_activations,
+            input_expand_gates,
+            total_nv,
+            None,
+        );
+
+        // Weight shred already has [j * n_in + i] layout; route to match
+        let mut weight_gates = Vec::new();
+        for idx in 0..total {
+            weight_gates.push((idx as u32, idx as u32));
+        }
+        let weights_routed = builder.add_identity_gate_node(
+            &weight_shreds[l],
+            weight_gates,
+            total_nv,
+            None,
+        );
+
+        // Element-wise multiply
+        let products = builder.add_sector(inputs_expanded.expr() * weights_routed.expr());
+
+        // Sum reduction: reduce n_in products per neuron to get dot products
+        // After this, we have n_out values.
+        let dot_products = sum_per_neuron(&mut builder, &products, n_out, n_in);
+
+        // === Bias addition ===
+        let pre_activations = builder.add_sector(dot_products.expr() + bias_shreds[l].expr());
+
+        // === Activation ===
+        let is_relu = relu_layer_indices.contains(&l);
+
+        if is_relu {
+            let decomp_shred = &decomp_shreds[relu_counter];
+            let sign_shred = &sign_shreds[relu_counter];
+
+            // --- Binary check on decomp bits: bit^2 - bit = 0 ---
+            let db_sq = builder.add_sector(decomp_shred.expr() * decomp_shred.expr());
+            let decomp_bc = builder.add_sector(db_sq.expr() - decomp_shred.expr());
+            let decomp_padded = 1usize << model::next_log2(n_out * decomp_k);
+            all_checks.push((decomp_bc, decomp_padded));
+
+            // --- Binary check on sign bits: bit^2 - bit = 0 ---
+            let sb_sq = builder.add_sector(sign_shred.expr() * sign_shred.expr());
+            let sign_bc = builder.add_sector(sb_sq.expr() - sign_shred.expr());
+            all_checks.push((sign_bc, n_out));
+
+            // --- Reconstruction check: for each neuron j, ---
+            // --- weighted_sum[j] == z[j] + 2^(K-1)        ---
+            //
+            // Compute weighted sum of decomp bits per neuron:
+            // weighted_sum[j] = sum_{i=0}^{K-1} 2^i * decomp_bits[j*K + i]
+            //
+            // We do this by routing each bit to a scalar, scaling, and summing.
+            // For efficiency, we build the weighted sum expression per neuron.
+
+            // Route and scale decomp bits into per-neuron weighted sums
+            let mut weighted_sum_expr: AbstractExpression<Fr> =
+                AbstractExpression::constant(Fr::from(0u64));
+
+            for j in 0..n_out {
+                for bit_i in 0..decomp_k {
+                    let src_idx = j * decomp_k + bit_i;
+                    let bit_routed = builder.add_identity_gate_node(
+                        decomp_shred,
+                        vec![(j as u32, src_idx as u32)],
+                        out_nv_l,
+                        None,
+                    );
+                    let scale = fr_power_of_2(bit_i);
+                    weighted_sum_expr += AbstractExpression::scaled(bit_routed.expr(), scale);
+                }
+            }
+            let weighted_sum = builder.add_sector(weighted_sum_expr);
+
+            // shifted = z + 2^(K-1)
+            let offset = fr_power_of_2(decomp_k - 1);
+            let shifted = builder.add_sector(
+                pre_activations.expr() + AbstractExpression::constant(offset),
+            );
+
+            // Reconstruction residual: weighted_sum - shifted
+            let recon_residual = builder.add_sector(weighted_sum.expr() - shifted.expr());
+            all_checks.push((recon_residual, n_out));
+
+            // --- Sign consistency: sign_bit[j] == decomp_bits[j*K + (K-1)] ---
+            let mut sign_from_decomp_gates = Vec::new();
+            for j in 0..n_out {
+                let msb_idx = j * decomp_k + (decomp_k - 1);
+                sign_from_decomp_gates.push((j as u32, msb_idx as u32));
+            }
+            let sign_from_decomp = builder.add_identity_gate_node(
+                decomp_shred,
+                sign_from_decomp_gates,
+                out_nv_l,
+                None,
+            );
+            let sign_consistency =
+                builder.add_sector(sign_from_decomp.expr() - sign_shred.expr());
+            all_checks.push((sign_consistency, n_out));
+
+            // --- ReLU output: relu[j] = z[j] * sign[j] ---
+            current_activations =
+                builder.add_sector(pre_activations.expr() * sign_shred.expr());
+
+            relu_counter += 1;
+        } else {
+            // Linear: pass through
+            current_activations = pre_activations;
+        }
+    }
+
+    // === Output residual: computed_outputs - expected_outputs must be zero ===
+    let output_residual =
+        builder.add_sector(current_activations.expr() - expected_outputs.expr());
+    all_checks.push((output_residual, last_n_out));
+
+    // === Combine all checks into a single output layer ===
+    let total_checks: usize = all_checks.iter().map(|(_, count)| *count).sum();
+    let output_total_nv = model::next_log2(total_checks);
+
+    let mut offset_pos = 0usize;
+    let mut combined_expr: AbstractExpression<Fr> =
+        AbstractExpression::constant(Fr::from(0u64));
+
+    for (check_node, count) in &all_checks {
+        let mut gates = Vec::new();
+        for i in 0..*count {
+            gates.push(((offset_pos + i) as u32, i as u32));
+        }
+        let routed =
+            builder.add_identity_gate_node(check_node, gates, output_total_nv, None);
+        combined_expr = combined_expr + routed.expr();
+        offset_pos += count;
+    }
+
+    let combined = builder.add_sector(combined_expr);
+    builder.set_output(&combined);
+    builder
+        .build()
+        .expect("Failed to build MLP circuit")
+}
+
+/// Sum-reduce n_in values per neuron to get n_out dot products.
+///
+/// Input layout: `[j * n_in + i]` for j in 0..n_out, i in 0..n_in.
+/// Output: n_out values (one per neuron).
+fn sum_per_neuron(
+    builder: &mut CircuitBuilder<Fr>,
+    products: &NodeRef<Fr>,
+    n_out: usize,
+    n_in: usize,
+) -> NodeRef<Fr> {
+    let out_nv = n_out.trailing_zeros() as usize;
+    let in_nv = n_in.trailing_zeros() as usize;
+
+    // Pairwise reduction within each neuron's block of n_in values
+    let mut current = products.clone();
+    let mut current_block_size = n_in;
+    let mut current_total_nv = model::next_log2(n_out * n_in);
+
+    for _level in (0..in_nv).rev() {
+        let half_block = current_block_size / 2;
+        let new_total = n_out * half_block;
+        let new_nv = model::next_log2(new_total);
+
+        let mut even_gates = Vec::new();
+        let mut odd_gates = Vec::new();
+        for j in 0..n_out {
+            for i in 0..half_block {
+                let src_even = j * current_block_size + 2 * i;
+                let src_odd = j * current_block_size + 2 * i + 1;
+                let dst = j * half_block + i;
+                even_gates.push((dst as u32, src_even as u32));
+                odd_gates.push((dst as u32, src_odd as u32));
+            }
+        }
+
+        let even = builder.add_identity_gate_node(&current, even_gates, new_nv, None);
+        let odd = builder.add_identity_gate_node(&current, odd_gates, new_nv, None);
+        current = builder.add_sector(even.expr() + odd.expr());
+
+        current_block_size = half_block;
+        current_total_nv = new_nv;
+    }
+
+    // current now has n_out values (one dot product per neuron)
+    current
+}
+
+/// Compute Fr::from(2^k) handling k >= 64 correctly.
+fn fr_power_of_2(k: usize) -> Fr {
+    if k < 64 {
+        Fr::from(1u64 << k)
+    } else {
+        let mut power = Fr::from(1u64 << 63);
+        for _ in 63..k {
+            power = power + power;
+        }
+        power
+    }
 }
 
 // ============================================================================
