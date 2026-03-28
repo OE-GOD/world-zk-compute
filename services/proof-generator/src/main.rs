@@ -20,19 +20,22 @@
 //! - `POST /models/:name/rollback`    -- rollback to the previous version
 //! - `GET  /health`                   -- health check
 
+mod batch;
+mod jobs;
 mod model_registry;
 mod models;
 mod prover;
 mod registry_client;
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{delete, get, post},
     Json, Router,
 };
 use clap::Parser;
+use jobs::JobStore;
 use model_registry::{ModelRegistry, VersionInfo};
 use models::{ModelMetadata, ModelStore};
 use prover::ProverManager;
@@ -97,6 +100,8 @@ struct AppState {
     /// Optional client for auto-submitting proofs to the proof-registry.
     /// Configured via the `REGISTRY_URL` environment variable.
     registry_client: Option<RegistryClient>,
+    /// In-memory store for async proof jobs.
+    job_store: Arc<JobStore>,
     start_time: Instant,
 }
 
@@ -590,6 +595,173 @@ async fn prove_handler(
     }))
 }
 
+/// `POST /v1/prove/batch` -- generate proofs for a batch of inputs.
+///
+/// Accepts an array of feature vectors and proves them all with configurable
+/// concurrency. Each individual failure does not block the rest of the batch.
+async fn batch_prove_handler(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<batch::BatchProveRequest>,
+) -> Result<Json<batch::BatchProveResponse>, (StatusCode, Json<ErrorResponse>)> {
+    // Validate request structure.
+    if let Err(msg) = batch::validate_batch_request(&req) {
+        return Err((StatusCode::BAD_REQUEST, Json(ErrorResponse { error: msg })));
+    }
+
+    // Verify model exists and is active.
+    let model = state
+        .model_store
+        .get_model(&req.model_id)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: format!("Model not found: {}", req.model_id),
+                }),
+            )
+        })?;
+
+    if !model.active {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!("Model {} is deactivated", req.model_id),
+            }),
+        ));
+    }
+
+    let batch_id = uuid::Uuid::new_v4().to_string();
+    let total = req.inputs.len();
+    let concurrency = req.effective_concurrency();
+
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
+    let model_arc = Arc::new(model);
+    let state_arc = state.clone();
+
+    // Spawn a task for each input, governed by the semaphore.
+    let mut handles = Vec::with_capacity(total);
+    for (index, features) in req.inputs.into_iter().enumerate() {
+        let sem = semaphore.clone();
+        let model_ref = model_arc.clone();
+        let st = state_arc.clone();
+
+        let handle = tokio::spawn(async move {
+            let _permit = sem.acquire().await.expect("semaphore closed");
+            prove_single(index, &features, &model_ref, &st).await
+        });
+        handles.push(handle);
+    }
+
+    // Collect results in order.
+    let mut results = Vec::with_capacity(total);
+    let mut completed = 0usize;
+    let mut failed = 0usize;
+    for handle in handles {
+        match handle.await {
+            Ok(result) => {
+                if result.error.is_some() {
+                    failed += 1;
+                } else {
+                    completed += 1;
+                }
+                results.push(result);
+            }
+            Err(e) => {
+                // Task panicked or was cancelled.
+                failed += 1;
+                results.push(batch::BatchProveResult {
+                    index: results.len(),
+                    proof_id: None,
+                    output: None,
+                    error: Some(format!("Internal error: {}", e)),
+                });
+            }
+        }
+    }
+
+    Ok(Json(batch::BatchProveResponse {
+        batch_id,
+        total,
+        completed,
+        failed,
+        results,
+    }))
+}
+
+/// Prove a single input within a batch. Returns a `BatchProveResult` with
+/// either the proof data or an error message (never panics).
+async fn prove_single(
+    index: usize,
+    features: &[f64],
+    model: &models::LoadedModel,
+    state: &AppState,
+) -> batch::BatchProveResult {
+    let start = Instant::now();
+    let proof_id = uuid::Uuid::new_v4().to_string();
+
+    if state.mock_mode {
+        let mock = generate_mock_proof(model, features);
+        let _prove_time_ms = start.elapsed().as_millis() as u64;
+        return batch::BatchProveResult {
+            index,
+            proof_id: Some(proof_id),
+            output: Some(mock.output),
+            error: None,
+        };
+    }
+
+    // Real proving via the ProverManager.
+    let prover_mgr = match state.prover_manager.as_ref() {
+        Some(mgr) => mgr,
+        None => {
+            return batch::BatchProveResult {
+                index,
+                proof_id: None,
+                output: None,
+                error: Some("Prover manager not initialized".to_string()),
+            };
+        }
+    };
+
+    // Ensure prover is registered for this model.
+    if !prover_mgr.has_prover(&model.id).await {
+        if let Err(e) = prover_mgr
+            .register_model(&model.id, &model.raw_json, &model.model_hash)
+            .await
+        {
+            return batch::BatchProveResult {
+                index,
+                proof_id: None,
+                output: None,
+                error: Some(format!("Failed to start prover: {}", e)),
+            };
+        }
+    }
+
+    match prover_mgr.prove(&model.id, features).await {
+        Ok(result) => {
+            let output = if result.predicted_class > 0 {
+                "approved".to_string()
+            } else {
+                "denied".to_string()
+            };
+            batch::BatchProveResult {
+                index,
+                proof_id: Some(proof_id),
+                output: Some(output),
+                error: None,
+            }
+        }
+        Err(e) => batch::BatchProveResult {
+            index,
+            proof_id: None,
+            output: None,
+            error: Some(format!("Proof generation failed: {}", e)),
+        },
+    }
+}
+
 /// Submit a proof bundle to the proof-registry if `REGISTRY_URL` is configured.
 ///
 /// Returns `Some(proof_id)` on success, `None` if the registry is not
@@ -682,6 +854,215 @@ fn generate_mock_proof(model: &models::LoadedModel, features: &[f64]) -> MockPro
 }
 
 // ---------------------------------------------------------------------------
+// Async prove types and handlers
+// ---------------------------------------------------------------------------
+
+/// Request body for `POST /v1/prove/async` (same shape as sync prove).
+#[derive(Debug, Deserialize)]
+struct AsyncProveRequest {
+    /// ID of a previously uploaded model.
+    model_id: String,
+    /// Feature vector for inference.
+    features: Vec<f64>,
+}
+
+/// Response body for `POST /v1/prove/async`.
+#[derive(Debug, Serialize, Deserialize)]
+struct AsyncProveResponse {
+    /// Job ID to poll for status.
+    job_id: String,
+    /// Initial status (always "pending").
+    status: String,
+}
+
+/// Query parameters for `GET /v1/jobs`.
+#[derive(Debug, Deserialize)]
+struct ListJobsQuery {
+    /// Maximum number of jobs to return. Defaults to 20.
+    #[serde(default = "default_job_limit")]
+    limit: usize,
+}
+
+fn default_job_limit() -> usize {
+    20
+}
+
+/// Response body for `GET /v1/jobs`.
+#[derive(Debug, Serialize, Deserialize)]
+struct ListJobsResponse {
+    jobs: Vec<jobs::Job>,
+}
+
+/// `POST /v1/prove/async` -- submit an async proof request.
+///
+/// Returns immediately with a job ID. The proof is generated in a background
+/// task. Poll `GET /v1/jobs/{id}` for status.
+async fn async_prove_handler(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<AsyncProveRequest>,
+) -> Result<(StatusCode, Json<AsyncProveResponse>), (StatusCode, Json<ErrorResponse>)> {
+    // Validate: model exists and is active.
+    let model = state
+        .model_store
+        .get_model(&req.model_id)
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: format!("Model not found: {}", req.model_id),
+                }),
+            )
+        })?;
+
+    if !model.active {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!("Model {} is deactivated", req.model_id),
+            }),
+        ));
+    }
+
+    if req.features.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Features vector must not be empty".to_string(),
+            }),
+        ));
+    }
+
+    // Create the job.
+    let job_id = state.job_store.create(&req.model_id).await;
+
+    // Spawn background proving task.
+    let state_bg = state.clone();
+    let job_id_bg = job_id.clone();
+    let features = req.features;
+    let model_id = req.model_id.clone();
+
+    tokio::spawn(async move {
+        // Transition to proving.
+        state_bg
+            .job_store
+            .update_status(&job_id_bg, jobs::JobStatus::Proving)
+            .await;
+
+        // Run the proof (reuse the same logic as the sync handler).
+        let result = run_prove(&state_bg, &model_id, &features).await;
+
+        match result {
+            Ok((proof_id, output)) => {
+                state_bg
+                    .job_store
+                    .complete(&job_id_bg, &proof_id, &output)
+                    .await;
+            }
+            Err(err_msg) => {
+                state_bg.job_store.fail(&job_id_bg, &err_msg).await;
+            }
+        }
+    });
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(AsyncProveResponse {
+            job_id,
+            status: "pending".to_string(),
+        }),
+    ))
+}
+
+/// `GET /v1/jobs/{id}` -- get job status.
+async fn get_job_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<jobs::Job>, (StatusCode, Json<ErrorResponse>)> {
+    state.job_store.get(&id).await.map(Json).ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: format!("Job not found: {}", id),
+            }),
+        )
+    })
+}
+
+/// `GET /v1/jobs` -- list recent jobs.
+async fn list_jobs_handler(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ListJobsQuery>,
+) -> Json<ListJobsResponse> {
+    let limit = params.limit.min(100); // Cap at 100
+    let jobs = state.job_store.list(limit).await;
+    Json(ListJobsResponse { jobs })
+}
+
+/// Core prove logic shared by the sync handler and async background task.
+///
+/// Returns `Ok((proof_id, output))` on success, or `Err(error_message)` on failure.
+async fn run_prove(
+    state: &AppState,
+    model_id: &str,
+    features: &[f64],
+) -> Result<(String, String), String> {
+    let model = state
+        .model_store
+        .get_model(model_id)
+        .await
+        .ok_or_else(|| format!("Model not found: {}", model_id))?;
+
+    let start = Instant::now();
+    let proof_id = uuid::Uuid::new_v4().to_string();
+
+    if state.mock_mode {
+        let mock = generate_mock_proof(&model, features);
+        let prove_time_ms = start.elapsed().as_millis() as u64;
+        // Auto-submit to registry if configured.
+        let _registry_proof_id =
+            submit_to_registry(state, &model, &mock.bundle, prove_time_ms).await;
+        return Ok((proof_id, mock.output));
+    }
+
+    // Real proving via the ProverManager.
+    let prover_mgr = state
+        .prover_manager
+        .as_ref()
+        .ok_or_else(|| "Prover manager not initialized. Service misconfigured.".to_string())?;
+
+    // Lazy registration.
+    if !prover_mgr.has_prover(model_id).await {
+        prover_mgr
+            .register_model(model_id, &model.raw_json, &model.model_hash)
+            .await
+            .map_err(|e| format!("Failed to start prover for model {}: {}", model_id, e))?;
+    }
+
+    let result = prover_mgr
+        .prove(model_id, features)
+        .await
+        .map_err(|e| format!("Proof generation failed: {}", e))?;
+
+    let prove_time_ms = start.elapsed().as_millis() as u64;
+    let output = if result.predicted_class > 0 {
+        "approved".to_string()
+    } else {
+        "denied".to_string()
+    };
+
+    let bundle = ProofBundle {
+        proof_hex: result.proof_hex,
+        public_inputs_hex: result.public_inputs_hex,
+        proof_size_bytes: result.proof_size_bytes,
+    };
+
+    let _registry_proof_id = submit_to_registry(state, &model, &bundle, prove_time_ms).await;
+
+    Ok((proof_id, output))
+}
+
+// ---------------------------------------------------------------------------
 // Router construction (used by both main and tests)
 // ---------------------------------------------------------------------------
 
@@ -699,6 +1080,10 @@ fn build_router(state: Arc<AppState>, enable_cors: bool) -> Router {
         .route("/models/:name/versions", get(list_versions_handler))
         .route("/models/:name/rollback", post(rollback_handler))
         .route("/prove", post(prove_handler))
+        .route("/v1/prove/batch", post(batch_prove_handler))
+        .route("/v1/prove/async", post(async_prove_handler))
+        .route("/v1/jobs", get(list_jobs_handler))
+        .route("/v1/jobs/:id", get(get_job_handler))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
@@ -781,6 +1166,7 @@ async fn main() -> anyhow::Result<()> {
         mock_mode: cli.mock,
         prover_manager,
         registry_client,
+        job_store: Arc::new(JobStore::new()),
         start_time: Instant::now(),
     });
 
@@ -826,6 +1212,7 @@ mod tests {
             mock_mode: true,
             prover_manager: None,
             registry_client: None,
+            job_store: Arc::new(JobStore::new()),
             start_time: Instant::now(),
         });
         (build_router(state, false), tmp)
@@ -842,6 +1229,7 @@ mod tests {
             mock_mode: true,
             prover_manager: None,
             registry_client: Some(RegistryClient::new(registry_url)),
+            job_store: Arc::new(JobStore::new()),
             start_time: Instant::now(),
         });
         (build_router(state, false), tmp)

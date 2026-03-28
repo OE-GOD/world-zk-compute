@@ -148,6 +148,7 @@ impl MeteringStore {
     }
 
     /// Compute aggregate totals across all records.
+    #[allow(dead_code)]
     pub async fn totals(&self) -> UsageTotals {
         let records = self.records.read().await;
         let mut totals = UsageTotals {
