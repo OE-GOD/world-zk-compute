@@ -85,9 +85,7 @@ fn init_tracing() {
                 .init();
         }
         _ => {
-            tracing_subscriber::fmt()
-                .with_env_filter(filter)
-                .init();
+            tracing_subscriber::fmt().with_env_filter(filter).init();
         }
     }
 }
@@ -120,16 +118,14 @@ async fn main() {
         #[cfg(feature = "s3")]
         {
             if let Ok(bucket) = env::var("S3_BUCKET") {
-                let region =
-                    env::var("S3_REGION").unwrap_or_else(|_| "us-east-1".to_string());
-                let mode = env::var("S3_RETENTION_MODE")
-                    .unwrap_or_else(|_| "GOVERNANCE".to_string());
+                let region = env::var("S3_REGION").unwrap_or_else(|_| "us-east-1".to_string());
+                let mode =
+                    env::var("S3_RETENTION_MODE").unwrap_or_else(|_| "GOVERNANCE".to_string());
                 let years: u32 = env::var("S3_RETENTION_YEARS")
                     .ok()
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(7);
-                let prefix =
-                    env::var("S3_PREFIX").unwrap_or_else(|_| "proofs/".to_string());
+                let prefix = env::var("S3_PREFIX").unwrap_or_else(|_| "proofs/".to_string());
 
                 let s3 = s3::S3Storage::new(&bucket, &region, &mode, years, &prefix)
                     .await
@@ -191,10 +187,7 @@ async fn main() {
     if api_keys.is_empty() {
         tracing::info!("API key auth disabled (no REGISTRY_API_KEYS set)");
     } else {
-        tracing::info!(
-            key_count = api_keys.len(),
-            "API key auth enabled"
-        );
+        tracing::info!(key_count = api_keys.len(), "API key auth enabled");
     }
 
     let state = Arc::new(AppState {

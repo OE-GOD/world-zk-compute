@@ -84,8 +84,7 @@ impl S3Storage {
 
     /// Compute the retention expiry from now.
     fn retention(&self) -> ObjectLockRetention {
-        let retain_until =
-            Utc::now() + chrono::Duration::days(self.retention_years as i64 * 365);
+        let retain_until = Utc::now() + chrono::Duration::days(self.retention_years as i64 * 365);
         let retain_until_aws =
             aws_sdk_s3::primitives::DateTime::from_millis(retain_until.timestamp_millis());
 
@@ -128,9 +127,7 @@ impl ProofStorage for S3Storage {
                 retention
                     .retain_until_date()
                     .cloned()
-                    .unwrap_or_else(|| {
-                        aws_sdk_s3::primitives::DateTime::from_millis(0)
-                    }),
+                    .unwrap_or_else(|| aws_sdk_s3::primitives::DateTime::from_millis(0)),
             )
             .send()
             .await

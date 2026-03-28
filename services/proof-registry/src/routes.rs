@@ -303,12 +303,8 @@ pub async fn compare_proofs(
     let bundle_a = db.load_bundle(&req.proof_a).ok();
     let bundle_b = db.load_bundle(&req.proof_b).ok();
 
-    let result = crate::compare::compare_proofs(
-        &proof_a,
-        &proof_b,
-        bundle_a.as_ref(),
-        bundle_b.as_ref(),
-    );
+    let result =
+        crate::compare::compare_proofs(&proof_a, &proof_b, bundle_a.as_ref(), bundle_b.as_ref());
 
     Ok(Json(result))
 }
@@ -541,11 +537,8 @@ mod tests {
         let db_path = tmp.path().join("test.db");
         let storage_dir = tmp.path().join("bundles");
         let tlog_path = tmp.path().join("transparency.db");
-        let db = crate::db::ProofDb::new(
-            db_path.to_str().unwrap(),
-            storage_dir.to_str().unwrap(),
-        )
-        .unwrap();
+        let db = crate::db::ProofDb::new(db_path.to_str().unwrap(), storage_dir.to_str().unwrap())
+            .unwrap();
         let tlog = TransparencyLog::new(tlog_path.to_str().unwrap()).unwrap();
         let signing_key = SigningKey::from_slice(&[42u8; 32]).unwrap();
 
@@ -725,7 +718,9 @@ mod tests {
         submit_bundle(&app, &bundle2).await;
 
         // Search all proofs (no filter).
-        let req = Request::get("/proofs?limit=50").body(Body::empty()).unwrap();
+        let req = Request::get("/proofs?limit=50")
+            .body(Body::empty())
+            .unwrap();
         let resp = app.clone().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let json = body_json(resp).await;
@@ -753,5 +748,178 @@ mod tests {
         let json = body_json(resp).await;
         assert_eq!(json["count"], 1);
         assert_eq!(json["proofs"][0]["circuit_hash"], "0xothercircuit");
+    }
+
+    // -- Proof comparison endpoint tests --
+
+    /// Helper: submit a proof bundle with custom model/circuit hash and return its ID.
+    async fn submit_bundle_with_hashes(
+        app: &Router,
+        model_hash: &str,
+        circuit_hash: &str,
+        public_inputs: &str,
+    ) -> String {
+        let proof_data: Vec<u8> = (0..256).map(|i| (i % 256) as u8).collect();
+        let gens_data: Vec<u8> = (0..128).map(|i| ((i * 7) % 256) as u8).collect();
+
+        let bundle_json = serde_json::json!({
+            "proof_hex": format!("0x{}", hex::encode(&proof_data)),
+            "public_inputs_hex": public_inputs,
+            "gens_hex": format!("0x{}", hex::encode(&gens_data)),
+            "dag_circuit_description": {
+                "num_compute_layers": 4,
+                "layer_types": [0, 1, 0, 1],
+            },
+            "model_hash": model_hash,
+            "timestamp": 1700000000u64,
+            "prover_version": "0.1.0-test",
+            "circuit_hash": circuit_hash,
+        });
+
+        let resp = submit_bundle(app, &bundle_json).await;
+        resp["id"].as_str().unwrap().to_string()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_compare_same_model_same_output() {
+        let state = make_test_state();
+        let app = build_test_app(state);
+
+        let id_a = submit_bundle_with_hashes(&app, "0xmodel1", "0xcircuit1", "0xaabbccdd").await;
+        let id_b = submit_bundle_with_hashes(&app, "0xmodel1", "0xcircuit1", "0xaabbccdd").await;
+
+        let compare_req = serde_json::json!({
+            "proof_a": id_a,
+            "proof_b": id_b,
+        });
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/proofs/compare")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&compare_req).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp).await;
+        assert_eq!(json["proof_a_id"], id_a);
+        assert_eq!(json["proof_b_id"], id_b);
+        assert_eq!(json["same_model"], true);
+        assert_eq!(json["same_circuit"], true);
+        assert_eq!(json["outputs_match"], true);
+        assert_eq!(json["model_a_hash"], "0xmodel1");
+        assert_eq!(json["model_b_hash"], "0xmodel1");
+        assert_eq!(json["circuit_a_hash"], "0xcircuit1");
+        assert_eq!(json["circuit_b_hash"], "0xcircuit1");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_compare_same_model_different_output() {
+        let state = make_test_state();
+        let app = build_test_app(state);
+
+        let id_a = submit_bundle_with_hashes(&app, "0xmodel1", "0xcircuit1", "0xaabbccdd").await;
+        let id_b = submit_bundle_with_hashes(&app, "0xmodel1", "0xcircuit1", "0x11223344").await;
+
+        let compare_req = serde_json::json!({
+            "proof_a": id_a,
+            "proof_b": id_b,
+        });
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/proofs/compare")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&compare_req).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp).await;
+        assert_eq!(json["same_model"], true);
+        assert_eq!(json["same_circuit"], true);
+        assert_eq!(json["outputs_match"], false);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_compare_different_models() {
+        let state = make_test_state();
+        let app = build_test_app(state);
+
+        let id_a = submit_bundle_with_hashes(&app, "0xmodel1", "0xcircuit1", "0xaabbccdd").await;
+        let id_b = submit_bundle_with_hashes(&app, "0xmodel2", "0xcircuit2", "0xaabbccdd").await;
+
+        let compare_req = serde_json::json!({
+            "proof_a": id_a,
+            "proof_b": id_b,
+        });
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/proofs/compare")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&compare_req).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp).await;
+        assert_eq!(json["same_model"], false);
+        assert_eq!(json["same_circuit"], false);
+        assert_eq!(json["outputs_match"], true);
+        assert_eq!(json["model_a_hash"], "0xmodel1");
+        assert_eq!(json["model_b_hash"], "0xmodel2");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_compare_nonexistent_proof() {
+        let state = make_test_state();
+        let app = build_test_app(state);
+
+        let id_a = submit_bundle_with_hashes(&app, "0xmodel1", "0xcircuit1", "0xaabb").await;
+
+        let compare_req = serde_json::json!({
+            "proof_a": id_a,
+            "proof_b": "nonexistent-id",
+        });
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/proofs/compare")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&compare_req).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_compare_empty_public_inputs() {
+        let state = make_test_state();
+        let app = build_test_app(state);
+
+        let id_a = submit_bundle_with_hashes(&app, "0xmodel1", "0xcircuit1", "").await;
+        let id_b = submit_bundle_with_hashes(&app, "0xmodel1", "0xcircuit1", "").await;
+
+        let compare_req = serde_json::json!({
+            "proof_a": id_a,
+            "proof_b": id_b,
+        });
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/proofs/compare")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&compare_req).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let json = body_json(resp).await;
+        assert_eq!(json["same_model"], true);
+        assert_eq!(json["same_circuit"], true);
+        // Both empty, no embedded outputs, so vacuously match.
+        assert_eq!(json["outputs_match"], true);
     }
 }

@@ -71,10 +71,7 @@ impl ProofDb {
     }
 
     /// Open or create a proof database with a custom storage backend.
-    pub fn with_storage(
-        db_path: &str,
-        blob_store: Arc<dyn ProofStorage>,
-    ) -> Result<Self, String> {
+    pub fn with_storage(db_path: &str, blob_store: Arc<dyn ProofStorage>) -> Result<Self, String> {
         let conn =
             Connection::open(db_path).map_err(|e| format!("failed to open database: {e}"))?;
 
@@ -403,9 +400,9 @@ impl ProofDb {
         let data = {
             let rt = tokio::runtime::Handle::try_current();
             match rt {
-                Ok(handle) => tokio::task::block_in_place(|| {
-                    handle.block_on(self.blob_store.get(id))
-                }),
+                Ok(handle) => {
+                    tokio::task::block_in_place(|| handle.block_on(self.blob_store.get(id)))
+                }
                 Err(_) => tokio::runtime::Runtime::new()
                     .map_err(|e| format!("failed to create runtime: {e}"))?
                     .block_on(self.blob_store.get(id)),
@@ -413,8 +410,8 @@ impl ProofDb {
         }
         .map_err(|e| format!("failed to read bundle: {e}"))?;
 
-        let text = String::from_utf8(data)
-            .map_err(|e| format!("bundle is not valid UTF-8: {e}"))?;
+        let text =
+            String::from_utf8(data).map_err(|e| format!("bundle is not valid UTF-8: {e}"))?;
         serde_json::from_str(&text).map_err(|e| format!("failed to parse bundle: {e}"))
     }
 
@@ -422,7 +419,6 @@ impl ProofDb {
     pub fn is_healthy(&self) -> bool {
         self.conn.query_row("SELECT 1", [], |_| Ok(())).is_ok()
     }
-
 }
 
 #[cfg(test)]

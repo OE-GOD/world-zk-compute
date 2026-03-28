@@ -268,13 +268,11 @@ mod tests {
         let result = compare_proofs(&proof_a, &proof_b, Some(&bundle_a), Some(&bundle_b));
         // Both empty, no embedded outputs => vacuously match
         assert!(result.outputs_match);
-        assert!(
-            result
-                .details
-                .as_ref()
-                .unwrap()
-                .contains("no public inputs")
-        );
+        assert!(result
+            .details
+            .as_ref()
+            .unwrap()
+            .contains("no public inputs"));
     }
 
     #[test]
@@ -295,13 +293,11 @@ mod tests {
 
         let result = compare_proofs(&proof_a, &proof_b, None, None);
         assert!(!result.outputs_match);
-        assert!(
-            result
-                .details
-                .as_ref()
-                .unwrap()
-                .contains("bundles not available")
-        );
+        assert!(result
+            .details
+            .as_ref()
+            .unwrap()
+            .contains("bundles not available"));
     }
 
     #[test]
@@ -345,13 +341,11 @@ mod tests {
 
         let result = compare_proofs(&proof_a, &proof_b, Some(&bundle_a), Some(&bundle_b));
         assert!(!result.outputs_match);
-        assert!(
-            result
-                .details
-                .as_ref()
-                .unwrap()
-                .contains("embedded outputs differ")
-        );
+        assert!(result
+            .details
+            .as_ref()
+            .unwrap()
+            .contains("embedded outputs differ"));
     }
 
     #[test]
