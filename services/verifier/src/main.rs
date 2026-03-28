@@ -357,6 +357,75 @@ async fn verify_batch(
     }))
 }
 
+// -- Compare endpoint --
+
+#[derive(Deserialize)]
+struct CompareRequest {
+    /// First proof bundle to verify and compare.
+    bundle_a: ProofBundle,
+    /// Second proof bundle to verify and compare.
+    bundle_b: ProofBundle,
+}
+
+#[derive(Serialize)]
+struct CompareResponse {
+    /// Whether both proofs verified successfully.
+    both_valid: bool,
+    /// Whether the circuit hashes match (same model/circuit).
+    same_circuit: bool,
+    /// Circuit hash of bundle A (hex).
+    circuit_hash_a: String,
+    /// Circuit hash of bundle B (hex).
+    circuit_hash_b: String,
+    /// Whether both verified proofs passed.
+    verified_a: bool,
+    verified_b: bool,
+    /// Error from bundle A verification (if any).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error_a: Option<String>,
+    /// Error from bundle B verification (if any).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error_b: Option<String>,
+}
+
+/// Compare two proof bundles: verify both and check if they use the same circuit.
+async fn compare_proofs(
+    Json(req): Json<CompareRequest>,
+) -> Result<Json<CompareResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let bundle_a = req.bundle_a;
+    let bundle_b = req.bundle_b;
+
+    let (result_a, result_b) = tokio::task::spawn_blocking(move || {
+        let a = verify(&bundle_a);
+        let b = verify(&bundle_b);
+        (a, b)
+    })
+    .await
+    .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let (verified_a, hash_a, error_a) = match result_a {
+        Ok(r) => (r.verified, format!("0x{}", hex::encode(r.circuit_hash)), None),
+        Err(e) => (false, String::new(), Some(e.to_string())),
+    };
+    let (verified_b, hash_b, error_b) = match result_b {
+        Ok(r) => (r.verified, format!("0x{}", hex::encode(r.circuit_hash)), None),
+        Err(e) => (false, String::new(), Some(e.to_string())),
+    };
+
+    let same_circuit = !hash_a.is_empty() && !hash_b.is_empty() && hash_a == hash_b;
+
+    Ok(Json(CompareResponse {
+        both_valid: verified_a && verified_b,
+        same_circuit,
+        circuit_hash_a: hash_a,
+        circuit_hash_b: hash_b,
+        verified_a,
+        verified_b,
+        error_a,
+        error_b,
+    }))
+}
+
 fn err(code: StatusCode, msg: String) -> (StatusCode, Json<ErrorResponse>) {
     (code, Json(ErrorResponse { error: msg }))
 }
@@ -387,6 +456,7 @@ fn build_app_with_config(config: ServiceConfig) -> Router {
         .route("/verify", post(verify_proof))
         .route("/verify/raw", post(verify_proof_bytes))
         .route("/verify/batch", post(verify_batch))
+        .route("/verify/compare", post(compare_proofs))
         .route("/verify/hybrid", post(verify_hybrid_proof))
         .route("/circuits", get(list_circuits))
         .route("/circuits", post(register_circuit))
@@ -1522,5 +1592,37 @@ mod tests {
             StatusCode::TOO_MANY_REQUESTS,
             "3rd request should be rate limited at tenant's 2 RPM"
         );
+    }
+
+    #[tokio::test]
+    async fn test_compare_invalid_proofs() {
+        let app = build_app();
+        let body = serde_json::json!({
+            "bundle_a": {
+                "proof_hex": "0xdead",
+                "gens_hex": "0xbeef",
+                "dag_circuit_description": {}
+            },
+            "bundle_b": {
+                "proof_hex": "0xcafe",
+                "gens_hex": "0xbabe",
+                "dag_circuit_description": {}
+            }
+        });
+        let req = Request::post("/verify/compare")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["both_valid"], false);
+        assert_eq!(json["verified_a"], false);
+        assert_eq!(json["verified_b"], false);
+        assert!(json["error_a"].is_string());
+        assert!(json["error_b"].is_string());
     }
 }

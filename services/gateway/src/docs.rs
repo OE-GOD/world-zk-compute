@@ -7,14 +7,17 @@
 
 /// Serve the Swagger UI HTML page.
 pub async fn swagger_ui() -> axum::response::Html<String> {
-    axum::response::Html(r#"<!DOCTYPE html>
+    axum::response::Html(
+        r#"<!DOCTYPE html>
 <html><head><title>World ZK Compute API</title>
 <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist/swagger-ui.css">
 </head><body>
 <div id="swagger-ui"></div>
 <script src="https://unpkg.com/swagger-ui-dist/swagger-ui-bundle.js"></script>
 <script>SwaggerUIBundle({url: '/docs/openapi.yaml', dom_id: '#swagger-ui'})</script>
-</body></html>"#.into())
+</body></html>"#
+            .into(),
+    )
 }
 
 /// Serve the raw OpenAPI specification.

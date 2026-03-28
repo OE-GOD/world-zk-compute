@@ -324,7 +324,10 @@ mod tests {
     #[test]
     fn test_classify_prove() {
         assert_eq!(classify_path("/prove"), Operation::ProofGenerated);
-        assert_eq!(classify_path("/prove/some-model"), Operation::ProofGenerated);
+        assert_eq!(
+            classify_path("/prove/some-model"),
+            Operation::ProofGenerated
+        );
         assert_eq!(classify_path("/v1/prove"), Operation::ProofGenerated);
         assert_eq!(
             classify_path("/v1/prove/some-model"),

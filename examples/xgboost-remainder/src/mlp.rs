@@ -1304,7 +1304,7 @@ mod tests {
         assert_eq!(xgb.trees.len(), 2);
     }
 
-    // ---- E2E prove + verify (ignored — slow) ----
+    // ---- E2E prove + verify via tree conversion (ignored — slow) ----
 
     #[test]
     #[ignore]
@@ -1324,5 +1324,353 @@ mod tests {
             "E2E prove+verify failed: {:?}",
             result.err()
         );
+    }
+
+    // ======================================================================
+    // Native MLP circuit tests
+    // ======================================================================
+
+    // ---- prepare_mlp_circuit_inputs ----
+
+    #[test]
+    fn test_prepare_mlp_circuit_inputs_linear() {
+        let mlp = single_layer_model();
+        let features = vec![1.0, 3.0];
+        let inputs = prepare_mlp_circuit_inputs(&mlp, &features);
+
+        assert_eq!(inputs.n_inputs_padded, 2);
+        assert_eq!(inputs.n_outputs_padded, 2);
+        assert_eq!(inputs.layer_dims.len(), 1);
+        assert_eq!(inputs.relu_layer_indices.len(), 0);
+        assert_eq!(inputs.relu_decomp_bits.len(), 0);
+        assert_eq!(inputs.relu_sign_bits.len(), 0);
+        assert_eq!(inputs.decomp_k, MLP_DECOMP_K);
+
+        // Expected outputs: neuron 0 = 1*1 + (-1)*3 = -2, neuron 1 = (-1)*1 + 1*3 = 2
+        // In quantized domain (SCALE^2): -2 * 2^32, 2 * 2^32
+        let scale_sq = MLP_FIXED_POINT_SCALE as i64 * MLP_FIXED_POINT_SCALE as i64;
+        assert_eq!(inputs.expected_outputs[0], -2 * scale_sq);
+        assert_eq!(inputs.expected_outputs[1], 2 * scale_sq);
+    }
+
+    #[test]
+    fn test_prepare_mlp_circuit_inputs_relu() {
+        let mlp = MLPModel {
+            model_type: "mlp".to_string(),
+            n_features: 2,
+            n_classes: 2,
+            layers: vec![MLPLayer {
+                weights: vec![vec![1.0, -1.0], vec![-1.0, 1.0]],
+                biases: vec![0.0, 0.0],
+                activation: Activation::Relu,
+            }],
+        };
+        let features = vec![1.0, 3.0];
+        let inputs = prepare_mlp_circuit_inputs(&mlp, &features);
+
+        assert_eq!(inputs.relu_layer_indices, vec![0]);
+        assert_eq!(inputs.relu_decomp_bits.len(), 1);
+        assert_eq!(inputs.relu_sign_bits.len(), 1);
+
+        // neuron 0: 1*1 + (-1)*3 = -2 -> sign=0, relu=0
+        // neuron 1: (-1)*1 + 1*3 = 2 -> sign=1, relu=2
+        assert!(!inputs.relu_sign_bits[0][0]); // negative
+        assert!(inputs.relu_sign_bits[0][1]); // positive
+
+        let scale_sq = MLP_FIXED_POINT_SCALE as i64 * MLP_FIXED_POINT_SCALE as i64;
+        assert_eq!(inputs.expected_outputs[0], 0); // ReLU clamps to 0
+        assert_eq!(inputs.expected_outputs[1], 2 * scale_sq); // passes through
+    }
+
+    #[test]
+    fn test_prepare_mlp_circuit_inputs_two_layer() {
+        let mlp = parse_mlp_model(two_layer_model_json()).unwrap();
+        let features = vec![1.0, 0.5, 0.3, 0.7];
+        let inputs = prepare_mlp_circuit_inputs(&mlp, &features);
+
+        assert_eq!(inputs.layer_dims.len(), 2);
+        assert_eq!(inputs.relu_layer_indices, vec![0]); // first layer has ReLU
+        assert_eq!(inputs.relu_decomp_bits.len(), 1);
+        assert_eq!(inputs.relu_sign_bits.len(), 1);
+        assert_eq!(inputs.n_outputs_padded, 2);
+    }
+
+    // ---- build_mlp_circuit ----
+
+    #[test]
+    fn test_build_mlp_circuit_linear_2x2() {
+        // Just check circuit builds without panicking
+        let layer_dims = vec![(2, 2)];
+        let _circuit = build_mlp_circuit(&layer_dims, &[], MLP_DECOMP_K);
+    }
+
+    #[test]
+    fn test_build_mlp_circuit_relu_2x2() {
+        let layer_dims = vec![(2, 2)];
+        let _circuit = build_mlp_circuit(&layer_dims, &[0], MLP_DECOMP_K);
+    }
+
+    #[test]
+    fn test_build_mlp_circuit_two_layer() {
+        let layer_dims = vec![(4, 2), (2, 2)];
+        let _circuit = build_mlp_circuit(&layer_dims, &[0], MLP_DECOMP_K);
+    }
+
+    #[test]
+    fn test_build_mlp_circuit_three_layer() {
+        let layer_dims = vec![(4, 4), (4, 2), (2, 2)];
+        let _circuit = build_mlp_circuit(&layer_dims, &[0, 1], MLP_DECOMP_K);
+    }
+
+    // ---- prove-and-verify ----
+
+    /// Build the native MLP circuit, set inputs, generate and verify a Hyrax proof.
+    fn prove_and_verify_mlp(inputs: &MLPCircuitInputs) -> anyhow::Result<()> {
+        use anyhow::Result;
+        use hyrax::gkr::verify_hyrax_proof;
+        use hyrax::utils::vandermonde::VandermondeInverse;
+        use rand::thread_rng;
+        use shared_types::config::{GKRCircuitProverConfig, GKRCircuitVerifierConfig};
+        use shared_types::pedersen::PedersenCommitter;
+        use shared_types::transcript::ec_transcript::ECTranscript;
+        use shared_types::transcript::poseidon_sponge::PoseidonSponge;
+        use shared_types::{
+            perform_function_under_prover_config, perform_function_under_verifier_config,
+            Bn256Point, Fq,
+        };
+
+        let base_circuit = build_mlp_circuit(
+            &inputs.layer_dims,
+            &inputs.relu_layer_indices,
+            inputs.decomp_k,
+        );
+
+        let mut prover_circuit = base_circuit.clone();
+        let verifier_circuit = base_circuit.clone();
+
+        // Set committed inputs
+        prover_circuit.set_input("features", inputs.features_quantized.clone().into());
+        for (r, layer_idx) in inputs.relu_layer_indices.iter().enumerate() {
+            prover_circuit.set_input(
+                &format!("decomp_bits_{}", r),
+                inputs.relu_decomp_bits[r].clone().into(),
+            );
+            prover_circuit.set_input(
+                &format!("sign_bits_{}", r),
+                inputs.relu_sign_bits[r].clone().into(),
+            );
+        }
+
+        // Set public inputs
+        for (l, weights) in inputs.layer_weights.iter().enumerate() {
+            prover_circuit.set_input(
+                &format!("weights_{}", l),
+                weights.clone().into(),
+            );
+            prover_circuit.set_input(
+                &format!("biases_{}", l),
+                inputs.layer_biases[l].clone().into(),
+            );
+        }
+        prover_circuit.set_input("expected_outputs", inputs.expected_outputs.clone().into());
+
+        let hyrax_prover_config =
+            GKRCircuitProverConfig::hyrax_compatible_runtime_optimized_default();
+        let hyrax_verifier_config =
+            GKRCircuitVerifierConfig::new_from_prover_config(&hyrax_prover_config, false);
+
+        let mut hyrax_provable = prover_circuit
+            .gen_hyrax_provable_circuit()
+            .expect("Failed to generate Hyrax-provable circuit");
+
+        let pedersen_committer =
+            PedersenCommitter::new(512, "mlp-circuit Pedersen committer", None);
+        let mut blinding_rng = thread_rng();
+        let mut vandermonde = VandermondeInverse::new();
+        let mut prover_transcript: ECTranscript<Bn256Point, PoseidonSponge<Fq>> =
+            ECTranscript::new("mlp-circuit prover transcript");
+
+        let (proof, proof_config) = perform_function_under_prover_config!(
+            |w, x, y, z| hyrax_provable.prove(w, x, y, z),
+            &hyrax_prover_config,
+            &pedersen_committer,
+            &mut blinding_rng,
+            &mut vandermonde,
+            &mut prover_transcript
+        );
+
+        let hyrax_verifiable = verifier_circuit
+            .gen_hyrax_verifiable_circuit()
+            .expect("Failed to generate Hyrax-verifiable circuit");
+
+        let verifier_pedersen_committer =
+            PedersenCommitter::new(512, "mlp-circuit Pedersen committer", None);
+        let mut verifier_transcript: ECTranscript<Bn256Point, PoseidonSponge<Fq>> =
+            ECTranscript::new("mlp-circuit prover transcript");
+
+        perform_function_under_verifier_config!(
+            verify_hyrax_proof,
+            &hyrax_verifier_config,
+            &proof,
+            &hyrax_verifiable,
+            &verifier_pedersen_committer,
+            &mut verifier_transcript,
+            &proof_config
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_native_mlp_prove_verify_linear_2x2() {
+        // Single linear layer, 2 inputs, 2 outputs, no activation
+        let mlp = single_layer_model();
+        let features = vec![1.0, 3.0];
+        let inputs = prepare_mlp_circuit_inputs(&mlp, &features);
+        let result = prove_and_verify_mlp(&inputs);
+        assert!(
+            result.is_ok(),
+            "prove_and_verify failed for linear 2x2: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_native_mlp_prove_verify_relu_2x2() {
+        // Single layer with ReLU
+        let mlp = MLPModel {
+            model_type: "mlp".to_string(),
+            n_features: 2,
+            n_classes: 2,
+            layers: vec![MLPLayer {
+                weights: vec![vec![1.0, -1.0], vec![-1.0, 1.0]],
+                biases: vec![0.1, -0.1],
+                activation: Activation::Relu,
+            }],
+        };
+        let features = vec![2.0, 0.5];
+        // neuron 0: 1*2 + (-1)*0.5 + 0.1 = 1.6 > 0 -> relu = 1.6
+        // neuron 1: (-1)*2 + 1*0.5 + (-0.1) = -1.6 < 0 -> relu = 0
+        let inputs = prepare_mlp_circuit_inputs(&mlp, &features);
+        let result = prove_and_verify_mlp(&inputs);
+        assert!(
+            result.is_ok(),
+            "prove_and_verify failed for relu 2x2: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_native_mlp_prove_verify_two_layer() {
+        // Two-layer MLP: 4 inputs -> 2 hidden (relu) -> 2 outputs (linear)
+        let mlp = parse_mlp_model(two_layer_model_json()).unwrap();
+        let features = vec![1.0, 0.5, 0.3, 0.7];
+        let inputs = prepare_mlp_circuit_inputs(&mlp, &features);
+        let result = prove_and_verify_mlp(&inputs);
+        assert!(
+            result.is_ok(),
+            "prove_and_verify failed for two-layer MLP: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_native_mlp_prove_verify_all_relu_zero() {
+        // All neurons have negative pre-activation -> all ReLU outputs are 0
+        let mlp = MLPModel {
+            model_type: "mlp".to_string(),
+            n_features: 2,
+            n_classes: 2,
+            layers: vec![MLPLayer {
+                weights: vec![vec![-1.0, -1.0], vec![-1.0, -1.0]],
+                biases: vec![-1.0, -1.0],
+                activation: Activation::Relu,
+            }],
+        };
+        let features = vec![1.0, 1.0];
+        // Both neurons: -1*1 + -1*1 + -1 = -3 < 0 -> relu = 0
+        let inputs = prepare_mlp_circuit_inputs(&mlp, &features);
+        assert_eq!(inputs.expected_outputs[0], 0);
+        assert_eq!(inputs.expected_outputs[1], 0);
+        let result = prove_and_verify_mlp(&inputs);
+        assert!(
+            result.is_ok(),
+            "prove_and_verify failed for all-zero relu: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_native_mlp_prove_verify_from_sample_file() {
+        // Load the sample MLP model from file and prove with native circuit
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("test-model/mlp_sample.json");
+        let data = std::fs::read_to_string(&path).unwrap();
+        let mlp = parse_mlp_model(&data).unwrap();
+        let features = vec![0.5, 0.3, 0.8, 0.1];
+        let inputs = prepare_mlp_circuit_inputs(&mlp, &features);
+        let result = prove_and_verify_mlp(&inputs);
+        assert!(
+            result.is_ok(),
+            "prove_and_verify failed for sample file: {:?}",
+            result.err()
+        );
+    }
+
+    // ---- negative tests for native circuit ----
+
+    #[test]
+    fn test_native_mlp_reject_wrong_output() {
+        let mlp = single_layer_model();
+        let features = vec![1.0, 3.0];
+        let mut inputs = prepare_mlp_circuit_inputs(&mlp, &features);
+        // Tamper: set expected output to wrong value
+        inputs.expected_outputs[0] = 12345;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            prove_and_verify_mlp(&inputs).is_ok()
+        }));
+        let succeeded = result.unwrap_or(false);
+        assert!(!succeeded, "Should reject wrong expected output");
+    }
+
+    #[test]
+    fn test_native_mlp_reject_wrong_sign_bit() {
+        let mlp = MLPModel {
+            model_type: "mlp".to_string(),
+            n_features: 2,
+            n_classes: 2,
+            layers: vec![MLPLayer {
+                weights: vec![vec![1.0, -1.0], vec![-1.0, 1.0]],
+                biases: vec![0.0, 0.0],
+                activation: Activation::Relu,
+            }],
+        };
+        let features = vec![2.0, 0.5];
+        let mut inputs = prepare_mlp_circuit_inputs(&mlp, &features);
+        // Tamper: flip a sign bit
+        inputs.relu_sign_bits[0][0] = !inputs.relu_sign_bits[0][0];
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            prove_and_verify_mlp(&inputs).is_ok()
+        }));
+        let succeeded = result.unwrap_or(false);
+        assert!(!succeeded, "Should reject wrong sign bit");
+    }
+
+    // ---- detect tests for MLP ----
+
+    #[test]
+    fn test_detect_mlp_format() {
+        use crate::detect;
+        let json = two_layer_model_json();
+        assert_eq!(detect::detect_model_format(json).unwrap(), detect::FORMAT_MLP);
+    }
+
+    #[test]
+    fn test_detect_mlp_from_sample_file() {
+        use crate::detect;
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("test-model/mlp_sample.json");
+        let fmt = detect::detect_model_format_from_file(&path).unwrap();
+        assert_eq!(fmt, detect::FORMAT_MLP);
     }
 }
