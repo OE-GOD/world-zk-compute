@@ -355,9 +355,7 @@ pub async fn register_handler(
 }
 
 /// `GET /v1/webhooks` -- list all registered webhooks.
-pub async fn list_handler(
-    State(store): State<Arc<WebhookStore>>,
-) -> Json<ListResponse> {
+pub async fn list_handler(State(store): State<Arc<WebhookStore>>) -> Json<ListResponse> {
     let webhooks = store.list().await;
     Json(ListResponse { webhooks })
 }
@@ -714,10 +712,7 @@ mod tests {
             .await;
 
         store
-            .fire(
-                "proof.created",
-                serde_json::json!({"proof_id": "p-123"}),
-            )
+            .fire("proof.created", serde_json::json!({"proof_id": "p-123"}))
             .await;
 
         // Allow the spawned task time to deliver.
@@ -747,10 +742,7 @@ mod tests {
 
         // Fire a different event type.
         store
-            .fire(
-                "proof.verified",
-                serde_json::json!({"proof_id": "p-456"}),
-            )
+            .fire("proof.verified", serde_json::json!({"proof_id": "p-456"}))
             .await;
 
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -782,10 +774,7 @@ mod tests {
             .await;
 
         store
-            .fire(
-                "proof.failed",
-                serde_json::json!({"error": "timeout"}),
-            )
+            .fire("proof.failed", serde_json::json!({"error": "timeout"}))
             .await;
 
         // Wait for retries (backoff: 1s, 2s).
@@ -816,10 +805,7 @@ mod tests {
             .await;
 
         store
-            .fire(
-                "proof.created",
-                serde_json::json!({"proof_id": "p-789"}),
-            )
+            .fire("proof.created", serde_json::json!({"proof_id": "p-789"}))
             .await;
 
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;

@@ -472,7 +472,12 @@ async fn auth_middleware(
 
     // Health, admin, and docs endpoints are always public.
     let path = req.uri().path();
-    if path == "/health" || path.starts_with("/health/") || path.starts_with("/admin/") || path == "/docs" || path.starts_with("/docs/") {
+    if path == "/health"
+        || path.starts_with("/health/")
+        || path.starts_with("/admin/")
+        || path == "/docs"
+        || path.starts_with("/docs/")
+    {
         return Ok(next.run(req).await);
     }
 
