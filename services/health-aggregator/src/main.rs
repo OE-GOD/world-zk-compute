@@ -138,9 +138,7 @@ async fn main() {
                 .init();
         }
         _ => {
-            tracing_subscriber::fmt()
-                .with_env_filter(filter)
-                .init();
+            tracing_subscriber::fmt().with_env_filter(filter).init();
         }
     }
 
@@ -181,7 +179,10 @@ async fn main() {
         .with_state(store);
 
     let addr = format!("0.0.0.0:{port}");
-    tracing::info!("Health aggregator on {addr}, polling {} services every {poll_interval}s", services.len());
+    tracing::info!(
+        "Health aggregator on {addr}, polling {} services every {poll_interval}s",
+        services.len()
+    );
 
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();

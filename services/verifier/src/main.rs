@@ -393,7 +393,10 @@ async fn onboard(
         return Err(err(StatusCode::BAD_REQUEST, "name is required".into()));
     }
     if req.email.trim().is_empty() || !req.email.contains('@') {
-        return Err(err(StatusCode::BAD_REQUEST, "valid email is required".into()));
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "valid email is required".into(),
+        ));
     }
 
     // Create tenant with default limits (60 RPM)
@@ -501,11 +504,19 @@ async fn compare_proofs(
     .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let (verified_a, hash_a, error_a) = match result_a {
-        Ok(r) => (r.verified, format!("0x{}", hex::encode(r.circuit_hash)), None),
+        Ok(r) => (
+            r.verified,
+            format!("0x{}", hex::encode(r.circuit_hash)),
+            None,
+        ),
         Err(e) => (false, String::new(), Some(e.to_string())),
     };
     let (verified_b, hash_b, error_b) = match result_b {
-        Ok(r) => (r.verified, format!("0x{}", hex::encode(r.circuit_hash)), None),
+        Ok(r) => (
+            r.verified,
+            format!("0x{}", hex::encode(r.circuit_hash)),
+            None,
+        ),
         Err(e) => (false, String::new(), Some(e.to_string())),
     };
 
@@ -620,9 +631,7 @@ fn init_tracing() {
                 .init();
         }
         _ => {
-            tracing_subscriber::fmt()
-                .with_env_filter(filter)
-                .init();
+            tracing_subscriber::fmt().with_env_filter(filter).init();
         }
     }
 }

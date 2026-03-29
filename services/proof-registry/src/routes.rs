@@ -522,9 +522,7 @@ pub async fn register_webhook(
     ))
 }
 
-pub async fn list_webhooks(
-    State(state): State<Arc<AppState>>,
-) -> Json<serde_json::Value> {
+pub async fn list_webhooks(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let hooks = state.webhooks.list();
     Json(serde_json::json!({"webhooks": hooks, "count": hooks.len()}))
 }

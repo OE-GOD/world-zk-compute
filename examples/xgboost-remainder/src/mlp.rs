@@ -134,8 +134,8 @@ pub fn parse_mlp_json(json_str: &str) -> Result<XgboostModel, String> {
 ///
 /// Useful for running inference directly via [`predict_mlp`].
 pub fn parse_mlp_model(json_str: &str) -> Result<MLPModel, String> {
-    let mlp: MLPModel = serde_json::from_str(json_str)
-        .map_err(|e| format!("Failed to parse MLP JSON: {}", e))?;
+    let mlp: MLPModel =
+        serde_json::from_str(json_str).map_err(|e| format!("Failed to parse MLP JSON: {}", e))?;
     validate_mlp(&mlp)?;
     Ok(mlp)
 }
@@ -479,10 +479,7 @@ fn mlp_quantize(val: f64) -> i64 {
 ///
 /// Runs the forward pass in quantized integer arithmetic to compute
 /// intermediate values and witness data (decomp bits for ReLU layers).
-pub fn prepare_mlp_circuit_inputs(
-    mlp: &MLPModel,
-    features: &[f64],
-) -> MLPCircuitInputs {
+pub fn prepare_mlp_circuit_inputs(mlp: &MLPModel, features: &[f64]) -> MLPCircuitInputs {
     assert_eq!(features.len(), mlp.n_features, "Feature count mismatch");
 
     let decomp_k = MLP_DECOMP_K;
@@ -522,10 +519,9 @@ pub fn prepare_mlp_circuit_inputs(
         // Quantize biases (scaled by SCALE^2 to match w*x domain)
         let mut biases_q = vec![0i64; n_out_padded];
         for j in 0..n_out {
-            biases_q[j] = (layer.biases[j]
-                * MLP_FIXED_POINT_SCALE as f64
-                * MLP_FIXED_POINT_SCALE as f64)
-                .round() as i64;
+            biases_q[j] =
+                (layer.biases[j] * MLP_FIXED_POINT_SCALE as f64 * MLP_FIXED_POINT_SCALE as f64)
+                    .round() as i64;
         }
         layer_biases.push(biases_q.clone());
 
@@ -672,19 +668,11 @@ pub fn build_mlp_circuit(
     for (l, &(n_in, n_out)) in layer_dims.iter().enumerate() {
         let w_size = n_out * n_in;
         let w_nv = model::next_log2(w_size);
-        let w_shred = builder.add_input_shred(
-            &format!("weights_{}", l),
-            w_nv,
-            &public,
-        );
+        let w_shred = builder.add_input_shred(&format!("weights_{}", l), w_nv, &public);
         weight_shreds.push(w_shred);
 
         let b_nv = n_out.trailing_zeros() as usize;
-        let b_shred = builder.add_input_shred(
-            &format!("biases_{}", l),
-            b_nv,
-            &public,
-        );
+        let b_shred = builder.add_input_shred(&format!("biases_{}", l), b_nv, &public);
         bias_shreds.push(b_shred);
     }
 
@@ -695,19 +683,13 @@ pub fn build_mlp_circuit(
         let (_, n_out) = layer_dims[layer_idx];
         let decomp_size = n_out * decomp_k;
         let decomp_nv = model::next_log2(decomp_size);
-        let decomp_shred = builder.add_input_shred(
-            &format!("decomp_bits_{}", relu_idx),
-            decomp_nv,
-            &committed,
-        );
+        let decomp_shred =
+            builder.add_input_shred(&format!("decomp_bits_{}", relu_idx), decomp_nv, &committed);
         decomp_shreds.push(decomp_shred);
 
         let sign_nv = n_out.trailing_zeros() as usize;
-        let sign_shred = builder.add_input_shred(
-            &format!("sign_bits_{}", relu_idx),
-            sign_nv,
-            &committed,
-        );
+        let sign_shred =
+            builder.add_input_shred(&format!("sign_bits_{}", relu_idx), sign_nv, &committed);
         sign_shreds.push(sign_shred);
     }
 
@@ -754,12 +736,8 @@ pub fn build_mlp_circuit(
         for idx in 0..total {
             weight_gates.push((idx as u32, idx as u32));
         }
-        let weights_routed = builder.add_identity_gate_node(
-            &weight_shreds[l],
-            weight_gates,
-            total_nv,
-            None,
-        );
+        let weights_routed =
+            builder.add_identity_gate_node(&weight_shreds[l], weight_gates, total_nv, None);
 
         // Element-wise multiply
         let products = builder.add_sector(inputs_expanded.expr() * weights_routed.expr());
@@ -819,9 +797,8 @@ pub fn build_mlp_circuit(
 
             // shifted = z + 2^(K-1)
             let offset = fr_power_of_2(decomp_k - 1);
-            let shifted = builder.add_sector(
-                pre_activations.expr() + AbstractExpression::constant(offset),
-            );
+            let shifted =
+                builder.add_sector(pre_activations.expr() + AbstractExpression::constant(offset));
 
             // Reconstruction residual: weighted_sum - shifted
             let recon_residual = builder.add_sector(weighted_sum.expr() - shifted.expr());
@@ -839,13 +816,11 @@ pub fn build_mlp_circuit(
                 out_nv_l,
                 None,
             );
-            let sign_consistency =
-                builder.add_sector(sign_from_decomp.expr() - sign_shred.expr());
+            let sign_consistency = builder.add_sector(sign_from_decomp.expr() - sign_shred.expr());
             all_checks.push((sign_consistency, n_out));
 
             // --- ReLU output: relu[j] = z[j] * sign[j] ---
-            current_activations =
-                builder.add_sector(pre_activations.expr() * sign_shred.expr());
+            current_activations = builder.add_sector(pre_activations.expr() * sign_shred.expr());
 
             relu_counter += 1;
         } else {
@@ -855,8 +830,7 @@ pub fn build_mlp_circuit(
     }
 
     // === Output residual: computed_outputs - expected_outputs must be zero ===
-    let output_residual =
-        builder.add_sector(current_activations.expr() - expected_outputs.expr());
+    let output_residual = builder.add_sector(current_activations.expr() - expected_outputs.expr());
     all_checks.push((output_residual, last_n_out));
 
     // === Combine all checks into a single output layer ===
@@ -864,25 +838,21 @@ pub fn build_mlp_circuit(
     let output_total_nv = model::next_log2(total_checks);
 
     let mut offset_pos = 0usize;
-    let mut combined_expr: AbstractExpression<Fr> =
-        AbstractExpression::constant(Fr::from(0u64));
+    let mut combined_expr: AbstractExpression<Fr> = AbstractExpression::constant(Fr::from(0u64));
 
     for (check_node, count) in &all_checks {
         let mut gates = Vec::new();
         for i in 0..*count {
             gates.push(((offset_pos + i) as u32, i as u32));
         }
-        let routed =
-            builder.add_identity_gate_node(check_node, gates, output_total_nv, None);
+        let routed = builder.add_identity_gate_node(check_node, gates, output_total_nv, None);
         combined_expr = combined_expr + routed.expr();
         offset_pos += count;
     }
 
     let combined = builder.add_sector(combined_expr);
     builder.set_output(&combined);
-    builder
-        .build()
-        .expect("Failed to build MLP circuit")
+    builder.build().expect("Failed to build MLP circuit")
 }
 
 /// Sum-reduce n_in values per neuron to get n_out dot products.
@@ -1255,8 +1225,7 @@ mod tests {
                     assert!(node.left_child < n, "left_child out of bounds");
                     assert!(node.right_child < n, "right_child out of bounds");
                     assert!(
-                        tree.nodes[node.left_child].is_leaf
-                            || !tree.nodes[node.left_child].is_leaf,
+                        tree.nodes[node.left_child].is_leaf || !tree.nodes[node.left_child].is_leaf,
                         "left child must exist"
                     );
                 }
@@ -1294,8 +1263,8 @@ mod tests {
 
     #[test]
     fn test_load_mlp_from_sample_file() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("test-model/mlp_sample.json");
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("test-model/mlp_sample.json");
         let xgb = load_mlp_json(&path).unwrap();
         assert_eq!(xgb.num_features, 4);
         assert_eq!(xgb.num_classes, 2);
@@ -1461,10 +1430,7 @@ mod tests {
 
         // Set public inputs
         for (l, weights) in inputs.layer_weights.iter().enumerate() {
-            prover_circuit.set_input(
-                &format!("weights_{}", l),
-                weights.clone().into(),
-            );
+            prover_circuit.set_input(&format!("weights_{}", l), weights.clone().into());
             prover_circuit.set_input(
                 &format!("biases_{}", l),
                 inputs.layer_biases[l].clone().into(),
@@ -1601,8 +1567,8 @@ mod tests {
     #[test]
     fn test_native_mlp_prove_verify_from_sample_file() {
         // Load the sample MLP model from file and prove with native circuit
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("test-model/mlp_sample.json");
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("test-model/mlp_sample.json");
         let data = std::fs::read_to_string(&path).unwrap();
         let mlp = parse_mlp_model(&data).unwrap();
         let features = vec![0.5, 0.3, 0.8, 0.1];
@@ -1660,14 +1626,17 @@ mod tests {
     fn test_detect_mlp_format() {
         use crate::detect;
         let json = two_layer_model_json();
-        assert_eq!(detect::detect_model_format(json).unwrap(), detect::FORMAT_MLP);
+        assert_eq!(
+            detect::detect_model_format(json).unwrap(),
+            detect::FORMAT_MLP
+        );
     }
 
     #[test]
     fn test_detect_mlp_from_sample_file() {
         use crate::detect;
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("test-model/mlp_sample.json");
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("test-model/mlp_sample.json");
         let fmt = detect::detect_model_format_from_file(&path).unwrap();
         assert_eq!(fmt, detect::FORMAT_MLP);
     }

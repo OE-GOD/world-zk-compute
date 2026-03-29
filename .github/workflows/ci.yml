@@ -269,7 +269,7 @@ jobs:
           shared-key: wasm-check
 
       - name: Check WASM target compiles
-        run: cargo check -p zkml-verifier --target wasm32-unknown-unknown --no-default-features
+        run: cargo check -p zkml-verifier --target wasm32-unknown-unknown --features wasm
 
   # ── SDK E2E (batch verification on Anvil) ───────────────────────────────
 

@@ -185,11 +185,7 @@ mod tests {
     #[test]
     fn test_detect_invalid_json() {
         let err = detect_model_format("not json at all").unwrap_err();
-        assert!(
-            err.contains("Invalid JSON"),
-            "unexpected error: {}",
-            err
-        );
+        assert!(err.contains("Invalid JSON"), "unexpected error: {}", err);
     }
 
     #[test]

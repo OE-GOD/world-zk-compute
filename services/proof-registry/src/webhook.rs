@@ -101,8 +101,7 @@ impl WebhookStore {
             .map(|h| {
                 h.values()
                     .filter(|w| {
-                        w.active
-                            && (w.events.is_empty() || w.events.contains(&event.event))
+                        w.active && (w.events.is_empty() || w.events.contains(&event.event))
                     })
                     .cloned()
                     .collect()
