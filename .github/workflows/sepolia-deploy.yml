@@ -23,7 +23,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: recursive
 
@@ -39,7 +39,7 @@ jobs:
         run: bash scripts/deploy-sepolia-tee.sh
 
       - name: Upload deployment artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sepolia-deployment
           path: deployments/11155111.json
@@ -54,7 +54,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: recursive
 
@@ -63,7 +63,7 @@ jobs:
 
       - name: Download deployment artifacts
         if: ${{ inputs.deploy }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: sepolia-deployment
           path: deployments/
