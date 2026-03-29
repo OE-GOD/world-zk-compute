@@ -6,6 +6,7 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY crates/zkml-verifier/ crates/zkml-verifier/
 COPY services/verifier/ services/verifier/
+COPY services/landing.html services/landing.html
 # Create bench stub (not needed for build but referenced in Cargo.toml)
 RUN mkdir -p crates/zkml-verifier/benches && \
     echo "fn main(){}" > crates/zkml-verifier/benches/verify_bench.rs
