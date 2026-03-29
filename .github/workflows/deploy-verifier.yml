@@ -1,11 +1,6 @@
 name: Deploy Verifier API
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'services/verifier/**'
-      - 'crates/zkml-verifier/**'
   workflow_dispatch:
 
 permissions:
@@ -16,7 +11,7 @@ jobs:
     name: Deploy to Fly.io
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    environment: production
+    if: ${{ secrets.FLY_API_TOKEN != '' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -24,7 +19,7 @@ jobs:
       - uses: superfly/flyctl-actions/setup-flyctl@master
 
       - name: Deploy
-        run: flyctl deploy --config services/verifier/fly.toml --dockerfile services/verifier/Dockerfile --remote-only
+        run: flyctl deploy --config fly.verifier.toml --remote-only
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
