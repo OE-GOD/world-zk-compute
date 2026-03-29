@@ -99,6 +99,10 @@ struct CircuitListResponse {
 
 // -- Handlers --
 
+async fn landing_page() -> axum::response::Html<&'static str> {
+    axum::response::Html(include_str!("../../landing.html"))
+}
+
 async fn health(State(store): State<CircuitStore>) -> Json<HealthResponse> {
     let count = store.read().await.len();
     Json(HealthResponse {
@@ -585,6 +589,7 @@ fn build_app_with_config(config: ServiceConfig) -> Router {
         .with_state(tenant_store_for_onboard);
 
     let public_router = Router::new()
+        .route("/", get(landing_page))
         .route("/health", get(health))
         .route("/openapi.json", get(openapi_json))
         .route("/docs", get(swagger_ui))
