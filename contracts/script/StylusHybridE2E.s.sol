@@ -5,7 +5,6 @@ import "forge-std/Script.sol";
 import "../src/remainder/RemainderVerifier.sol";
 import {UUPSProxy} from "../src/Upgradeable.sol";
 import "../src/remainder/GKRDAGVerifier.sol";
-import "../src/remainder/HybridStylusGroth16Verifier.sol";
 
 /// @title StylusHybridE2E
 /// @notice Deploy RemainderVerifier, register DAG circuit, configure Stylus + EC Groth16 verifiers,

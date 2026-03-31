@@ -8,8 +8,6 @@ import "../src/ProverRegistry.sol";
 import "../src/ProverReputation.sol";
 import "../src/mocks/MockRiscZeroVerifier.sol";
 import "../src/tee/TEEMLVerifier.sol";
-import "../src/RiscZeroVerifierRouter.sol";
-import "../src/RiscZeroVerifierAdapter.sol";
 import {DeployTEEMLVerifierHelper} from "./helpers/DeployTEEMLVerifier.sol";
 
 /// @dev Minimal ERC20 for ProverRegistry staking in tests

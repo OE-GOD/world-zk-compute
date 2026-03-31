@@ -23,7 +23,6 @@ mod lightgbm;
 mod logistic_regression;
 mod mlp;
 mod model;
-mod proof_abi;
 mod random_forest;
 mod server;
 

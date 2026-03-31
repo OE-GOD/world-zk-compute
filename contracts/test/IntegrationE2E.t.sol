@@ -9,7 +9,6 @@ import "../src/IProofVerifier.sol";
 import "../src/remainder/RemainderVerifier.sol";
 import "../src/tee/TEEMLVerifier.sol";
 import "../src/mocks/MockRiscZeroVerifier.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {GKRDAGVerifier} from "../src/remainder/GKRDAGVerifier.sol";
 import {DeployRemainderVerifierHelper} from "./helpers/DeployRemainderVerifier.sol";

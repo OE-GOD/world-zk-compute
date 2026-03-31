@@ -34,18 +34,8 @@ use crate::model;
 use anyhow::Result;
 use frontend::abstract_expr::AbstractExpression;
 use frontend::layouter::builder::{Circuit, CircuitBuilder, LayerVisibility, NodeRef};
-use hyrax::gkr::verify_hyrax_proof;
-use hyrax::utils::vandermonde::VandermondeInverse;
-use rand::thread_rng;
 use serde::{Deserialize, Serialize};
-use shared_types::config::{GKRCircuitProverConfig, GKRCircuitVerifierConfig};
-use shared_types::pedersen::PedersenCommitter;
-use shared_types::transcript::ec_transcript::ECTranscript;
-use shared_types::transcript::poseidon_sponge::PoseidonSponge;
-use shared_types::{
-    perform_function_under_prover_config, perform_function_under_verifier_config, Bn256Point, Fq,
-    Fr,
-};
+use shared_types::Fr;
 use std::path::Path;
 
 /// Fixed-point scale for quantizing weights and features (2^16).
@@ -463,6 +453,18 @@ fn aggregate_sum_logreg(
 /// Returns Ok on successful verification, Err on failure.
 #[cfg(test)]
 fn prove_and_verify_logreg(inputs: &LogRegCircuitInputs) -> Result<()> {
+    use hyrax::gkr::verify_hyrax_proof;
+    use hyrax::utils::vandermonde::VandermondeInverse;
+    use rand::thread_rng;
+    use shared_types::config::{GKRCircuitProverConfig, GKRCircuitVerifierConfig};
+    use shared_types::pedersen::PedersenCommitter;
+    use shared_types::transcript::ec_transcript::ECTranscript;
+    use shared_types::transcript::poseidon_sponge::PoseidonSponge;
+    use shared_types::{
+        perform_function_under_prover_config, perform_function_under_verifier_config, Bn256Point,
+        Fq,
+    };
+
     let base_circuit = build_logreg_circuit(inputs.n_padded, inputs.decomp_k);
 
     let mut prover_circuit = base_circuit.clone();

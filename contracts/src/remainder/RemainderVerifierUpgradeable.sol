@@ -2,7 +2,6 @@
 pragma solidity ^0.8.20;
 
 import {RemainderVerifier} from "./RemainderVerifier.sol";
-import {UUPSUpgradeable} from "../Upgradeable.sol";
 
 /// @title RemainderVerifierUpgradeable
 /// @notice Production-hardened UUPS-upgradeable RemainderVerifier with two-step admin

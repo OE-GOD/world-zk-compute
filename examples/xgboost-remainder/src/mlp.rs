@@ -704,7 +704,6 @@ pub fn build_mlp_circuit(
     let mut all_checks: Vec<(NodeRef<Fr>, usize)> = Vec::new(); // (check_node, count)
 
     for (l, &(n_in, n_out)) in layer_dims.iter().enumerate() {
-        let in_nv = n_in.trailing_zeros() as usize;
         let out_nv_l = n_out.trailing_zeros() as usize;
 
         // === Matrix multiply: for each output neuron j, compute dot(w[j], x) ===
