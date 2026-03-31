@@ -4,14 +4,111 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>World ZK Compute — Verifiable AI Inference</title>
-    <meta name="description" content="Cryptographic proof that the right model ran on the right data and produced the right output. On-chain verification for ML inference.">
-    <link rel="stylesheet" href="style.css">
+    <meta name="description" content="Cryptographic proof that the right model ran on the right data and produced the right output. Zero-knowledge proofs for ML inference.">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%236366f1'/><text x='50' y='68' font-size='50' font-weight='bold' text-anchor='middle' fill='white'>ZK</text></svg>">
+    <style>
+:root {
+    --bg-dark: #0b0b11;
+    --bg-surface: #131320;
+    --bg-light: #1a1a2e;
+    --bg-accent: #16163a;
+    --border: #252540;
+    --text: #e8e8f0;
+    --text-muted: #9090a8;
+    --text-dim: #606078;
+    --accent: #6366f1;
+    --accent-hover: #818cf8;
+    --accent-glow: rgba(99, 102, 241, 0.15);
+    --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    --mono: 'SF Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+}
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { font-family: var(--font); background: var(--bg-dark); color: var(--text); line-height: 1.7; -webkit-font-smoothing: antialiased; }
+nav { position: sticky; top: 0; z-index: 100; background: rgba(11, 11, 17, 0.92); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border); }
+.nav-inner { max-width: 1100px; margin: 0 auto; display: flex; justify-content: space-between; align-items: center; padding: 1rem 2rem; }
+.logo { font-weight: 700; font-size: 1.1rem; letter-spacing: -0.02em; color: var(--text); display: flex; align-items: center; gap: 0.5rem; }
+.logo-icon { width: 28px; height: 28px; background: var(--accent); border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; font-size: 0.7rem; font-weight: 800; color: #fff; }
+.nav-links { display: flex; gap: 1.75rem; }
+.nav-links a { color: var(--text-muted); text-decoration: none; font-size: 0.9rem; font-weight: 500; transition: color 0.2s; }
+.nav-links a:hover { color: var(--text); }
+.hero { text-align: center; padding: 7rem 2rem 5rem; max-width: 800px; margin: 0 auto; }
+.hero h1 { font-size: 3.5rem; font-weight: 800; letter-spacing: -0.03em; line-height: 1.1; margin-bottom: 1.25rem; background: linear-gradient(135deg, var(--text) 0%, var(--accent-hover) 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+.hero-sub { font-size: 1.25rem; color: var(--text-muted); max-width: 600px; margin: 0 auto 2.5rem; line-height: 1.6; }
+.hero-actions { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
+.btn { display: inline-block; padding: 0.75rem 1.75rem; border-radius: 8px; font-weight: 600; font-size: 0.95rem; text-decoration: none; cursor: pointer; border: none; transition: all 0.2s; font-family: var(--font); }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { background: var(--accent-hover); box-shadow: 0 0 24px var(--accent-glow); }
+.btn-outline { background: transparent; color: var(--text); border: 1px solid var(--border); }
+.btn-outline:hover { border-color: var(--text-muted); }
+.btn-large { padding: 1rem 2.5rem; font-size: 1.05rem; margin-top: 1.5rem; }
+.section-dark { background: var(--bg-dark); }
+.section-light { background: var(--bg-surface); }
+.section-accent { background: var(--bg-accent); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.section-inner { max-width: 1000px; margin: 0 auto; padding: 5rem 2rem; }
+.section-inner h2 { font-size: 2rem; font-weight: 700; margin-bottom: 1rem; letter-spacing: -0.02em; }
+.section-text { font-size: 1.35rem; color: var(--text); font-weight: 600; margin-bottom: 1rem; line-height: 1.4; }
+.section-detail { font-size: 1.05rem; color: var(--text-muted); max-width: 700px; line-height: 1.7; }
+.center { text-align: center; }
+.center .section-detail { margin: 0 auto; }
+.steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2rem; margin-top: 2.5rem; }
+.step { background: var(--bg-surface); border: 1px solid var(--border); border-radius: 12px; padding: 2rem 1.5rem; }
+.step-number { display: inline-flex; align-items: center; justify-content: center; width: 2.5rem; height: 2.5rem; border-radius: 50%; background: var(--accent); color: #fff; font-weight: 700; font-size: 1.1rem; margin-bottom: 1rem; }
+.step h3 { font-size: 1.1rem; font-weight: 700; margin-bottom: 0.5rem; }
+.step p { color: var(--text-muted); font-size: 0.95rem; line-height: 1.6; }
+.demo-block { background: var(--bg-dark); border: 1px solid var(--border); border-radius: 12px; padding: 1.75rem; margin-top: 2rem; max-width: 700px; margin-left: auto; margin-right: auto; text-align: left; }
+.demo-block pre { font-family: var(--mono); font-size: 0.85rem; color: var(--accent-hover); line-height: 1.8; overflow-x: auto; white-space: pre; }
+.demo-block .comment { color: var(--text-dim); }
+.demo-block .output { color: #4ade80; }
+.demo-block .time { color: var(--text-muted); }
+.use-case-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1.5rem; margin-top: 2rem; }
+.use-case { background: var(--bg-surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.75rem; }
+.use-case h3 { font-size: 1.05rem; font-weight: 700; margin-bottom: 0.5rem; }
+.use-case p { color: var(--text-muted); font-size: 0.9rem; line-height: 1.6; }
+.sdk-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.25rem; margin-top: 2rem; }
+.sdk-card { background: var(--bg-dark); border: 1px solid var(--border); border-radius: 10px; padding: 1.5rem; text-align: center; }
+.sdk-lang { display: block; font-weight: 600; font-size: 0.85rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.75rem; }
+.sdk-card code { font-family: var(--mono); color: var(--accent-hover); font-size: 0.9rem; }
+.sdk-extra { text-align: center; margin-top: 2rem; color: var(--text-muted); font-size: 0.95rem; }
+.code-block { display: block; margin-top: 0.75rem; font-family: var(--mono); color: var(--accent-hover); font-size: 0.85rem; background: var(--bg-dark); border: 1px solid var(--border); border-radius: 8px; padding: 0.75rem 1.25rem; max-width: 500px; margin-left: auto; margin-right: auto; }
+.arch-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.5rem; margin-top: 2rem; }
+.arch-item { background: var(--bg-surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.75rem; }
+.arch-item h3 { font-size: 1rem; font-weight: 700; margin-bottom: 0.5rem; }
+.arch-item p { color: var(--text-muted); font-size: 0.9rem; line-height: 1.6; }
+.stats { display: flex; justify-content: center; gap: 3rem; margin-top: 2rem; flex-wrap: wrap; }
+.stat { text-align: center; }
+.stat-value { font-size: 2rem; font-weight: 800; color: var(--accent-hover); }
+.stat-label { font-size: 0.85rem; color: var(--text-muted); margin-top: 0.25rem; }
+footer { border-top: 1px solid var(--border); padding: 2rem; }
+.footer-inner { max-width: 1000px; margin: 0 auto; display: flex; justify-content: space-between; align-items: center; }
+.footer-inner p { color: var(--text-dim); font-size: 0.85rem; }
+.footer-links { display: flex; gap: 1.5rem; }
+.footer-links a { color: var(--text-muted); text-decoration: none; font-size: 0.85rem; }
+.footer-links a:hover { color: var(--text); }
+@media (max-width: 768px) {
+    .hero h1 { font-size: 2.25rem; }
+    .hero-sub { font-size: 1.05rem; }
+    .steps, .use-case-grid, .sdk-grid, .arch-grid { grid-template-columns: 1fr; }
+    .nav-inner { flex-direction: column; gap: 0.75rem; }
+    .nav-links { gap: 1rem; }
+    .footer-inner { flex-direction: column; gap: 1rem; text-align: center; }
+    .section-inner { padding: 3.5rem 1.25rem; }
+    .hero { padding: 4rem 1.25rem 3rem; }
+    .stats { gap: 2rem; }
+}
+@media (max-width: 480px) {
+    .hero h1 { font-size: 1.75rem; }
+    .nav-links { flex-wrap: wrap; justify-content: center; }
+    .hero-actions { flex-direction: column; align-items: center; }
+    .btn-large { width: 100%; text-align: center; }
+}
+    </style>
 </head>
 <body>
 
     <nav>
         <div class="nav-inner">
-            <span class="logo">World ZK Compute</span>
+            <span class="logo"><span class="logo-icon">ZK</span> World ZK Compute</span>
             <div class="nav-links">
                 <a href="#how-it-works">How It Works</a>
                 <a href="#use-cases">Use Cases</a>
@@ -31,6 +128,12 @@
                 <a href="https://github.com/OE-GOD/world-zk-compute#quick-start" class="btn btn-primary" target="_blank" rel="noopener">Get Started</a>
                 <a href="https://github.com/OE-GOD/world-zk-compute" class="btn btn-outline" target="_blank" rel="noopener">View on GitHub</a>
             </div>
+            <div class="stats">
+                <div class="stat"><div class="stat-value">629ms</div><div class="stat-label">Verify Time</div></div>
+                <div class="stat"><div class="stat-value">130KB</div><div class="stat-label">Proof Size</div></div>
+                <div class="stat"><div class="stat-value">5</div><div class="stat-label">Model Types</div></div>
+                <div class="stat"><div class="stat-value">3,335</div><div class="stat-label">Tests</div></div>
+            </div>
         </section>
 
         <!-- Problem -->
@@ -46,7 +149,7 @@
         <section class="section-light">
             <div class="section-inner">
                 <h2>The Solution</h2>
-                <p class="section-text">Cryptographic proof that the right model ran on the right data and produced the right output.</p>
+                <p class="section-text">Don't trust. Verify. With math.</p>
                 <p class="section-detail">World ZK Compute generates a zero-knowledge proof of ML inference. The proof is non-interactive, publicly verifiable, and can be checked on-chain or off-chain in milliseconds. The model weights and input data stay private.</p>
             </div>
         </section>
@@ -59,7 +162,7 @@
                     <div class="step">
                         <div class="step-number">1</div>
                         <h3>Run Inference</h3>
-                        <p>Execute your ML model (XGBoost, LightGBM, Random Forest, Logistic Regression) inside a TEE or the ZK prover. The computation is recorded as an arithmetic circuit.</p>
+                        <p>Execute your ML model (XGBoost, LightGBM, Random Forest, Logistic Regression, Neural Networks) normally. The computation is recorded as an arithmetic circuit.</p>
                     </div>
                     <div class="step">
                         <div class="step-number">2</div>
@@ -69,7 +172,7 @@
                     <div class="step">
                         <div class="step-number">3</div>
                         <h3>Verify Anywhere</h3>
-                        <p>Check the proof on Ethereum, Arbitrum, in a browser, or via REST API. Verification is fast (&lt;1s off-chain, ~3-6M gas on-chain) and requires no trust in the prover.</p>
+                        <p>Check the proof on Ethereum, Arbitrum, in a browser, or via REST API. Verification takes 629ms off-chain or ~3-6M gas on-chain. No trust in the prover required.</p>
                     </div>
                 </div>
             </div>
@@ -79,8 +182,19 @@
         <section class="section-accent">
             <div class="section-inner center">
                 <h2>See It In Action</h2>
-                <p class="section-detail">Verify an XGBoost credit scoring proof in your browser. The WASM verifier runs the same GKR+Hyrax cryptographic checks as the on-chain Solidity contract. No backend required.</p>
-                <a href="https://github.com/OE-GOD/world-zk-compute#quick-start" class="btn btn-primary btn-large" target="_blank" rel="noopener">Get Started</a>
+                <p class="section-detail">Verify a real 88-layer XGBoost credit scoring proof with a single API call.</p>
+                <div class="demo-block">
+<pre><span class="comment"># Verify a real XGBoost credit scoring proof</span>
+$ curl -X POST /verify -H "Content-Type: application/json" -d @proof.json
+
+<span class="output">{
+  "verified": true,
+  "circuit_hash": "0x8e7c338859ba0bcb6911e6b68794f5449c0bb36a0e2ce47cb5dc96e8eb56e909"
+}</span>
+
+<span class="time"># 629ms. 88 compute layers. Cryptographic certainty.</span></pre>
+                </div>
+                <a href="https://github.com/OE-GOD/world-zk-compute#quick-start" class="btn btn-primary btn-large" target="_blank" rel="noopener">Try It Yourself</a>
             </div>
         </section>
 
@@ -113,15 +227,15 @@
         <section id="sdk" class="section-light">
             <div class="section-inner">
                 <h2>Get Started</h2>
-                <p class="section-detail center">Install the verifier SDK in your language of choice.</p>
+                <p class="section-detail center">Integrate in your language of choice.</p>
                 <div class="sdk-grid">
                     <div class="sdk-card">
                         <span class="sdk-lang">Python</span>
                         <code>pip install zkml-verifier</code>
                     </div>
                     <div class="sdk-card">
-                        <span class="sdk-lang">JavaScript</span>
-                        <code>npm install @worldzk/verifier</code>
+                        <span class="sdk-lang">TypeScript</span>
+                        <code>npm install @worldzk/sdk</code>
                     </div>
                     <div class="sdk-card">
                         <span class="sdk-lang">Rust</span>
@@ -129,13 +243,13 @@
                     </div>
                 </div>
                 <div class="sdk-extra">
-                    <p>Or run the full stack with Docker:</p>
-                    <code class="code-block">docker compose -f docker-compose.bank-demo.yml up -d</code>
+                    <p>Also available: Go SDK, CLI tool, on-chain Solidity + Stylus (WASM)</p>
+                    <code class="code-block">docker compose -f docker-compose.offchain.yml up -d</code>
                 </div>
             </div>
         </section>
 
-        <!-- Architecture summary -->
+        <!-- Architecture -->
         <section class="section-dark">
             <div class="section-inner">
                 <h2>Architecture</h2>
