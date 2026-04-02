@@ -12,16 +12,18 @@
 ## Development Setup
 
 ```bash
-# Clone the repo
-git clone https://github.com/worldcoin/world-zk-compute.git
+# Clone the repo (--recursive pulls Foundry submodules)
+git clone --recursive https://github.com/OE-GOD/world-zk-compute.git
 cd world-zk-compute
 
-# Install dependencies
+# Build all components (contracts + Rust workspace)
 make setup
 
 # Run all tests
 make test
 ```
+
+> **Already cloned without `--recursive`?** Run `git submodule update --init --recursive` to fetch the Foundry dependencies.
 
 ## Project Structure
 

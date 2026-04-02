@@ -44,13 +44,21 @@ curl -s -X POST http://localhost:3000/verify \
 
 A live WASM demo is available at [`web/index.html`](web/index.html). The browser verifier runs the same GKR+Hyrax cryptographic checks as the on-chain Solidity contracts. No backend required.
 
+### Build from source
+
+```bash
+git clone --recursive https://github.com/OE-GOD/world-zk-compute.git
+cd world-zk-compute
+make setup
+```
+
 ### Run the full stack with Docker
 
 ```bash
 docker compose -f docker-compose.bank-demo.yml up -d
 ```
 
-See the [Quick Start tutorial](docs/QUICKSTART.md) for detailed setup instructions.
+See the [Quick Start tutorial](docs/QUICKSTART.md) for verification examples and [Development Setup](docs/DEVELOPMENT.md) for the full dev guide.
 
 ## Supported Models
 

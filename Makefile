@@ -4,7 +4,7 @@
 
 .DEFAULT_GOAL := help
 
-.PHONY: test test-fast test-contracts test-rust test-python test-ts test-operator test-enclave test-sdk \
+.PHONY: setup test test-fast test-contracts test-rust test-python test-ts test-operator test-enclave test-sdk \
         test-admin-cli test-indexer test-watcher-crate test-events-crate \
         test-xgboost test-stylus \
         build build-contracts build-rust \
@@ -16,6 +16,13 @@
         bench clean verify snapshot snapshot-check snapshot-update gas-report help \
         smoke-test audit docs check preflight sepolia-status \
         test-docker-demo
+
+# ── Setup ───────────────────────────────────────────────────────────────────
+
+setup: ## Initialize submodules and build all components
+	git submodule update --init --recursive
+	cd contracts && forge build
+	cargo build --workspace
 
 # ── Test ─────────────────────────────────────────────────────────────────────
 

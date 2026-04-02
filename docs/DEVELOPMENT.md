@@ -23,22 +23,23 @@ Optional for ZK guest programs:
 ## Clone and setup
 
 ```bash
-# Clone
-git clone https://github.com/worldcoin/world-zk-compute.git
+# Clone (--recursive fetches Foundry submodules: forge-std, risc0-ethereum, OpenZeppelin)
+git clone --recursive https://github.com/OE-GOD/world-zk-compute.git
 cd world-zk-compute
 
-# Build contracts
-cd contracts && forge install && forge build && cd ..
+# Build everything (submodules + contracts + Rust workspace)
+make setup
+```
 
-# Build Rust crates
-cargo build --manifest-path sdk/Cargo.toml
-cargo build --manifest-path services/operator/Cargo.toml
-cargo build --manifest-path tee/enclave/Cargo.toml
+> **Already cloned without `--recursive`?** Run `git submodule update --init --recursive` first.
 
-# Install Python SDK (editable mode with dev deps)
+### Optional: language-specific SDKs
+
+```bash
+# Python SDK (editable mode with dev deps)
 cd sdk/python && pip install -e ".[dev]" && cd ../..
 
-# Install TypeScript SDK
+# TypeScript SDK
 cd sdk/typescript && npm install && cd ../..
 ```
 
