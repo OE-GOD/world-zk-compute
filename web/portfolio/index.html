@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aung Maw — Builder</title>
+    <meta name="description" content="22-year-old builder. Creator of MOOUSER — verifiable AI inference with zero-knowledge proofs.">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23ffffff'/><text x='50' y='68' font-size='45' font-weight='bold' text-anchor='middle' fill='black'>AM</text></svg>">
+    <style>
+:root {
+    --bg: #000000;
+    --bg-card: #0a0a0a;
+    --border: #1a1a1a;
+    --text: #ffffff;
+    --muted: #888888;
+    --dim: #555555;
+    --accent: #ffffff;
+    --accent-light: #cccccc;
+    --green: #ffffff;
+    --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    --mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', Consolas, monospace;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: var(--font); background: var(--bg); color: var(--text); line-height: 1.7; -webkit-font-smoothing: antialiased; min-height: 100vh; }
+
+.container { max-width: 640px; margin: 0 auto; padding: 6rem 2rem 4rem; }
+
+/* Header */
+.header { margin-bottom: 3.5rem; }
+.name { font-size: 2.5rem; font-weight: 800; letter-spacing: -0.03em; line-height: 1.1; margin-bottom: 0.75rem; }
+.tagline { font-size: 1.15rem; color: var(--muted); line-height: 1.5; }
+.tagline strong { color: var(--text); font-weight: 600; }
+
+/* Links row */
+.links { display: flex; gap: 1.25rem; margin-top: 1.5rem; flex-wrap: wrap; }
+.links a { color: var(--accent-light); text-decoration: none; font-size: 0.9rem; font-weight: 500; transition: color 0.2s; }
+.links a:hover { color: var(--text); }
+.links .sep { color: var(--dim); }
+
+/* Section */
+.section { margin-bottom: 3rem; }
+.section-title { font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; color: var(--dim); margin-bottom: 1.25rem; }
+
+/* Project card */
+.project { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 1.75rem; margin-bottom: 1rem; transition: border-color 0.2s; }
+.project:hover { border-color: var(--accent); }
+.project-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.75rem; }
+.project-name { font-size: 1.2rem; font-weight: 700; }
+.project-badge { font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; background: rgba(255,255,255,0.1); color: var(--accent-light); padding: 0.25rem 0.6rem; border-radius: 4px; white-space: nowrap; }
+.project-desc { color: var(--muted); font-size: 0.95rem; margin-bottom: 1rem; line-height: 1.6; }
+.project-stats { display: flex; gap: 1.5rem; flex-wrap: wrap; }
+.stat { display: flex; flex-direction: column; }
+.stat-val { font-size: 1.1rem; font-weight: 700; color: var(--accent-light); font-family: var(--mono); }
+.stat-label { font-size: 0.75rem; color: var(--dim); margin-top: 0.1rem; }
+.project-tech { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 1rem; }
+.tech-tag { font-size: 0.75rem; color: var(--muted); background: rgba(255,255,255,0.04); border: 1px solid var(--border); border-radius: 4px; padding: 0.2rem 0.5rem; }
+.project-links { display: flex; gap: 1rem; margin-top: 1.25rem; }
+.project-links a { font-size: 0.85rem; color: var(--accent-light); text-decoration: none; font-weight: 500; }
+.project-links a:hover { color: var(--text); }
+
+/* About */
+.about-text { color: var(--muted); font-size: 0.95rem; line-height: 1.8; }
+.about-text strong { color: var(--text); font-weight: 600; }
+
+/* Status */
+.status { display: inline-flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; color: var(--green); margin-top: 1.5rem; }
+.status-dot { width: 8px; height: 8px; background: var(--green); border-radius: 50%; animation: pulse 2s infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+/* Footer */
+.footer { margin-top: 4rem; padding-top: 2rem; border-top: 1px solid var(--border); color: var(--dim); font-size: 0.8rem; }
+
+/* Responsive */
+@media (max-width: 480px) {
+    .container { padding: 3rem 1.25rem 3rem; }
+    .name { font-size: 2rem; }
+    .project-stats { gap: 1rem; }
+}
+    </style>
+</head>
+<body>
+
+<div class="container">
+
+    <div class="header">
+        <h1 class="name">Aung Maw</h1>
+        <p class="tagline">22. Building <strong>MOOUSER</strong> — verifiable AI inference with zero-knowledge proofs. Making it impossible to fake an AI decision.</p>
+        <div class="links">
+            <a href="https://github.com/OE-GOD" target="_blank">GitHub</a>
+            <span class="sep">/</span>
+            <a href="https://x.com/AungMaw97445407" target="_blank">Twitter</a>
+            <span class="sep">/</span>
+            <a href="https://www.linkedin.com/in/aung-maw-b79669309/" target="_blank">LinkedIn</a>
+            <span class="sep">/</span>
+            <a href="mailto:irving46764@gmail.com">Email</a>
+        </div>
+        <div class="status"><span class="status-dot"></span> Open to conversations — investors, design partners, collaborators</div>
+    </div>
+
+    <div class="section">
+        <div class="section-title">Featured Project</div>
+        <div class="project">
+            <div class="project-header">
+                <span class="project-name">MOOUSER</span>
+                <span class="project-badge">Solo Built</span>
+            </div>
+            <p class="project-desc">Cryptographic proof that AI models produce correct outputs. Banks run ML models for credit, fraud, and AML decisions. Regulators ask "prove it." We turn trust into math.</p>
+            <div class="project-stats">
+                <div class="stat"><span class="stat-val">3,335</span><span class="stat-label">Tests</span></div>
+                <div class="stat"><span class="stat-val">629ms</span><span class="stat-label">Verify Time</span></div>
+                <div class="stat"><span class="stat-val">5</span><span class="stat-label">Model Types</span></div>
+                <div class="stat"><span class="stat-val">4</span><span class="stat-label">SDKs</span></div>
+                <div class="stat"><span class="stat-val">108</span><span class="stat-label">Tasks Shipped</span></div>
+            </div>
+            <div class="project-tech">
+                <span class="tech-tag">Rust</span>
+                <span class="tech-tag">Solidity</span>
+                <span class="tech-tag">GKR+Hyrax</span>
+                <span class="tech-tag">Groth16</span>
+                <span class="tech-tag">XGBoost</span>
+                <span class="tech-tag">Arbitrum Stylus</span>
+                <span class="tech-tag">Python</span>
+                <span class="tech-tag">TypeScript</span>
+                <span class="tech-tag">Go</span>
+            </div>
+            <div class="project-links">
+                <a href="https://worldzk.vercel.app" target="_blank">Website</a>
+                <a href="https://github.com/OE-GOD/world-zk-compute" target="_blank">GitHub</a>
+            </div>
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="section-title">What I Built</div>
+        <div class="about-text">
+            <p>I built <strong>MOOUSER</strong> from scratch as a solo developer — the ZK prover, circuit compiler, on-chain Solidity verifiers, Stylus WASM verifier (24KB), REST APIs, 4 SDKs, CLI tool, and full production infrastructure.</p>
+            <br>
+            <p>The system generates <strong>zero-knowledge proofs</strong> that an ML model (XGBoost, LightGBM, Random Forest, Logistic Regression, Neural Networks) produced a specific output on specific inputs. Verification takes <strong>629ms off-chain</strong> or <strong>3-6M gas on-chain</strong>.</p>
+            <br>
+            <p>The architecture uses a <strong>TEE happy path</strong> ($0.0001/inference) with <strong>ZK dispute fallback</strong> — you only generate expensive proofs when someone challenges a result. This makes cryptographic accountability economically viable.</p>
+            <br>
+            <p><strong>Open source.</strong> Apache-2.0. Cryptographic infrastructure that banks depend on needs to be auditable.</p>
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="section-title">Why This Matters</div>
+        <div class="about-text">
+            <p>EU AI Act enforcement begins 2026. US regulators are increasing scrutiny on ML-driven lending. Banks need to prove their AI makes correct decisions. Today the proof is log files. Log files can be edited. <strong>Cryptographic proofs cannot.</strong></p>
+        </div>
+    </div>
+
+    <div class="footer">
+        <p>Built with conviction, shipped with urgency.</p>
+    </div>
+
+</div>
+
+</body>
+</html>

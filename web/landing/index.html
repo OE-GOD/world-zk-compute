@@ -3,285 +3,494 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>World ZK Compute — Verifiable AI Inference</title>
-    <meta name="description" content="Cryptographic proof that the right model ran on the right data and produced the right output. Zero-knowledge proofs for ML inference.">
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%236366f1'/><text x='50' y='68' font-size='50' font-weight='bold' text-anchor='middle' fill='white'>ZK</text></svg>">
+    <title>MOOUSER — Verifiable AI Inference</title>
+    <meta name="description" content="Cryptographic proof that AI models produce correct outputs. Zero-knowledge proofs for ML inference in regulated industries.">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23fff'/><text x='50' y='68' font-size='40' font-weight='bold' text-anchor='middle' fill='%23000'>M</text></svg>">
     <style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
 :root {
-    --bg-dark: #0b0b11;
-    --bg-surface: #131320;
-    --bg-light: #1a1a2e;
-    --bg-accent: #16163a;
-    --border: #252540;
-    --text: #e8e8f0;
-    --text-muted: #9090a8;
-    --text-dim: #606078;
-    --accent: #6366f1;
-    --accent-hover: #818cf8;
-    --accent-glow: rgba(99, 102, 241, 0.15);
-    --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-    --mono: 'SF Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+    --bg: #09090b;
+    --bg-card: #0f0f12;
+    --bg-subtle: #131316;
+    --border: #1c1c22;
+    --border-light: #27272f;
+    --text: #fafafa;
+    --text-secondary: #a1a1aa;
+    --text-dim: #71717a;
+    --accent: #ffffff;
+    --green: #22c55e;
+    --blue: #3b82f6;
+    --font: 'Inter', -apple-system, system-ui, sans-serif;
+    --mono: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
 }
-*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+* { margin: 0; padding: 0; box-sizing: border-box; }
 html { scroll-behavior: smooth; }
-body { font-family: var(--font); background: var(--bg-dark); color: var(--text); line-height: 1.7; -webkit-font-smoothing: antialiased; }
-nav { position: sticky; top: 0; z-index: 100; background: rgba(11, 11, 17, 0.92); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border); }
-.nav-inner { max-width: 1100px; margin: 0 auto; display: flex; justify-content: space-between; align-items: center; padding: 1rem 2rem; }
-.logo { font-weight: 700; font-size: 1.1rem; letter-spacing: -0.02em; color: var(--text); display: flex; align-items: center; gap: 0.5rem; }
-.logo-icon { width: 28px; height: 28px; background: var(--accent); border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; font-size: 0.7rem; font-weight: 800; color: #fff; }
-.nav-links { display: flex; gap: 1.75rem; }
-.nav-links a { color: var(--text-muted); text-decoration: none; font-size: 0.9rem; font-weight: 500; transition: color 0.2s; }
+body { font-family: var(--font); background: var(--bg); color: var(--text); line-height: 1.7; -webkit-font-smoothing: antialiased; }
+
+/* Nav */
+nav { border-bottom: 1px solid var(--border); padding: 1rem 0; position: sticky; top: 0; background: rgba(9,9,11,0.95); backdrop-filter: blur(12px); z-index: 100; }
+.nav-inner { max-width: 860px; margin: 0 auto; padding: 0 2rem; display: flex; justify-content: space-between; align-items: center; }
+.nav-logo { font-weight: 800; font-size: 1.1rem; letter-spacing: -0.02em; color: var(--text); text-decoration: none; }
+.nav-links { display: flex; gap: 2rem; }
+.nav-links a { color: var(--text-dim); text-decoration: none; font-size: 0.85rem; font-weight: 500; transition: color 0.15s; }
 .nav-links a:hover { color: var(--text); }
-.hero { text-align: center; padding: 7rem 2rem 5rem; max-width: 800px; margin: 0 auto; }
-.hero h1 { font-size: 3.5rem; font-weight: 800; letter-spacing: -0.03em; line-height: 1.1; margin-bottom: 1.25rem; background: linear-gradient(135deg, var(--text) 0%, var(--accent-hover) 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
-.hero-sub { font-size: 1.25rem; color: var(--text-muted); max-width: 600px; margin: 0 auto 2.5rem; line-height: 1.6; }
-.hero-actions { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
-.btn { display: inline-block; padding: 0.75rem 1.75rem; border-radius: 8px; font-weight: 600; font-size: 0.95rem; text-decoration: none; cursor: pointer; border: none; transition: all 0.2s; font-family: var(--font); }
-.btn-primary { background: var(--accent); color: #fff; }
-.btn-primary:hover { background: var(--accent-hover); box-shadow: 0 0 24px var(--accent-glow); }
-.btn-outline { background: transparent; color: var(--text); border: 1px solid var(--border); }
-.btn-outline:hover { border-color: var(--text-muted); }
-.btn-large { padding: 1rem 2.5rem; font-size: 1.05rem; margin-top: 1.5rem; }
-.section-dark { background: var(--bg-dark); }
-.section-light { background: var(--bg-surface); }
-.section-accent { background: var(--bg-accent); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
-.section-inner { max-width: 1000px; margin: 0 auto; padding: 5rem 2rem; }
-.section-inner h2 { font-size: 2rem; font-weight: 700; margin-bottom: 1rem; letter-spacing: -0.02em; }
-.section-text { font-size: 1.35rem; color: var(--text); font-weight: 600; margin-bottom: 1rem; line-height: 1.4; }
-.section-detail { font-size: 1.05rem; color: var(--text-muted); max-width: 700px; line-height: 1.7; }
-.center { text-align: center; }
-.center .section-detail { margin: 0 auto; }
-.steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2rem; margin-top: 2.5rem; }
-.step { background: var(--bg-surface); border: 1px solid var(--border); border-radius: 12px; padding: 2rem 1.5rem; }
-.step-number { display: inline-flex; align-items: center; justify-content: center; width: 2.5rem; height: 2.5rem; border-radius: 50%; background: var(--accent); color: #fff; font-weight: 700; font-size: 1.1rem; margin-bottom: 1rem; }
-.step h3 { font-size: 1.1rem; font-weight: 700; margin-bottom: 0.5rem; }
-.step p { color: var(--text-muted); font-size: 0.95rem; line-height: 1.6; }
-.demo-block { background: var(--bg-dark); border: 1px solid var(--border); border-radius: 12px; padding: 1.75rem; margin-top: 2rem; max-width: 700px; margin-left: auto; margin-right: auto; text-align: left; }
-.demo-block pre { font-family: var(--mono); font-size: 0.85rem; color: var(--accent-hover); line-height: 1.8; overflow-x: auto; white-space: pre; }
-.demo-block .comment { color: var(--text-dim); }
-.demo-block .output { color: #4ade80; }
-.demo-block .time { color: var(--text-muted); }
-.use-case-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1.5rem; margin-top: 2rem; }
-.use-case { background: var(--bg-surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.75rem; }
-.use-case h3 { font-size: 1.05rem; font-weight: 700; margin-bottom: 0.5rem; }
-.use-case p { color: var(--text-muted); font-size: 0.9rem; line-height: 1.6; }
-.sdk-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.25rem; margin-top: 2rem; }
-.sdk-card { background: var(--bg-dark); border: 1px solid var(--border); border-radius: 10px; padding: 1.5rem; text-align: center; }
-.sdk-lang { display: block; font-weight: 600; font-size: 0.85rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.75rem; }
-.sdk-card code { font-family: var(--mono); color: var(--accent-hover); font-size: 0.9rem; }
-.sdk-extra { text-align: center; margin-top: 2rem; color: var(--text-muted); font-size: 0.95rem; }
-.code-block { display: block; margin-top: 0.75rem; font-family: var(--mono); color: var(--accent-hover); font-size: 0.85rem; background: var(--bg-dark); border: 1px solid var(--border); border-radius: 8px; padding: 0.75rem 1.25rem; max-width: 500px; margin-left: auto; margin-right: auto; }
-.arch-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.5rem; margin-top: 2rem; }
-.arch-item { background: var(--bg-surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.75rem; }
-.arch-item h3 { font-size: 1rem; font-weight: 700; margin-bottom: 0.5rem; }
-.arch-item p { color: var(--text-muted); font-size: 0.9rem; line-height: 1.6; }
-.stats { display: flex; justify-content: center; gap: 3rem; margin-top: 2rem; flex-wrap: wrap; }
-.stat { text-align: center; }
-.stat-value { font-size: 2rem; font-weight: 800; color: var(--accent-hover); }
-.stat-label { font-size: 0.85rem; color: var(--text-muted); margin-top: 0.25rem; }
-footer { border-top: 1px solid var(--border); padding: 2rem; }
-.footer-inner { max-width: 1000px; margin: 0 auto; display: flex; justify-content: space-between; align-items: center; }
-.footer-inner p { color: var(--text-dim); font-size: 0.85rem; }
+
+/* Content */
+.content { max-width: 860px; margin: 0 auto; padding: 0 2rem; }
+
+/* Hero */
+.hero { padding: 6rem 0 4rem; }
+.hero h1 { font-size: 3rem; font-weight: 800; letter-spacing: -0.04em; line-height: 1.1; margin-bottom: 1.5rem; }
+.hero h1 em { font-style: italic; color: var(--text-secondary); }
+.hero-desc { font-size: 1.15rem; color: var(--text-secondary); line-height: 1.7; max-width: 640px; margin-bottom: 2rem; }
+.hero-links { display: flex; gap: 1rem; flex-wrap: wrap; }
+.hero-links a { font-size: 0.9rem; color: var(--text-dim); text-decoration: none; border: 1px solid var(--border); padding: 0.5rem 1.25rem; border-radius: 6px; transition: all 0.15s; }
+.hero-links a:hover { color: var(--text); border-color: var(--border-light); }
+.hero-links a.primary { background: var(--text); color: var(--bg); border-color: var(--text); font-weight: 600; }
+.hero-links a.primary:hover { opacity: 0.9; }
+
+/* Divider */
+hr { border: none; border-top: 1px solid var(--border); margin: 4rem 0; }
+
+/* Section */
+.section { padding: 0 0 1rem; }
+.section h2 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 1rem; }
+.section h3 { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.5rem; margin-top: 2rem; }
+.section p { color: var(--text-secondary); font-size: 0.95rem; line-height: 1.8; margin-bottom: 1rem; }
+.section strong { color: var(--text); font-weight: 600; }
+
+/* Comparison table */
+.compare { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; margin: 2rem 0; }
+.compare-item { background: var(--bg); padding: 1.5rem; }
+.compare-item.highlight { background: var(--bg-subtle); }
+.compare-label { font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-dim); margin-bottom: 0.75rem; }
+.compare-title { font-size: 1rem; font-weight: 700; margin-bottom: 0.5rem; }
+.compare-desc { font-size: 0.85rem; color: var(--text-secondary); line-height: 1.6; }
+.compare-tag { display: inline-block; font-size: 0.7rem; font-weight: 600; padding: 0.15rem 0.5rem; border-radius: 3px; margin-top: 0.75rem; }
+.tag-red { background: rgba(239,68,68,0.15); color: #f87171; }
+.tag-green { background: rgba(34,197,94,0.15); color: #4ade80; }
+.tag-yellow { background: rgba(234,179,8,0.15); color: #facc15; }
+
+/* Protocol steps */
+.protocol { counter-reset: step; margin: 2rem 0; }
+.protocol-step { display: flex; gap: 1.5rem; margin-bottom: 2rem; }
+.step-num { counter-increment: step; flex-shrink: 0; width: 2.25rem; height: 2.25rem; border-radius: 50%; border: 1px solid var(--border-light); display: flex; align-items: center; justify-content: center; font-size: 0.85rem; font-weight: 700; color: var(--text-dim); margin-top: 0.1rem; }
+.step-content h3 { margin-top: 0; font-size: 1rem; font-weight: 600; margin-bottom: 0.25rem; }
+.step-content p { color: var(--text-secondary); font-size: 0.9rem; line-height: 1.7; margin-bottom: 0; }
+.step-content code { font-family: var(--mono); font-size: 0.8rem; background: var(--bg-subtle); border: 1px solid var(--border); padding: 0.15rem 0.4rem; border-radius: 3px; color: var(--text); }
+
+/* Metrics */
+.metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; margin: 2rem 0; }
+.metric { background: var(--bg); padding: 1.5rem; text-align: center; }
+.metric-val { font-size: 1.75rem; font-weight: 800; font-family: var(--mono); letter-spacing: -0.02em; }
+.metric-label { font-size: 0.75rem; color: var(--text-dim); margin-top: 0.25rem; font-weight: 500; }
+
+/* Code block */
+.code-block { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; margin: 1.5rem 0; overflow-x: auto; }
+.code-block pre { font-family: var(--mono); font-size: 0.8rem; line-height: 1.8; color: var(--text-secondary); }
+.code-block .comment { color: var(--text-dim); }
+.code-block .output { color: var(--green); }
+.code-block .cmd { color: var(--text); }
+
+/* Table */
+.spec-table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; font-size: 0.85rem; }
+.spec-table th { text-align: left; font-weight: 600; color: var(--text-dim); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; padding: 0.75rem 1rem; border-bottom: 1px solid var(--border); }
+.spec-table td { padding: 0.75rem 1rem; border-bottom: 1px solid var(--border); color: var(--text-secondary); }
+.spec-table td:first-child { color: var(--text); font-weight: 500; }
+
+/* Use cases */
+.use-cases { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; margin: 2rem 0; }
+.use-case { border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; }
+.use-case h4 { font-size: 0.95rem; font-weight: 600; margin-bottom: 0.4rem; }
+.use-case p { font-size: 0.85rem; color: var(--text-secondary); line-height: 1.6; margin-bottom: 0; }
+
+/* Diagram */
+.flow { display: flex; align-items: center; justify-content: center; gap: 0; margin: 2.5rem 0; flex-wrap: wrap; }
+.flow-box { background: var(--bg-subtle); border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.25rem; text-align: center; min-width: 140px; }
+.flow-box .flow-title { font-size: 0.8rem; font-weight: 600; margin-bottom: 0.2rem; }
+.flow-box .flow-desc { font-size: 0.7rem; color: var(--text-dim); }
+.flow-arrow { color: var(--text-dim); font-size: 1.25rem; padding: 0 0.5rem; }
+.flow-box.active { border-color: var(--text-dim); }
+
+/* SDK grid */
+.sdk-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin: 1.5rem 0; }
+.sdk-item { border: 1px solid var(--border); border-radius: 8px; padding: 1rem; text-align: center; }
+.sdk-item .lang { font-size: 0.75rem; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.4rem; }
+.sdk-item code { font-family: var(--mono); font-size: 0.75rem; color: var(--text-secondary); }
+
+/* Footer */
+footer { border-top: 1px solid var(--border); margin-top: 4rem; padding: 2rem 0; }
+.footer-inner { max-width: 860px; margin: 0 auto; padding: 0 2rem; display: flex; justify-content: space-between; align-items: center; }
+.footer-inner p { color: var(--text-dim); font-size: 0.8rem; }
 .footer-links { display: flex; gap: 1.5rem; }
-.footer-links a { color: var(--text-muted); text-decoration: none; font-size: 0.85rem; }
+.footer-links a { color: var(--text-dim); text-decoration: none; font-size: 0.8rem; }
 .footer-links a:hover { color: var(--text); }
+
+/* Responsive */
 @media (max-width: 768px) {
-    .hero h1 { font-size: 2.25rem; }
-    .hero-sub { font-size: 1.05rem; }
-    .steps, .use-case-grid, .sdk-grid, .arch-grid { grid-template-columns: 1fr; }
-    .nav-inner { flex-direction: column; gap: 0.75rem; }
+    .hero h1 { font-size: 2rem; }
+    .compare { grid-template-columns: 1fr; }
+    .metrics { grid-template-columns: repeat(2, 1fr); }
+    .use-cases { grid-template-columns: 1fr; }
+    .sdk-grid { grid-template-columns: repeat(2, 1fr); }
+    .flow { flex-direction: column; }
+    .flow-arrow { transform: rotate(90deg); }
     .nav-links { gap: 1rem; }
-    .footer-inner { flex-direction: column; gap: 1rem; text-align: center; }
-    .section-inner { padding: 3.5rem 1.25rem; }
-    .hero { padding: 4rem 1.25rem 3rem; }
-    .stats { gap: 2rem; }
 }
 @media (max-width: 480px) {
     .hero h1 { font-size: 1.75rem; }
-    .nav-links { flex-wrap: wrap; justify-content: center; }
-    .hero-actions { flex-direction: column; align-items: center; }
-    .btn-large { width: 100%; text-align: center; }
+    .metrics { grid-template-columns: 1fr 1fr; }
+    .sdk-grid { grid-template-columns: 1fr 1fr; }
+    .nav-links { display: none; }
 }
     </style>
 </head>
 <body>
 
-    <nav>
-        <div class="nav-inner">
-            <span class="logo"><span class="logo-icon">ZK</span> World ZK Compute</span>
-            <div class="nav-links">
-                <a href="#how-it-works">How It Works</a>
-                <a href="#use-cases">Use Cases</a>
-                <a href="#sdk">SDK</a>
-                <a href="https://github.com/OE-GOD/world-zk-compute" target="_blank" rel="noopener">GitHub</a>
+<nav>
+    <div class="nav-inner">
+        <a href="/" class="nav-logo">MOOUSER</a>
+        <div class="nav-links">
+            <a href="#protocol">Protocol</a>
+            <a href="#guarantees">Guarantees</a>
+            <a href="#use-cases">Use Cases</a>
+            <a href="#sdk">SDK</a>
+            <a href="https://github.com/OE-GOD/world-zk-compute" target="_blank">GitHub</a>
+        </div>
+    </div>
+</nav>
+
+<div class="content">
+
+    <!-- Hero -->
+    <div class="hero">
+        <h1>Cryptographic proof for<br><em>ML model inference</em></h1>
+        <p class="hero-desc">Banks and fintechs run ML models for credit decisions, fraud detection, and AML screening. When regulators ask "prove the model actually ran" &mdash; today the answer is log files. Logs can be edited. <strong>Cryptographic proofs cannot.</strong></p>
+        <p class="hero-desc">MOOUSER generates zero-knowledge proofs that a specific model produced a specific output on specific inputs. Verifiable by anyone. Off-chain via REST API. No trust required.</p>
+        <div class="hero-links">
+            <a href="https://github.com/OE-GOD/world-zk-compute" class="primary" target="_blank">View on GitHub</a>
+            <a href="#protocol">How it works</a>
+            <a href="#sdk">Get started</a>
+        </div>
+    </div>
+
+    <hr>
+
+    <!-- The Gap -->
+    <div class="section">
+        <h2>The verification gap</h2>
+        <p>Existing approaches to ML inference verification fall into two extremes. MOOUSER occupies the practical middle ground: <strong>mathematically complete proofs</strong> for the models regulated industries actually use.</p>
+
+        <div class="compare">
+            <div class="compare-item">
+                <div class="compare-label">Insufficient</div>
+                <div class="compare-title">Audit Logs</div>
+                <div class="compare-desc">Timestamp + model version + output hash. Easy to fabricate. No cryptographic binding between model, input, and output.</div>
+                <span class="compare-tag tag-red">Forgeable</span>
+            </div>
+            <div class="compare-item highlight">
+                <div class="compare-label">MOOUSER</div>
+                <div class="compare-title">Zero-Knowledge Proofs</div>
+                <div class="compare-desc">GKR+Hyrax protocol. Mathematically impossible to produce a valid proof for a computation that didn't happen. 629ms verification.</div>
+                <span class="compare-tag tag-green">100% sound</span>
+            </div>
+            <div class="compare-item">
+                <div class="compare-label">Impractical</div>
+                <div class="compare-title">Full ZK for LLMs</div>
+                <div class="compare-desc">General-purpose ZK for billion-parameter models. Would take hours-days per inference. Not viable for production workloads.</div>
+                <span class="compare-tag tag-yellow">Too slow</span>
             </div>
         </div>
-    </nav>
+    </div>
 
-    <main>
+    <hr>
 
-        <!-- Hero -->
-        <section class="hero">
-            <h1>Verifiable AI Inference</h1>
-            <p class="hero-sub">Cryptographic proof that the right model ran on the right data and produced the right output.</p>
-            <div class="hero-actions">
-                <a href="https://github.com/OE-GOD/world-zk-compute#quick-start" class="btn btn-primary" target="_blank" rel="noopener">Get Started</a>
-                <a href="https://github.com/OE-GOD/world-zk-compute" class="btn btn-outline" target="_blank" rel="noopener">View on GitHub</a>
+    <!-- Protocol -->
+    <div class="section" id="protocol">
+        <h2>Protocol</h2>
+        <p>MOOUSER converts ML inference into an arithmetic circuit, then generates a zero-knowledge proof that the circuit was evaluated correctly. The verifier checks the proof without re-executing the model.</p>
+
+        <!-- Flow diagram -->
+        <div class="flow">
+            <div class="flow-box">
+                <div class="flow-title">ML Model</div>
+                <div class="flow-desc">XGBoost, LightGBM,<br>RF, LR, MLP</div>
             </div>
-            <div class="stats">
-                <div class="stat"><div class="stat-value">629ms</div><div class="stat-label">Verify Time</div></div>
-                <div class="stat"><div class="stat-value">130KB</div><div class="stat-label">Proof Size</div></div>
-                <div class="stat"><div class="stat-value">5</div><div class="stat-label">Model Types</div></div>
-                <div class="stat"><div class="stat-value">3,335</div><div class="stat-label">Tests</div></div>
+            <div class="flow-arrow">&rarr;</div>
+            <div class="flow-box active">
+                <div class="flow-title">GKR Circuit</div>
+                <div class="flow-desc">Arithmetic circuit<br>of the computation</div>
             </div>
-        </section>
-
-        <!-- Problem -->
-        <section class="section-dark">
-            <div class="section-inner">
-                <h2>The Problem</h2>
-                <p class="section-text">AI makes decisions. Nobody can verify them.</p>
-                <p class="section-detail">Credit approvals, fraud scores, insurance risk assessments &mdash; regulated institutions deploy ML models that affect millions of people. Regulators, auditors, and counterparties have no way to confirm that the declared model actually ran, that the input data was not tampered with, or that the output was not fabricated.</p>
+            <div class="flow-arrow">&rarr;</div>
+            <div class="flow-box active">
+                <div class="flow-title">Hyrax Proof</div>
+                <div class="flow-desc">Polynomial commitment<br>+ sumcheck</div>
             </div>
-        </section>
-
-        <!-- Solution -->
-        <section class="section-light">
-            <div class="section-inner">
-                <h2>The Solution</h2>
-                <p class="section-text">Don't trust. Verify. With math.</p>
-                <p class="section-detail">World ZK Compute generates a zero-knowledge proof of ML inference. The proof is non-interactive, publicly verifiable, and can be checked on-chain or off-chain in milliseconds. The model weights and input data stay private.</p>
+            <div class="flow-arrow">&rarr;</div>
+            <div class="flow-box">
+                <div class="flow-title">Verify</div>
+                <div class="flow-desc">629ms off-chain<br>or on-chain</div>
             </div>
-        </section>
+        </div>
 
-        <!-- How It Works -->
-        <section id="how-it-works" class="section-dark">
-            <div class="section-inner">
-                <h2>How It Works</h2>
-                <div class="steps">
-                    <div class="step">
-                        <div class="step-number">1</div>
-                        <h3>Run Inference</h3>
-                        <p>Execute your ML model (XGBoost, LightGBM, Random Forest, Logistic Regression, Neural Networks) normally. The computation is recorded as an arithmetic circuit.</p>
-                    </div>
-                    <div class="step">
-                        <div class="step-number">2</div>
-                        <h3>Generate Proof</h3>
-                        <p>The GKR+Hyrax protocol produces a cryptographic proof that the circuit was evaluated correctly. A Groth16 wrapper compresses EC checks for efficient on-chain verification.</p>
-                    </div>
-                    <div class="step">
-                        <div class="step-number">3</div>
-                        <h3>Verify Anywhere</h3>
-                        <p>Check the proof on Ethereum, Arbitrum, in a browser, or via REST API. Verification takes 629ms off-chain or ~3-6M gas on-chain. No trust in the prover required.</p>
-                    </div>
+        <div class="protocol">
+            <div class="protocol-step">
+                <div class="step-num">1</div>
+                <div class="step-content">
+                    <h3>Circuit Compilation</h3>
+                    <p>The ML model (tree ensemble, linear model, or neural network) is compiled into a layered arithmetic circuit. Each decision node, matrix multiply, or comparison becomes a gate. An 88-tree XGBoost model produces an 88-layer DAG circuit.</p>
                 </div>
             </div>
-        </section>
+            <div class="protocol-step">
+                <div class="step-num">2</div>
+                <div class="step-content">
+                    <h3>Proof Generation</h3>
+                    <p>The GKR interactive proof protocol is applied layer-by-layer, reducing the claim about the output to claims about the input. Hyrax polynomial commitments bind the prover to specific intermediate values. The proof is non-interactive via Fiat-Shamir (Poseidon sponge).</p>
+                </div>
+            </div>
+            <div class="protocol-step">
+                <div class="step-num">3</div>
+                <div class="step-content">
+                    <h3>Verification</h3>
+                    <p>The verifier replays the transcript, checks sumcheck rounds, and verifies polynomial evaluation proofs. <strong>No access to model weights or input data required.</strong> Verification is <code>O(n log n)</code> in circuit depth &mdash; independent of the number of gates.</p>
+                </div>
+            </div>
+            <div class="protocol-step">
+                <div class="step-num">4</div>
+                <div class="step-content">
+                    <h3>Receipt</h3>
+                    <p>A signed ECDSA receipt binds the proof to a timestamp and verifier identity. Receipts are recorded in a Merkle-tree transparency log &mdash; like Certificate Transparency, but for AI decisions. Tamper-evident and publicly auditable.</p>
+                </div>
+            </div>
+        </div>
+    </div>
 
-        <!-- Live Demo -->
-        <section class="section-accent">
-            <div class="section-inner center">
-                <h2>See It In Action</h2>
-                <p class="section-detail">Verify a real 88-layer XGBoost credit scoring proof with a single API call.</p>
-                <div class="demo-block">
-<pre><span class="comment"># Verify a real XGBoost credit scoring proof</span>
-$ curl -X POST /verify -H "Content-Type: application/json" -d @proof.json
+    <hr>
+
+    <!-- Guarantees -->
+    <div class="section" id="guarantees">
+        <h2>Guarantees</h2>
+        <p>The proof binds four things together cryptographically. Tampering with any one of them invalidates the proof.</p>
+
+        <table class="spec-table">
+            <thead>
+                <tr><th>Property</th><th>Guarantee</th><th>Mechanism</th></tr>
+            </thead>
+            <tbody>
+                <tr><td>Model identity</td><td>Circuit hash commits to exact model weights</td><td>Poseidon hash of circuit description</td></tr>
+                <tr><td>Input binding</td><td>Proof is bound to specific input features</td><td>Hyrax polynomial commitment</td></tr>
+                <tr><td>Output correctness</td><td>Output is the unique correct result of the computation</td><td>GKR sumcheck protocol</td></tr>
+                <tr><td>Non-transferability</td><td>Proof cannot be reused for different inputs</td><td>Fiat-Shamir transcript binding</td></tr>
+            </tbody>
+        </table>
+
+        <h3>What this means in practice</h3>
+        <p>A bank runs a credit scoring model on a loan application. MOOUSER produces a proof that <strong>this specific model</strong> produced <strong>this specific score</strong> on <strong>this specific application</strong>. A regulator can verify this in 629ms without seeing the model weights or the applicant's data. The proof is mathematically unforgeable &mdash; it is impossible to produce a valid proof for a computation that did not happen.</p>
+    </div>
+
+    <hr>
+
+    <!-- Measurements -->
+    <div class="section">
+        <h2>Performance</h2>
+        <p>Measured on an 88-layer XGBoost credit scoring model (production-representative complexity).</p>
+
+        <div class="metrics">
+            <div class="metric"><div class="metric-val">629ms</div><div class="metric-label">Verify time</div></div>
+            <div class="metric"><div class="metric-val">130KB</div><div class="metric-label">Proof size</div></div>
+            <div class="metric"><div class="metric-val">5</div><div class="metric-label">Model types</div></div>
+            <div class="metric"><div class="metric-val">3,335</div><div class="metric-label">Tests</div></div>
+        </div>
+
+        <table class="spec-table">
+            <thead>
+                <tr><th>Model Type</th><th>Supported</th><th>Prove Time</th><th>Verify Time</th></tr>
+            </thead>
+            <tbody>
+                <tr><td>XGBoost</td><td>Yes</td><td>~30s (88 layers)</td><td>629ms</td></tr>
+                <tr><td>LightGBM</td><td>Yes</td><td>~25s</td><td>~500ms</td></tr>
+                <tr><td>Random Forest</td><td>Yes</td><td>~20s</td><td>~400ms</td></tr>
+                <tr><td>Logistic Regression</td><td>Yes</td><td>&lt;5s</td><td>&lt;200ms</td></tr>
+                <tr><td>MLP (Neural Network)</td><td>Yes</td><td>~10s</td><td>~300ms</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <hr>
+
+    <!-- Architecture -->
+    <div class="section">
+        <h2>Production Architecture</h2>
+        <p>MOOUSER uses a <strong>TEE happy path</strong> with <strong>ZK dispute fallback</strong>. Normal inference runs in a Trusted Execution Environment (fast, cheap). Zero-knowledge proofs are only generated when someone challenges a result.</p>
+
+        <table class="spec-table">
+            <thead>
+                <tr><th>Path</th><th>Cost</th><th>Latency</th><th>When</th></tr>
+            </thead>
+            <tbody>
+                <tr><td>TEE (happy path)</td><td>$0.0001</td><td>Milliseconds</td><td>99% of inferences</td></tr>
+                <tr><td>ZK proof (dispute)</td><td>$0.02</td><td>Seconds</td><td>When challenged</td></tr>
+                <tr><td>On-chain (settlement)</td><td>3-6M gas</td><td>Block time</td><td>Cross-institutional disputes</td></tr>
+            </tbody>
+        </table>
+
+        <p>This makes cryptographic accountability <strong>economically viable</strong>. You don't pay for proofs nobody checks.</p>
+    </div>
+
+    <hr>
+
+    <!-- Demo -->
+    <div class="section">
+        <h2>Try it</h2>
+        <p>Verify a real 88-layer XGBoost credit scoring proof.</p>
+
+        <div class="code-block">
+<pre><span class="comment"># Verify a proof via REST API</span>
+<span class="cmd">$ curl -X POST /verify \
+    -H "Content-Type: application/json" \
+    -d @proof.json</span>
 
 <span class="output">{
   "verified": true,
-  "circuit_hash": "0x8e7c338859ba0bcb6911e6b68794f5449c0bb36a0e2ce47cb5dc96e8eb56e909"
+  "circuit_hash": "0x8e7c338859ba0bcb...56e909"
 }</span>
 
-<span class="time"># 629ms. 88 compute layers. Cryptographic certainty.</span></pre>
-                </div>
-                <a href="https://github.com/OE-GOD/world-zk-compute#quick-start" class="btn btn-primary btn-large" target="_blank" rel="noopener">Try It Yourself</a>
+<span class="comment"># 629ms. 88 compute layers. Cryptographic certainty.</span></pre>
+        </div>
+
+        <div class="code-block">
+<pre><span class="comment"># Or use the Python SDK</span>
+<span class="cmd">from worldzk import WorldZK
+
+client = WorldZK("https://your-verifier.example.com")
+result = client.verify(proof_bundle)
+print(result.verified)       # True
+print(result.circuit_hash)   # 0x8e7c33...</span></pre>
+        </div>
+    </div>
+
+    <hr>
+
+    <!-- Use Cases -->
+    <div class="section" id="use-cases">
+        <h2>Use Cases</h2>
+        <p>MOOUSER is built for regulated industries where AI decisions have legal and financial consequences.</p>
+
+        <div class="use-cases">
+            <div class="use-case">
+                <h4>Credit Scoring</h4>
+                <p>Prove to regulators (CFPB, OCC) that the approved model produced each credit decision. ECOA/FCRA compliance without exposing proprietary model weights.</p>
             </div>
-        </section>
-
-        <!-- Use Cases -->
-        <section id="use-cases" class="section-dark">
-            <div class="section-inner">
-                <h2>Use Cases</h2>
-                <div class="use-case-grid">
-                    <div class="use-case">
-                        <h3>Credit Scoring</h3>
-                        <p>Prove to regulators that the approved model produced each credit decision. Audit trail without exposing proprietary model weights.</p>
-                    </div>
-                    <div class="use-case">
-                        <h3>Fraud Detection</h3>
-                        <p>Demonstrate to counterparties that transaction risk scores were computed by the declared model, not overridden manually.</p>
-                    </div>
-                    <div class="use-case">
-                        <h3>Insurance Claims</h3>
-                        <p>Verify that automated claims decisions followed the registered model. Reduce dispute resolution from weeks to seconds.</p>
-                    </div>
-                    <div class="use-case">
-                        <h3>AML Compliance</h3>
-                        <p>Provide cryptographic evidence that AML screening models ran on the correct data. Satisfy cross-border regulatory requirements without sharing raw data.</p>
-                    </div>
-                </div>
+            <div class="use-case">
+                <h4>Fraud Detection</h4>
+                <p>Demonstrate to counterparties that transaction risk scores were computed by the declared model, not overridden manually. Cryptographic chain of custody.</p>
             </div>
-        </section>
-
-        <!-- SDK -->
-        <section id="sdk" class="section-light">
-            <div class="section-inner">
-                <h2>Get Started</h2>
-                <p class="section-detail center">Integrate in your language of choice.</p>
-                <div class="sdk-grid">
-                    <div class="sdk-card">
-                        <span class="sdk-lang">Python</span>
-                        <code>pip install zkml-verifier</code>
-                    </div>
-                    <div class="sdk-card">
-                        <span class="sdk-lang">TypeScript</span>
-                        <code>npm install @worldzk/sdk</code>
-                    </div>
-                    <div class="sdk-card">
-                        <span class="sdk-lang">Rust</span>
-                        <code>cargo add zkml-verifier</code>
-                    </div>
-                </div>
-                <div class="sdk-extra">
-                    <p>Also available: Go SDK, CLI tool, on-chain Solidity + Stylus (WASM)</p>
-                    <code class="code-block">docker compose -f docker-compose.offchain.yml up -d</code>
-                </div>
+            <div class="use-case">
+                <h4>AML Screening</h4>
+                <p>Provide cryptographic evidence that AML models ran on the correct data. Satisfy cross-border regulatory requirements without sharing raw customer data.</p>
             </div>
-        </section>
-
-        <!-- Architecture -->
-        <section class="section-dark">
-            <div class="section-inner">
-                <h2>Architecture</h2>
-                <div class="arch-grid">
-                    <div class="arch-item">
-                        <h3>TEE Happy Path</h3>
-                        <p>AWS Nitro Enclave runs inference and signs the result. Cost: ~$0.0001 per inference. Latency: milliseconds.</p>
-                    </div>
-                    <div class="arch-item">
-                        <h3>ZK Dispute Resolution</h3>
-                        <p>If challenged, a GKR+Hyrax proof settles the dispute on-chain. Groth16 wrapper keeps gas under 6M on Arbitrum Stylus.</p>
-                    </div>
-                    <div class="arch-item">
-                        <h3>On-Chain Verifier</h3>
-                        <p>Solidity + Stylus (WASM) contracts on Ethereum and Arbitrum. Upgradeable via UUPS proxy. Pausable for emergency response.</p>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-    </main>
-
-    <footer>
-        <div class="footer-inner">
-            <p>Apache-2.0 License</p>
-            <div class="footer-links">
-                <a href="https://github.com/OE-GOD/world-zk-compute" target="_blank" rel="noopener">GitHub</a>
-                <a href="https://github.com/OE-GOD/world-zk-compute/blob/main/docs/SECURITY_MODEL.md" target="_blank" rel="noopener">Security Model</a>
-                <a href="https://github.com/OE-GOD/world-zk-compute/blob/main/docs/API_REFERENCE.md" target="_blank" rel="noopener">API Docs</a>
+            <div class="use-case">
+                <h4>Insurance Claims</h4>
+                <p>Verify that automated claims decisions followed the registered model. Reduce dispute resolution from weeks to seconds with unforgeable proof.</p>
             </div>
         </div>
-    </footer>
+    </div>
+
+    <hr>
+
+    <!-- Regulatory -->
+    <div class="section">
+        <h2>Regulatory Landscape</h2>
+        <p>The demand for verifiable AI is being driven by regulation, not speculation.</p>
+
+        <table class="spec-table">
+            <thead>
+                <tr><th>Regulation</th><th>Requirement</th><th>How MOOUSER Helps</th></tr>
+            </thead>
+            <tbody>
+                <tr><td>EU AI Act (2026)</td><td>Auditability and transparency for high-risk AI</td><td>Cryptographic proof of model execution + transparency log</td></tr>
+                <tr><td>ECOA / FCRA (US)</td><td>Fair lending documentation</td><td>Proof that the declared model made each decision</td></tr>
+                <tr><td>SR 11-7 (OCC)</td><td>Model risk management</td><td>Immutable audit trail with signed receipts</td></tr>
+                <tr><td>GDPR Art. 22</td><td>Right to explanation of automated decisions</td><td>Verifiable proof without exposing personal data</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <hr>
+
+    <!-- SDK -->
+    <div class="section" id="sdk">
+        <h2>Get Started</h2>
+
+        <div class="sdk-grid">
+            <div class="sdk-item">
+                <div class="lang">Python</div>
+                <code>pip install zkml-verifier</code>
+            </div>
+            <div class="sdk-item">
+                <div class="lang">TypeScript</div>
+                <code>npm i @worldzk/sdk</code>
+            </div>
+            <div class="sdk-item">
+                <div class="lang">Rust</div>
+                <code>cargo add zkml-verifier</code>
+            </div>
+            <div class="sdk-item">
+                <div class="lang">Go</div>
+                <code>go get worldzk/sdk</code>
+            </div>
+        </div>
+
+        <div class="code-block">
+<pre><span class="comment"># Run the full stack locally</span>
+<span class="cmd">$ docker compose -f docker-compose.offchain.yml up -d</span>
+
+<span class="comment"># Or use the CLI</span>
+<span class="cmd">$ worldzk upload-model credit_model.json
+$ worldzk prove --model credit-v1 --features "52000,0.38,710,4"
+$ worldzk verify &lt;proof_id&gt;
+$ worldzk receipt &lt;proof_id&gt;</span></pre>
+        </div>
+    </div>
+
+    <hr>
+
+    <!-- Repository -->
+    <div class="section">
+        <h2>Repository</h2>
+
+        <table class="spec-table">
+            <thead>
+                <tr><th>Component</th><th>Language</th><th>Description</th></tr>
+            </thead>
+            <tbody>
+                <tr><td>zkml-verifier</td><td>Rust</td><td>Core verification library — GKR+Hyrax protocol</td></tr>
+                <tr><td>Verifier service</td><td>Rust</td><td>REST API for proof verification</td></tr>
+                <tr><td>Proof generator</td><td>Rust</td><td>Proof generation service with real prover integration</td></tr>
+                <tr><td>Gateway</td><td>Rust</td><td>API gateway with auth, rate limiting, metering</td></tr>
+                <tr><td>On-chain verifiers</td><td>Solidity</td><td>GKR, Hyrax, Groth16 verifier contracts</td></tr>
+                <tr><td>Stylus verifier</td><td>Rust/WASM</td><td>24KB WASM verifier for Arbitrum Stylus</td></tr>
+                <tr><td>Circuit compiler</td><td>Rust</td><td>XGBoost, LightGBM, RF, LR, MLP → GKR circuits</td></tr>
+                <tr><td>SDKs</td><td>Py/TS/Go</td><td>Client libraries for all major languages</td></tr>
+            </tbody>
+        </table>
+
+        <p style="margin-top: 1.5rem;"><strong>Apache-2.0.</strong> Cryptographic infrastructure that institutions depend on needs to be auditable. The code is open. The proofs are verifiable. That's the point.</p>
+    </div>
+
+</div>
+
+<footer>
+    <div class="footer-inner">
+        <p>MOOUSER &mdash; Verifiable AI Inference</p>
+        <div class="footer-links">
+            <a href="https://github.com/OE-GOD/world-zk-compute" target="_blank">GitHub</a>
+            <a href="https://github.com/OE-GOD/world-zk-compute/blob/main/docs/API_REFERENCE.md" target="_blank">API Docs</a>
+            <a href="https://github.com/OE-GOD/world-zk-compute/blob/main/docs/SECURITY_MODEL.md" target="_blank">Security</a>
+            <a href="https://aungmaw.vercel.app" target="_blank">Team</a>
+        </div>
+    </div>
+</footer>
 
 </body>
 </html>
