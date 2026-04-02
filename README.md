@@ -4,47 +4,29 @@ Cryptographic proof that AI models produce correct outputs. Verify ML inference 
 
 ## What It Does
 
-A bank runs an XGBoost credit scoring model. World ZK Compute generates a cryptographic proof that the model ran correctly on the given inputs and produced the declared output. Anyone can verify that proof -- locally, on-chain, or via API -- without access to the model weights or input data.
+You have an ML model (XGBoost, LightGBM, Random Forest, etc.). World ZK Compute generates a cryptographic proof that the model ran correctly on given inputs and produced the declared output. Anyone can verify that proof -- locally, on-chain, or via API -- without access to the model weights or input data.
 
-## Quick Start
-
-### Verify a proof (Python)
-
-```bash
-pip install zkml-verifier
+```
+   ML Model + Input ──→ Prover (TEE or ZK) ──→ Proof Bundle (JSON)
+                                                       │
+                                        Verifier (API / SDK / on-chain)
+                                                       │
+                                                  Valid / Invalid
 ```
 
-```python
-from zkml_verifier import verify_file
+## Prerequisites
 
-result = verify_file("proof_bundle.json")
-print(f"Verified: {result['verified']}")
-```
+| Tool | Required for | Install |
+|------|-------------|---------|
+| **Rust** 1.82+ | Core build | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
+| **Foundry** | Solidity contracts | `curl -L https://foundry.paradigm.xyz \| bash && foundryup` |
+| **Docker** | Full stack / demos | [Docker Desktop](https://docs.docker.com/get-docker/) |
+| Node.js 18+ | TypeScript SDK (optional) | `brew install node` or [nvm](https://github.com/nvm-sh/nvm) |
+| Python 3.10+ | Python SDK (optional) | `brew install python3` |
 
-### Verify a proof (Rust)
+## Getting Started
 
-```bash
-cargo install zkml-verifier
-zkml-verifier verify proof_bundle.json
-```
-
-### Verify a proof (REST API)
-
-```bash
-curl -s -X POST http://localhost:3000/verify \
-  -H "Content-Type: application/json" \
-  -d @proof_bundle.json
-```
-
-```json
-{ "verified": true, "circuit_hash": "0xabcdef..." }
-```
-
-### Verify a proof (Browser)
-
-A live WASM demo is available at [`web/index.html`](web/index.html). The browser verifier runs the same GKR+Hyrax cryptographic checks as the on-chain Solidity contracts. No backend required.
-
-### Build from source
+### 1. Clone and build
 
 ```bash
 git clone --recursive https://github.com/OE-GOD/world-zk-compute.git
@@ -52,13 +34,74 @@ cd world-zk-compute
 make setup
 ```
 
-### Run the full stack with Docker
+> Already cloned without `--recursive`? Run `git submodule update --init --recursive` first.
+
+### 2. Run tests
+
+```bash
+make test-contracts    # Solidity tests (~60s)
+make test-sdk          # Rust SDK tests
+make test              # Everything (takes a few minutes)
+```
+
+### 3. Try it out
+
+**Option A: Verify a proof with the Rust CLI**
+
+```bash
+cargo run -p zkml-verifier -- verify contracts/test/fixtures/phase1a_dag_fixture.json --json
+```
+
+**Option B: Run the full stack with Docker**
 
 ```bash
 docker compose -f docker-compose.bank-demo.yml up -d
+curl http://localhost:3000/health
 ```
 
-See the [Quick Start tutorial](docs/QUICKSTART.md) for verification examples and [Development Setup](docs/DEVELOPMENT.md) for the full dev guide.
+**Option C: Install the Python SDK**
+
+```bash
+pip install zkml-verifier
+```
+
+```python
+from zkml_verifier import verify_file
+result = verify_file("proof_bundle.json")
+print(f"Verified: {result['verified']}")
+```
+
+## Project Structure
+
+```
+contracts/              Solidity verifier contracts (Foundry)
+  src/remainder/        GKR/Hyrax/Groth16 on-chain verifiers
+  test/                 1,100+ Solidity tests
+examples/               Prover implementations
+  xgboost-remainder/    XGBoost inference circuit (GKR+Hyrax)
+crates/                 Shared Rust libraries
+  zkml-verifier/        Standalone proof verifier (Rust + Python FFI + WASM)
+sdk/                    Client SDKs (Rust, Python, TypeScript)
+services/               Backend services (operator, indexer, admin-cli)
+tee/                    AWS Nitro enclave (TEE happy path)
+prover/                 risc0-zkvm prover
+programs/               Pre-compiled guest program binaries
+scripts/                Build, test, and deployment scripts
+docs/                   Full documentation
+```
+
+## How It Works
+
+**TEE happy path:** The model runs inside an AWS Nitro enclave. The enclave signs the result. Cost: ~$0.0001 per inference.
+
+**ZK dispute path:** If anyone challenges a result, a GKR+Hyrax zero-knowledge proof settles the dispute on-chain. The proof is purely mathematical -- no hardware trust required.
+
+| Verification Path | Gas Cost | Transactions | Use Case |
+|-------------------|----------|-------------|----------|
+| REST API | Free | N/A | Off-chain audit, compliance |
+| Stylus + Groth16 Hybrid | ~3-6M gas | 1 | On-chain dispute (Arbitrum) |
+| Multi-tx Batch | <30M gas/tx | 15 | On-chain dispute (Ethereum L1) |
+| Direct GKR+Hyrax | ~254M gas | 1 | High-gas-limit chains |
 
 ## Supported Models
 
@@ -69,35 +112,6 @@ See the [Quick Start tutorial](docs/QUICKSTART.md) for verification examples and
 | Random Forest | Supported |
 | Logistic Regression | Supported |
 
-## How It Works
-
-```
-                    +-----------+
-   ML Model -----→ |  Prover   | -----→ Proof (JSON bundle)
-   (XGBoost,       |  (TEE or  |             |
-    LightGBM,      |   ZK)     |             |
-    etc.)          +-----------+             |
-                                             ▼
-                                      +-----------+
-                                      | Verifier  | -----→ Valid / Invalid
-                                      | (API, SDK,|
-                                      |  on-chain)|
-                                      +-----------+
-```
-
-**TEE happy path:** The model runs inside an AWS Nitro enclave. The enclave signs the result. Cost: ~$0.0001 per inference.
-
-**ZK dispute path:** If anyone challenges a result, a GKR+Hyrax zero-knowledge proof settles the dispute on-chain. The proof is purely mathematical -- no hardware trust required.
-
-## Verification Paths
-
-| Path | Gas Cost | Transactions | Use Case |
-|------|----------|-------------|----------|
-| REST API | Free | N/A | Off-chain audit, compliance |
-| Stylus + Groth16 Hybrid | ~3-6M gas | 1 | On-chain dispute (Arbitrum) |
-| Multi-tx Batch | <30M gas/tx | 15 | On-chain dispute (Ethereum L1) |
-| Direct GKR+Hyrax | ~254M gas | 1 | High-gas-limit chains |
-
 ## SDKs
 
 | Language | Install | Docs |
@@ -107,25 +121,14 @@ See the [Quick Start tutorial](docs/QUICKSTART.md) for verification examples and
 | JavaScript | `npm install @worldzk/verifier` | [Quick Start](docs/QUICKSTART.md#javascript-browser--wasm) |
 | REST API | `docker compose -f docker-compose.verifier.yml up` | [API Reference](docs/API_REFERENCE.md) |
 
-## Test Coverage
-
-2,100+ tests across all components. Every push runs the full suite in CI.
-
-```
-Solidity:    1,183 tests   (verifier, batch, Groth16 hybrid, TEE, fuzz, invariant)
-Rust workspace: 970 tests  (SDK, operator, enclave, indexer, watcher, chaos)
-zkml-verifier:  188 tests  (GKR, Hyrax, Poseidon, BN254, bundle, FFI)
-xgboost-prover: 146 tests  (XGBoost, LightGBM, random forest, logistic regression)
-Python SDK:      12 tests  (ctypes FFI, integration)
-gnark Go:        14 tests  (Groth16, chunked EC, Poseidon)
-```
-
 ## Documentation
 
 - [Quick Start](docs/QUICKSTART.md) -- Verify your first proof in 5 minutes
+- [Development Setup](docs/DEVELOPMENT.md) -- Full dev environment guide
+- [Contributing](CONTRIBUTING.md) -- How to contribute
 - [API Reference](docs/API_REFERENCE.md) -- CLI, REST, Rust, Python, C FFI
-- [Security Model](docs/SECURITY_MODEL.md) -- Trust assumptions and threat model
 - [Architecture](docs/ARCHITECTURE.md) -- System design and components
+- [Security Model](docs/SECURITY_MODEL.md) -- Trust assumptions and threat model
 - [TEE Deployment](docs/TEE_DEPLOYMENT.md) -- AWS Nitro enclave setup
 - [Contract Deployment](docs/CONTRACT_DEPLOYMENT.md) -- On-chain deployment
 - [Troubleshooting](docs/TROUBLESHOOTING.md) -- Common issues and fixes
