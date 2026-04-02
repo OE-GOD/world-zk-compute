@@ -12,11 +12,11 @@ jobs:
       pages: write
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install mdBook
         run: cargo install mdbook
       - name: Build
         run: mdbook build docs/
-      - uses: actions/deploy-pages@v4
+      - uses: actions/deploy-pages@v5
         with:
           path: docs/book/
