@@ -19,10 +19,8 @@ You have an ML model (XGBoost, LightGBM, Random Forest, etc.). World ZK Compute 
 | Tool | Required for | Install |
 |------|-------------|---------|
 | **Rust** 1.82+ | Core build | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
-| **Foundry** | Solidity contracts | `curl -L https://foundry.paradigm.xyz \| bash && foundryup` |
-| **Docker** | Full stack / demos | [Docker Desktop](https://docs.docker.com/get-docker/) |
-| Node.js 18+ | TypeScript SDK (optional) | `brew install node` or [nvm](https://github.com/nvm-sh/nvm) |
-| Python 3.10+ | Python SDK (optional) | `brew install python3` |
+| **Foundry** | Solidity contracts + demos | `curl -L https://foundry.paradigm.xyz \| bash && foundryup` |
+| **Docker** | Full stack (optional) | [Docker Desktop](https://docs.docker.com/get-docker/) |
 
 ## Getting Started
 
@@ -31,45 +29,64 @@ You have an ML model (XGBoost, LightGBM, Random Forest, etc.). World ZK Compute 
 ```bash
 git clone --recursive https://github.com/OE-GOD/world-zk-compute.git
 cd world-zk-compute
-make setup
+make setup    # initializes submodules, builds contracts + Rust (~2-3 min first time)
 ```
 
 > Already cloned without `--recursive`? Run `git submodule update --init --recursive` first.
 
-### 2. Run tests
+### 2. Verify a proof
 
-```bash
-make test-contracts    # Solidity tests (~60s)
-make test-sdk          # Rust SDK tests
-make test              # Everything (takes a few minutes)
-```
-
-### 3. Try it out
-
-**Option A: Verify a proof with the Rust CLI**
+The repo ships with a real proof bundle. Verify it with the CLI:
 
 ```bash
 cargo run -p zkml-verifier -- verify contracts/test/fixtures/phase1a_dag_fixture.json --json
 ```
 
-**Option B: Run the full stack with Docker**
+Expected output:
+```json
+{"verified":true,"circuit_hash":"0x..."}
+```
+
+### 3. Run the on-chain demo
+
+This walks through the full TEE lifecycle on a local Anvil chain -- deploy contracts, register a model, submit inference, wait the challenge window, and finalize. No Docker needed.
 
 ```bash
-docker compose -f docker-compose.bank-demo.yml up -d
-curl http://localhost:3000/health
+./scripts/tee-local-demo.sh --step
 ```
 
-**Option C: Install the Python SDK**
+> Requires Foundry (anvil, forge, cast) + python3. Takes ~30-60 seconds.
+
+### 4. Run tests
 
 ```bash
-pip install zkml-verifier
+make test-contracts    # Solidity tests (~60s)
+make test-sdk          # Rust SDK tests
+make test              # Everything
 ```
 
-```python
-from zkml_verifier import verify_file
-result = verify_file("proof_bundle.json")
-print(f"Verified: {result['verified']}")
+### 5. Start the verifier API (Docker)
+
+```bash
+docker compose -f docker-compose.bank-demo.yml up -d    # first build takes ~5 min
+curl http://localhost:3000/health                        # wait for {"status":"ok"}
+
+# Verify a proof via REST
+curl -s -X POST http://localhost:3000/verify \
+  -H "Content-Type: application/json" \
+  -d @contracts/test/fixtures/phase1a_dag_fixture.json
 ```
+
+### 6. Run the full stack (advanced)
+
+Starts Anvil + contract deployer + TEE enclave + ZK prover + operator service:
+
+```bash
+docker compose up -d --build    # first build takes ~10-15 min (4 Rust services)
+docker compose logs -f          # watch all services
+```
+
+See [Development Setup](docs/DEVELOPMENT.md) for the full dev guide.
 
 ## Project Structure
 
@@ -80,12 +97,10 @@ contracts/              Solidity verifier contracts (Foundry)
 examples/               Prover implementations
   xgboost-remainder/    XGBoost inference circuit (GKR+Hyrax)
 crates/                 Shared Rust libraries
-  zkml-verifier/        Standalone proof verifier (Rust + Python FFI + WASM)
-sdk/                    Client SDKs (Rust, Python, TypeScript)
-services/               Backend services (operator, indexer, admin-cli)
+  zkml-verifier/        Standalone proof verifier (Rust + WASM + Python FFI)
+services/               Backend services (operator, indexer, verifier API)
 tee/                    AWS Nitro enclave (TEE happy path)
 prover/                 risc0-zkvm prover
-programs/               Pre-compiled guest program binaries
 scripts/                Build, test, and deployment scripts
 docs/                   Full documentation
 ```
@@ -116,9 +131,9 @@ docs/                   Full documentation
 
 | Language | Install | Docs |
 |----------|---------|------|
-| Python | `pip install zkml-verifier` | [Quick Start](docs/QUICKSTART.md#python) |
-| Rust | `cargo add zkml-verifier` | [Crate README](crates/zkml-verifier/README.md) |
-| JavaScript | `npm install @worldzk/verifier` | [Quick Start](docs/QUICKSTART.md#javascript-browser--wasm) |
+| Rust | `cargo add zkml-verifier` | [Crate docs](crates/zkml-verifier/README.md) |
+| Python | Build from source (see [Quick Start](docs/QUICKSTART.md#python)) | [Quick Start](docs/QUICKSTART.md#python) |
+| JavaScript | WASM build (see [Quick Start](docs/QUICKSTART.md#javascript-browser--wasm)) | [Quick Start](docs/QUICKSTART.md#javascript-browser--wasm) |
 | REST API | `docker compose -f docker-compose.verifier.yml up` | [API Reference](docs/API_REFERENCE.md) |
 
 ## Documentation
@@ -129,8 +144,6 @@ docs/                   Full documentation
 - [API Reference](docs/API_REFERENCE.md) -- CLI, REST, Rust, Python, C FFI
 - [Architecture](docs/ARCHITECTURE.md) -- System design and components
 - [Security Model](docs/SECURITY_MODEL.md) -- Trust assumptions and threat model
-- [TEE Deployment](docs/TEE_DEPLOYMENT.md) -- AWS Nitro enclave setup
-- [Contract Deployment](docs/CONTRACT_DEPLOYMENT.md) -- On-chain deployment
 - [Troubleshooting](docs/TROUBLESHOOTING.md) -- Common issues and fixes
 
 ## License
