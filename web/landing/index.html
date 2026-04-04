@@ -25,10 +25,33 @@
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html { scroll-behavior: smooth; }
-body { font-family: var(--font); background: var(--bg); color: var(--text); line-height: 1.7; -webkit-font-smoothing: antialiased; }
+body { font-family: var(--font); background: var(--bg); color: var(--text); line-height: 1.7; -webkit-font-smoothing: antialiased; position: relative; }
+
+/* Animated gradient mesh background */
+.bg-mesh { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; overflow: hidden; }
+.bg-mesh .orb { position: absolute; border-radius: 50%; filter: blur(120px); opacity: 0.07; animation: drift 20s ease-in-out infinite; }
+.bg-mesh .orb-1 { width: 600px; height: 600px; background: #6366f1; top: -10%; left: -10%; animation-delay: 0s; animation-duration: 25s; }
+.bg-mesh .orb-2 { width: 500px; height: 500px; background: #22c55e; top: 40%; right: -15%; animation-delay: -5s; animation-duration: 30s; }
+.bg-mesh .orb-3 { width: 400px; height: 400px; background: #3b82f6; bottom: -10%; left: 30%; animation-delay: -10s; animation-duration: 22s; }
+@keyframes drift {
+    0%, 100% { transform: translate(0, 0) scale(1); }
+    25% { transform: translate(40px, -30px) scale(1.05); }
+    50% { transform: translate(-20px, 40px) scale(0.95); }
+    75% { transform: translate(30px, 20px) scale(1.02); }
+}
+
+/* Noise grain overlay */
+.bg-noise { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; pointer-events: none; opacity: 0.03; background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); background-repeat: repeat; background-size: 256px 256px; }
+
+/* Grid lines */
+.bg-grid { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; pointer-events: none; opacity: 0.03; background-image: linear-gradient(rgba(255,255,255,0.1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.1) 1px, transparent 1px); background-size: 60px 60px; mask-image: radial-gradient(ellipse at 50% 30%, black 20%, transparent 70%); -webkit-mask-image: radial-gradient(ellipse at 50% 30%, black 20%, transparent 70%); }
+
+/* Ensure content above backgrounds */
+nav { position: sticky; top: 0; z-index: 100; }
+.content, footer { position: relative; z-index: 10; }
 
 /* Nav */
-nav { border-bottom: 1px solid var(--border); padding: 1rem 0; position: sticky; top: 0; background: rgba(9,9,11,0.95); backdrop-filter: blur(12px); z-index: 100; }
+nav { border-bottom: 1px solid var(--border); padding: 1rem 0; background: rgba(9,9,11,0.85); backdrop-filter: blur(16px); }
 .nav-inner { max-width: 860px; margin: 0 auto; padding: 0 2rem; display: flex; justify-content: space-between; align-items: center; }
 .nav-logo { font-weight: 800; font-size: 1.1rem; letter-spacing: -0.02em; color: var(--text); text-decoration: none; }
 .nav-links { display: flex; gap: 2rem; }
@@ -146,6 +169,14 @@ footer { border-top: 1px solid var(--border); margin-top: 4rem; padding: 2rem 0;
     </style>
 </head>
 <body>
+
+<div class="bg-mesh">
+    <div class="orb orb-1"></div>
+    <div class="orb orb-2"></div>
+    <div class="orb orb-3"></div>
+</div>
+<div class="bg-noise"></div>
+<div class="bg-grid"></div>
 
 <nav>
     <div class="nav-inner">
