@@ -27,24 +27,29 @@
 html { scroll-behavior: smooth; }
 body { font-family: var(--font); background: var(--bg); color: var(--text); line-height: 1.7; -webkit-font-smoothing: antialiased; position: relative; }
 
+/* Cursor glow that follows mouse */
+.cursor-glow { position: fixed; width: 500px; height: 500px; border-radius: 50%; background: radial-gradient(circle, rgba(99,102,241,0.15) 0%, rgba(99,102,241,0.05) 30%, transparent 70%); pointer-events: none; z-index: 2; transform: translate(-50%, -50%); transition: opacity 0.3s; opacity: 0; }
+.cursor-glow.active { opacity: 1; }
+
 /* Animated gradient mesh background */
 .bg-mesh { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; overflow: hidden; }
-.bg-mesh .orb { position: absolute; border-radius: 50%; filter: blur(120px); opacity: 0.07; animation: drift 20s ease-in-out infinite; }
-.bg-mesh .orb-1 { width: 600px; height: 600px; background: #6366f1; top: -10%; left: -10%; animation-delay: 0s; animation-duration: 25s; }
-.bg-mesh .orb-2 { width: 500px; height: 500px; background: #22c55e; top: 40%; right: -15%; animation-delay: -5s; animation-duration: 30s; }
-.bg-mesh .orb-3 { width: 400px; height: 400px; background: #3b82f6; bottom: -10%; left: 30%; animation-delay: -10s; animation-duration: 22s; }
+.bg-mesh .orb { position: absolute; border-radius: 50%; filter: blur(100px); opacity: 0.12; animation: drift 20s ease-in-out infinite; }
+.bg-mesh .orb-1 { width: 700px; height: 700px; background: #6366f1; top: -15%; left: -10%; animation-delay: 0s; animation-duration: 25s; }
+.bg-mesh .orb-2 { width: 600px; height: 600px; background: #22c55e; top: 40%; right: -15%; animation-delay: -5s; animation-duration: 30s; }
+.bg-mesh .orb-3 { width: 500px; height: 500px; background: #3b82f6; bottom: -10%; left: 30%; animation-delay: -10s; animation-duration: 22s; }
+.bg-mesh .orb-4 { width: 400px; height: 400px; background: #a855f7; top: 20%; left: 50%; animation-delay: -15s; animation-duration: 28s; }
 @keyframes drift {
     0%, 100% { transform: translate(0, 0) scale(1); }
-    25% { transform: translate(40px, -30px) scale(1.05); }
-    50% { transform: translate(-20px, 40px) scale(0.95); }
-    75% { transform: translate(30px, 20px) scale(1.02); }
+    25% { transform: translate(60px, -40px) scale(1.08); }
+    50% { transform: translate(-30px, 50px) scale(0.92); }
+    75% { transform: translate(40px, 30px) scale(1.05); }
 }
 
 /* Noise grain overlay */
-.bg-noise { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; pointer-events: none; opacity: 0.03; background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); background-repeat: repeat; background-size: 256px 256px; }
+.bg-noise { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; pointer-events: none; opacity: 0.035; background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); background-repeat: repeat; background-size: 256px 256px; }
 
 /* Grid lines */
-.bg-grid { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; pointer-events: none; opacity: 0.03; background-image: linear-gradient(rgba(255,255,255,0.1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.1) 1px, transparent 1px); background-size: 60px 60px; mask-image: radial-gradient(ellipse at 50% 30%, black 20%, transparent 70%); -webkit-mask-image: radial-gradient(ellipse at 50% 30%, black 20%, transparent 70%); }
+.bg-grid { position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; pointer-events: none; opacity: 0.04; background-image: linear-gradient(rgba(255,255,255,0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.08) 1px, transparent 1px); background-size: 50px 50px; mask-image: radial-gradient(ellipse at 50% 20%, black 30%, transparent 70%); -webkit-mask-image: radial-gradient(ellipse at 50% 20%, black 30%, transparent 70%); }
 
 /* Ensure content above backgrounds */
 nav { position: sticky; top: 0; z-index: 100; }
@@ -170,10 +175,12 @@ footer { border-top: 1px solid var(--border); margin-top: 4rem; padding: 2rem 0;
 </head>
 <body>
 
+<div class="cursor-glow" id="cursorGlow"></div>
 <div class="bg-mesh">
     <div class="orb orb-1"></div>
     <div class="orb orb-2"></div>
     <div class="orb orb-3"></div>
+    <div class="orb orb-4"></div>
 </div>
 <div class="bg-noise"></div>
 <div class="bg-grid"></div>
@@ -523,5 +530,28 @@ $ worldzk receipt &lt;proof_id&gt;</span></pre>
     </div>
 </footer>
 
+<script>
+const glow = document.getElementById('cursorGlow');
+let mouseX = 0, mouseY = 0, glowX = 0, glowY = 0;
+
+document.addEventListener('mousemove', (e) => {
+    mouseX = e.clientX;
+    mouseY = e.clientY;
+    glow.classList.add('active');
+});
+
+document.addEventListener('mouseleave', () => {
+    glow.classList.remove('active');
+});
+
+function animate() {
+    glowX += (mouseX - glowX) * 0.08;
+    glowY += (mouseY - glowY) * 0.08;
+    glow.style.left = glowX + 'px';
+    glow.style.top = glowY + 'px';
+    requestAnimationFrame(animate);
+}
+animate();
+</script>
 </body>
 </html>
