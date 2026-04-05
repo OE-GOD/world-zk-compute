@@ -1,2 +1,5 @@
 # WASM build artifacts (built by wasm-pack, see README.md)
 pkg/
+
+# hot-reload trigger
+.reload-stamp

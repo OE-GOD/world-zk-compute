@@ -188,6 +188,16 @@
         <p id="loading-text">Initializing WASM verifier...</p>
     </div>
 
+    <script>
+        const evtSource = new EventSource("/__reload")
+
+        evtSource.onmessage = (event) => {
+            if (event.data === "reload") {
+                console.log("[reload] refreshing...")
+                location.reload()
+            }
+        }
+    </script>
     <script type="module" src="app.js"></script>
 </body>
 </html>
