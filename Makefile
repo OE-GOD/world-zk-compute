@@ -7,7 +7,8 @@
 .PHONY: setup test test-fast test-contracts test-rust test-python test-ts test-operator test-enclave test-sdk \
         test-admin-cli test-indexer test-watcher-crate test-events-crate \
         test-xgboost test-stylus \
-        build build-contracts build-rust \
+        dev-web \
+        build build-contracts build-rust build-wasm \
         fmt fmt-sol fmt-rust lint lint-sol lint-rust \
         deploy-local deploy-mocks deploy-sepolia deploy-multichain deploy-sepolia-tee \
         docker-up docker-down docker-gpu docker-sepolia docker-sepolia-down \
@@ -77,9 +78,15 @@ test-xgboost: ## Run XGBoost remainder tests (slow)
 test-stylus: ## Run Stylus GKR verifier tests (native target)
 	cd contracts/stylus/gkr-verifier && cargo test --target $$(rustc -vV | awk '/^host:/{print $$2}')
 
+# ── DEV ────────────────────────────────────────────────────────────────────
+dev-web: ## Serve development for web
+	@trap 'kill 0' EXIT; \
+	bash scripts/watch-wasm-build.sh & \
+	python3 scripts/serve-web-dev.py
+
 # ── Build ────────────────────────────────────────────────────────────────────
 
-build: build-contracts build-rust ## Build everything
+build: build-contracts build-rust build-wasm ## Build everything
 
 build-contracts: ## Compile Solidity contracts
 	cd contracts && forge build
@@ -93,6 +100,10 @@ build-rust: ## Build all Rust crates
 	cargo build --manifest-path crates/watcher/Cargo.toml
 	cargo build --manifest-path crates/events/Cargo.toml
 	cargo build --manifest-path examples/xgboost-remainder/Cargo.toml
+
+build-wasm: ## Build web wasm verifier
+	wasm-pack build --target web crates/zkml-verifier -- --features wasm
+	cp -r crates/zkml-verifier/pkg web/pkg
 
 # ── Format ───────────────────────────────────────────────────────────────────
 
