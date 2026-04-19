@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The Boring Parts Have the Most Opportunity</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23fff'/><text x='50' y='68' font-size='40' font-weight='bold' text-anchor='middle' fill='%23000'>AM</text></svg>">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#fafafa;--bg-card:#fff;--border:#e4e4e7;--text:#09090b;--text-secondary:#52525b;--text-dim:#a1a1aa;--green:#16a34a;--red:#dc2626;--blue:#2563eb;--purple:#7c3aed;--font:'Inter',-apple-system,system-ui,sans-serif;--mono:'JetBrains Mono',monospace}
+*{margin:0;padding:0;box-sizing:border-box}body{font-family:var(--font);background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased}
+nav{max-width:680px;margin:0 auto;padding:1.25rem 2rem;display:flex;justify-content:space-between}nav a{color:var(--text-dim);text-decoration:none;font-size:.85rem}nav a:hover{color:var(--text)}.nav-left{font-weight:700;color:var(--text);font-size:.9rem}
+.hero{max-width:680px;margin:0 auto;padding:3rem 2rem 1.5rem}.hero-label{font-size:.72rem;font-weight:600;text-transform:uppercase;letter-spacing:.1em;color:var(--green);margin-bottom:1rem}
+.hero h1{font-size:2.2rem;font-weight:900;letter-spacing:-.035em;line-height:1.15;max-width:600px}.hero-meta{margin-top:1rem;font-size:.82rem;color:var(--text-dim);display:flex;gap:1.5rem}
+.article{max-width:680px;margin:0 auto;padding:1rem 2rem 4rem}.article h2{font-size:1.4rem;font-weight:800;margin-top:3rem;margin-bottom:1rem;letter-spacing:-.02em}
+.article h3{font-size:1.05rem;font-weight:700;margin-top:2rem;margin-bottom:.5rem}.article p{color:var(--text-secondary);margin-bottom:1.25rem;font-size:.95rem;line-height:1.85}
+.article p strong{color:var(--text)}.article hr{border:none;border-top:1px solid var(--border);margin:3rem 0}.article a{color:var(--blue);text-decoration:none}.article a:hover{text-decoration:underline}
+.article ul,.article ol{margin:.5rem 0 1.25rem 1.5rem;color:var(--text-secondary);font-size:.95rem;line-height:1.85}.article li{margin-bottom:.4rem}
+pre{background:var(--text);color:#e4e4e7;border-radius:10px;padding:1.25rem 1.5rem;overflow-x:auto;margin:1.25rem 0 1.5rem;font-size:.82rem;line-height:1.6}
+code{font-family:var(--mono);font-size:.82rem}p code,.article code{background:#f4f4f5;color:var(--text);padding:.15rem .4rem;border-radius:4px;border:1px solid var(--border)}pre code{background:none;color:#e4e4e7;padding:0;border:none}
+table{width:100%;border-collapse:collapse;margin:1rem 0 1.5rem;font-size:.85rem}th{text-align:left;padding:.6rem .75rem;border-bottom:2px solid var(--text);font-weight:700;font-size:.72rem;text-transform:uppercase;letter-spacing:.06em}
+td{padding:.55rem .75rem;border-bottom:1px solid var(--border);color:var(--text-secondary)}
+.series{background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:1rem 1.25rem;margin-top:2rem;font-size:.88rem;color:var(--text-dim)}.series a{color:var(--blue);text-decoration:none}.series a:hover{text-decoration:underline}
+.footer{text-align:center;padding:2rem;font-size:.75rem;color:var(--text-dim);max-width:680px;margin:0 auto;border-top:1px solid var(--border)}
+@media(max-width:640px){.hero h1{font-size:1.7rem}.hero,.article{padding-left:1.25rem;padding-right:1.25rem}}
+</style>
+</head>
+<body>
+<nav><a href="/blog/" class="nav-left">Blog</a><a href="/blog/">&larr; All posts</a></nav>
+<div class="hero"><div class="hero-label">Essay &middot; April 2026</div><h1>The Boring Parts Have the Most Opportunity</h1><div class="hero-meta"><span>Aung Maw</span><span>April 2026</span><span>5 min read</span></div></div>
+<div class="article">
+<p>I spent $150 and two weeks on OpenAI's Parameter Golf competition. Tested 14 ideas. Here's what I found:</p>
+<ul>
+<li>Architecture changes: 0 improvements</li>
+<li>Training schedule changes: 0 improvements</li>
+<li>Tokenizer changes: 0 improvements</li>
+<li><strong>Compression change: -17% artifact size (ANS, PR #1510)</strong></li>
+<li><strong>Eval code review: found 14% BPP inflation bug</strong></li>
+<li><strong>Pipeline audit: found 3 silently disabled training systems</strong></li>
+</ul>
+<p>Every discovery came from the pipeline, not the model.</p>
+<h2>Why the Boring Parts Are Neglected</h2>
+<p>In ML competitions, prestige flows to model innovation. A new attention mechanism gets a paper. A better loss function gets a blog post. A faster compressor gets... nothing. Nobody tweets about their quantization pipeline.</p>
+<p>The result: the model is optimized by hundreds of researchers over weeks. The compression step is a one-line call to <code>zlib.compress()</code>. The eval code is copy-pasted from a template. The training schedule is set once and never checked.</p>
+<p>Each of these "boring" components has measurable, quantifiable waste:</p>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Waste Found</th>
+<th>How I Found It</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Compression (LZMA)</td>
+<td>0.91 bits/param wasted</td>
+<td>Computed Shannon entropy</td>
+</tr>
+<tr>
+<td>Eval byte counting</td>
+<td>14% BPB inflation</td>
+<td>Read the function (6 lines)</td>
+</tr>
+<tr>
+<td>Warmdown schedule</td>
+<td>3 training systems disabled</td>
+<td>Read the training log</td>
+</tr>
+</tbody>
+</table>
+<p>Total potential improvement from boring-part fixes: ~2 MB saved + correct metrics + proper training. Total potential from architecture changes I tested: 0.</p>
+<h2>The Pattern Generalizes</h2>
+<p>This isn't specific to Parameter Golf. In every system I've built, the biggest wins come from the least-glamorous components:</p>
+<p><strong>MOOUSER (my ZK proof system):</strong> The biggest performance gain wasn't from the proof algorithm — it was from fixing how the Poseidon hash sponge was initialized. A 3-line change that saved 40% of on-chain gas.</p>
+<p><strong>Smart contract audits ($24K+ in bug bounties):</strong> The most critical vulnerabilities are never in the complex DeFi logic. They're in the access control, the input validation, the token approval patterns. The boring parts.</p>
+<p><strong>This competition:</strong> The model is fine. The compressor wasted 17%. The eval code was wrong. The training schedule disabled its own optimization systems.</p>
+<h2>How to Find Opportunities in Boring Parts</h2>
+<ol>
+<li>
+<p><strong>Compute the theoretical minimum.</strong> For compression, it's Shannon entropy. For training, it's the scaling law prediction. For evaluation, it's a manual byte count. If the current implementation is far from the minimum, there's waste.</p>
+</li>
+<li>
+<p><strong>Read the code, not the paper.</strong> The architecture is described in the paper. The bugs are in the implementation. I found the byte-counting bug by reading a 6-line function. I found the warmdown issue by reading the training log (lr_mul was 1.0 for all 2100 steps — warmdown never triggered).</p>
+</li>
+<li>
+<p><strong>Ask "is this actually running?"</strong> Three systems in the GDN-Hybrid (warmdown, SWA, Late QAT) were configured but never executed due to a timing mismatch. The code was correct. The configuration made it impossible for the code to run. Nobody noticed because nobody checked.</p>
+</li>
+</ol>
+<h2>The Meta-Lesson</h2>
+<p>The distance between what is and what could be is largest where nobody is looking. In ML competitions, that's the pipeline. In production systems, that's the monitoring. In codebases, that's the test suite.</p>
+<p>The boring parts don't get optimized because optimizing them doesn't feel like progress. There's no leaderboard for "best compressor." There's no paper for "I read the eval code and found a bug." But the impact is real and measurable — 17% compression improvement, 14% metric correction, three training systems fixed.</p>
+<p>If you're looking for impact, look where nobody else is looking. The model is fine. Check the pipeline.</p>
+<hr />
+<p><em>This is part of a series on <a href="https://aungmaw.vercel.app/blog/parameter-golf.html">14 Experiments, 13 Failures</a> in OpenAI's Parameter Golf competition.</em></p>
+<div class="series">Part of <a href="/blog/parameter-golf.html">14 Experiments, 13 Failures</a> &mdash; my journey through OpenAI's Parameter Golf.</div>
+</div>
+<div class="footer"><a href="/blog/" style="color:var(--text-dim)">All posts</a> &middot; <a href="/" style="color:var(--text-dim)">Portfolio</a></div>
+</body>
+</html>

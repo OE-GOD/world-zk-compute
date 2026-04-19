@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>I Found a Bug That Inflated the Leaderboard by 14%</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23fff'/><text x='50' y='68' font-size='40' font-weight='bold' text-anchor='middle' fill='%23000'>AM</text></svg>">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#fafafa;--bg-card:#fff;--border:#e4e4e7;--text:#09090b;--text-secondary:#52525b;--text-dim:#a1a1aa;--green:#16a34a;--red:#dc2626;--blue:#2563eb;--purple:#7c3aed;--font:'Inter',-apple-system,system-ui,sans-serif;--mono:'JetBrains Mono',monospace}
+*{margin:0;padding:0;box-sizing:border-box}body{font-family:var(--font);background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased}
+nav{max-width:680px;margin:0 auto;padding:1.25rem 2rem;display:flex;justify-content:space-between}nav a{color:var(--text-dim);text-decoration:none;font-size:.85rem}nav a:hover{color:var(--text)}.nav-left{font-weight:700;color:var(--text);font-size:.9rem}
+.hero{max-width:680px;margin:0 auto;padding:3rem 2rem 1.5rem}.hero-label{font-size:.72rem;font-weight:600;text-transform:uppercase;letter-spacing:.1em;color:var(--purple);margin-bottom:1rem}
+.hero h1{font-size:2.2rem;font-weight:900;letter-spacing:-.035em;line-height:1.15;max-width:600px}.hero-meta{margin-top:1rem;font-size:.82rem;color:var(--text-dim);display:flex;gap:1.5rem}
+.article{max-width:680px;margin:0 auto;padding:1rem 2rem 4rem}.article h2{font-size:1.4rem;font-weight:800;margin-top:3rem;margin-bottom:1rem;letter-spacing:-.02em}
+.article h3{font-size:1.05rem;font-weight:700;margin-top:2rem;margin-bottom:.5rem}.article p{color:var(--text-secondary);margin-bottom:1.25rem;font-size:.95rem;line-height:1.85}
+.article p strong{color:var(--text)}.article hr{border:none;border-top:1px solid var(--border);margin:3rem 0}.article a{color:var(--blue);text-decoration:none}.article a:hover{text-decoration:underline}
+.article ul,.article ol{margin:.5rem 0 1.25rem 1.5rem;color:var(--text-secondary);font-size:.95rem;line-height:1.85}.article li{margin-bottom:.4rem}
+pre{background:var(--text);color:#e4e4e7;border-radius:10px;padding:1.25rem 1.5rem;overflow-x:auto;margin:1.25rem 0 1.5rem;font-size:.82rem;line-height:1.6}
+code{font-family:var(--mono);font-size:.82rem}p code,.article code{background:#f4f4f5;color:var(--text);padding:.15rem .4rem;border-radius:4px;border:1px solid var(--border)}pre code{background:none;color:#e4e4e7;padding:0;border:none}
+table{width:100%;border-collapse:collapse;margin:1rem 0 1.5rem;font-size:.85rem}th{text-align:left;padding:.6rem .75rem;border-bottom:2px solid var(--text);font-weight:700;font-size:.72rem;text-transform:uppercase;letter-spacing:.06em}
+td{padding:.55rem .75rem;border-bottom:1px solid var(--border);color:var(--text-secondary)}
+.series{background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:1rem 1.25rem;margin-top:2rem;font-size:.88rem;color:var(--text-dim)}.series a{color:var(--blue);text-decoration:none}.series a:hover{text-decoration:underline}
+.footer{text-align:center;padding:2rem;font-size:.75rem;color:var(--text-dim);max-width:680px;margin:0 auto;border-top:1px solid var(--border)}
+@media(max-width:640px){.hero h1{font-size:1.7rem}.hero,.article{padding-left:1.25rem;padding-right:1.25rem}}
+</style>
+</head>
+<body>
+<nav><a href="/blog/" class="nav-left">Blog</a><a href="/blog/">&larr; All posts</a></nav>
+<div class="hero"><div class="hero-label">Discovery &middot; April 2026</div><h1>I Found a Bug That Inflated the Leaderboard by 14%</h1><div class="hero-meta"><span>Aung Maw</span><span>April 2026</span><span>6 min read</span></div></div>
+<div class="article">
+<p>The GDN-Hybrid architecture claimed 1.024 BPB on OpenAI's Parameter Golf leaderboard. That would have been first place by a wide margin.</p>
+<p>The real number is ~1.17 BPB. Not even close.</p>
+<h2>How BPB Works</h2>
+<p>BPB (bits per byte) = total cross-entropy bits / total bytes of text.</p>
+<p>The numerator depends on how well the model predicts. The denominator depends on how you count bytes. Get the denominator wrong, and the BPB looks better than it is.</p>
+<h2>The Bug</h2>
+<p>SentencePiece represents word-start tokens with a <code>▁</code> prefix. The token <code>▁the</code> represents the text " the" — a space followed by "the". That's 4 bytes.</p>
+<p>The GDN-Hybrid's <code>build_sentencepiece_luts</code> function counts bytes like this:</p>
+<pre><code class="language-python">if piece.startswith(&quot;▁&quot;):
+    has_space[i] = True
+    base_bytes[i] = len(piece[1:].encode(&quot;utf-8&quot;)) + 1  # strip ▁, add 1 for space
+</code></pre>
+<p>Then the eval function adds the space byte again:</p>
+<pre><code class="language-python">tb = base_bytes_lut[tgt]
+tb += (has_leading_space_lut[tgt] &amp; ~is_boundary_token_lut[prev])  # +1 again
+</code></pre>
+<p>For <code>▁the</code>: base_bytes = 3 + 1 = 4, then eval adds another +1 = 5. But the actual text " the" is 4 bytes. Every word-start token is overcounted by 1 byte.</p>
+<h2>The Impact</h2>
+<p>~65% of tokens in English text are word-start tokens (they have the <code>▁</code> prefix). Each overcounted by 1 byte. Average token length is ~4.5 bytes. So:</p>
+<ul>
+<li>Overcounted bytes: 65% × 1 byte = 0.65 extra bytes per token</li>
+<li>Actual bytes: ~4.5 per token</li>
+<li>Inflation: 0.65 / 4.5 = 14.4%</li>
+</ul>
+<p>BPB = bits / bytes. If bytes are inflated by 14.4%, BPB is deflated by 14.4%.</p>
+<p>Reported 1.024 × 1.144 = <strong>1.171 BPB actual</strong>.</p>
+<h2>The Reference Implementation Is Correct</h2>
+<p>The competition's reference <code>train_gpt.py</code> does it right:</p>
+<pre><code class="language-python">if piece.startswith(&quot;▁&quot;):
+    has_leading_space_np[token_id] = True
+    piece = piece[1:]  # strip ▁
+base_bytes_np[token_id] = len(piece.encode(&quot;utf-8&quot;))  # NO +1
+</code></pre>
+<p>No double-counting. The +1 happens only in the eval function. Total is correct.</p>
+<h2>How I Found It</h2>
+<p>I was investigating why our GDN-Hybrid BPB numbers seemed "too good." The model was getting 1.024 BPB — better than the transformer leaderboard #1 at 1.081. That's suspicious for an architecture that's theoretically less capable.</p>
+<p>I wrote a test:</p>
+<pre><code class="language-python">for i in range(20):
+    piece = sp.id_to_piece(i)
+    text = sp.decode([i])
+    correct = len(text.encode('utf-8'))
+    raw = len(piece.replace('▁', ' ').encode('utf-8'))
+    if raw != correct:
+        print(f'BUG: {piece} raw={raw} correct={correct}')
+</code></pre>
+<p>Every <code>▁</code> token showed <code>raw</code> 1 byte higher than <code>correct</code>. The bug was confirmed.</p>
+<p>A community reviewer independently found the same issue and posted it on PR #1545. Multiple GDN-Hybrid PRs (#1545, #1553, #1576) all share this bug.</p>
+<h2>What I Learned</h2>
+<p><strong>When a metric looks too good, check the denominator.</strong> BPB has a numerator (model quality) and a denominator (byte counting). Everyone optimizes the numerator. Nobody checks the denominator.</p>
+<p>This is the same pattern as my ANS compression finding: the "boring" part of the pipeline (byte counting, compression) is where the bugs hide. The model gets all the scrutiny. The infrastructure gets none.</p>
+<p><strong>10 minutes of reading the eval code would have saved days of optimization.</strong> I spent multiple days optimizing GDN-Hybrid BPB, debugging package incompatibilities, tuning warmdown schedules — all on numbers that were wrong by 14%. The entire time, the answer was in a 6-line function I never read.</p>
+<hr />
+<p><em>This is part of a series on <a href="https://aungmaw.vercel.app/blog/parameter-golf.html">14 Experiments, 13 Failures</a> in OpenAI's Parameter Golf competition.</em></p>
+<div class="series">Part of <a href="/blog/parameter-golf.html">14 Experiments, 13 Failures</a> &mdash; my journey through OpenAI's Parameter Golf.</div>
+</div>
+<div class="footer"><a href="/blog/" style="color:var(--text-dim)">All posts</a> &middot; <a href="/" style="color:var(--text-dim)">Portfolio</a></div>
+</body>
+</html>
