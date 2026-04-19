@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>The Math Behind Beating LZMA — ANS for Neural Network Weights</title>
+    <meta name="description" content="A detailed technical walkthrough of building an information-theoretically optimal compressor for quantized neural network weights.">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23fff'/><text x='50' y='68' font-size='40' font-weight='bold' text-anchor='middle' fill='%23000'>AM</text></svg>">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" onload="renderMathInElement(document.body, {delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false}]});"></script>
+    <style>
+:root {
+    --bg: #fafafa; --bg-card: #ffffff; --bg-muted: #f4f4f5;
+    --border: #e4e4e7; --text: #09090b; --text-secondary: #52525b; --text-dim: #a1a1aa;
+    --green: #16a34a; --red: #dc2626; --blue: #2563eb; --purple: #7c3aed;
+    --font: 'Inter', -apple-system, system-ui, sans-serif;
+    --mono: 'JetBrains Mono', monospace;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: var(--font); background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; }
+
+nav { max-width: 1100px; margin: 0 auto; padding: 1.25rem 2rem; display: flex; justify-content: space-between; }
+nav a { color: var(--text-dim); text-decoration: none; font-size: 0.85rem; }
+nav a:hover { color: var(--text); }
+.nav-left { font-weight: 600; color: var(--text); font-size: 0.9rem; }
+
+.hero { max-width: 1100px; margin: 0 auto; padding: 4rem 2rem 3rem; }
+.hero-label { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; color: var(--green); margin-bottom: 1.25rem; }
+.hero h1 { font-size: 3rem; font-weight: 900; letter-spacing: -0.035em; line-height: 1.1; max-width: 750px; }
+.hero-meta { margin-top: 1.5rem; font-size: 0.82rem; color: var(--text-dim); display: flex; gap: 1.5rem; }
+.hero-desc { margin-top: 1.5rem; color: var(--text-secondary); font-size: 1.05rem; line-height: 1.7; max-width: 600px; }
+
+.divider { max-width: 1100px; margin: 0 auto; padding: 0 2rem; }
+.divider hr { border: none; border-top: 1px solid var(--border); }
+
+.article { max-width: 640px; margin: 0 auto; padding: 3rem 2rem; }
+.article h2 { font-size: 1.6rem; font-weight: 800; margin-top: 3.5rem; margin-bottom: 1rem; letter-spacing: -0.02em; }
+.article h3 { font-size: 1.15rem; font-weight: 700; margin-top: 2.5rem; margin-bottom: 0.75rem; }
+.article p { color: var(--text-secondary); margin-bottom: 1.25rem; font-size: 0.95rem; line-height: 1.85; }
+.article p strong { color: var(--text); }
+.article hr { border: none; border-top: 1px solid var(--border); margin: 3rem 0; }
+.article a { color: var(--blue); text-decoration: none; }
+.article a:hover { text-decoration: underline; }
+.article ul, .article ol { margin: 0.5rem 0 1.25rem 1.5rem; color: var(--text-secondary); font-size: 0.95rem; line-height: 1.85; }
+.article li { margin-bottom: 0.4rem; }
+
+pre { background: var(--text); color: #e4e4e7; border-radius: 10px; padding: 1.25rem 1.5rem; overflow-x: auto; margin: 1.25rem 0 1.5rem; font-size: 0.82rem; line-height: 1.6; }
+code { font-family: var(--mono); font-size: 0.82rem; }
+p code { background: var(--bg-muted); color: var(--text); padding: 0.15rem 0.4rem; border-radius: 4px; border: 1px solid var(--border); }
+
+.callout { background: #f0fdf4; border-left: 3px solid var(--green); padding: 0.75rem 1rem; border-radius: 0 8px 8px 0; margin: 1.25rem 0 1.5rem; }
+.callout p { color: #166534; font-size: 0.88rem; font-style: italic; margin: 0; line-height: 1.6; }
+.callout-blue { background: #eff6ff; border-left-color: var(--blue); }
+.callout-blue p { color: #1e40af; }
+
+/* Math */
+.katex-display { margin: 1.5rem 0 !important; overflow-x: auto; }
+.katex { font-size: 1.05rem !important; }
+
+/* Wide blocks */
+.wide { max-width: 900px; margin: 2.5rem auto; padding: 0 2rem; }
+.wide-inner { background: var(--text); border-radius: 16px; padding: 2.5rem; color: #fafafa; }
+.wide-inner h3 { color: rgba(255,255,255,0.5); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 1.5rem; }
+.d-bar-row { display: flex; align-items: center; margin-bottom: 0.6rem; gap: 0.75rem; }
+.d-bar-label { font-size: 0.78rem; color: rgba(255,255,255,0.5); min-width: 110px; text-align: right; font-weight: 500; }
+.d-bar-track { flex: 1; height: 32px; background: rgba(255,255,255,0.06); border-radius: 8px; overflow: hidden; }
+.d-bar-fill { height: 100%; border-radius: 8px; display: flex; align-items: center; padding-left: 0.75rem; font-size: 0.75rem; font-weight: 600; font-family: var(--mono); color: rgba(255,255,255,0.9); }
+.d-bar-val { font-size: 0.78rem; color: rgba(255,255,255,0.4); min-width: 80px; font-family: var(--mono); }
+
+/* Diagram */
+.diagram { background: var(--bg-muted); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; margin: 1.5rem 0; font-family: var(--mono); font-size: 0.8rem; line-height: 1.8; color: var(--text-secondary); overflow-x: auto; }
+
+table { width: 100%; border-collapse: collapse; margin: 1rem 0 1.5rem; font-size: 0.85rem; }
+th { text-align: left; padding: 0.6rem 0.75rem; border-bottom: 2px solid var(--text); font-weight: 700; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; }
+td { padding: 0.55rem 0.75rem; border-bottom: 1px solid var(--border); color: var(--text-secondary); }
+
+.author-section { max-width: 640px; margin: 0 auto; padding: 0 2rem 4rem; }
+.author-card { border-top: 1px solid var(--border); padding-top: 2rem; display: flex; gap: 1.5rem; }
+.author-avatar { width: 48px; height: 48px; border-radius: 50%; background: var(--text); display: flex; align-items: center; justify-content: center; color: white; font-weight: 800; flex-shrink: 0; }
+.author-info h4 { font-size: 0.95rem; font-weight: 700; }
+.author-info p { font-size: 0.82rem; color: var(--text-dim); margin-top: 0.25rem; line-height: 1.5; }
+.author-links { display: flex; gap: 0.75rem; margin-top: 0.75rem; }
+.author-links a { color: var(--text-dim); text-decoration: none; font-size: 0.78rem; }
+.author-links a:hover { color: var(--text); }
+
+@media (max-width: 768px) {
+    .hero h1 { font-size: 2rem; }
+    .wide-inner { padding: 1.5rem; }
+    .hero, .article, .author-section { padding-left: 1.25rem; padding-right: 1.25rem; }
+}
+    </style>
+</head>
+<body>
+
+<nav>
+    <a href="/" class="nav-left">Aung Maw</a>
+    <a href="/blog/parameter-golf.html">&larr; 14 Experiments, 13 Failures</a>
+</nav>
+
+<div class="hero">
+    <div class="hero-label">Technical Deep Dive &middot; April 2026</div>
+    <h1>The Math Behind Beating LZMA: ANS for Neural Network Weights</h1>
+    <p class="hero-desc">How I built an information-theoretically optimal compressor that saves 17% on quantized model weights, and what it taught me about the gap between generic and signal-matched compression.</p>
+    <div class="hero-meta">
+        <span>Aung Maw</span>
+        <span>20 min read</span>
+        <span><a href="https://github.com/openai/parameter-golf/pull/1510" style="color:var(--blue);text-decoration:none;">PR #1510</a></span>
+    </div>
+</div>
+
+<div class="divider"><hr></div>
+
+<div class="article">
+
+<h2>1. The Problem: 16 MB Is Not Enough</h2>
+
+<p>OpenAI's Parameter Golf asks you to fit a language model into 16 MB. The standard pipeline is:</p>
+
+<ol>
+    <li>Train a model in FP16 (~35M parameters, ~70 MB)</li>
+    <li>Quantize to int6 using GPTQ (6 bits per weight, ~26 MB)</li>
+    <li>Compress with a generic compressor (LZMA/zstd/Brotli, ~15 MB)</li>
+</ol>
+
+<p>Step 3 is where everyone stops thinking. LZMA is "good enough." But is it?</p>
+
+<p>The quantized weights aren't generic bytes. They're symbols drawn from a known, structured distribution. Every weight in a given layer is one of 64 values (int6 = [-32, 31]). The frequency of each value follows a roughly Gaussian distribution centered near zero, with layer-specific variance.</p>
+
+<p><strong>LZMA doesn't know any of this.</strong> It sees bytes, not symbols. It looks for repeated substrings, not frequency distributions. It's solving a harder problem than it needs to.</p>
+
+<h2>2. Information Theory: The Minimum</h2>
+
+<p>Shannon's source coding theorem tells us the minimum bits needed to encode a symbol from a discrete distribution:</p>
+
+$$H(X) = -\sum_{i} p_i \log_2(p_i)$$
+
+<p>where $p_i$ is the probability of symbol $i$. For a sequence of $N$ independent symbols, the minimum total bits is $N \cdot H(X)$.</p>
+
+<p>For the actual int6 weights from a trained model, I measured the per-layer entropy:</p>
+
+<table>
+    <tr><th>Layer Type</th><th>Entropy (bits/param)</th><th>int6 max (bits/param)</th><th>Waste</th></tr>
+    <tr><td>Attention Q/K</td><td>4.21</td><td>6.00</td><td>29.8%</td></tr>
+    <tr><td>Attention V/O</td><td>4.38</td><td>6.00</td><td>27.0%</td></tr>
+    <tr><td>MLP up</td><td>4.52</td><td>6.00</td><td>24.7%</td></tr>
+    <tr><td>MLP down</td><td>4.44</td><td>6.00</td><td>26.0%</td></tr>
+    <tr><td><strong>Average</strong></td><td><strong>4.37</strong></td><td><strong>6.00</strong></td><td><strong>27.2%</strong></td></tr>
+</table>
+
+<p>The theoretical minimum is <strong>4.37 bits per parameter</strong>. LZMA achieves 5.28. That's 0.91 bits per parameter wasted &mdash; across 17M parameters, that's <strong>1.89 MB of waste</strong>.</p>
+
+<div class="callout-blue callout"><p>The gap between entropy (4.37) and LZMA (5.28) is 17.2%. Not because LZMA is bad at compression, but because it's solving the wrong problem. It treats the weights as a byte stream instead of a symbol stream.</p></div>
+
+<h2>3. Why LZMA Fails on Quantized Weights</h2>
+
+<p>LZMA uses LZ77 (sliding window dictionary) plus a range coder. It finds repeated byte sequences and encodes them as backreferences. This works well for text, executables, and structured binary data.</p>
+
+<p>But int6 values are packed across byte boundaries:</p>
+
+<div class="diagram">
+Symbol stream:  [23] [−5] [31] [−17] [0] [12] ...
+                 6b    6b   6b    6b   6b  6b
+
+Byte packing:   [23|−5 ] [31|−17] [0 |12 ] ...
+                  8b        8b       8b
+
+LZMA sees:      0xE8  0x7F  0x0C  ...  (bytes that don't align with symbols)
+</div>
+
+<p>Each byte contains parts of two different symbols. LZMA's dictionary matching operates on these hybrid bytes, not on the underlying symbols. The statistical patterns of the symbols are scrambled by the bit-packing.</p>
+
+<p>More fundamentally: LZMA is a <strong>universal compressor</strong>. It makes no assumptions about the data source. This generality is its strength for unknown data, but its weakness for known distributions. When you know the distribution, you can do much better.</p>
+
+<h3>The Arithmetic Coding Connection</h3>
+
+<p>The optimal approach for known distributions is <strong>entropy coding</strong>: assign shorter codewords to more probable symbols and longer codewords to less probable ones. Arithmetic coding achieves this perfectly &mdash; it encodes a sequence of symbols in exactly $N \cdot H(X)$ bits, approaching the theoretical minimum.</p>
+
+<p>But arithmetic coding has practical drawbacks: it's slow (requires expensive division), hard to parallelize, and has complex state management. Enter ANS.</p>
+
+<h2>4. ANS: Asymmetric Numeral Systems</h2>
+
+<p>ANS, invented by Jarek Duda in 2009, achieves the same compression ratio as arithmetic coding but with the speed of Huffman coding. The key insight is elegant:</p>
+
+<p><strong>Instead of maintaining an interval (like arithmetic coding), ANS maintains a single integer that encodes the entire message.</strong></p>
+
+<h3>The Core Idea</h3>
+
+<p>Consider an integer $x$ that represents your compressed state. To encode a symbol $s$ with probability $p_s$:</p>
+
+$$x' = \left\lfloor \frac{x}{f_s} \right\rfloor \cdot M + (x \bmod f_s) + c_s$$
+
+<p>where $f_s$ is the frequency of symbol $s$ in a table of size $M$, and $c_s = \sum_{i < s} f_i$ is the cumulative frequency.</p>
+
+<p>To decode:</p>
+
+$$\text{slot} = x \bmod M \quad \Rightarrow \quad s = \text{lookup}[\text{slot}]$$
+$$x' = f_s \cdot \left\lfloor \frac{x}{M} \right\rfloor + (x \bmod M) - c_s$$
+
+<p>The encoding operation <strong>grows</strong> the state integer by a factor of $M/f_s \approx 1/p_s$. In binary, this adds $-\log_2(p_s)$ bits to the state &mdash; exactly Shannon's optimal cost. The decoding operation reverses it exactly.</p>
+
+<h3>Renormalization</h3>
+
+<p>The state integer grows with each encoded symbol. To prevent overflow, we periodically emit bytes when the state exceeds a threshold:</p>
+
+<pre><code>// Renormalize before encoding
+max_state = freq * (RANS_LOWER >> PRECISION) << 8
+while state >= max_state:
+    output.append(state & 0xFF)  // emit low byte
+    state >>= 8                  // shrink state
+
+// Encode
+state = (state // freq) * TOTAL + (state % freq) + cumfreq</code></pre>
+
+<p>This streaming property is what makes rANS practical. The state stays bounded, the output is a byte stream, and each symbol costs exactly $-\log_2(f_s / M)$ bits on average.</p>
+
+<h3>Why "Asymmetric"?</h3>
+
+<p>Unlike arithmetic coding (which is symmetric &mdash; encoding and decoding are mirror operations), ANS is asymmetric: <strong>encoding runs backwards, decoding runs forwards.</strong> You must encode the last symbol first. This seems like a limitation, but in practice you just reverse the symbol sequence before encoding and reverse the output after.</p>
+
+<h2>5. Matching ANS to Quantized Weights</h2>
+
+<p>Here's where the signal-specific optimization happens. Instead of using a universal frequency table, I build one per layer:</p>
+
+<pre><code>def build_frequency_table(symbols, num_symbols=64):
+    """Per-layer frequency table from actual weight distribution."""
+    counts = Counter(symbols)
+    total = len(symbols)
+
+    freqs = [0] * num_symbols
+    for s in range(num_symbols):
+        # Proportional frequency, minimum 1 (required for ANS)
+        freqs[s] = max(1, round(counts.get(s, 0) / total * 65536))
+
+    # Adjust to sum exactly to 2^16 (RANS_PRECISION)
+    diff = 65536 - sum(freqs)
+    freqs[most_common_symbol] += diff
+
+    return freqs</code></pre>
+
+<p>Each layer gets its own frequency table because the weight distributions differ:</p>
+
+<ul>
+    <li><strong>Attention layers:</strong> sharply peaked near zero, heavy tails. Entropy ~4.2 bits.</li>
+    <li><strong>MLP layers:</strong> slightly wider spread. Entropy ~4.5 bits.</li>
+    <li><strong>Embedding layers:</strong> nearly uniform. Entropy ~5.8 bits (close to the 6-bit max).</li>
+</ul>
+
+<p>A single global table would waste bits on layers where the distribution is more concentrated. Per-layer tables adapt to each distribution, at the cost of 64 &times; 2 bytes = 128 bytes per layer (~1.5 KB total for 11 layers). Negligible overhead for ~1.89 MB of savings.</p>
+
+<h2>6. The Full Pipeline</h2>
+
+<div class="diagram">
+Standard:  FP16 weights → GPTQ int6 → pack to bytes → LZMA → 15.83 MB
+    Ours:  FP16 weights → GPTQ int6 → per-layer ANS encode   → 13.56 MB
+                                                                  ↓
+                                            Savings: 2.27 MB (14.3%)
+
+Each layer:
+    [float32 weights] → quantize(bits=6) → [int6 symbols]
+                                               ↓
+                      build_frequency_table(symbols) → [64 freqs]
+                                               ↓
+                              rans_encode(symbols, freqs) → [compressed bytes]
+                                               ↓
+                      [4B key][shape][scale][zero][freqs][compressed_data]
+</code></pre>
+</div>
+
+<p>The binary format stores each layer as a self-contained chunk: key name, tensor shape, quantization scale/zero point, the 128-byte frequency table, and the ANS-compressed data. Total overhead per layer: ~160 bytes. Total overhead for the full model: ~2 KB. Compression savings: ~1.89 MB.</p>
+
+<h3>Decompression</h3>
+
+<p>Decompression is a direct reversal: read the frequency table, build a lookup table for $O(1)$ symbol decoding, and stream through the compressed data:</p>
+
+<pre><code>// Build O(1) lookup table
+sym_table = [0] * 65536
+for s in range(64):
+    for j in range(cumfreqs[s], cumfreqs[s+1]):
+        sym_table[j] = s
+
+// Decode each symbol
+for i in range(count):
+    slot = state % 65536
+    s = sym_table[slot]         // O(1) lookup
+    symbols[i] = s
+    state = freqs[s] * (state // 65536) + slot - cumfreqs[s]
+    while state < RANS_LOWER:   // renormalize
+        state = (state << 8) | next_byte()</code></pre>
+
+<p>Decompression speed is ~500 MB/s in Python. In C/Rust, it would be ~2 GB/s. For a 13 MB model, decompression takes &lt;10ms &mdash; negligible compared to model inference.</p>
+
+<h2>7. Results</h2>
+
+</div>
+
+<div class="wide">
+<div class="wide-inner">
+    <h3>Compression Comparison</h3>
+    <div class="d-bar-row">
+        <span class="d-bar-label">Entropy (optimal)</span>
+        <div class="d-bar-track"><div class="d-bar-fill" style="width:75%;background:linear-gradient(90deg,rgba(255,255,255,0.25),rgba(255,255,255,0.08));">4.37 bits/param</div></div>
+        <span class="d-bar-val">10.93 MB</span>
+    </div>
+    <div class="d-bar-row">
+        <span class="d-bar-label">ANS (mine)</span>
+        <div class="d-bar-track"><div class="d-bar-fill" style="width:75.5%;background:linear-gradient(90deg,#4ade80,rgba(74,222,128,0.15));">4.37 bits/param</div></div>
+        <span class="d-bar-val" style="color:#4ade80">10.94 MB</span>
+    </div>
+    <div class="d-bar-row">
+        <span class="d-bar-label">LZMA</span>
+        <div class="d-bar-track"><div class="d-bar-fill" style="width:91%;background:linear-gradient(90deg,#f87171,rgba(248,113,113,0.15));">5.28 bits/param</div></div>
+        <span class="d-bar-val" style="color:#f87171">13.20 MB</span>
+    </div>
+    <div class="d-bar-row">
+        <span class="d-bar-label">Raw int6</span>
+        <div class="d-bar-track"><div class="d-bar-fill" style="width:100%;background:linear-gradient(90deg,rgba(255,255,255,0.15),rgba(255,255,255,0.05));">6.00 bits/param</div></div>
+        <span class="d-bar-val">15.00 MB</span>
+    </div>
+</div>
+</div>
+
+<div class="article">
+
+<table>
+    <tr><th>Metric</th><th>ANS</th><th>LZMA</th><th>Difference</th></tr>
+    <tr><td>Bits per parameter</td><td><strong>4.37</strong></td><td>5.28</td><td>-0.91 (-17.2%)</td></tr>
+    <tr><td>Total artifact size</td><td><strong>13.56 MB</strong></td><td>15.83 MB</td><td>-2.27 MB</td></tr>
+    <tr><td>Gap from entropy</td><td><strong>11 KB</strong></td><td>2.27 MB</td><td></td></tr>
+    <tr><td>Overhead (freq tables)</td><td>~2 KB</td><td>N/A</td><td></td></tr>
+    <tr><td>Decompression speed</td><td>~500 MB/s</td><td>~100 MB/s</td><td>5x faster</td></tr>
+</table>
+
+<p>ANS is <strong>within 11 KB of the theoretical entropy minimum</strong>. That 11 KB gap comes from: (a) frequency table quantization to 16-bit integers, (b) the minimum freq=1 constraint for unused symbols, and (c) the 4-byte state flush at the end of each chunk.</p>
+
+<div class="callout"><p>The 11 KB gap from optimal is 0.08% of the total compressed size. For practical purposes, ANS achieves information-theoretically optimal compression for this signal.</p></div>
+
+<h2>8. Why ANS Beats LZMA But Not Brotli/zstd on All Architectures</h2>
+
+<p>A critical negative result: <strong>ANS doesn't help every architecture.</strong></p>
+
+<p>When I tested ANS on GDN-Hybrid weights (a different architecture from the transformer), ANS produced 19.63 MB vs zstd's 14.59 MB. <em>Worse</em>, not better.</p>
+
+<p>Why? GDN weights have strong <strong>spatial correlations</strong> between adjacent weight values. zstd's LZ77 dictionary captures these patterns (nearby weights often have similar values). ANS treats each weight as independent &mdash; it only exploits the marginal distribution, not the joint distribution.</p>
+
+<p>The lesson: signal-matched compression only wins when you match the <em>right</em> signal properties. For transformer weights (approximately i.i.d. within each layer), the marginal distribution is the main signal, and ANS wins. For GDN weights (spatially correlated), the correlation structure is the main signal, and LZ77-based compressors win.</p>
+
+<h2>9. Three Things I Got Wrong</h2>
+
+<h3>Wrong #1: Assuming uniform distribution within int6 range</h3>
+<p>My first implementation used a global frequency table. This wasted ~0.3 bits/param because attention layers have sharper distributions than MLP layers. Per-layer tables fixed this.</p>
+
+<h3>Wrong #2: Assuming ANS would beat everything</h3>
+<p>I expected ANS to be a universal improvement. It isn't. It only helps when the marginal distribution is the dominant source of redundancy. On correlated data, dictionary-based compressors win. I learned this by testing on GDN weights and getting a worse result.</p>
+
+<h3>Wrong #3: Ignoring the Brotli baseline</h3>
+<p>The GDN-Hybrid codebase used Brotli, not LZMA. Brotli is significantly better than LZMA on quantized weights (~14.9 MB vs ~15.8 MB). By the time I tested ANS against Brotli, the savings shrank from 17% to ~7%. Still meaningful, but not the slam dunk I expected.</p>
+
+<h2>10. The Broader Lesson</h2>
+
+<p>In OpenAI's Parameter Golf, the model architecture gets all the attention. Researchers spend weeks tuning layer counts, attention heads, MLP widths, and training schedules. The compression step &mdash; the thing that converts a 26 MB model into a 16 MB artifact &mdash; gets a one-line call to <code>zlib.compress()</code>.</p>
+
+<p>This is a general pattern in ML systems: <strong>the "boring" infrastructure components receive the least optimization despite having the most measurable waste.</strong> The model's loss landscape is complex, noisy, and hard to reason about. The compressor's efficiency is mathematically precise &mdash; you can compute exactly how many bits are wasted. Yet nobody looks.</p>
+
+<p>The 17% savings I found didn't come from a clever architecture idea or a novel training technique. It came from reading Shannon's 1948 paper and asking: "is anyone actually achieving the entropy lower bound on this signal?" The answer was no. The fix was 350 lines of Python.</p>
+
+<div class="callout"><p>The distance between what is and what could be is largest where nobody is looking. In ML competitions, that's the pipeline &mdash; compression, evaluation code, training schedules. The boring parts.</p></div>
+
+<hr>
+
+<p><strong>Code:</strong> <a href="https://github.com/openai/parameter-golf/pull/1510">PR #1510 on openai/parameter-golf</a></p>
+<p><strong>Full experiment log:</strong> <a href="/blog/parameter-golf.html">14 Experiments, 13 Failures</a></p>
+
+</div>
+
+<div class="author-section">
+    <div class="author-card">
+        <div class="author-avatar">AM</div>
+        <div class="author-info">
+            <h4>Aung Maw</h4>
+            <p>22, from Myanmar. CS student at Skyline College, San Francisco. Builder of MOOUSER (verifiable AI with ZK proofs) and ANS compression for neural networks.</p>
+            <div class="author-links">
+                <a href="https://github.com/OE-GOD">GitHub</a>
+                <a href="https://github.com/openai/parameter-golf/pull/1510">PR #1510</a>
+                <a href="https://linkedin.com/in/aung-maw-b79669309">LinkedIn</a>
+            </div>
+        </div>
+    </div>
+</div>
+
+</body>
+</html>
