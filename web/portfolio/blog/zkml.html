@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>How I Built a Zero-Knowledge Proof System for AI Inference (Solo, From Scratch)</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23fff'/><text x='50' y='68' font-size='40' font-weight='bold' text-anchor='middle' fill='%23000'>AM</text></svg>">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#fafafa;--bg-card:#fff;--border:#e4e4e7;--text:#09090b;--text-secondary:#52525b;--text-dim:#a1a1aa;--green:#16a34a;--red:#dc2626;--blue:#2563eb;--purple:#7c3aed;--font:'Inter',-apple-system,system-ui,sans-serif;--mono:'JetBrains Mono',monospace}
+*{margin:0;padding:0;box-sizing:border-box}body{font-family:var(--font);background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased}
+nav{max-width:680px;margin:0 auto;padding:1.25rem 2rem;display:flex;justify-content:space-between}nav a{color:var(--text-dim);text-decoration:none;font-size:.85rem}nav a:hover{color:var(--text)}.nav-left{font-weight:700;color:var(--text);font-size:.9rem}
+.hero{max-width:680px;margin:0 auto;padding:3rem 2rem 1.5rem}.hero-label{font-size:.72rem;font-weight:600;text-transform:uppercase;letter-spacing:.1em;color:var(--purple);margin-bottom:1rem}
+.hero h1{font-size:2.2rem;font-weight:900;letter-spacing:-.035em;line-height:1.15;max-width:600px}.hero-meta{margin-top:1rem;font-size:.82rem;color:var(--text-dim);display:flex;gap:1.5rem}
+.article{max-width:680px;margin:0 auto;padding:1rem 2rem 4rem}.article h2{font-size:1.4rem;font-weight:800;margin-top:3rem;margin-bottom:1rem;letter-spacing:-.02em}
+.article h3{font-size:1.05rem;font-weight:700;margin-top:2rem;margin-bottom:.5rem}.article p{color:var(--text-secondary);margin-bottom:1.25rem;font-size:.95rem;line-height:1.85}
+.article p strong{color:var(--text)}.article hr{border:none;border-top:1px solid var(--border);margin:3rem 0}.article a{color:var(--blue);text-decoration:none}.article a:hover{text-decoration:underline}
+.article ul,.article ol{margin:.5rem 0 1.25rem 1.5rem;color:var(--text-secondary);font-size:.95rem;line-height:1.85}.article li{margin-bottom:.4rem}
+pre{background:var(--text);color:#e4e4e7;border-radius:10px;padding:1.25rem 1.5rem;overflow-x:auto;margin:1.25rem 0 1.5rem;font-size:.82rem;line-height:1.6}
+code{font-family:var(--mono);font-size:.82rem}p code,.article code{background:#f4f4f5;color:var(--text);padding:.15rem .4rem;border-radius:4px;border:1px solid var(--border)}pre code{background:none;color:#e4e4e7;padding:0;border:none}
+table{width:100%;border-collapse:collapse;margin:1rem 0 1.5rem;font-size:.85rem}th{text-align:left;padding:.6rem .75rem;border-bottom:2px solid var(--text);font-weight:700;font-size:.72rem;text-transform:uppercase;letter-spacing:.06em}
+td{padding:.55rem .75rem;border-bottom:1px solid var(--border);color:var(--text-secondary)}
+.footer{text-align:center;padding:2rem;font-size:.75rem;color:var(--text-dim);max-width:680px;margin:0 auto;border-top:1px solid var(--border)}
+@media(max-width:640px){.hero h1{font-size:1.7rem}.hero,.article{padding-left:1.25rem;padding-right:1.25rem}}
+</style>
+</head>
+<body>
+<nav><a href="/blog/" class="nav-left">Blog</a><a href="/blog/">&larr; All posts</a></nav>
+<div class="hero"><div class="hero-label">ZKML &middot; April 2026</div><h1>How I Built a Zero-Knowledge Proof System for AI Inference (Solo, From Scratch)</h1><div class="hero-meta"><span>Aung Maw</span><span>April 2026</span><span>15 min read</span></div></div>
+<div class="article">
+<p>A bank runs an XGBoost model to decide your credit application. The model says "denied." You ask: "Prove the model actually ran. Prove it ran on MY data. Prove you didn't change the answer."</p>
+<p>The bank can't. There's no way to verify that an ML model produced a specific output without re-running the model yourself — which requires the bank's proprietary model, their infrastructure, and their data pipeline.</p>
+<p>I built the system that solves this. It's called MOOUSER. It generates cryptographic proofs that an ML model produced a specific output on specific inputs. The proof is 629ms to verify off-chain, or 3-6M gas on-chain. The model's weights stay private. The proof is unforgeable.</p>
+<p>I built it solo. 3,335 tests. 108 tasks shipped. Rust, Solidity, Go, TypeScript, Python. Open source under Apache-2.0.</p>
+<p>Here's how it works, and what I learned building it.</p>
+<hr />
+<h2>The Problem: AI Is a Black Box</h2>
+<p>When a company says "our AI model decided X," you have two options:</p>
+<ol>
+<li><strong>Trust them.</strong> They say the model ran, it produced this output, they didn't tamper with it. You have no way to check.</li>
+<li><strong>Re-run it yourself.</strong> You need the model weights, the inference code, the exact input preprocessing, and enough compute to run it. For most ML models, this is impossible — the weights are proprietary.</li>
+</ol>
+<p>Zero-knowledge proofs offer a third option:</p>
+<ol>
+<li><strong>Verify a proof.</strong> The company generates a cryptographic proof alongside the inference. The proof mathematically guarantees that a specific model (identified by a hash) produced a specific output on specific inputs. You verify the proof in milliseconds. You never see the model weights.</li>
+</ol>
+<h2>Why This Is Hard</h2>
+<p>A zero-knowledge proof says: "I know a witness W such that F(W) = output, and I can prove this without revealing W."</p>
+<p>For ML inference, W is the model weights and F is the inference computation. An XGBoost model with 100 trees, depth 6, and 50 features performs ~6,400 comparisons, ~100 additions, and ~100 table lookups per inference. That's a small computation — but converting it to a ZK circuit is where the difficulty lies.</p>
+<p>The standard approach (zkVM) puts the entire computation inside a virtual machine, generates a proof of the VM's execution trace, and converts that to a succinct proof. This works but is extremely expensive — a single XGBoost inference costs $5+ in proving time.</p>
+<p>I used a different approach.</p>
+<h2>The Architecture: GKR + Hyrax + Groth16</h2>
+<p>Instead of proving "this VM executed correctly" (general but slow), I prove "this specific arithmetic circuit computed correctly" (specialized but fast).</p>
+<h3>Layer 1: GKR Protocol</h3>
+<p>The GKR (Goldwasser-Kalai-Rothblum) protocol proves that a layered arithmetic circuit was computed correctly. It works top-down: start with the claimed output, then verify each layer's computation by reducing it to a claim about the layer below.</p>
+<p>For an XGBoost model with 100 trees at depth 6, the circuit has 88 compute layers. Each layer contains additions and multiplications over a finite field (BN254's scalar field, ~254-bit primes).</p>
+<p>The key property: GKR verification is logarithmic in the circuit size. An 88-layer circuit with millions of gates requires only ~88 rounds of interaction (made non-interactive via Fiat-Shamir with Poseidon hashing).</p>
+<h3>Layer 2: Hyrax Polynomial Commitments</h3>
+<p>GKR reduces the output claim to a claim about the inputs. To verify the input claim, the verifier needs to check that the committed inputs (model weights) match the claimed values at specific evaluation points.</p>
+<p>Hyrax uses Pedersen commitments with inner-product arguments. The prover commits to the model weights once (when registering the model). For each inference, the prover shows that the committed weights, evaluated at the GKR's challenge point, give the expected value.</p>
+<h3>Layer 3: Groth16 for EC Operations</h3>
+<p>The on-chain verifier needs to check elliptic curve operations (Pedersen commitments, multi-scalar multiplications). These are expensive in Solidity — ~200M gas for an 88-layer XGBoost circuit.</p>
+<p>I built a hybrid approach: the Solidity verifier replays the Poseidon transcript (cheap, ~2M gas) and delegates the EC operations to a Groth16 proof (which verifies EC equations in ~230K gas via the EVM's BN254 precompiles).</p>
+<p>The result: full verification in 3-6M gas instead of 200M+.</p>
+<h3>The Full Stack</h3>
+<pre><code>XGBoost model → Circuit compiler → GKR prover → Hyrax commitments
+                                                        ↓
+                              Groth16 wrapper (EC operations only)
+                                                        ↓
+                              On-chain verification (3-6M gas)
+                              Or off-chain verification (629ms)
+</code></pre>
+<h2>What I Actually Built</h2>
+<p>This isn't a research prototype. It's a production system:</p>
+<p><strong>Rust prover</strong> (<code>prover/</code>): Generates GKR proofs, Hyrax commitments, and coordinates with the Groth16 wrapper. Handles BN254 field arithmetic, Poseidon hashing, and the full Fiat-Shamir transcript.</p>
+<p><strong>Circuit compiler</strong> (<code>examples/xgboost-remainder/</code>): Converts XGBoost JSON models into layered arithmetic circuits. Handles tree traversal (leaf selection via path bits), feature comparison (bit decomposition with sign extraction), and multi-tree aggregation.</p>
+<p><strong>Solidity verifiers</strong> (<code>contracts/src/remainder/</code>): On-chain verification contracts — PoseidonSponge, SumcheckVerifier, HyraxVerifier, GKRVerifier, RemainderVerifier, GKRHybridVerifier, GKRDAGVerifier, DAGBatchVerifier. 166 Foundry tests.</p>
+<p><strong>DAG batch verifier</strong>: The 88-layer XGBoost circuit exceeds Ethereum's 30M gas block limit. I built a multi-transaction verifier that splits verification into 15 transactions (1 setup + 11 compute batches + 3 finalize), each under 30M gas. Sessions are authenticated by sender address and stored on-chain.</p>
+<p><strong>Stylus WASM verifier</strong> (<code>contracts/stylus/</code>): Ported the entire GKR verifier to Rust/WASM for Arbitrum Stylus. The WASM binary is 52KB raw, 24.5KB Brotli-compressed — under the 24KB Stylus deployment limit. Key optimization: shared <code>#[inline(never)]</code> field operations that deduplicate Fq/Fr arithmetic, and a <code>verify!</code> macro that strips panic strings from the WASM build.</p>
+<p><strong>4 SDKs</strong>: Python, TypeScript, Go, Rust client libraries for submitting proofs, registering models, and querying verification status.</p>
+<p><strong>TEE happy path</strong>: For production, most inferences run in a Trusted Execution Environment (AWS Nitro) at $0.0001/inference. ZK proofs are only generated when someone disputes a result. This makes cryptographic accountability economically viable — you only pay for expensive proofs when someone actually challenges you.</p>
+<h2>The Hardest Engineering Problems</h2>
+<h3>Problem 1: Poseidon Sponge Consistency</h3>
+<p>The GKR protocol uses Fiat-Shamir to make it non-interactive. Both prover and verifier must produce identical challenge sequences from the same transcript. I use Poseidon hashing (width=3, rate=2, 8 full + 57 partial rounds with PSE/Scroll BN254 constants).</p>
+<p>The problem: any discrepancy between the Rust prover's Poseidon implementation and the Solidity verifier's implementation causes the challenge sequences to diverge, and verification fails silently. Debugging this is a nightmare — you get a "proof invalid" error with no indication of WHERE the transcripts diverged.</p>
+<p>I solved this by building a transcript trace system that logs every squeeze/absorb operation on both sides and comparing them step-by-step in test fixtures.</p>
+<h3>Problem 2: MLE Bit-Ordering Convention</h3>
+<p>Multilinear extensions (MLEs) evaluate polynomials over Boolean hypercubes. The bit-ordering convention (MSB-first vs LSB-first) must match between the circuit compiler, the prover, and the verifier.</p>
+<p>The Remainder library uses MSB-first: <code>point[0]</code> is the most significant bit of the data index. This means <code>evaluateMLEFromData</code> uses <code>(w &gt;&gt; (n-1-i)) &amp; 1</code>, and the tensor initialization processes coordinates in reverse.</p>
+<p>I got this wrong three times before getting it right. Each time, the proofs verified on small circuits but failed on the full 88-layer XGBoost circuit because the bit-ordering errors only manifest when the number of variables exceeds a threshold.</p>
+<h3>Problem 3: Fitting in 24KB (Stylus WASM)</h3>
+<p>Arbitrum Stylus limits deployed WASM binaries to 24KB (Brotli-compressed). The full GKR verifier with BN254 arithmetic, Poseidon hashing, sumcheck verification, and proof decoding compiled to 52KB raw / 30KB Brotli. 6KB over the limit.</p>
+<p>Optimizations that worked:
+- <code>#[inline(never)]</code> on shared field operations (Fq add, mul, sub used by both Fq and Fr types)
+- <code>verify!</code> macro that replaces <code>assert!</code> with conditional returns (strips panic format strings from WASM)
+- <code>#[cfg(not(target_arch = "wasm32"))]</code> on all Debug trait implementations
+- <code>U256::from_be_slice()</code> instead of <code>try_into().unwrap()</code> (avoids pulling in formatting code for the unwrap panic)</p>
+<p>Final binary: 52KB raw / 24.5KB Brotli. Under the limit with 500 bytes to spare.</p>
+<h3>Problem 4: 512-bit Modular Reduction</h3>
+<p>BN254 field multiplication produces 512-bit intermediate results that must be reduced modulo a 254-bit prime. My initial implementation used repeated subtraction — correct but O(2^256) worst case. It worked on small inputs and hung on real proofs.</p>
+<p>I replaced it with Knuth's Algorithm D (long division for multi-precision integers), adapted for 256-bit divisors. This runs in constant time regardless of input magnitude.</p>
+<h2>The Numbers</h2>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Off-chain verification</td>
+<td>629ms</td>
+</tr>
+<tr>
+<td>On-chain (direct GKR)</td>
+<td>~252M gas (88-layer circuit)</td>
+</tr>
+<tr>
+<td>On-chain (Groth16 hybrid)</td>
+<td>3-6M gas</td>
+</tr>
+<tr>
+<td>On-chain (batch, 15 txs)</td>
+<td>&lt;30M gas each</td>
+</tr>
+<tr>
+<td>Stylus WASM binary</td>
+<td>24.5KB (Brotli)</td>
+</tr>
+<tr>
+<td>TEE happy path cost</td>
+<td>$0.0001/inference</td>
+</tr>
+<tr>
+<td>ZK fallback cost</td>
+<td>$0.02 (Groth16) / $5 (direct GKR)</td>
+</tr>
+<tr>
+<td>Test count</td>
+<td>3,335 (Rust + Solidity + Go)</td>
+</tr>
+<tr>
+<td>Solidity tests</td>
+<td>166 (Foundry)</td>
+</tr>
+<tr>
+<td>Supported model types</td>
+<td>5 (XGBoost, LightGBM, RF, LR, NN)</td>
+</tr>
+</tbody>
+</table>
+<h2>What I Learned</h2>
+<p><strong>1. The hard part of ZK isn't the math — it's the plumbing.</strong> The GKR protocol is well-defined. Implementing it correctly across three languages (Rust prover, Solidity verifier, Go gnark wrapper) with identical Poseidon transcripts, matching bit-ordering conventions, and correct field arithmetic is where the months go.</p>
+<p><strong>2. Production ZK needs economic design, not just cryptographic design.</strong> A $5 proof per inference is too expensive for production. The TEE happy path + ZK dispute fallback architecture makes it viable by only generating proofs when challenged. This is an economics insight, not a cryptography insight.</p>
+<p><strong>3. Size constraints force real optimization.</strong> The 24KB Stylus limit forced me to understand exactly where every byte in the WASM binary comes from. Without that constraint, I would have shipped a 100KB binary and never learned about inline(never) deduplication or panic string elimination.</p>
+<p><strong>4. Test everything against the largest circuit you'll deploy.</strong> My bit-ordering bugs only appeared on 88-layer circuits. My reduction algorithm only hung on real-sized field elements. Small test cases pass with incorrect code because they don't exercise edge cases. Always test at production scale.</p>
+<hr />
+<p><em>Code: <a href="https://github.com/OE-GOD/world-zk-compute">github.com/OE-GOD/world-zk-compute</a></em></p>
+</div>
+<div class="footer"><a href="/blog/" style="color:var(--text-dim)">All posts</a> &middot; <a href="/" style="color:var(--text-dim)">Portfolio</a></div>
+</body>
+</html>
