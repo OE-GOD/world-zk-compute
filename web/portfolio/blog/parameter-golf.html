@@ -3,463 +3,355 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>14 Experiments, 13 Failures — Parameter Golf Journey</title>
-    <meta name="description" content="A community college student's honest journey through OpenAI's Parameter Golf competition. 14 experiments, 13 failures, and what I actually learned.">
-    <meta property="og:title" content="14 Experiments, 13 Failures — Parameter Golf">
-    <meta property="og:description" content="What I actually learned about ML compression in OpenAI's competition">
+    <title>14 Experiments, 13 Failures — Parameter Golf</title>
+    <meta name="description" content="What I actually learned about ML compression in OpenAI's Parameter Golf competition.">
+    <meta property="og:title" content="14 Experiments, 13 Failures">
+    <meta property="og:description" content="A community college student's honest journey through OpenAI's Parameter Golf">
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23fff'/><text x='50' y='68' font-size='40' font-weight='bold' text-anchor='middle' fill='%23000'>AM</text></svg>">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
     <style>
 :root {
-    --bg: #09090b; --bg-card: #0f0f12; --border: #1c1c22; --border-light: #27272f;
-    --text: #fafafa; --text-secondary: #a1a1aa; --text-dim: #71717a;
-    --green: #22c55e; --red: #ef4444; --yellow: #eab308; --purple: #8b5cf6;
+    --bg: #fafafa; --bg-card: #ffffff; --bg-muted: #f4f4f5;
+    --border: #e4e4e7; --border-light: #f0f0f2;
+    --text: #09090b; --text-secondary: #52525b; --text-dim: #a1a1aa;
+    --green: #16a34a; --red: #dc2626; --yellow: #ca8a04; --purple: #7c3aed; --blue: #2563eb;
     --font: 'Inter', -apple-system, system-ui, sans-serif;
-    --mono: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+    --mono: 'JetBrains Mono', monospace;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: var(--font); background: var(--bg); color: var(--text); line-height: 1.8; -webkit-font-smoothing: antialiased; }
-.container { max-width: 720px; margin: 0 auto; padding: 4rem 1.5rem; }
-.back { color: var(--text-dim); text-decoration: none; font-size: 0.85rem; display: inline-block; margin-bottom: 2rem; }
-.back:hover { color: var(--text-secondary); }
-h1 { font-size: 2.2rem; font-weight: 800; letter-spacing: -0.03em; line-height: 1.2; margin-bottom: 0.5rem; }
-.subtitle { color: var(--text-secondary); font-size: 1.1rem; margin-bottom: 0.5rem; }
-.meta { color: var(--text-dim); font-size: 0.85rem; margin-bottom: 3rem; }
-h2 { font-size: 1.5rem; font-weight: 700; margin-top: 3rem; margin-bottom: 1rem; letter-spacing: -0.02em; }
-h3 { font-size: 1.15rem; font-weight: 600; margin-top: 2rem; margin-bottom: 0.75rem; }
-p { color: var(--text-secondary); margin-bottom: 1.25rem; font-size: 0.95rem; }
-p strong { color: var(--text); font-weight: 600; }
-hr { border: none; border-top: 1px solid var(--border); margin: 3rem 0; }
-pre { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; overflow-x: auto; margin-bottom: 1.5rem; }
-code { font-family: var(--mono); font-size: 0.85rem; color: var(--text-secondary); }
-p code { background: var(--bg-card); padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.85rem; }
-table { width: 100%; border-collapse: collapse; margin-bottom: 1.5rem; font-size: 0.85rem; }
-th { text-align: left; padding: 0.6rem 0.75rem; border-bottom: 2px solid var(--border-light); color: var(--text-dim); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.75rem; }
-td { padding: 0.5rem 0.75rem; border-bottom: 1px solid var(--border); color: var(--text-secondary); }
-tr:hover td { background: rgba(255,255,255,0.02); }
-.worked { color: var(--green); font-weight: 600; }
+body { font-family: var(--font); background: var(--bg); color: var(--text); -webkit-font-smoothing: antialiased; }
+
+/* NAV */
+nav { max-width: 1100px; margin: 0 auto; padding: 1.25rem 2rem; display: flex; justify-content: space-between; align-items: center; }
+nav a { color: var(--text-dim); text-decoration: none; font-size: 0.85rem; transition: color 0.2s; }
+nav a:hover { color: var(--text); }
+.nav-left { font-weight: 600; color: var(--text); font-size: 0.9rem; }
+
+/* HERO */
+.hero { max-width: 1100px; margin: 0 auto; padding: 4rem 2rem 3rem; }
+.hero-label { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; color: var(--red); margin-bottom: 1.25rem; }
+.hero h1 { font-size: 3.5rem; font-weight: 900; letter-spacing: -0.035em; line-height: 1.08; max-width: 700px; }
+.hero-sub { margin-top: 1.5rem; display: flex; gap: 3rem; align-items: flex-start; }
+.hero-desc { color: var(--text-secondary); font-size: 1.1rem; line-height: 1.7; max-width: 420px; }
+.hero-stats-col { display: flex; flex-direction: column; gap: 1.25rem; min-width: 140px; }
+.stat-item { }
+.stat-num { font-family: var(--mono); font-size: 2rem; font-weight: 700; line-height: 1; }
+.stat-num.red { color: var(--red); }
+.stat-num.green { color: var(--green); }
+.stat-label { font-size: 0.7rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.08em; margin-top: 0.2rem; }
+.hero-meta { margin-top: 2rem; font-size: 0.8rem; color: var(--text-dim); display: flex; gap: 1.5rem; }
+
+/* DIVIDER */
+.divider { max-width: 1100px; margin: 0 auto; padding: 0 2rem; }
+.divider hr { border: none; border-top: 1px solid var(--border); }
+
+/* CONTENT */
+.article { max-width: 640px; margin: 0 auto; padding: 3rem 2rem; }
+.article h2 { font-size: 1.75rem; font-weight: 800; margin-top: 3.5rem; margin-bottom: 1rem; letter-spacing: -0.02em; }
+.article h3 { font-size: 1.1rem; font-weight: 700; margin-top: 2rem; margin-bottom: 0.5rem; }
+.article p { color: var(--text-secondary); margin-bottom: 1.25rem; font-size: 0.95rem; line-height: 1.85; }
+.article p strong { color: var(--text); }
+.article hr { border: none; border-top: 1px solid var(--border); margin: 3rem 0; }
+.article a { color: var(--blue); text-decoration: none; }
+.article a:hover { text-decoration: underline; }
+
+/* CODE */
+pre { background: var(--text); color: #e4e4e7; border-radius: 10px; padding: 1.25rem 1.5rem; overflow-x: auto; margin: 1.25rem 0 1.5rem; }
+code { font-family: var(--mono); font-size: 0.82rem; }
+p code { background: var(--bg-muted); color: var(--text); padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.82rem; }
+
+/* TABLES */
+table { width: 100%; border-collapse: collapse; margin: 1rem 0 1.5rem; font-size: 0.85rem; }
+th { text-align: left; padding: 0.6rem 0.75rem; border-bottom: 2px solid var(--text); color: var(--text); font-weight: 700; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; }
+td { padding: 0.55rem 0.75rem; border-bottom: 1px solid var(--border); color: var(--text-secondary); }
+.worked { color: var(--green); font-weight: 700; }
 .failed { color: var(--red); font-weight: 600; }
 .marginal { color: var(--yellow); font-weight: 600; }
 .discovery { color: var(--purple); font-weight: 600; }
-.experiment { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; margin-bottom: 1.5rem; }
-.experiment h3 { margin-top: 0; color: var(--text); }
-.experiment-meta { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; flex-wrap: wrap; }
-.tag { font-size: 0.7rem; padding: 0.2rem 0.5rem; border-radius: 4px; background: rgba(255,255,255,0.05); color: var(--text-dim); }
-.tag-green { background: rgba(34,197,94,0.1); color: var(--green); }
-.tag-red { background: rgba(239,68,68,0.1); color: var(--red); }
-.tag-purple { background: rgba(139,92,246,0.1); color: var(--purple); }
-.tag-yellow { background: rgba(234,179,8,0.1); color: var(--yellow); }
-.lesson { border-left: 3px solid var(--border-light); padding-left: 1rem; margin: 1rem 0 1.5rem; }
-.lesson p { color: var(--text-dim); font-size: 0.9rem; font-style: italic; margin-bottom: 0; }
-.author { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; margin-top: 3rem; }
-.author p { margin-bottom: 0.5rem; }
-.author a { color: var(--text); text-decoration: none; border-bottom: 1px solid var(--border-light); }
-.author a:hover { border-color: var(--text); }
 
-/* === VISUALIZATIONS === */
+/* TAGS */
+.tags { display: flex; gap: 0.35rem; margin-bottom: 0.75rem; flex-wrap: wrap; }
+.tag { font-size: 0.65rem; padding: 0.2rem 0.55rem; border-radius: 100px; font-weight: 600; letter-spacing: 0.02em; }
+.t-green { background: #dcfce7; color: #15803d; }
+.t-red { background: #fee2e2; color: #b91c1c; }
+.t-purple { background: #ede9fe; color: #6d28d9; }
+.t-yellow { background: #fef9c3; color: #a16207; }
+.t-gray { background: var(--bg-muted); color: var(--text-dim); }
 
-/* Hero stats */
-.hero-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin: 2rem 0; }
-.hero-stat { background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 1.25rem; text-align: center; }
-.hero-stat .num { font-size: 2rem; font-weight: 800; font-family: var(--mono); }
-.hero-stat .label { font-size: 0.75rem; color: var(--text-dim); margin-top: 0.25rem; text-transform: uppercase; letter-spacing: 0.05em; }
-.hero-stat.green .num { color: var(--green); }
-.hero-stat.red .num { color: var(--red); }
-.hero-stat.purple .num { color: var(--purple); }
+/* EXPERIMENT CARD */
+.exp { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; margin: 1.25rem 0; }
+.exp h3 { margin-top: 0; font-size: 1rem; }
 
-/* Funnel visualization */
-.funnel { margin: 2rem 0; }
-.funnel-step { display: flex; align-items: center; gap: 1rem; margin-bottom: 0.5rem; }
-.funnel-bar { height: 36px; border-radius: 6px; display: flex; align-items: center; padding: 0 1rem; font-size: 0.8rem; font-weight: 600; transition: all 0.3s; position: relative; overflow: hidden; }
-.funnel-bar::after { content: ''; position: absolute; top: 0; left: -100%; width: 100%; height: 100%; background: linear-gradient(90deg, transparent, rgba(255,255,255,0.05), transparent); animation: shimmer 3s infinite; }
-@keyframes shimmer { 0% { left: -100%; } 100% { left: 100%; } }
-.funnel-label { font-size: 0.8rem; color: var(--text-dim); min-width: 90px; text-align: right; }
+/* CALLOUT / LESSON */
+.callout { background: #f0fdf4; border-left: 3px solid var(--green); padding: 0.75rem 1rem; border-radius: 0 8px 8px 0; margin: 1rem 0 1.5rem; }
+.callout p { color: #166534; font-size: 0.88rem; font-style: italic; margin: 0; line-height: 1.6; }
+.callout-red { background: #fef2f2; border-left-color: var(--red); }
+.callout-red p { color: #991b1b; }
+.callout-purple { background: #f5f3ff; border-left-color: var(--purple); }
+.callout-purple p { color: #4c1d95; }
 
-/* Compression bar chart */
-.bar-chart { margin: 1.5rem 0; }
-.bar-row { display: flex; align-items: center; margin-bottom: 0.75rem; gap: 0.75rem; }
-.bar-label { font-size: 0.8rem; color: var(--text-secondary); min-width: 100px; text-align: right; }
-.bar-track { flex: 1; height: 28px; background: rgba(255,255,255,0.03); border-radius: 6px; position: relative; overflow: hidden; }
-.bar-fill { height: 100%; border-radius: 6px; display: flex; align-items: center; padding-left: 0.75rem; font-size: 0.75rem; font-weight: 600; font-family: var(--mono); transition: width 1s ease-out; }
-.bar-value { font-size: 0.8rem; color: var(--text-dim); min-width: 70px; font-family: var(--mono); }
+/* WIDE SECTION (full-bleed visualization) */
+.wide { max-width: 900px; margin: 2.5rem auto; padding: 0 2rem; }
+.wide-inner { background: var(--text); border-radius: 16px; padding: 2.5rem; color: #fafafa; overflow: hidden; }
+.wide-inner h3 { color: #fafafa; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 1.5rem; font-weight: 600; opacity: 0.6; }
 
-/* BPB comparison chart */
-.bpb-chart { margin: 2rem 0; position: relative; padding-left: 0; }
-.bpb-row { display: flex; align-items: center; margin-bottom: 0.6rem; gap: 0.75rem; }
-.bpb-name { font-size: 0.8rem; color: var(--text-secondary); min-width: 140px; text-align: right; }
-.bpb-bar-track { flex: 1; height: 24px; background: rgba(255,255,255,0.03); border-radius: 4px; position: relative; }
-.bpb-bar-fill { height: 100%; border-radius: 4px; display: flex; align-items: center; justify-content: flex-end; padding-right: 0.5rem; font-size: 0.7rem; font-family: var(--mono); font-weight: 600; }
-.bpb-target { position: absolute; top: -8px; bottom: -8px; width: 2px; background: var(--green); z-index: 2; }
-.bpb-target-label { position: absolute; top: -22px; font-size: 0.65rem; color: var(--green); white-space: nowrap; transform: translateX(-50%); }
+/* BAR CHART (dark bg) */
+.d-bar-row { display: flex; align-items: center; margin-bottom: 0.6rem; gap: 0.75rem; }
+.d-bar-label { font-size: 0.78rem; color: rgba(255,255,255,0.5); min-width: 80px; text-align: right; font-weight: 500; }
+.d-bar-track { flex: 1; height: 32px; background: rgba(255,255,255,0.06); border-radius: 8px; overflow: hidden; }
+.d-bar-fill { height: 100%; border-radius: 8px; display: flex; align-items: center; padding-left: 0.75rem; font-size: 0.75rem; font-weight: 600; font-family: var(--mono); color: rgba(255,255,255,0.9); }
+.d-bar-val { font-size: 0.78rem; color: rgba(255,255,255,0.4); min-width: 60px; font-family: var(--mono); }
 
-/* Timeline */
-.timeline { margin: 2rem 0; position: relative; padding-left: 2rem; }
-.timeline::before { content: ''; position: absolute; left: 7px; top: 0; bottom: 0; width: 2px; background: var(--border); }
-.timeline-item { position: relative; margin-bottom: 1.5rem; }
-.timeline-dot { position: absolute; left: -2rem; top: 4px; width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--border); background: var(--bg); }
-.timeline-dot.green { border-color: var(--green); background: rgba(34,197,94,0.2); }
-.timeline-dot.red { border-color: var(--red); background: rgba(239,68,68,0.2); }
-.timeline-dot.purple { border-color: var(--purple); background: rgba(139,92,246,0.2); }
-.timeline-dot.yellow { border-color: var(--yellow); background: rgba(234,179,8,0.2); }
-.timeline-title { font-size: 0.9rem; font-weight: 600; color: var(--text); }
-.timeline-desc { font-size: 0.8rem; color: var(--text-dim); margin-top: 0.25rem; }
-.timeline-bpb { font-family: var(--mono); font-size: 0.8rem; margin-top: 0.25rem; }
+/* TIMELINE (dark bg) */
+.d-timeline { padding-left: 2rem; position: relative; }
+.d-timeline::before { content: ''; position: absolute; left: 7px; top: 4px; bottom: 8px; width: 2px; background: rgba(255,255,255,0.1); }
+.d-tl-item { position: relative; margin-bottom: 1.5rem; }
+.d-tl-dot { position: absolute; left: -2rem; top: 5px; width: 16px; height: 16px; border-radius: 50%; border: 2.5px solid rgba(255,255,255,0.2); background: var(--text); }
+.d-tl-dot.green { border-color: #4ade80; box-shadow: 0 0 10px rgba(74,222,128,0.3); }
+.d-tl-dot.red { border-color: #f87171; }
+.d-tl-dot.purple { border-color: #a78bfa; box-shadow: 0 0 10px rgba(167,139,250,0.3); }
+.d-tl-dot.yellow { border-color: #facc15; }
+.d-tl-title { font-size: 0.88rem; font-weight: 700; color: #fafafa; }
+.d-tl-desc { font-size: 0.78rem; color: rgba(255,255,255,0.45); margin-top: 0.15rem; }
+.d-tl-bpb { font-family: var(--mono); font-size: 0.75rem; margin-top: 0.25rem; }
+.d-tl-bpb.green { color: #4ade80; }
+.d-tl-bpb.red { color: #f87171; }
+.d-tl-bpb.purple { color: #a78bfa; }
+.d-tl-bpb.yellow { color: #facc15; }
 
-/* Animated counter */
-.counter { font-family: var(--mono); }
+/* LESSONS GRID */
+.lessons { display: grid; grid-template-columns: 1fr; gap: 0.75rem; margin: 1.5rem 0; }
+.lesson-card { border: 1px solid var(--border); border-radius: 10px; padding: 1.25rem 1.5rem; display: flex; gap: 1rem; align-items: flex-start; background: var(--bg-card); }
+.lesson-n { font-family: var(--mono); font-size: 1.8rem; font-weight: 900; color: var(--border); line-height: 1; min-width: 30px; }
+.lesson-t { font-size: 0.9rem; color: var(--text-secondary); line-height: 1.6; }
+.lesson-t strong { color: var(--text); }
 
-@media (max-width: 640px) {
-    .container { padding: 2rem 1rem; }
-    h1 { font-size: 1.7rem; }
-    .hero-stats { grid-template-columns: repeat(3, 1fr); gap: 0.5rem; }
-    .hero-stat .num { font-size: 1.5rem; }
-    .bar-label, .bpb-name { min-width: 80px; font-size: 0.7rem; }
-    .funnel-label { min-width: 60px; font-size: 0.7rem; }
+/* AUTHOR */
+.author-section { max-width: 640px; margin: 0 auto; padding: 0 2rem 4rem; }
+.author-card { border-top: 1px solid var(--border); padding-top: 2rem; display: flex; gap: 1.5rem; align-items: flex-start; }
+.author-avatar { width: 48px; height: 48px; border-radius: 50%; background: var(--text); display: flex; align-items: center; justify-content: center; color: white; font-weight: 800; font-size: 1rem; flex-shrink: 0; }
+.author-info h4 { font-size: 0.95rem; font-weight: 700; }
+.author-info p { font-size: 0.82rem; color: var(--text-dim); margin-top: 0.25rem; line-height: 1.5; }
+.author-links { display: flex; gap: 0.75rem; margin-top: 0.75rem; flex-wrap: wrap; }
+.author-links a { color: var(--text-dim); text-decoration: none; font-size: 0.78rem; font-weight: 500; transition: color 0.2s; }
+.author-links a:hover { color: var(--text); }
+
+@media (max-width: 768px) {
+    .hero h1 { font-size: 2.2rem; }
+    .hero-sub { flex-direction: column; gap: 2rem; }
+    .hero-stats-col { flex-direction: row; gap: 2rem; }
+    .wide-inner { padding: 1.5rem; }
+    .d-bar-label { min-width: 60px; font-size: 0.7rem; }
+    nav { padding: 1rem; }
+    .hero, .article, .author-section { padding-left: 1.25rem; padding-right: 1.25rem; }
+    .wide { padding: 0 1rem; }
+    .author-card { flex-direction: column; }
 }
     </style>
 </head>
 <body>
 
-<div class="container">
+<nav>
+    <a href="/" class="nav-left">Aung Maw</a>
+    <a href="/">&larr; Back</a>
+</nav>
 
-<a href="https://aungmaw.vercel.app" class="back">&larr; aungmaw.vercel.app</a>
-
-<h1>14 Experiments, 13 Failures</h1>
-<p class="subtitle">What I actually learned about ML compression in OpenAI's Parameter Golf</p>
-<p class="meta">Aung Maw &middot; April 2026 &middot; ~12 min read</p>
-
-<!-- Hero Stats -->
-<div class="hero-stats">
-    <div class="hero-stat red"><div class="num counter" data-target="13">0</div><div class="label">Failed</div></div>
-    <div class="hero-stat green"><div class="num counter" data-target="1">0</div><div class="label">Worked</div></div>
-    <div class="hero-stat purple"><div class="num">$150</div><div class="label">GPU Spend</div></div>
-</div>
-
-<!-- Funnel Visualization -->
-<div class="funnel">
-    <div class="funnel-step">
-        <span class="funnel-label">Ideas</span>
-        <div class="funnel-bar" style="width:100%;background:linear-gradient(90deg,rgba(59,130,246,0.3),rgba(59,130,246,0.1));">14 experiments tested</div>
+<!-- HERO -->
+<div class="hero">
+    <div class="hero-label">OpenAI Parameter Golf &middot; April 2026</div>
+    <h1>14 Experiments,<br>13 Failures</h1>
+    <div class="hero-sub">
+        <p class="hero-desc">What I actually learned about ML compression in OpenAI's competition. Two weeks, ~$150 in GPU compute, and a lot of honest negative results.</p>
+        <div class="hero-stats-col">
+            <div class="stat-item"><div class="stat-num red" data-count="13">13</div><div class="stat-label">Failed</div></div>
+            <div class="stat-item"><div class="stat-num green" data-count="1">1</div><div class="stat-label">Worked</div></div>
+        </div>
     </div>
-    <div class="funnel-step">
-        <span class="funnel-label">Promising</span>
-        <div class="funnel-bar" style="width:35%;background:linear-gradient(90deg,rgba(234,179,8,0.3),rgba(234,179,8,0.1));">5 showed signal</div>
-    </div>
-    <div class="funnel-step">
-        <span class="funnel-label">Worked</span>
-        <div class="funnel-bar" style="width:8%;background:linear-gradient(90deg,rgba(34,197,94,0.4),rgba(34,197,94,0.1));">1</div>
+    <div class="hero-meta">
+        <span>Aung Maw</span>
+        <span>12 min read</span>
+        <span>$150 GPU spend</span>
     </div>
 </div>
 
-<hr>
+<div class="divider"><hr></div>
 
-<h2>The Competition</h2>
-<p>OpenAI's Parameter Golf: train the best language model that fits in <strong>16 MB</strong>. Score by how well it compresses English text (bits per byte). Lower is better. Everyone gets <strong>10 minutes on 8&times;H100 GPUs</strong>. Same budget, same data. The leaderboard #1 sits at <strong>1.081 BPB</strong>.</p>
+<!-- JOURNEY VISUALIZATION (full-width dark block) -->
+<div class="wide">
+<div class="wide-inner">
+    <h3>The Journey</h3>
+    <div class="d-timeline">
+        <div class="d-tl-item"><div class="d-tl-dot green"></div><div class="d-tl-title">ANS Compression</div><div class="d-tl-desc">Built rANS encoder. 17% lossless improvement. Merged as PR #1510.</div><div class="d-tl-bpb green">-17% artifact size</div></div>
+        <div class="d-tl-item"><div class="d-tl-dot red"></div><div class="d-tl-title">SP8192 on GDN-Hybrid</div><div class="d-tl-desc">Bigger vocab. Embedding table too large for 16 MB budget.</div><div class="d-tl-bpb red">16.94 MB (over budget)</div></div>
+        <div class="d-tl-item"><div class="d-tl-dot red"></div><div class="d-tl-title">head_dim=128</div><div class="d-tl-desc">2x state capacity, 44% less memory. But 15% slower = fewer steps.</div><div class="d-tl-bpb red">+0.011 BPB (worse)</div></div>
+        <div class="d-tl-item"><div class="d-tl-dot purple"></div><div class="d-tl-title">Byte-Counting Bug</div><div class="d-tl-desc">GDN-Hybrid double-counts space bytes. All GDN BPB numbers inflated.</div><div class="d-tl-bpb purple">14% BPB inflation</div></div>
+        <div class="d-tl-item"><div class="d-tl-dot yellow"></div><div class="d-tl-title">Warmdown Fix</div><div class="d-tl-desc">Three training systems silently disabled. Fixed timing.</div><div class="d-tl-bpb yellow">-0.003 BPB</div></div>
+        <div class="d-tl-item"><div class="d-tl-dot red"></div><div class="d-tl-title">Score-First TTT</div><div class="d-tl-desc">Compliant TTT: score before training. Perturbs weights, hurts quality.</div><div class="d-tl-bpb red">+0.003 BPB (worse)</div></div>
+        <div class="d-tl-item"><div class="d-tl-dot red"></div><div class="d-tl-title">6 More Experiments</div><div class="d-tl-desc">Extra layer, ANS on GDN, per-matrix quant, recurrence, casefold, batch.</div><div class="d-tl-bpb red">All failed</div></div>
+    </div>
+</div>
+</div>
 
-<hr>
+<!-- ARTICLE BODY -->
+<div class="article">
 
 <h2>The One That Worked</h2>
 
-<div class="experiment">
+<div class="exp">
+<div class="tags"><span class="tag t-green">Worked</span><span class="tag t-gray">Compression</span><span class="tag t-gray">Information Theory</span></div>
 <h3>ANS Compression (PR #1510)</h3>
-<div class="experiment-meta">
-<span class="tag tag-green">Worked</span>
-<span class="tag">Compression</span>
-<span class="tag">Information Theory</span>
-</div>
 <p><strong>The question:</strong> Everyone uses generic compressors (LZMA, Brotli) to pack model weights into 16 MB. Are they wasting space?</p>
-
-<!-- Compression Bar Chart -->
-<div class="bar-chart">
-    <div class="bar-row">
-        <span class="bar-label">Optimal</span>
-        <div class="bar-track"><div class="bar-fill" style="width:82.8%;background:linear-gradient(90deg,var(--green),rgba(34,197,94,0.3));">4.37 bits</div></div>
-        <span class="bar-value" style="color:var(--green);">4.37 b/p</span>
-    </div>
-    <div class="bar-row">
-        <span class="bar-label">ANS (mine)</span>
-        <div class="bar-track"><div class="bar-fill" style="width:82.8%;background:linear-gradient(90deg,var(--green),rgba(34,197,94,0.3));">4.37 bits</div></div>
-        <span class="bar-value" style="color:var(--green);">4.37 b/p</span>
-    </div>
-    <div class="bar-row">
-        <span class="bar-label">LZMA</span>
-        <div class="bar-track"><div class="bar-fill" style="width:100%;background:linear-gradient(90deg,var(--red),rgba(239,68,68,0.3));">5.28 bits &mdash; 0.91 wasted</div></div>
-        <span class="bar-value" style="color:var(--red);">5.28 b/p</span>
-    </div>
 </div>
 
-<p><strong>Savings: 1.89 MB (17.2%).</strong> I built a rANS encoder using per-layer frequency tables matched to the actual weight distribution. Information-theoretically optimal.</p>
-<div class="lesson"><p>Everyone optimized the model. Nobody optimized the compression. The boring part had the most opportunity.</p></div>
+<!-- Compression chart (dark) -->
 </div>
+<div class="wide">
+<div class="wide-inner">
+    <h3>Compression Efficiency</h3>
+    <div class="d-bar-row">
+        <span class="d-bar-label">Optimal</span>
+        <div class="d-bar-track"><div class="d-bar-fill" style="width:82.8%;background:linear-gradient(90deg,#4ade80,rgba(74,222,128,0.2));">4.37 bits</div></div>
+        <span class="d-bar-val" style="color:#4ade80">4.37</span>
+    </div>
+    <div class="d-bar-row">
+        <span class="d-bar-label">ANS (mine)</span>
+        <div class="d-bar-track"><div class="d-bar-fill" style="width:82.8%;background:linear-gradient(90deg,#4ade80,rgba(74,222,128,0.2));">4.37 bits</div></div>
+        <span class="d-bar-val" style="color:#4ade80">4.37</span>
+    </div>
+    <div class="d-bar-row">
+        <span class="d-bar-label">LZMA</span>
+        <div class="d-bar-track"><div class="d-bar-fill" style="width:100%;background:linear-gradient(90deg,#f87171,rgba(248,113,113,0.2));">5.28 bits &mdash; 0.91 wasted</div></div>
+        <span class="d-bar-val" style="color:#f87171">5.28</span>
+    </div>
+</div>
+</div>
+<div class="article">
+
+<p><strong>Savings: 1.89 MB (17.2%).</strong> rANS encoder with per-layer frequency tables matched to the actual weight distribution. Information-theoretically optimal.</p>
+
+<div class="callout"><p>Everyone optimized the model. Nobody optimized the compression. The boring part had the most opportunity.</p></div>
 
 <hr>
 
 <h2>The 13 That Failed</h2>
 
-<!-- Journey Timeline -->
-<h3 style="margin-bottom:1.5rem;">The Journey</h3>
-<div class="timeline">
-    <div class="timeline-item">
-        <div class="timeline-dot green"></div>
-        <div class="timeline-title">ANS Compression</div>
-        <div class="timeline-desc">Built rANS encoder. 17% improvement. Merged as PR #1510.</div>
-        <div class="timeline-bpb worked">-17% artifact size</div>
-    </div>
-    <div class="timeline-item">
-        <div class="timeline-dot red"></div>
-        <div class="timeline-title">SP8192 on GDN-Hybrid</div>
-        <div class="timeline-desc">Bigger tokenizer vocab. Embedding table too large for 16 MB.</div>
-        <div class="timeline-bpb failed">16.94 MB (over budget)</div>
-    </div>
-    <div class="timeline-item">
-        <div class="timeline-dot red"></div>
-        <div class="timeline-title">head_dim=128</div>
-        <div class="timeline-desc">2x state capacity, 44% less memory. But 15% slower = fewer steps.</div>
-        <div class="timeline-bpb failed">+0.011 BPB (worse)</div>
-    </div>
-    <div class="timeline-item">
-        <div class="timeline-dot purple"></div>
-        <div class="timeline-title">Byte-Counting Bug Found</div>
-        <div class="timeline-desc">GDN-Hybrid double-counts space bytes. All GDN BPB numbers inflated.</div>
-        <div class="timeline-bpb discovery">14% BPB inflation</div>
-    </div>
-    <div class="timeline-item">
-        <div class="timeline-dot yellow"></div>
-        <div class="timeline-title">Warmdown Fix</div>
-        <div class="timeline-desc">Three training systems silently disabled. Fixed timing. Marginal gain.</div>
-        <div class="timeline-bpb marginal">-0.003 BPB</div>
-    </div>
-    <div class="timeline-item">
-        <div class="timeline-dot red"></div>
-        <div class="timeline-title">Score-First TTT</div>
-        <div class="timeline-desc">Compliant TTT: score before training. Perturbs weights, hurts quality.</div>
-        <div class="timeline-bpb failed">+0.003 BPB (worse)</div>
-    </div>
-    <div class="timeline-item">
-        <div class="timeline-dot red"></div>
-        <div class="timeline-title">6 More Experiments</div>
-        <div class="timeline-desc">Extra layer, ANS on GDN, per-matrix quant, recurrence, casefold, batch size.</div>
-        <div class="timeline-bpb failed">All failed</div>
-    </div>
-</div>
-
-<hr>
-
-<!-- Detailed Experiments -->
-
-<div class="experiment">
-<h3>1. SP8192 Tokenizer on GDN-Hybrid</h3>
-<div class="experiment-meta">
-<span class="tag tag-red">Failed</span>
-<span class="tag">Tokenizer</span>
-<span class="tag">Architecture</span>
-</div>
-<p><strong>Hypothesis:</strong> SP8192 produces 37% fewer tokens. Every transformer uses it. Switching GDN should give -0.03 BPB.</p>
-
+<div class="exp">
+<div class="tags"><span class="tag t-red">Failed</span><span class="tag t-gray">Tokenizer</span></div>
+<h3>1. SP8192 on GDN-Hybrid</h3>
+<p><strong>Hypothesis:</strong> SP8192 produces 37% fewer tokens. Every transformer uses it. Should give -0.03 BPB.</p>
 <table>
 <tr><th>Config</th><th>BPB</th><th>Artifact</th><th>Fits?</th></tr>
 <tr><td>SP1024 baseline</td><td>~1.10</td><td>14.59 MB</td><td>Yes</td></tr>
 <tr><td>SP8192 dim=512</td><td>1.062</td><td>16.94 MB</td><td class="failed">No</td></tr>
 <tr><td>SP8192 dim=496</td><td>1.088</td><td>16.30 MB</td><td class="failed">No</td></tr>
 </table>
-
-<p>The SP8192 embedding costs 3.7M extra parameters (~1.5 MB). Over budget. Shrinking the model to compensate loses more than the tokenizer gains.</p>
-<div class="lesson"><p>Optimizations that work for transformers don't transfer to architectures with different parameter budgets.</p></div>
+<div class="callout-red callout"><p>Optimizations that work for transformers don't transfer to architectures with different parameter budgets.</p></div>
 </div>
 
-<div class="experiment">
-<h3>2. GDN head_dim=128 (4 Heads Instead of 8)</h3>
-<div class="experiment-meta">
-<span class="tag tag-red">Failed</span>
-<span class="tag">Architecture</span>
-</div>
-<p><strong>Hypothesis:</strong> 2&times; state capacity at same parameter count. From first principles: larger key dimension = cleaner retrieval in the associative memory.</p>
-
-<!-- Memory comparison -->
-<div class="bar-chart">
-    <div class="bar-row">
-        <span class="bar-label">8h &times; 64d</span>
-        <div class="bar-track"><div class="bar-fill" style="width:100%;background:linear-gradient(90deg,rgba(239,68,68,0.4),rgba(239,68,68,0.1));">21 GB</div></div>
-        <span class="bar-value">BPB: 1.094</span>
-    </div>
-    <div class="bar-row">
-        <span class="bar-label">4h &times; 128d</span>
-        <div class="bar-track"><div class="bar-fill" style="width:56%;background:linear-gradient(90deg,rgba(34,197,94,0.4),rgba(34,197,94,0.1));">11.8 GB (44% less)</div></div>
-        <span class="bar-value">BPB: 1.105</span>
-    </div>
+<div class="exp">
+<div class="tags"><span class="tag t-red">Failed</span><span class="tag t-gray">Architecture</span></div>
+<h3>2. head_dim=128 (4 Heads Instead of 8)</h3>
+<p><strong>Hypothesis:</strong> 2&times; state capacity at same param count. Larger keys = cleaner retrieval.</p>
+<p><strong>Result:</strong> 44% less GPU memory (11.8 vs 21 GB) but 0.011 worse BPB. Fewer heads = slower steps = less training in 10 minutes.</p>
+<div class="callout-red callout"><p>State capacity is NOT the bottleneck. Training compute (steps per wallclock) is.</p></div>
 </div>
 
-<p>44% less memory but 0.011 worse BPB. Fewer heads = slower steps = less training.</p>
-<div class="lesson"><p>State capacity is NOT the bottleneck. Training compute (steps per wallclock) is.</p></div>
-</div>
-
-<div class="experiment">
+<div class="exp">
+<div class="tags"><span class="tag t-purple">Discovery</span><span class="tag t-gray">Evaluation</span></div>
 <h3>3. The Byte-Counting Bug</h3>
-<div class="experiment-meta">
-<span class="tag tag-purple">Discovery</span>
-<span class="tag">Evaluation</span>
-</div>
-<p><strong>Discovery:</strong> GDN-Hybrid's eval double-counts leading space bytes for ~65% of tokens.</p>
-
+<p><strong>Found:</strong> GDN-Hybrid's eval double-counts leading space bytes for ~65% of tokens. Impact: ~14% BPB inflation.</p>
 <pre><code>// BUGGY: +1 baked in, then eval adds +1 again
 base_bytes[i] = len(piece[1:].encode("utf-8")) + 1
 
 // CORRECT: no +1, eval adds it once
 base_bytes[i] = len(piece[1:].encode("utf-8"))</code></pre>
-
-<!-- Impact visualization -->
-<div class="bar-chart">
-    <div class="bar-row">
-        <span class="bar-label">Reported</span>
-        <div class="bar-track"><div class="bar-fill" style="width:67%;background:linear-gradient(90deg,rgba(34,197,94,0.4),rgba(34,197,94,0.1));">1.024 BPB</div></div>
-        <span class="bar-value" style="color:var(--green);">1.024</span>
-    </div>
-    <div class="bar-row">
-        <span class="bar-label">Actual</span>
-        <div class="bar-track"><div class="bar-fill" style="width:77%;background:linear-gradient(90deg,rgba(239,68,68,0.4),rgba(239,68,68,0.1));">~1.17 BPB (+14%)</div></div>
-        <span class="bar-value" style="color:var(--red);">~1.17</span>
-    </div>
+<div class="callout-purple callout"><p>When your BPB looks too good, check the denominator.</p></div>
 </div>
 
-<div class="lesson"><p>When your BPB looks too good, check the denominator.</p></div>
-</div>
-
-<div class="experiment">
+<div class="exp">
+<div class="tags"><span class="tag t-red">Failed</span><span class="tag t-gray">Compliance</span></div>
 <h3>4. Score-First Compliant TTT</h3>
-<div class="experiment-meta">
-<span class="tag tag-red">Failed</span>
-<span class="tag">Evaluation</span>
-<span class="tag">Compliance</span>
-</div>
-<p><strong>The problem:</strong> Top entries train 6 epochs on val data, then score it. This violates Condition 3 (score-before-update). PRs #1487 and #1488 were closed for this.</p>
-<p><strong>My fix:</strong> 2-chunk score-first TTT. Score first half. Train on first half. Score second half with adaptation.</p>
-
-<!-- TTT comparison -->
-<div class="bpb-chart">
-    <div class="bpb-row">
-        <span class="bpb-name">No TTT</span>
-        <div class="bpb-bar-track">
-            <div class="bpb-bar-fill" style="width:74%;background:linear-gradient(90deg,rgba(255,255,255,0.15),rgba(255,255,255,0.05));">1.1118</div>
-        </div>
-    </div>
-    <div class="bpb-row">
-        <span class="bpb-name" style="color:var(--red);">Score-first (mine)</span>
-        <div class="bpb-bar-track">
-            <div class="bpb-bar-fill" style="width:76%;background:linear-gradient(90deg,rgba(239,68,68,0.3),rgba(239,68,68,0.1));">1.1152 (worse!)</div>
-        </div>
-    </div>
-    <div class="bpb-row">
-        <span class="bpb-name" style="color:var(--text-dim);">6-epoch (non-compliant)</span>
-        <div class="bpb-bar-track">
-            <div class="bpb-bar-fill" style="width:52%;background:linear-gradient(90deg,rgba(234,179,8,0.3),rgba(234,179,8,0.1));">1.0787</div>
-        </div>
-    </div>
+<p><strong>Problem:</strong> Top entries train 6 epochs on val data then score it &mdash; violating Condition 3. PRs #1487, #1488 were closed for this.</p>
+<p><strong>My fix:</strong> Score first half. Train on first half. Score second half with adaptation.</p>
+<table>
+<tr><th>Method</th><th>BPB</th><th>Compliant?</th></tr>
+<tr><td>No TTT</td><td>1.1118</td><td>Yes</td></tr>
+<tr><td>Score-first (mine)</td><td>1.1152</td><td>Yes</td></tr>
+<tr><td>6-epoch (invalid)</td><td>1.0787</td><td class="failed">No</td></tr>
+</table>
+<p>Score-first is <strong>0.003 worse</strong> than no TTT. Training perturbs EMA weights. Damage compounds during quantization.</p>
+<div class="callout-red callout"><p>The TTT improvement on the leaderboard may be entirely an artifact of non-compliance.</p></div>
 </div>
 
-<p>Score-first TTT is <strong>0.003 worse</strong> than no TTT. Training perturbs the EMA weights. The damage compounds during quantization.</p>
-<div class="lesson"><p>The TTT improvement on the leaderboard may be entirely an artifact of non-compliance.</p></div>
-</div>
-
-<div class="experiment">
-<h3>5. Warmdown Fix</h3>
-<div class="experiment-meta">
-<span class="tag tag-yellow">Marginal</span>
-<span class="tag">Training</span>
-</div>
-<p>Three training systems (warmdown, SWA, Late QAT) silently disabled by a timing mismatch. Fixed with <code>ITERATIONS=2200, WARMDOWN_ITERS=400</code>. All three activated. Improvement: -0.003 BPB.</p>
-</div>
-
-<div class="experiment">
-<h3>6-13. Other Experiments</h3>
-<div class="experiment-meta"><span class="tag tag-red">All Failed</span></div>
-
+<div class="exp">
+<div class="tags"><span class="tag t-red">All Failed</span></div>
+<h3>5-13. Other Experiments</h3>
 <table>
 <tr><th>Experiment</th><th>Expected</th><th>Actual</th></tr>
-<tr><td>Extra GDN layer (13 blocks)</td><td>-0.005 BPB</td><td class="failed">~0 (not enough training time)</td></tr>
-<tr><td>ANS on GDN weights</td><td>Smaller artifact</td><td class="failed">Bigger (19.6 vs 14.6 MB)</td></tr>
-<tr><td>Per-matrix quant (Q,K at int4)</td><td>Less quant error</td><td class="failed">MSE +51-271%</td></tr>
-<tr><td>Post-TTT GPTQ recalibration</td><td>-0.005 BPB</td><td class="failed">+0.000</td></tr>
-<tr><td>Progressive depth recurrence</td><td>-0.01 BPB</td><td class="failed">~0 (steps/depth cancels)</td></tr>
-<tr><td>Word-start loss weighting</td><td>-0.005 BPB</td><td class="failed">Marginal on GDN</td></tr>
-<tr><td>Casefold tokenization</td><td>-0.01 BPB</td><td class="failed">~0</td></tr>
-<tr><td>Reduced batch size</td><td>More steps</td><td class="failed">Worse (gradient quality)</td></tr>
+<tr><td>Warmdown fix (3 systems)</td><td>-0.01</td><td class="marginal">-0.003</td></tr>
+<tr><td>Extra GDN layer</td><td>-0.005</td><td class="failed">~0</td></tr>
+<tr><td>ANS on GDN weights</td><td>Smaller</td><td class="failed">Bigger</td></tr>
+<tr><td>Per-matrix quant</td><td>Less error</td><td class="failed">+51% MSE</td></tr>
+<tr><td>Post-TTT GPTQ</td><td>-0.005</td><td class="failed">+0.000</td></tr>
+<tr><td>Depth recurrence</td><td>-0.01</td><td class="failed">~0</td></tr>
+<tr><td>Word-start weighting</td><td>-0.005</td><td class="failed">Marginal</td></tr>
+<tr><td>Casefold tokenizer</td><td>-0.01</td><td class="failed">~0</td></tr>
+<tr><td>Reduced batch</td><td>More steps</td><td class="failed">Worse</td></tr>
 </table>
 </div>
 
 <hr>
 
 <h2>The Pattern</h2>
-
-<p><strong>The model works.</strong> Dozens of researchers spent weeks optimizing it. There's no easy -0.03 BPB hiding in an architecture change.</p>
-<p><strong>The pipeline has bugs.</strong> Byte-counting inflated BPB by 14%. TTT compliance affected top entries. Warmdown disabled three systems. The findings were in infrastructure, not the model.</p>
+<p><strong>The model works.</strong> Dozens of researchers spent weeks optimizing. No easy -0.03 hiding in architecture changes.</p>
+<p><strong>The pipeline has bugs.</strong> Byte-counting inflated BPB 14%. TTT compliance affected top entries. Warmdown disabled three systems.</p>
 <p><strong>Negative results have value.</strong> Each failure narrows the search space for everyone.</p>
 
 <hr>
 
 <h2>What I'd Tell My Past Self</h2>
 
-<p><strong>1. Check the eval code before optimizing.</strong> I spent days improving BPB that was measured wrong.</p>
-<p><strong>2. Run the baseline first.</strong> Half my experiments used broken software stacks.</p>
-<p><strong>3. Compliance beats cleverness.</strong> A compliant 1.11 is worth more than a non-compliant 1.08.</p>
-<p><strong>4. $4 experiments are cheap. $150 of undirected experiments is expensive.</strong></p>
-<p><strong>5. The boring parts have the most opportunity.</strong> Compression, schedules, eval code. Nobody looks. That's why they're wrong.</p>
+<div class="lessons">
+    <div class="lesson-card"><div class="lesson-n">1</div><div class="lesson-t"><strong>Check the eval code before optimizing.</strong> I spent days improving BPB that was measured wrong.</div></div>
+    <div class="lesson-card"><div class="lesson-n">2</div><div class="lesson-t"><strong>Run the baseline first.</strong> Half my experiments used broken software stacks.</div></div>
+    <div class="lesson-card"><div class="lesson-n">3</div><div class="lesson-t"><strong>Compliance beats cleverness.</strong> A compliant 1.11 is worth more than a non-compliant 1.08.</div></div>
+    <div class="lesson-card"><div class="lesson-n">4</div><div class="lesson-t"><strong>$4 experiments are cheap.</strong> $150 of undirected experiments is expensive.</div></div>
+    <div class="lesson-card"><div class="lesson-n">5</div><div class="lesson-t"><strong>The boring parts have the most opportunity.</strong> Compression, schedules, eval code. Nobody looks.</div></div>
+</div>
 
 <hr>
 
 <h2>Summary</h2>
-
 <table>
 <tr><th>Experiment</th><th>Expected</th><th>Actual</th><th>Status</th></tr>
 <tr><td>ANS compression</td><td>-17% size</td><td>-17% size</td><td class="worked">Worked</td></tr>
 <tr><td>Byte-counting bug</td><td>N/A</td><td>14% inflation</td><td class="discovery">Discovery</td></tr>
-<tr><td>SP8192 on GDN</td><td>-0.03 BPB</td><td>Over 16 MB</td><td class="failed">Failed</td></tr>
+<tr><td>SP8192 on GDN</td><td>-0.03</td><td>Over 16 MB</td><td class="failed">Failed</td></tr>
 <tr><td>head_dim=128</td><td>-0.005</td><td>+0.011</td><td class="failed">Failed</td></tr>
 <tr><td>Score-first TTT</td><td>-0.008</td><td>+0.003</td><td class="failed">Failed</td></tr>
 <tr><td>Warmdown fix</td><td>-0.01</td><td>-0.003</td><td class="marginal">Marginal</td></tr>
-<tr><td>Extra layer</td><td>-0.005</td><td>~0</td><td class="failed">Failed</td></tr>
-<tr><td>ANS on GDN</td><td>Smaller</td><td>Bigger</td><td class="failed">Failed</td></tr>
-<tr><td>Per-matrix quant</td><td>Less error</td><td>+51% MSE</td><td class="failed">Failed</td></tr>
-<tr><td>Post-TTT GPTQ</td><td>-0.005</td><td>+0.000</td><td class="failed">Failed</td></tr>
-<tr><td>Depth recurrence</td><td>-0.01</td><td>~0</td><td class="failed">Failed</td></tr>
-<tr><td>Word-start weight</td><td>-0.005</td><td>Marginal</td><td class="failed">Failed</td></tr>
-<tr><td>Casefold tokenizer</td><td>-0.01</td><td>~0</td><td class="failed">Failed</td></tr>
-<tr><td>Reduced batch</td><td>More steps</td><td>Worse</td><td class="failed">Failed</td></tr>
+<tr><td>7 others</td><td>Various</td><td>All failed</td><td class="failed">Failed</td></tr>
 </table>
 
-<hr>
-
-<div class="author">
-<p><strong>Aung Maw</strong>, 22, from Myanmar. CS student at Skyline College, San Francisco.</p>
-<p>Builder: <a href="https://github.com/OE-GOD/world-zk-compute">MOOUSER</a> (verifiable AI with ZK proofs, 3,335 tests) &middot; <a href="https://github.com/openai/parameter-golf/pull/1510">PR #1510</a> (ANS compression)</p>
-<p>Open to research engineering roles and teams where rigorous thinking matters more than leaderboard positions.</p>
-<p><a href="https://github.com/OE-GOD">GitHub</a> &middot; <a href="https://linkedin.com/in/aung-maw-b79669309">LinkedIn</a> &middot; <a href="mailto:irving46764@gmail.com">Email</a></p>
 </div>
 
+<!-- AUTHOR -->
+<div class="author-section">
+    <div class="author-card">
+        <div class="author-avatar">AM</div>
+        <div class="author-info">
+            <h4>Aung Maw</h4>
+            <p>22, from Myanmar. CS student at Skyline College, San Francisco. Builder of MOOUSER (verifiable AI with ZK proofs, 3,335 tests) and PR #1510 (ANS compression). Open to research engineering roles.</p>
+            <div class="author-links">
+                <a href="https://github.com/OE-GOD">GitHub</a>
+                <a href="https://github.com/openai/parameter-golf/pull/1510">PR #1510</a>
+                <a href="https://github.com/OE-GOD/world-zk-compute">MOOUSER</a>
+                <a href="https://linkedin.com/in/aung-maw-b79669309">LinkedIn</a>
+                <a href="mailto:irving46764@gmail.com">Email</a>
+            </div>
+        </div>
+    </div>
 </div>
-
-<!-- Animated counters -->
-<script>
-document.addEventListener('DOMContentLoaded', () => {
-    const counters = document.querySelectorAll('.counter');
-    const observer = new IntersectionObserver(entries => {
-        entries.forEach(entry => {
-            if (entry.isIntersecting) {
-                const el = entry.target;
-                const target = parseInt(el.dataset.target);
-                let current = 0;
-                const step = Math.max(1, Math.floor(target / 20));
-                const timer = setInterval(() => {
-                    current += step;
-                    if (current >= target) { current = target; clearInterval(timer); }
-                    el.textContent = current;
-                }, 50);
-                observer.unobserve(el);
-            }
-        });
-    });
-    counters.forEach(c => observer.observe(c));
-});
-</script>
 
 </body>
 </html>
