@@ -1,5 +1,5 @@
 # Keep in sync with RUST_VERSION in .github/workflows/rust-ci.yml
-FROM rust:1.92-slim AS builder
+FROM rust:1.95-slim AS builder
 WORKDIR /app
 COPY enclave/ .
 RUN cargo build --release
