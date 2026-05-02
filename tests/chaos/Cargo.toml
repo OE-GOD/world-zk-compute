@@ -28,7 +28,7 @@ axum = "0.7"
 reqwest = { version = "0.12", features = ["json"] }
 
 # Alloy primitives for B256/Address types (used by DeadlineMonitor)
-alloy = { version = "1.0", features = ["full", "provider-anvil-node"] }
+alloy = { version = "1.8", features = ["full", "provider-anvil-node"] }
 
 # Hex encoding
 hex = "0.4"
