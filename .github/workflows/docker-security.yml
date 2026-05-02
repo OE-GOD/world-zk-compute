@@ -36,14 +36,14 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Compute artifact name
         id: name
         run: echo "slug=$(echo '${{ matrix.dockerfile }}' | tr '/' '-' | sed 's/\./-/g')" >> "$GITHUB_OUTPUT"
 
       - name: Run Trivy misconfiguration scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: 'fs'
           scan-ref: ${{ matrix.dockerfile }}
@@ -54,7 +54,7 @@ jobs:
           output: 'trivy-${{ steps.name.outputs.slug }}.sarif'
 
       - name: Upload Trivy SARIF to GitHub Security
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         if: always()
         continue-on-error: true
         with:
@@ -62,7 +62,7 @@ jobs:
           category: 'docker-${{ steps.name.outputs.slug }}'
 
       - name: Upload SARIF as artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: trivy-sarif-${{ steps.name.outputs.slug }}
@@ -76,7 +76,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Find all Dockerfiles and compare to matrix
         run: |
