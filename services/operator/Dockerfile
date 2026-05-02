@@ -10,7 +10,7 @@
 
 # ===== Stage 1: Build precompute_proof =====
 # Keep in sync with RUST_VERSION in .github/workflows/rust-ci.yml
-FROM rust:1.92-slim AS prover-builder
+FROM rust:1.95-slim AS prover-builder
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends pkg-config libssl-dev git && \
@@ -22,7 +22,7 @@ RUN cargo build --release --bin precompute_proof \
     --manifest-path examples/xgboost-remainder/Cargo.toml
 
 # ===== Stage 2: Build operator =====
-FROM rust:1.92-slim AS operator-builder
+FROM rust:1.95-slim AS operator-builder
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends pkg-config libssl-dev git && \
