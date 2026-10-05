@@ -97,11 +97,6 @@ contracts/stylus/gkr-verifier/calldata.hex
 # Claude Code
 .claude/
 
-# Multi-agent locks and per-agent build dirs
-.claude/locks/
-.claude/agent-state/locks/
-target/agent-*/
-
 # Secrets and credentials
 *.key
 *.pem
