@@ -1,5 +1,7 @@
 # World ZK Compute
 
+> **Status, October 2026: don't rely on the security claims in this README.** A review of the code found that the model's parameters are public inputs in every proof, so model weights are not kept private. The Solidity, Stylus and Rust verifiers skip the check that ties each GKR layer's sumcheck to the claim from the previous layer, so their soundness isn't established. The TEE dispute flow accepts proofs unrelated to the disputed result and pays the challenger when verification fails. The random-forest and neural-network converters can produce verified proofs of the wrong class, and logistic regression crashes before proving. The contracts were only deployed on testnets. The rest of this README describes the intended design. Details: [the retraction note on my April 2026 post](https://oe-god.github.io/2026/04/18/zkml/).
+
 Cryptographic proof that AI models produce correct outputs. Verify ML inference without re-executing the model.
 
 ## What It Does
