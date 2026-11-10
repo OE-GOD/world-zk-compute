@@ -127,6 +127,7 @@ services:
     environment:
       MODEL_PATH: /app/model/model.json
       PORT: "8080"
+      CHAIN_ID: "31337"
       # Anvil account #1 -- enclave signer
       ENCLAVE_PRIVATE_KEY: "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
     healthcheck:

@@ -178,27 +178,16 @@ class AsyncTEEVerifier:
         )
         return self._tx_hash_hex(receipt)
 
-    async def owner(self) -> str:
-        """Get the contract owner address."""
-        return await self._contract.functions.owner().call()
+    async def admin(self) -> str:
+        """Get the contract admin address."""
+        return await self._contract.functions.admin().call()
 
-    async def pending_owner(self) -> str:
-        """Get the pending owner address (for 2-step transfer)."""
-        return await self._contract.functions.pendingOwner().call()
-
-    async def transfer_ownership(self, new_owner: str) -> str:
-        """Initiate ownership transfer (2-step). Returns tx hash."""
+    async def change_admin(self, new_admin: str) -> str:
+        """Transfer admin role to a new address. Returns tx hash."""
         receipt = await self._send_tx(
-            self._contract.functions.transferOwnership(
-                AsyncWeb3.to_checksum_address(new_owner),
+            self._contract.functions.changeAdmin(
+                AsyncWeb3.to_checksum_address(new_admin),
             )
-        )
-        return self._tx_hash_hex(receipt)
-
-    async def accept_ownership(self) -> str:
-        """Accept pending ownership transfer. Returns tx hash."""
-        receipt = await self._send_tx(
-            self._contract.functions.acceptOwnership()
         )
         return self._tx_hash_hex(receipt)
 

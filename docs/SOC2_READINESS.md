@@ -44,7 +44,7 @@ implemented. 3 gaps requiring remediation.
 |---------|---------|----------|--------|
 | Health monitoring | A1.1 | `/health` and `/ready` endpoints on all services; Prometheus scrape at 15s intervals | Implemented |
 | Metrics collection | A1.1 | Prometheus metrics: `operator_active_disputes`, `operator_uptime_seconds`, `operator_last_block_polled`, etc. See `docs/MONITORING.md` | Implemented |
-| Alerting rules | A1.1 | Prometheus alerting rules for operator down, dispute queue growth, block polling stall, error rate spikes. See `deploy/alert-rules.yml` | Implemented |
+| Alerting rules | A1.1 | Prometheus alerting rules for operator down, dispute queue growth, block polling stall, error rate spikes. See `monitoring/alerting-rules.yml` | Implemented |
 | Webhook notifications | A1.1 | Slack-compatible webhooks for dispute events, proof submissions, resolution outcomes | Implemented |
 | Dashboard | A1.1 | Grafana dashboard (`deploy/grafana-dashboard.json`) with 7 panel rows: health, throughput, disputes, errors, gas costs | Implemented |
 | Backup procedures | A1.2 | Operator state backup every 15 min to S3; SQLite online backup daily; proof archive S3 sync. See `docs/DISASTER_RECOVERY.md` | Implemented |

@@ -399,18 +399,18 @@ class TestAsyncResolveDispute:
 
 @pytest.mark.asyncio
 class TestAsyncOwnershipAndAdmin:
-    """Tests for owner, transfer, pause, and view methods."""
+    """Tests for admin, admin transfer, pause, and view methods."""
 
-    async def test_async_owner(self):
+    async def test_async_admin(self):
         verifier = _make_verifier(with_key=False)
         mock_call = AsyncMock(return_value="0x" + "11" * 20)
         mock_fn = MagicMock()
         mock_fn.call = mock_call
         verifier._contract = MagicMock()
-        verifier._contract.functions.owner.return_value = mock_fn
+        verifier._contract.functions.admin.return_value = mock_fn
 
-        owner = await verifier.owner()
-        assert owner == "0x" + "11" * 20
+        admin = await verifier.admin()
+        assert admin == "0x" + "11" * 20
 
     async def test_async_paused(self):
         verifier = _make_verifier(with_key=False)
@@ -475,12 +475,12 @@ class TestAsyncOwnershipAndAdmin:
         tx_hash = await verifier.pause()
         assert tx_hash == "0x" + FAKE_TX_HASH.hex()
 
-    async def test_async_transfer_ownership(self):
+    async def test_async_change_admin(self):
         verifier = _make_verifier()
         _mock_send_tx(verifier)
-        verifier._contract.functions.transferOwnership.return_value = MagicMock()
+        verifier._contract.functions.changeAdmin.return_value = MagicMock()
 
-        tx_hash = await verifier.transfer_ownership("0x" + "55" * 20)
+        tx_hash = await verifier.change_admin("0x" + "55" * 20)
         assert tx_hash == "0x" + FAKE_TX_HASH.hex()
 
 

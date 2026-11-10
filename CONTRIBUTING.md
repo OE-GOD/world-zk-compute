@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- **Rust** 1.82+ (`rustup update stable`)
+- **Rust** 1.92+ (`rustup update stable`)
 - **Foundry** (`curl -L https://foundry.paradigm.xyz | bash && foundryup`)
 - **Docker** (for Groth16 proving and containerized services)
 - **r0vm 3.0.5** (`rzup install r0vm 3.0.5`) — must match risc0-zkvm crate version
@@ -48,7 +48,7 @@ make test-contracts    # Solidity tests (forge test)
 make test-operator     # Operator service tests
 make test-sdk          # Rust SDK tests
 make test-python       # Python SDK tests
-make test-typescript   # TypeScript SDK tests
+make test-ts           # TypeScript SDK tests
 make test-xgboost      # XGBoost remainder tests (~95s)
 make test-stylus       # Stylus GKR verifier tests
 ```

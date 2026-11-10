@@ -16,7 +16,7 @@
         sepolia-e2e check-sepolia-balances test-sepolia-sdk \
         bench clean verify snapshot snapshot-check snapshot-update gas-report help \
         smoke-test audit docs check preflight sepolia-status \
-        test-docker-demo
+        test-docker-demo demo-bank demo-bank-down
 
 # ── Setup ───────────────────────────────────────────────────────────────────
 
@@ -229,11 +229,12 @@ gas-report: ## Print gas report for all tests
 
 # ── Verification ─────────────────────────────────────────────────────────────
 
-verify: ## Run post-deployment health check
-	@echo "Usage: make verify RPC_URL=<url> CONTRACT=<address>"
-	@echo "Example: make verify RPC_URL=http://127.0.0.1:8545 CONTRACT=0x..."
-	@if [ -n "$(RPC_URL)" ] && [ -n "$(CONTRACT)" ]; then \
-		bash scripts/verify-deployment.sh "$(RPC_URL)" "$(CONTRACT)"; \
+verify: ## Run post-deployment health check (RPC_URL=<url> [CONTRACT=<TEEMLVerifier address>])
+	@if [ -z "$(RPC_URL)" ]; then \
+		echo "Usage: make verify RPC_URL=<url> [CONTRACT=<TEEMLVerifier address>]"; \
+		echo "Example: make verify RPC_URL=http://127.0.0.1:8545 CONTRACT=0x..."; \
+	else \
+		TEE_VERIFIER_ADDR="$(CONTRACT)" bash scripts/verify-deployment.sh --rpc-url "$(RPC_URL)"; \
 	fi
 
 # ── Smoke Test ──────────────────────────────────────────────────────────────

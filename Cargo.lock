@@ -6044,7 +6044,6 @@ dependencies = [
  "axum",
  "base64",
  "hex",
- "rand 0.8.5",
  "secrecy",
  "serde",
  "serde_cbor",
@@ -6054,7 +6053,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "tower",
- "tower-http",
  "tracing",
  "tracing-subscriber",
 ]
@@ -6064,7 +6062,6 @@ name = "tee-events"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
- "alloy-sol-types",
  "hex",
  "serde",
  "serde_json",
@@ -7462,7 +7459,6 @@ dependencies = [
  "clap",
  "colored",
  "reqwest",
- "serde",
  "serde_json",
  "tokio",
 ]

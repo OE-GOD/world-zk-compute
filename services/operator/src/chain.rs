@@ -151,14 +151,6 @@ impl ChainClient {
         self.tee_verifier.finalize(result_id).await
     }
 
-    /// Check if a result is valid.
-    ///
-    /// This is a read-only call and is always executed regardless of dry-run mode.
-    #[cfg(test)]
-    pub async fn is_result_valid(&self, result_id: B256) -> anyhow::Result<bool> {
-        self.tee_verifier.is_result_valid(result_id).await
-    }
-
     /// Register an enclave key.
     ///
     /// In dry-run mode, logs the call parameters and returns `B256::ZERO`.

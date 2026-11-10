@@ -129,7 +129,7 @@ DEPLOYER_PRIVATE_KEY=0x... DRY_RUN=true bash contracts/stylus/gkr-verifier/deplo
   TEEMLVerifier, plus XGBoost DAG circuit registration.
 - Deployer is also the admin (unlike mainnet which requires a separate multisig).
 - After first deployment, update addresses above and in
-  `deployments/arbitrum-sepolia-testnet.json`.
+  `deployments/arbitrum-sepolia.json`.
 
 **Block explorer:** <https://sepolia.arbiscan.io>
 

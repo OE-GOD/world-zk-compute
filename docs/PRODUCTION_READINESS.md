@@ -135,14 +135,14 @@ DRY_RUN=true \
 OPERATOR_PRIVATE_KEY=0x... \
 TEE_VERIFIER_ADDRESS=0x... \
 OPERATOR_RPC_URL=https://... \
-cargo run --release -p operator -- watch --metrics-port 9090
+cargo run --release -p tee-operator -- watch --metrics-port 9090
 ```
 
 ### Production Startup
 
 ```bash
 # With TOML config file
-cargo run --release -p operator -- --config operator.toml watch --metrics-port 9090
+cargo run --release -p tee-operator -- --config operator.toml watch --metrics-port 9090
 
 # With env vars only
 OPERATOR_PRIVATE_KEY=0x... \
@@ -153,7 +153,7 @@ WEBHOOK_URL=https://hooks.slack.com/... \
 NITRO_VERIFICATION=true \
 EXPECTED_PCR0=abcdef... \
 RUST_LOG=info \
-cargo run --release -p operator -- watch --metrics-port 9090
+cargo run --release -p tee-operator -- watch --metrics-port 9090
 ```
 
 ---
@@ -269,7 +269,7 @@ ERROR deadline_monitor: DISPUTE DEADLINE EXPIRED -- challenger wins by timeout
 
 ```bash
 # Structured JSON logs (recommended for production)
-RUST_LOG=info RUST_LOG_FORMAT=json cargo run --release -p operator -- watch
+RUST_LOG=info RUST_LOG_FORMAT=json cargo run --release -p tee-operator -- watch
 ```
 
 Pipe to your log aggregator (Datadog, Grafana Loki, CloudWatch, etc.).

@@ -163,7 +163,6 @@ jobs:
     needs: build-and-test
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    if: ${{ secrets.NPM_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -202,7 +201,6 @@ jobs:
     needs: build-and-test
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    if: ${{ secrets.PYPI_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
 

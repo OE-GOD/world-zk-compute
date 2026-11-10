@@ -224,7 +224,7 @@ services:
       CONTRACT_ADDRESS: "${TEE_VERIFIER_ADDRESS:?Set TEE_VERIFIER_ADDRESS in .env.production}"
       PORT: "8081"
       DB_PATH: /data/indexer.db
-      POLL_INTERVAL: "${INDEXER_POLL_INTERVAL:-12}"
+      POLL_INTERVAL_SECS: "${INDEXER_POLL_INTERVAL:-12}"
       RATE_LIMIT_PER_IP: "${INDEXER_RATE_LIMIT:-100}"
       RUST_LOG: "${RUST_LOG:-info}"
     healthcheck:

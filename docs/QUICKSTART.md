@@ -418,7 +418,5 @@ Common causes:
 ## Next Steps
 
 - [API Reference](API_REFERENCE.md) -- Full contract and service API documentation
-- [Proof Format](PROOF_FORMAT.md) -- Wire format for all proof types
-- [Integration Guide](INTEGRATION_GUIDE.md) -- End-to-end integration patterns
 - [Publishing Guide](PUBLISHING.md) -- How to build and publish packages
 - [Security Model](SECURITY_MODEL.md) -- Trust assumptions and threat model

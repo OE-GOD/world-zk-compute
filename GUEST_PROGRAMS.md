@@ -13,11 +13,10 @@ Pre-compiled guest program binaries live in `programs/`, named by their **image 
 | File | Program | risc0 Version |
 |------|---------|---------------|
 | `f85c194e...b56e33.elf` | Rule Engine | v3.0 |
-| `24c3af82...82bc95.elf` | Anomaly Detector | v1.2 |
-| `28d93899...3ddd34.elf` | Sybil Detector | v1.2 |
-| `bed77c59...22f73.elf` | Signature-Verified | v1.2 |
-| `d6b60ae7...8aefe4.elf` | XGBoost Inference | v1.2 |
-| `ee666bd1...46e4.elf` | (Legacy) | v1.2 |
+| `d6b60ae7...8aefe4.elf` | XGBoost Inference | v3.0 |
+| `24c3af82...82bc95.elf` | Anomaly Detector | v1.2 (stale: source is now on v3.0, binary not rebuilt) |
+| `ee666bd1...46e4.elf` | Sybil Detector | v1.2 (stale: source is now on v3.0, binary not rebuilt) |
+| `28d93899...3ddd34.elf` | Signature-Verified | v1.2 |
 | `recursive-wrapper.elf` | Recursive Wrapper | v3.0 |
 
 > **Note:** Despite the `.elf` extension, risc0 v3.0 programs are in `.bin` format. The extension is kept for historical compatibility.
@@ -116,8 +115,9 @@ When you modify guest code:
 
 ### Current State
 
-- **risc0 v3.0**: Only the rule-engine guest has been upgraded
-- **risc0 v1.2**: The other 4 guests (anomaly-detector, sybil-detector, signature-verified, xgboost-inference) still use v1.2
+- **risc0 v3.0 (source and binary)**: rule-engine, xgboost-inference
+- **risc0 v3.0 source, v1.2 binary**: anomaly-detector, sybil-detector. The committed binaries predate the source migration, so their image IDs don't match the current source.
+- **risc0 v1.2**: signature-verified (pinned to `=1.2.6`). The v1.2 selector is tombstoned on the Sepolia router, so these v1.2 binaries can't be verified there.
 
 ### Important Rules
 

@@ -70,7 +70,7 @@ RUN chmod +x /app/entrypoint.sh && \
 USER appuser
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:9090/health || exit 1
+  CMD curl -fsS http://localhost:9090/health || exit 1
 
 ENTRYPOINT ["/app/entrypoint.sh"]
-CMD ["run"]
+CMD ["watch"]
