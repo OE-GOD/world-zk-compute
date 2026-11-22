@@ -1,5 +1,7 @@
 """Tests for the batch verifier module (no Anvil required)."""
 
+from unittest.mock import MagicMock, patch
+
 import pytest
 
 from worldzk.verifier import (
@@ -215,3 +217,67 @@ class TestStepResult:
         assert step.tx_hash == "0x" + "ff" * 32
         assert step.gas_used == 1_500_000
         assert step.block_number == 42
+
+
+def _make_verifier(**kwargs):
+    """Create a BatchVerifier with mocked web3 internals."""
+    with patch("worldzk.verifier.Web3") as mock_web3_cls:
+        mock_web3_cls.return_value = MagicMock()
+        mock_web3_cls.to_checksum_address.side_effect = lambda addr: addr
+
+        with patch("worldzk.verifier.Account") as mock_account_cls:
+            mock_account = MagicMock()
+            mock_account.address = "0xSIGNER"
+            mock_account_cls.from_key.return_value = mock_account
+
+            return BatchVerifier(
+                rpc_url="http://localhost:8545",
+                private_key="0x" + "cc" * 32,
+                contract_address="0x" + "ab" * 20,
+                **kwargs,
+            )
+
+
+class TestSendTransaction:
+    """Tests for gas estimation and revert handling in _send_transaction."""
+
+    @staticmethod
+    def _prepare(verifier, status=1):
+        verifier._w3.eth.wait_for_transaction_receipt.return_value = {
+            "status": status,
+            "transactionHash": bytes.fromhex("ab" * 32),
+            "gasUsed": 1,
+            "blockNumber": 1,
+        }
+        return MagicMock()
+
+    def test_estimate_is_not_capped_by_gas_limit(self):
+        """A step needing more than the configured limit still gets its estimate."""
+        verifier = _make_verifier(gas_limit=30_000_000)
+        fn = self._prepare(verifier)
+        fn.estimate_gas.return_value = 32_000_000
+
+        verifier._send_transaction(fn)
+
+        # The estimate call carries no "gas" field, so the node does not cap it.
+        fn.estimate_gas.assert_called_once_with({"from": "0xSIGNER"})
+        assert fn.build_transaction.call_args[0][0]["gas"] == int(32_000_000 * 1.1)
+
+    def test_falls_back_to_gas_limit_when_estimation_fails(self):
+        """The configured limit is used only when estimation fails."""
+        verifier = _make_verifier(gas_limit=30_000_000)
+        fn = self._prepare(verifier)
+        fn.estimate_gas.side_effect = ValueError("execution reverted")
+
+        verifier._send_transaction(fn)
+
+        assert fn.build_transaction.call_args[0][0]["gas"] == 30_000_000
+
+    def test_reverted_receipt_raises(self):
+        """A mined-but-reverted transaction is an error, not a completed step."""
+        verifier = _make_verifier()
+        fn = self._prepare(verifier, status=0)
+        fn.estimate_gas.return_value = 100_000
+
+        with pytest.raises(RuntimeError, match="Transaction reverted: 0x" + "ab" * 32):
+            verifier._send_transaction(fn)

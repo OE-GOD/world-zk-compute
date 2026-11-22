@@ -2,7 +2,6 @@
 
 import csv
 import hashlib
-import math
 import os
 import struct
 import sys
@@ -25,10 +24,8 @@ from worldzk.xgboost import (
     _write_byte_array_32,
     _write_f64,
     _write_u32,
-    _write_u8,
     _write_vec_f64,
 )
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Fixtures — reference model from generate-test-input.py

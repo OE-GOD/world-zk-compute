@@ -76,9 +76,10 @@ DAG_BATCH_VERIFIER_ABI = [
         "name": "DAGBatchSessionStarted",
         "inputs": [
             {"name": "sessionId", "type": "bytes32", "indexed": True},
-            {"name": "sender", "type": "address", "indexed": True},
-            {"name": "circuitHash", "type": "bytes32", "indexed": False},
+            {"name": "circuitHash", "type": "bytes32", "indexed": True},
+            {"name": "totalBatches", "type": "uint256", "indexed": False},
         ],
+        "anonymous": False,
     },
     {
         "type": "event",
@@ -87,12 +88,15 @@ DAG_BATCH_VERIFIER_ABI = [
             {"name": "sessionId", "type": "bytes32", "indexed": True},
             {"name": "batchIdx", "type": "uint256", "indexed": False},
         ],
+        "anonymous": False,
     },
     {
         "type": "event",
         "name": "DAGBatchFinalized",
         "inputs": [
             {"name": "sessionId", "type": "bytes32", "indexed": True},
+            {"name": "circuitHash", "type": "bytes32", "indexed": True},
         ],
+        "anonymous": False,
     },
 ]

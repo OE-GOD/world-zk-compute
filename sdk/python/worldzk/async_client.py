@@ -29,18 +29,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
-from typing import Any, Callable, List, Optional, Sequence, Union
-
-logger = logging.getLogger(__name__)
+from collections.abc import Sequence
+from typing import Any, Callable
 
 from eth_account import Account
 from eth_account.signers.local import LocalAccount
 from web3 import AsyncWeb3
 from web3.providers import AsyncHTTPProvider
 
+from .event_watcher import _EVENT_SIGNATURES, TEEEvent, parse_log, topic_hash
 from .tee_verifier import TEE_ML_VERIFIER_ABI, MLResult, _to_bytes, _to_bytes32
-from .event_watcher import TEEEvent, parse_log, _EVENT_SIGNATURES, topic_hash
+
+logger = logging.getLogger(__name__)
 
 
 class AsyncTEEVerifier:
@@ -353,8 +353,8 @@ class AsyncEventWatcher:
     async def poll_events(
         self,
         from_block: int,
-        to_block: Union[int, str] = "latest",
-        event_types: Optional[Sequence[str]] = None,
+        to_block: int | str = "latest",
+        event_types: Sequence[str] | None = None,
     ) -> tuple:
         """Poll for events in a block range.
 
@@ -384,7 +384,7 @@ class AsyncEventWatcher:
 
         logs = await self._w3.eth.get_logs(filter_params)
 
-        events: List[TEEEvent] = []
+        events: list[TEEEvent] = []
         for log_entry in logs:
             parsed = parse_log(log_entry)
             if parsed is not None:
@@ -399,8 +399,8 @@ class AsyncEventWatcher:
         self,
         callback: Callable[[TEEEvent], Any],
         poll_interval: float = 2.0,
-        from_block: Union[int, str] = "latest",
-        event_types: Optional[Sequence[str]] = None,
+        from_block: int | str = "latest",
+        event_types: Sequence[str] | None = None,
     ) -> None:
         """Start an async background task that polls for events.
 
@@ -468,8 +468,8 @@ class AsyncEventWatcher:
 
     @staticmethod
     def _build_topic0_filter(
-        event_types: Optional[Sequence[str]],
-    ) -> Optional[Any]:
+        event_types: Sequence[str] | None,
+    ) -> Any | None:
         """Build a topic0 filter value for ``eth_getLogs``."""
         if not event_types:
             return None

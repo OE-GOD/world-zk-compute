@@ -3,22 +3,16 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from worldzk.async_client import AsyncTEEVerifier, AsyncEventWatcher
-from worldzk.tee_verifier import MLResult, TEE_ML_VERIFIER_ABI
+from worldzk.async_client import AsyncEventWatcher, AsyncTEEVerifier
 from worldzk.event_watcher import (
-    ResultSubmitted,
-    ResultFinalized,
-    ResultChallenged,
     DisputeResolved,
-    EnclaveRegistered,
-    parse_log,
-    topic_hash,
-    _EVENT_SIGNATURES,
+    ResultFinalized,
 )
+from worldzk.tee_verifier import MLResult
 
 # Re-use the known topic hashes from the sync test.
 KNOWN_TOPIC_HASHES = {

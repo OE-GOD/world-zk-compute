@@ -10,7 +10,6 @@ from worldzk.prover_registry import (
     ProverRegistryClient,
 )
 
-
 # ===========================================================================
 # ProverInfo dataclass tests
 # ===========================================================================
@@ -181,13 +180,13 @@ class TestABI:
 
 def _make_mock_client(with_key: bool = True) -> ProverRegistryClient:
     """Create a ProverRegistryClient with mocked web3 internals."""
-    with patch("worldzk.prover_registry.Web3") as MockWeb3, \
-         patch("worldzk.prover_registry.Account") as MockAccount:
+    with patch("worldzk.prover_registry.Web3") as mock_web3_cls, \
+         patch("worldzk.prover_registry.Account") as mock_account_cls:
 
         mock_w3_instance = MagicMock()
-        MockWeb3.return_value = mock_w3_instance
-        MockWeb3.HTTPProvider = MagicMock()
-        MockWeb3.to_checksum_address = lambda addr: addr
+        mock_web3_cls.return_value = mock_w3_instance
+        mock_web3_cls.HTTPProvider = MagicMock()
+        mock_web3_cls.to_checksum_address = lambda addr: addr
 
         mock_contract = MagicMock()
         mock_w3_instance.eth.contract.return_value = mock_contract
@@ -196,7 +195,7 @@ def _make_mock_client(with_key: bool = True) -> ProverRegistryClient:
         if with_key:
             mock_account = MagicMock()
             mock_account.address = "0x" + "bb" * 20
-            MockAccount.from_key.return_value = mock_account
+            mock_account_cls.from_key.return_value = mock_account
             client = ProverRegistryClient(
                 rpc_url="http://localhost:8545",
                 contract_address="0x" + "aa" * 20,

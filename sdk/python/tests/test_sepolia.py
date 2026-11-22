@@ -104,14 +104,14 @@ class TestSepoliaSDKImports:
     """Verify SDK modules can be imported and used."""
 
     def test_import_verifier(self) -> None:
-        from worldzk.verifier import TEEVerifier
+        from worldzk.verifier import BatchVerifier
 
-        assert TEEVerifier is not None
+        assert BatchVerifier is not None
 
     def test_import_tee_verifier(self) -> None:
-        from worldzk.tee_verifier import TEEVerifierClient
+        from worldzk.tee_verifier import TEEVerifier
 
-        assert TEEVerifierClient is not None
+        assert TEEVerifier is not None
 
     def test_import_xgboost_converter(self) -> None:
         from worldzk.xgboost import XGBoostConverter

@@ -5,7 +5,6 @@ import pytest
 from worldzk.tee_verifier import (
     TEE_ML_VERIFIER_ABI,
     MLResult,
-    TEEVerifier,
     _to_bytes,
     _to_bytes32,
 )

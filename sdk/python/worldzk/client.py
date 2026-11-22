@@ -20,12 +20,11 @@ Usage (direct-service client, legacy)::
 """
 
 import json
-from typing import Any, Dict, List, Optional
-from urllib.request import Request, urlopen
+from typing import Any, Optional
 from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from .models import GatewayHealth, ProofResult, Receipt, VerificationResult
-
 
 # ---------------------------------------------------------------------------
 # WorldZK — gateway-facing client
@@ -74,7 +73,7 @@ class WorldZK:
         path: str,
         name: Optional[str] = None,
         format: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Upload an ML model file for proof generation.
 
         Parameters
@@ -93,18 +92,18 @@ class WorldZK:
         """
         with open(path) as f:
             model_json = f.read()
-        payload: Dict[str, Any] = {"model_json": model_json}
+        payload: dict[str, Any] = {"model_json": model_json}
         if name:
             payload["name"] = name
         if format:
             payload["format"] = format
         return self._post("/models", payload)
 
-    def list_models(self) -> List[Dict[str, Any]]:
+    def list_models(self) -> list[dict[str, Any]]:
         """List all uploaded models."""
         return self._get("/models")
 
-    def get_model(self, model_id: str) -> Dict[str, Any]:
+    def get_model(self, model_id: str) -> dict[str, Any]:
         """Retrieve a model by its ID."""
         return self._get(f"/models/{model_id}")
 
@@ -113,7 +112,7 @@ class WorldZK:
     def prove(
         self,
         model_id: str,
-        features: List[float],
+        features: list[float],
     ) -> ProofResult:
         """Generate a proof for model inference.
 
@@ -191,7 +190,7 @@ class WorldZK:
         self,
         model: Optional[str] = None,
         limit: int = 50,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """List proofs, optionally filtered by model.
 
         Parameters
@@ -209,7 +208,7 @@ class WorldZK:
 
     # -- Transparency ---------------------------------------------------
 
-    def transparency_root(self) -> Dict[str, Any]:
+    def transparency_root(self) -> dict[str, Any]:
         """Get the current transparency log Merkle root.
 
         Returns
@@ -221,13 +220,13 @@ class WorldZK:
 
     # -- Stats ----------------------------------------------------------
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         """Get proof registry statistics."""
         return self._get("/stats")
 
     # -- Circuits -------------------------------------------------------
 
-    def list_circuits(self) -> List[Dict[str, Any]]:
+    def list_circuits(self) -> list[dict[str, Any]]:
         """List registered verification circuits."""
         return self._get("/circuits")
 
@@ -249,7 +248,7 @@ class WorldZK:
             total_count=resp.get("total_count", 0),
         )
 
-    def health_service(self, service: str) -> Dict[str, Any]:
+    def health_service(self, service: str) -> dict[str, Any]:
         """Check health of a specific backend service.
 
         Parameters
@@ -261,7 +260,7 @@ class WorldZK:
 
     # -- HTTP helpers ---------------------------------------------------
 
-    def _headers(self) -> Dict[str, str]:
+    def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -313,23 +312,23 @@ class Client:
         self.generator_url = generator_url.rstrip("/")
         self.timeout = timeout
 
-    def verify(self, bundle: Dict[str, Any]) -> Dict[str, Any]:
+    def verify(self, bundle: dict[str, Any]) -> dict[str, Any]:
         """Verify a proof bundle via the verifier API."""
         return self._post(f"{self.verifier_url}/verify", bundle)
 
-    def verify_hybrid(self, bundle: Dict[str, Any]) -> Dict[str, Any]:
+    def verify_hybrid(self, bundle: dict[str, Any]) -> dict[str, Any]:
         """Hybrid verification (transcript only, no EC checks)."""
         return self._post(f"{self.verifier_url}/verify/hybrid", bundle)
 
-    def verify_batch(self, bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def verify_batch(self, bundles: list[dict[str, Any]]) -> dict[str, Any]:
         """Batch verify multiple proof bundles."""
         return self._post(f"{self.verifier_url}/verify/batch", {"bundles": bundles})
 
-    def submit(self, bundle: Dict[str, Any]) -> Dict[str, Any]:
+    def submit(self, bundle: dict[str, Any]) -> dict[str, Any]:
         """Submit a proof bundle to the registry."""
         return self._post(f"{self.registry_url}/proofs", bundle)
 
-    def get_proof(self, proof_id: str) -> Dict[str, Any]:
+    def get_proof(self, proof_id: str) -> dict[str, Any]:
         """Retrieve a proof from the registry by ID."""
         return self._get(f"{self.registry_url}/proofs/{proof_id}")
 
@@ -338,7 +337,7 @@ class Client:
         circuit_hash: Optional[str] = None,
         model_hash: Optional[str] = None,
         limit: int = 50,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Search proofs in the registry."""
         params = [f"limit={limit}"]
         if circuit_hash:
@@ -348,14 +347,14 @@ class Client:
         query = "&".join(params)
         return self._get(f"{self.registry_url}/proofs?{query}")
 
-    def prove(self, model_id: str, features: List[float]) -> Dict[str, Any]:
+    def prove(self, model_id: str, features: list[float]) -> dict[str, Any]:
         """Generate a proof via the proof generator service."""
         return self._post(
             f"{self.generator_url}/prove",
             {"model_id": model_id, "features": features},
         )
 
-    def health(self) -> Dict[str, Dict[str, Any]]:
+    def health(self) -> dict[str, dict[str, Any]]:
         """Check health of all services."""
         result = {}
         for name, url in [
@@ -370,7 +369,7 @@ class Client:
                 result[name] = {"healthy": False, "error": str(e)}
         return result
 
-    def _post(self, url: str, data: Any) -> Dict[str, Any]:
+    def _post(self, url: str, data: Any) -> dict[str, Any]:
         body = json.dumps(data).encode("utf-8")
         req = Request(url, data=body, headers={"Content-Type": "application/json"})
         try:
@@ -382,7 +381,7 @@ class Client:
         except URLError as e:
             raise ConnectionError(f"Cannot connect to {url}: {e}") from e
 
-    def _get(self, url: str) -> Dict[str, Any]:
+    def _get(self, url: str) -> dict[str, Any]:
         req = Request(url)
         try:
             with urlopen(req, timeout=self.timeout) as resp:

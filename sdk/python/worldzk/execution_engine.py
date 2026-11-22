@@ -37,14 +37,14 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Any, List, Optional
-
-logger = logging.getLogger(__name__)
+from typing import Any
 
 from eth_account import Account
 from eth_account.signers.local import LocalAccount
 from web3 import Web3
 from web3.contract import Contract
+
+logger = logging.getLogger(__name__)
 
 
 class RequestStatus(IntEnum):
@@ -381,7 +381,7 @@ class ExecutionEngineClient:
         self,
         rpc_url: str,
         contract_address: str,
-        private_key: Optional[str] = None,
+        private_key: str | None = None,
         gas_limit: int = 500_000,
     ):
         """Create a new ExecutionEngineClient.
@@ -394,7 +394,7 @@ class ExecutionEngineClient:
             gas_limit: Maximum gas per transaction (default 500000).
         """
         self._w3 = Web3(Web3.HTTPProvider(rpc_url))
-        self._account: Optional[LocalAccount] = None
+        self._account: LocalAccount | None = None
         if private_key is not None:
             self._account = Account.from_key(private_key)
         self._contract: Contract = self._w3.eth.contract(
@@ -409,7 +409,7 @@ class ExecutionEngineClient:
         return self._contract.address
 
     @property
-    def account_address(self) -> Optional[str]:
+    def account_address(self) -> str | None:
         """The signer's address, or None if read-only."""
         if self._account is not None:
             return self._account.address
@@ -578,7 +578,7 @@ class ExecutionEngineClient:
 
     def get_pending_requests(
         self, offset: int = 0, limit: int = 20
-    ) -> List[int]:
+    ) -> list[int]:
         """Get pending request IDs for provers to find work.
 
         Args:

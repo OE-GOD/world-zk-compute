@@ -9,7 +9,7 @@ import io
 import json
 import os
 import tempfile
-from typing import Any, Dict
+from typing import Any
 from unittest import mock
 from urllib.error import HTTPError, URLError
 
@@ -17,7 +17,6 @@ import pytest
 
 from worldzk.client import WorldZK
 from worldzk.models import GatewayHealth, ProofResult, Receipt, VerificationResult
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -35,7 +34,7 @@ def _mock_response(data: Any, status: int = 200) -> mock.MagicMock:
     return resp
 
 
-def _http_error(code: int, body: Dict[str, Any]) -> HTTPError:
+def _http_error(code: int, body: dict[str, Any]) -> HTTPError:
     """Build an HTTPError with a JSON body."""
     data = json.dumps(body).encode("utf-8")
     err = HTTPError(
@@ -678,9 +677,9 @@ class TestWorldZKImports:
     """Verify that WorldZK is importable from the top-level package."""
 
     def test_worldzk_importable(self):
-        from worldzk import WorldZK as WZK
+        from worldzk import WorldZK as PackageWorldZK
 
-        assert WZK is not None
+        assert PackageWorldZK is not None
 
     def test_models_importable(self):
         from worldzk import (

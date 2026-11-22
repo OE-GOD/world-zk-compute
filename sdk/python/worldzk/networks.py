@@ -2,14 +2,13 @@
 Pre-configured network definitions for World ZK Compute.
 
 Example usage:
-    from worldzk.networks import SEPOLIA
+    from worldzk.networks import NETWORKS, SEPOLIA
 
-    verifier = TEEVerifier(
-        rpc_url="https://eth-sepolia.g.alchemy.com/v2/YOUR_KEY",
-        private_key="0x...",
-        contract_address=SEPOLIA.tee_verifier_address,
-        chain_id=SEPOLIA.chain_id,
-    )
+    config = NETWORKS[11155111]  # same object as SEPOLIA
+    print(config.name, config.chain_id, config.verifier_router_address)
+
+An address left at the zero address has no deployment recorded here; pass the
+contract address to the client explicitly in that case.
 """
 
 from dataclasses import dataclass

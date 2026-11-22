@@ -23,9 +23,8 @@ import csv
 import hashlib
 import json
 import math
-from typing import Any, Dict, List, Optional
+from typing import Any
 
-from .errors import WorldZKError
 from .xgboost import (
     InputValidationError,
     ModelParseError,
@@ -40,15 +39,14 @@ from .xgboost import (
     _write_vec_f64,
 )
 
-
 # =============================================================================
 # LightGBM tree parsing (private)
 # =============================================================================
 
 
 def _parse_lightgbm_node(
-    node: Dict[str, Any],
-    nodes: List[TreeNode],
+    node: dict[str, Any],
+    nodes: list[TreeNode],
     num_features: int,
     tree_idx: int,
 ) -> int:
@@ -136,7 +134,7 @@ def _parse_lightgbm_node(
 
 
 def _parse_lightgbm_tree(
-    tree_info: Dict[str, Any],
+    tree_info: dict[str, Any],
     tree_idx: int,
     num_features: int,
 ) -> Tree:
@@ -147,7 +145,7 @@ def _parse_lightgbm_tree(
             f"Tree {tree_idx}: missing 'tree_structure'"
         )
 
-    nodes: List[TreeNode] = []
+    nodes: list[TreeNode] = []
     _parse_lightgbm_node(tree_structure, nodes, num_features, tree_idx)
 
     if not nodes:
@@ -156,7 +154,7 @@ def _parse_lightgbm_tree(
     return Tree(nodes=nodes)
 
 
-def _parse_lightgbm_model(data: Dict[str, Any]) -> XGBoostModel:
+def _parse_lightgbm_model(data: dict[str, Any]) -> XGBoostModel:
     """Parse a LightGBM dump_model() JSON dict into an XGBoostModel.
 
     LightGBM JSON format (top-level keys):
@@ -190,7 +188,6 @@ def _parse_lightgbm_model(data: Dict[str, Any]) -> XGBoostModel:
 
     # Extract num_classes
     lgb_num_class = int(data.get("num_class", 1))
-    objective = data.get("objective", "")
 
     # LightGBM conventions:
     # - Binary classification: num_class=1, objective contains "binary"
@@ -251,21 +248,21 @@ class LightGBMConverter:
             model: A parsed XGBoostModel instance (converted from LightGBM format).
         """
         self._model = model
-        self._samples: List[Sample] = []
+        self._samples: list[Sample] = []
         self._threshold: float = 0.5
 
     @classmethod
     def from_model_file(cls, path: str) -> "LightGBMConverter":
         """Load a LightGBM model from a JSON file (model.dump_model())."""
         try:
-            with open(path, "r") as f:
+            with open(path) as f:
                 data = json.load(f)
         except (OSError, json.JSONDecodeError) as e:
             raise ModelParseError(f"Failed to read model file: {e}")
         return cls.from_dict(data)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "LightGBMConverter":
+    def from_dict(cls, data: dict[str, Any]) -> "LightGBMConverter":
         """Create from a parsed LightGBM dump_model() JSON dict."""
         model = _parse_lightgbm_model(data)
         return cls(model)
@@ -280,7 +277,7 @@ class LightGBMConverter:
         return self._model
 
     @property
-    def samples(self) -> List[Sample]:
+    def samples(self) -> list[Sample]:
         return list(self._samples)
 
     @property
@@ -294,7 +291,7 @@ class LightGBMConverter:
         self._threshold = threshold
         return self
 
-    def add_sample(self, id: bytes, features: List[float]) -> "LightGBMConverter":
+    def add_sample(self, id: bytes, features: list[float]) -> "LightGBMConverter":
         """Add a single sample. Returns self for chaining.
 
         Args:
@@ -309,7 +306,7 @@ class LightGBMConverter:
         self,
         path: str,
         id_column: str,
-        feature_columns: List[str],
+        feature_columns: list[str],
     ) -> "LightGBMConverter":
         """Add samples from a CSV file. Returns self for chaining.
 
@@ -323,7 +320,7 @@ class LightGBMConverter:
             - Non-hex strings are SHA-256 hashed to produce 32 bytes.
         """
         try:
-            with open(path, "r", newline="") as f:
+            with open(path, newline="") as f:
                 reader = csv.DictReader(f)
                 for row_num, row in enumerate(reader, start=1):
                     if id_column not in row:
@@ -406,7 +403,7 @@ class LightGBMConverter:
         raw = self.serialize()
         return "0x" + hashlib.sha256(raw).hexdigest()
 
-    def _validate_sample(self, id: bytes, features: List[float]) -> None:
+    def _validate_sample(self, id: bytes, features: list[float]) -> None:
         """Validate a single sample's id and features."""
         if not isinstance(id, (bytes, bytearray)):
             raise InputValidationError(

@@ -26,14 +26,14 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
 
-logger = logging.getLogger(__name__)
-
 from eth_account import Account
 from eth_account.signers.local import LocalAccount
 from web3 import Web3
 from web3.contract import Contract
 
 from .abi import DAG_BATCH_VERIFIER_ABI
+
+logger = logging.getLogger(__name__)
 
 LAYERS_PER_BATCH = 8
 GROUPS_PER_FINALIZE_BATCH = 16
@@ -129,7 +129,7 @@ class BatchVerifier:
             rpc_url: JSON-RPC endpoint URL.
             private_key: Hex-encoded private key for signing transactions.
             contract_address: Deployed DAGBatchVerifier contract address.
-            gas_limit: Maximum gas per transaction (default 30M).
+            gas_limit: Gas limit used when gas estimation fails (default 30M).
             max_retries: Number of retries for transient failures.
             retry_delay_s: Base delay between retries in seconds.
         """
@@ -453,23 +453,34 @@ class BatchVerifier:
         """Build, sign, and send a transaction with retry logic."""
         for attempt in range(self._max_retries):
             try:
+                # Estimate without a gas cap and add a 10% buffer. The configured
+                # limit is only the fallback, as in the TypeScript SDK: passing it
+                # to the estimate would cap the estimate at that limit.
+                try:
+                    estimated = fn.estimate_gas({"from": self._account.address})
+                    gas = int(estimated * 1.1)
+                except Exception:
+                    logger.debug("Gas estimation failed, using configured limit", exc_info=True)
+                    gas = self._gas_limit
+
                 tx = fn.build_transaction({
                     "from": self._account.address,
                     "nonce": self._w3.eth.get_transaction_count(self._account.address),
-                    "gas": self._gas_limit,
+                    "gas": gas,
                     "gasPrice": self._w3.eth.gas_price,
                 })
 
-                # Try gas estimation with 10% buffer
-                try:
-                    estimated = self._w3.eth.estimate_gas(tx)
-                    tx["gas"] = int(estimated * 1.1)
-                except Exception:
-                    logger.debug("Gas estimation failed, using configured limit", exc_info=True)
-
                 signed = self._account.sign_transaction(tx)
                 tx_hash = self._w3.eth.send_raw_transaction(signed.raw_transaction)
-                return self._w3.eth.wait_for_transaction_receipt(tx_hash)
+                receipt = self._w3.eth.wait_for_transaction_receipt(tx_hash)
+
+                if receipt.get("status") == 0:
+                    reverted_hash = receipt["transactionHash"]
+                    if isinstance(reverted_hash, bytes):
+                        reverted_hash = "0x" + reverted_hash.hex()
+                    raise RuntimeError(f"Transaction reverted: {reverted_hash}")
+
+                return receipt
 
             except Exception as e:
                 err_msg = str(e).lower()

@@ -10,7 +10,7 @@ Error codes follow the format WZK-XXXX:
 """
 
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 
 class ErrorCode(str, Enum):
@@ -132,7 +132,7 @@ class ApiError(WorldZKError):
         code: str,
         message: str,
         http_status: int = 500,
-        details: Optional[Dict[str, Any]] = None,
+        details: Optional[dict[str, Any]] = None,
         request_id: Optional[str] = None,
         trace_id: Optional[str] = None,
         retry_after_ms: Optional[int] = None,
@@ -146,10 +146,14 @@ class ApiError(WorldZKError):
         self.retry_after_ms = retry_after_ms
 
     @classmethod
-    def from_response(cls, data: Dict[str, Any], http_status: int = 500) -> "ApiError":
+    def from_response(cls, data: dict[str, Any], http_status: int = 500) -> "ApiError":
         """Create ApiError from API response."""
         code = data.get("code", "WZK-2000")
-        message = data.get("message", "Unknown error")
+        message = data.get("message")
+        if not message:
+            # The indexer reports failures as {"error": "<text>"}.
+            error_text = data.get("error")
+            message = error_text if isinstance(error_text, str) and error_text else "Unknown error"
         details = data.get("details")
         request_id = data.get("request_id")
         trace_id = data.get("trace_id")

@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import List, Union
 
 logger = logging.getLogger(__name__)
 
@@ -73,8 +72,8 @@ def _keccak256(data: bytes) -> bytes:
 
     raise ImportError(
         "No keccak256 implementation found. "
-        "Install one of: pysha3, pycryptodome, or web3. "
-        "Example: pip install pysha3"
+        "Install pycryptodome or web3. "
+        "Example: pip install pycryptodome (or: pip install worldzk[web3])"
     )
 
 
@@ -111,7 +110,7 @@ def compute_model_hash_from_bytes(data: bytes) -> str:
     return "0x" + _keccak256(data).hex()
 
 
-def compute_input_hash(features: List[float]) -> str:
+def compute_input_hash(features: list[float]) -> str:
     """Compute input hash from a feature vector.
 
     This matches the enclave's computation:
@@ -131,7 +130,7 @@ def compute_input_hash(features: List[float]) -> str:
     return "0x" + _keccak256(json_bytes).hex()
 
 
-def compute_result_hash(scores: List[float]) -> str:
+def compute_result_hash(scores: list[float]) -> str:
     """Compute result hash from prediction scores.
 
     This matches the enclave's computation:
@@ -176,7 +175,7 @@ def compute_result_hash_from_bytes(result_bytes: bytes) -> str:
     return "0x" + _keccak256(result_bytes).hex()
 
 
-def _serialize_f64_list(values: List[float]) -> bytes:
+def _serialize_f64_list(values: list[float]) -> bytes:
     """Serialize a list of floats to JSON bytes matching Rust's serde_json.
 
     Rust's serde_json serializes f64 values with the following rules:

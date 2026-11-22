@@ -29,12 +29,12 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-logger = logging.getLogger(__name__)
-
 from eth_account import Account
 from eth_account.signers.local import LocalAccount
 from web3 import Web3
 from web3.contract import Contract
+
+logger = logging.getLogger(__name__)
 
 TEE_ML_VERIFIER_ABI: list[dict[str, Any]] = [
     {

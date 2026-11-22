@@ -1,6 +1,6 @@
 """Tests for the ExecutionEngine SDK client (no Anvil required)."""
 
-from unittest.mock import MagicMock, PropertyMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -13,7 +13,6 @@ from worldzk.execution_engine import (
     _to_bytes,
     _to_bytes32,
 )
-
 
 # ===========================================================================
 # Helper conversion tests
@@ -33,7 +32,7 @@ class TestToBytes32:
         assert len(result) == 32
         assert result == bytes.fromhex("ab" * 32)
 
-    def test_from_hex_string_0X(self):
+    def test_from_hex_string_upper_0x(self):
         hex_str = "0X" + "cd" * 32
         result = _to_bytes32(hex_str)
         assert len(result) == 32
@@ -259,13 +258,13 @@ class TestABI:
 
 def _make_mock_client(with_key: bool = True) -> ExecutionEngineClient:
     """Create an ExecutionEngineClient with mocked web3 internals."""
-    with patch("worldzk.execution_engine.Web3") as MockWeb3, \
-         patch("worldzk.execution_engine.Account") as MockAccount:
+    with patch("worldzk.execution_engine.Web3") as mock_web3_cls, \
+         patch("worldzk.execution_engine.Account") as mock_account_cls:
 
         mock_w3_instance = MagicMock()
-        MockWeb3.return_value = mock_w3_instance
-        MockWeb3.HTTPProvider = MagicMock()
-        MockWeb3.to_checksum_address = lambda addr: addr
+        mock_web3_cls.return_value = mock_w3_instance
+        mock_web3_cls.HTTPProvider = MagicMock()
+        mock_web3_cls.to_checksum_address = lambda addr: addr
 
         mock_contract = MagicMock()
         mock_w3_instance.eth.contract.return_value = mock_contract
@@ -274,7 +273,7 @@ def _make_mock_client(with_key: bool = True) -> ExecutionEngineClient:
         if with_key:
             mock_account = MagicMock()
             mock_account.address = "0x" + "bb" * 20
-            MockAccount.from_key.return_value = mock_account
+            mock_account_cls.from_key.return_value = mock_account
             client = ExecutionEngineClient(
                 rpc_url="http://localhost:8545",
                 contract_address="0x" + "aa" * 20,

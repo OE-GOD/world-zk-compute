@@ -18,9 +18,15 @@ import shutil
 import signal
 import subprocess
 import time
-from typing import Generator
+from collections.abc import Generator
+from typing import TYPE_CHECKING
 
 import pytest
+
+if TYPE_CHECKING:
+    from web3.contract import Contract
+
+    from worldzk.tee_verifier import TEEVerifier
 
 # ---------------------------------------------------------------------------
 # Skip the entire module when foundry tools or web3 are missing
@@ -153,7 +159,7 @@ def _sign_attestation(
     return signed.signature
 
 
-def _raw_contract(w3_inst: "Web3", address: str) -> "Contract":
+def _raw_contract(w3_inst: Web3, address: str) -> Contract:
     """Return a web3 Contract with the SDK ABI plus the ``enclaves`` getter."""
     from worldzk.tee_verifier import TEE_ML_VERIFIER_ABI
 
@@ -165,7 +171,7 @@ def _raw_contract(w3_inst: "Web3", address: str) -> "Contract":
 
 
 def _compute_result_id(
-    w3_inst: "Web3", tx_hash_hex: str, sender: str, model_hash: bytes, input_hash: bytes
+    w3_inst: Web3, tx_hash_hex: str, sender: str, model_hash: bytes, input_hash: bytes
 ) -> str:
     """Compute the on-chain result ID from a submit transaction.
 
@@ -267,7 +273,7 @@ def contract_address(anvil_process: subprocess.Popen) -> str:
 
 
 @pytest.fixture(scope="module")
-def deployer_verifier(contract_address: str) -> "TEEVerifier":
+def deployer_verifier(contract_address: str) -> TEEVerifier:
     """TEEVerifier instance connected as the deployer/owner."""
     from worldzk.tee_verifier import TEEVerifier
 
@@ -279,7 +285,7 @@ def deployer_verifier(contract_address: str) -> "TEEVerifier":
 
 
 @pytest.fixture(scope="module")
-def user2_verifier(contract_address: str) -> "TEEVerifier":
+def user2_verifier(contract_address: str) -> TEEVerifier:
     """TEEVerifier instance connected as a non-owner user."""
     from worldzk.tee_verifier import TEEVerifier
 
@@ -291,7 +297,7 @@ def user2_verifier(contract_address: str) -> "TEEVerifier":
 
 
 @pytest.fixture(scope="module")
-def w3() -> "Web3":
+def w3() -> Web3:
     """Raw Web3 instance connected to Anvil."""
     return Web3(Web3.HTTPProvider(ANVIL_RPC))
 
@@ -304,18 +310,18 @@ def w3() -> "Web3":
 class TestOwnership:
     """Test Ownable2Step functionality via the SDK."""
 
-    def test_owner_returns_deployer(self, deployer_verifier: "TEEVerifier") -> None:
+    def test_owner_returns_deployer(self, deployer_verifier: TEEVerifier) -> None:
         owner = deployer_verifier.owner()
         assert owner.lower() == DEPLOYER_ADDRESS.lower()
 
     def test_pending_owner_initially_zero(
-        self, deployer_verifier: "TEEVerifier"
+        self, deployer_verifier: TEEVerifier
     ) -> None:
         pending = deployer_verifier.pending_owner()
         assert pending == "0x0000000000000000000000000000000000000000"
 
     def test_transfer_ownership_sets_pending(
-        self, deployer_verifier: "TEEVerifier"
+        self, deployer_verifier: TEEVerifier
     ) -> None:
         tx_hash = deployer_verifier.transfer_ownership(USER2_ADDRESS)
         assert tx_hash.startswith("0x")
@@ -324,8 +330,8 @@ class TestOwnership:
 
     def test_accept_ownership_completes_transfer(
         self,
-        deployer_verifier: "TEEVerifier",
-        user2_verifier: "TEEVerifier",
+        deployer_verifier: TEEVerifier,
+        user2_verifier: TEEVerifier,
     ) -> None:
         # user2 accepts ownership
         tx_hash = user2_verifier.accept_ownership()
@@ -346,15 +352,15 @@ class TestOwnership:
 class TestPauseUnpause:
     """Test Pausable functionality via the SDK."""
 
-    def test_initially_not_paused(self, deployer_verifier: "TEEVerifier") -> None:
+    def test_initially_not_paused(self, deployer_verifier: TEEVerifier) -> None:
         assert deployer_verifier.paused() is False
 
-    def test_owner_can_pause(self, deployer_verifier: "TEEVerifier") -> None:
+    def test_owner_can_pause(self, deployer_verifier: TEEVerifier) -> None:
         tx_hash = deployer_verifier.pause()
         assert tx_hash.startswith("0x")
         assert deployer_verifier.paused() is True
 
-    def test_owner_can_unpause(self, deployer_verifier: "TEEVerifier") -> None:
+    def test_owner_can_unpause(self, deployer_verifier: TEEVerifier) -> None:
         # Ensure it is paused first
         if not deployer_verifier.paused():
             deployer_verifier.pause()
@@ -363,7 +369,7 @@ class TestPauseUnpause:
         assert deployer_verifier.paused() is False
 
     def test_non_owner_cannot_pause(
-        self, w3: "Web3", contract_address: str
+        self, w3: Web3, contract_address: str
     ) -> None:
         """Simulate pause() from non-owner via eth_call -- should revert.
 
@@ -385,8 +391,8 @@ class TestRegisterEnclave:
 
     def test_register_enclave_succeeds(
         self,
-        deployer_verifier: "TEEVerifier",
-        w3: "Web3",
+        deployer_verifier: TEEVerifier,
+        w3: Web3,
         contract_address: str,
     ) -> None:
         tx_hash = deployer_verifier.register_enclave(
@@ -407,7 +413,7 @@ class TestRegisterEnclave:
         assert info[2] == IMAGE_HASH  # enclaveImageHash
 
     def test_register_duplicate_reverts(
-        self, w3: "Web3", contract_address: str
+        self, w3: Web3, contract_address: str
     ) -> None:
         """Duplicate registration should revert with 'already registered'."""
         contract = _raw_contract(w3, contract_address)
@@ -418,7 +424,7 @@ class TestRegisterEnclave:
             ).call({"from": DEPLOYER_ADDRESS})
 
     def test_non_owner_cannot_register(
-        self, w3: "Web3", contract_address: str
+        self, w3: Web3, contract_address: str
     ) -> None:
         """Non-owner should be denied registration."""
         contract = _raw_contract(w3, contract_address)
@@ -431,8 +437,8 @@ class TestRegisterEnclave:
 
     def test_revoke_enclave(
         self,
-        deployer_verifier: "TEEVerifier",
-        w3: "Web3",
+        deployer_verifier: TEEVerifier,
+        w3: Web3,
         contract_address: str,
     ) -> None:
         # Register a fresh enclave, then revoke it
@@ -462,25 +468,25 @@ class TestRegisterEnclave:
 class TestConfigReads:
     """Test reading configuration parameters via the SDK."""
 
-    def test_prover_stake_default(self, deployer_verifier: "TEEVerifier") -> None:
+    def test_prover_stake_default(self, deployer_verifier: TEEVerifier) -> None:
         stake = deployer_verifier.prover_stake_amount()
         # Default is 0.1 ether = 10^17
         assert stake == 10**17
 
-    def test_challenge_bond_default(self, deployer_verifier: "TEEVerifier") -> None:
+    def test_challenge_bond_default(self, deployer_verifier: TEEVerifier) -> None:
         bond = deployer_verifier.challenge_bond_amount()
         # Default is 0.1 ether = 10^17
         assert bond == 10**17
 
     def test_prover_stake_readable_by_non_owner(
-        self, user2_verifier: "TEEVerifier"
+        self, user2_verifier: TEEVerifier
     ) -> None:
         # View functions should be callable by anyone
         stake = user2_verifier.prover_stake_amount()
         assert stake == 10**17
 
     def test_challenge_bond_readable_by_non_owner(
-        self, user2_verifier: "TEEVerifier"
+        self, user2_verifier: TEEVerifier
     ) -> None:
         bond = user2_verifier.challenge_bond_amount()
         assert bond == 10**17
@@ -495,25 +501,25 @@ class TestQueryFunctions:
     """Test view/query functions on the contract."""
 
     def test_is_result_valid_for_nonexistent(
-        self, deployer_verifier: "TEEVerifier"
+        self, deployer_verifier: TEEVerifier
     ) -> None:
         valid = deployer_verifier.is_result_valid(ZERO_BYTES32)
         assert valid is False
 
     def test_dispute_resolved_for_nonexistent(
-        self, deployer_verifier: "TEEVerifier"
+        self, deployer_verifier: TEEVerifier
     ) -> None:
         resolved = deployer_verifier.dispute_resolved(ZERO_BYTES32)
         assert resolved is False
 
     def test_dispute_prover_won_for_nonexistent(
-        self, deployer_verifier: "TEEVerifier"
+        self, deployer_verifier: TEEVerifier
     ) -> None:
         won = deployer_verifier.dispute_prover_won(ZERO_BYTES32)
         assert won is False
 
     def test_get_result_for_nonexistent(
-        self, deployer_verifier: "TEEVerifier"
+        self, deployer_verifier: TEEVerifier
     ) -> None:
         result = deployer_verifier.get_result(ZERO_BYTES32)
         assert result.submitted_at == 0
@@ -531,15 +537,15 @@ class TestAddressProperties:
 
     def test_contract_address(
         self,
-        deployer_verifier: "TEEVerifier",
+        deployer_verifier: TEEVerifier,
         contract_address: str,
     ) -> None:
         assert deployer_verifier.address.lower() == contract_address.lower()
 
-    def test_account_address(self, deployer_verifier: "TEEVerifier") -> None:
+    def test_account_address(self, deployer_verifier: TEEVerifier) -> None:
         assert deployer_verifier.account_address.lower() == DEPLOYER_ADDRESS.lower()
 
-    def test_user2_account_address(self, user2_verifier: "TEEVerifier") -> None:
+    def test_user2_account_address(self, user2_verifier: TEEVerifier) -> None:
         assert user2_verifier.account_address.lower() == USER2_ADDRESS.lower()
 
 
@@ -561,8 +567,8 @@ class TestSubmitResult:
 
     def test_submit_result_succeeds(
         self,
-        deployer_verifier: "TEEVerifier",
-        w3: "Web3",
+        deployer_verifier: TEEVerifier,
+        w3: Web3,
         contract_address: str,
     ) -> None:
         model_hash = b"\x01" * 32
@@ -585,8 +591,8 @@ class TestSubmitResult:
 
     def test_submitted_result_is_queryable(
         self,
-        deployer_verifier: "TEEVerifier",
-        w3: "Web3",
+        deployer_verifier: TEEVerifier,
+        w3: Web3,
     ) -> None:
         model_hash = b"\x03" * 32
         input_hash = b"\x04" * 32
@@ -618,7 +624,7 @@ class TestSubmitResult:
         assert on_chain.prover_stake_amount == 10**17
 
     def test_submit_insufficient_stake_reverts(
-        self, w3: "Web3", contract_address: str
+        self, w3: Web3, contract_address: str
     ) -> None:
         """Submitting with too little stake should revert.
 
@@ -643,8 +649,8 @@ class TestSubmitResult:
 
     def test_is_result_valid_before_finalize(
         self,
-        deployer_verifier: "TEEVerifier",
-        w3: "Web3",
+        deployer_verifier: TEEVerifier,
+        w3: Web3,
     ) -> None:
         """A freshly submitted result should NOT be valid (not yet finalized)."""
         model_hash = b"\x07" * 32
@@ -677,9 +683,9 @@ class TestChallengeFlow:
 
     def test_challenge_submitted_result(
         self,
-        deployer_verifier: "TEEVerifier",
-        user2_verifier: "TEEVerifier",
-        w3: "Web3",
+        deployer_verifier: TEEVerifier,
+        user2_verifier: TEEVerifier,
+        w3: Web3,
     ) -> None:
         model_hash = b"\x10" * 32
         input_hash = b"\x11" * 32
@@ -708,9 +714,9 @@ class TestChallengeFlow:
 
     def test_cannot_challenge_after_window(
         self,
-        deployer_verifier: "TEEVerifier",
-        user2_verifier: "TEEVerifier",
-        w3: "Web3",
+        deployer_verifier: TEEVerifier,
+        user2_verifier: TEEVerifier,
+        w3: Web3,
         contract_address: str,
     ) -> None:
         model_hash = b"\x14" * 32
@@ -752,8 +758,8 @@ class TestFinalizeFlow:
 
     def test_finalize_after_challenge_window(
         self,
-        deployer_verifier: "TEEVerifier",
-        w3: "Web3",
+        deployer_verifier: TEEVerifier,
+        w3: Web3,
     ) -> None:
         model_hash = b"\x20" * 32
         input_hash = b"\x21" * 32
@@ -783,8 +789,8 @@ class TestFinalizeFlow:
 
     def test_is_result_valid_after_finalize(
         self,
-        deployer_verifier: "TEEVerifier",
-        w3: "Web3",
+        deployer_verifier: TEEVerifier,
+        w3: Web3,
     ) -> None:
         model_hash = b"\x22" * 32
         input_hash = b"\x23" * 32
@@ -815,8 +821,8 @@ class TestFinalizeFlow:
 
     def test_cannot_finalize_before_window(
         self,
-        deployer_verifier: "TEEVerifier",
-        w3: "Web3",
+        deployer_verifier: TEEVerifier,
+        w3: Web3,
         contract_address: str,
     ) -> None:
         model_hash = b"\x24" * 32
@@ -854,9 +860,9 @@ class TestDisputeTimeout:
 
     def test_resolve_dispute_by_timeout(
         self,
-        deployer_verifier: "TEEVerifier",
-        user2_verifier: "TEEVerifier",
-        w3: "Web3",
+        deployer_verifier: TEEVerifier,
+        user2_verifier: TEEVerifier,
+        w3: Web3,
     ) -> None:
         model_hash = b"\x30" * 32
         input_hash = b"\x31" * 32
@@ -891,9 +897,9 @@ class TestDisputeTimeout:
 
     def test_cannot_resolve_timeout_before_window(
         self,
-        deployer_verifier: "TEEVerifier",
-        user2_verifier: "TEEVerifier",
-        w3: "Web3",
+        deployer_verifier: TEEVerifier,
+        user2_verifier: TEEVerifier,
+        w3: Web3,
         contract_address: str,
     ) -> None:
         model_hash = b"\x32" * 32
@@ -934,11 +940,11 @@ class TestEventWatcherIntegration:
 
     def test_poll_catches_enclave_registered(
         self,
-        deployer_verifier: "TEEVerifier",
-        w3: "Web3",
+        deployer_verifier: TEEVerifier,
+        w3: Web3,
         contract_address: str,
     ) -> None:
-        from worldzk.event_watcher import TEEEventWatcher, TEEEventType
+        from worldzk.event_watcher import TEEEventWatcher
 
         watcher = TEEEventWatcher(
             contract_address=contract_address,
@@ -961,8 +967,8 @@ class TestEventWatcherIntegration:
 
     def test_poll_catches_result_submitted(
         self,
-        deployer_verifier: "TEEVerifier",
-        w3: "Web3",
+        deployer_verifier: TEEVerifier,
+        w3: Web3,
         contract_address: str,
     ) -> None:
         from worldzk.event_watcher import TEEEventWatcher
@@ -1000,9 +1006,9 @@ class TestEventWatcherIntegration:
 
     def test_poll_catches_result_challenged(
         self,
-        deployer_verifier: "TEEVerifier",
-        user2_verifier: "TEEVerifier",
-        w3: "Web3",
+        deployer_verifier: TEEVerifier,
+        user2_verifier: TEEVerifier,
+        w3: Web3,
         contract_address: str,
     ) -> None:
         from worldzk.event_watcher import TEEEventWatcher
@@ -1040,8 +1046,8 @@ class TestEventWatcherIntegration:
 
     def test_poll_with_event_type_filter(
         self,
-        deployer_verifier: "TEEVerifier",
-        w3: "Web3",
+        deployer_verifier: TEEVerifier,
+        w3: Web3,
         contract_address: str,
     ) -> None:
         from worldzk.event_watcher import TEEEventWatcher
@@ -1062,7 +1068,7 @@ class TestEventWatcherIntegration:
 
     def test_poll_next_block_advances(
         self,
-        w3: "Web3",
+        w3: Web3,
         contract_address: str,
     ) -> None:
         from worldzk.event_watcher import TEEEventWatcher

@@ -1,12 +1,9 @@
 """
-pdoc3 configuration for worldzk Python SDK.
+pdoc usage notes for the worldzk Python SDK (pdoc is in the ``docs`` extra).
 
 Generate HTML docs:
-    pdoc --html --output-dir docs/api worldzk
-
-Generate Markdown docs:
-    pdoc --pdf worldzk > docs/api.md
+    pdoc -o docs/api worldzk
 
 Serve docs locally for development:
-    pdoc --http : worldzk
+    pdoc worldzk
 """
