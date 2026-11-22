@@ -4,12 +4,15 @@
   "private": true,
   "description": "World ZK Compute TypeScript SDK quickstart example",
   "scripts": {
-    "start": "tsx index.ts"
+    "start": "tsx index.ts",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@worldzk/sdk": "^1.0.0"
+    "@worldzk/sdk": "file:../../sdk/typescript",
+    "viem": "^2.0.0"
   },
   "devDependencies": {
+    "@types/node": "^20.10.0",
     "tsx": "^4.0.0",
     "typescript": "^5.0.0"
   }

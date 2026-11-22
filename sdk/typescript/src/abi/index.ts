@@ -4,16 +4,7 @@
 export const teeMLVerifierAbi = [
   {
     "type": "constructor",
-    "inputs": [
-      {
-        "name": "_admin",
-        "type": "address"
-      },
-      {
-        "name": "_remainderVerifier",
-        "type": "address"
-      }
-    ],
+    "inputs": [],
     "stateMutability": "nonpayable"
   },
   {
@@ -22,24 +13,12 @@ export const teeMLVerifierAbi = [
   },
   {
     "type": "function",
-    "name": "CHALLENGE_WINDOW",
+    "name": "DOMAIN_SEPARATOR",
     "inputs": [],
     "outputs": [
       {
         "name": "",
-        "type": "uint256"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "DISPUTE_WINDOW",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256"
+        "type": "bytes32"
       }
     ],
     "stateMutability": "view"
@@ -70,10 +49,27 @@ export const teeMLVerifierAbi = [
   },
   {
     "type": "function",
-    "name": "acceptOwnership",
+    "name": "RESULT_TYPEHASH",
     "inputs": [],
-    "outputs": [],
-    "stateMutability": "nonpayable"
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "admin",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -98,6 +94,30 @@ export const teeMLVerifierAbi = [
       }
     ],
     "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "challengeWindow",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "changeAdmin",
+    "inputs": [
+      {
+        "name": "newAdmin",
+        "type": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -152,29 +172,47 @@ export const teeMLVerifierAbi = [
   },
   {
     "type": "function",
+    "name": "disputeWindow",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "enclaves",
     "inputs": [
       {
-        "name": "",
+        "name": "enclaveKey",
         "type": "address"
       }
     ],
     "outputs": [
       {
-        "name": "registered",
-        "type": "bool"
-      },
-      {
-        "name": "active",
-        "type": "bool"
-      },
-      {
-        "name": "enclaveImageHash",
-        "type": "bytes32"
-      },
-      {
-        "name": "registeredAt",
-        "type": "uint256"
+        "name": "info",
+        "type": "tuple",
+        "components": [
+          {
+            "name": "registered",
+            "type": "bool"
+          },
+          {
+            "name": "active",
+            "type": "bool"
+          },
+          {
+            "name": "enclaveImageHash",
+            "type": "bytes32"
+          },
+          {
+            "name": "registeredAt",
+            "type": "uint256"
+          }
+        ]
       }
     ],
     "stateMutability": "view"
@@ -280,6 +318,34 @@ export const teeMLVerifierAbi = [
   },
   {
     "type": "function",
+    "name": "implementation",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "initialize",
+    "inputs": [
+      {
+        "name": "_admin",
+        "type": "address"
+      },
+      {
+        "name": "_remainderVerifier",
+        "type": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "isResultValid",
     "inputs": [
       {
@@ -291,18 +357,6 @@ export const teeMLVerifierAbi = [
       {
         "name": "",
         "type": "bool"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "owner",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address"
       }
     ],
     "stateMutability": "view"
@@ -328,18 +382,6 @@ export const teeMLVerifierAbi = [
   },
   {
     "type": "function",
-    "name": "pendingOwner",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
     "name": "proverStake",
     "inputs": [],
     "outputs": [
@@ -349,6 +391,18 @@ export const teeMLVerifierAbi = [
       }
     ],
     "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "proxiableUUID",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32"
+      }
+    ],
+    "stateMutability": "pure"
   },
   {
     "type": "function",
@@ -377,13 +431,6 @@ export const teeMLVerifierAbi = [
       }
     ],
     "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "renounceOwnership",
-    "inputs": [],
-    "outputs": [],
-    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -427,6 +474,78 @@ export const teeMLVerifierAbi = [
   },
   {
     "type": "function",
+    "name": "resolveDisputeHybrid",
+    "inputs": [
+      {
+        "name": "resultId",
+        "type": "bytes32"
+      },
+      {
+        "name": "proof",
+        "type": "bytes"
+      },
+      {
+        "name": "circuitHash",
+        "type": "bytes32"
+      },
+      {
+        "name": "publicInputs",
+        "type": "bytes"
+      },
+      {
+        "name": "gensData",
+        "type": "bytes"
+      },
+      {
+        "name": "ecGroth16Proof",
+        "type": "uint256[8]"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "resolveDisputeHybridChunked",
+    "inputs": [
+      {
+        "name": "resultId",
+        "type": "bytes32"
+      },
+      {
+        "name": "proof",
+        "type": "bytes"
+      },
+      {
+        "name": "circuitHash",
+        "type": "bytes32"
+      },
+      {
+        "name": "publicInputs",
+        "type": "bytes"
+      },
+      {
+        "name": "gensData",
+        "type": "bytes"
+      },
+      {
+        "name": "ecGroth16Proofs",
+        "type": "uint256[][]"
+      },
+      {
+        "name": "totalChunks",
+        "type": "uint256"
+      },
+      {
+        "name": "opsDigest",
+        "type": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "revokeEnclave",
     "inputs": [
       {
@@ -443,6 +562,30 @@ export const teeMLVerifierAbi = [
     "inputs": [
       {
         "name": "_amount",
+        "type": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setChallengeWindow",
+    "inputs": [
+      {
+        "name": "_duration",
+        "type": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setDisputeWindow",
+    "inputs": [
+      {
+        "name": "_duration",
         "type": "uint256"
       }
     ],
@@ -468,6 +611,42 @@ export const teeMLVerifierAbi = [
       {
         "name": "_verifier",
         "type": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setTimelock",
+    "inputs": [
+      {
+        "name": "_timelock",
+        "type": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setUseStylusGroth16",
+    "inputs": [
+      {
+        "name": "_enabled",
+        "type": "bool"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setUseStylusVerifier",
+    "inputs": [
+      {
+        "name": "_enabled",
+        "type": "bool"
       }
     ],
     "outputs": [],
@@ -504,10 +683,29 @@ export const teeMLVerifierAbi = [
   },
   {
     "type": "function",
-    "name": "transferOwnership",
+    "name": "timelock",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "unpause",
+    "inputs": [],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "upgradeTo",
     "inputs": [
       {
-        "name": "newOwner",
+        "name": "newImplementation",
         "type": "address"
       }
     ],
@@ -516,10 +714,60 @@ export const teeMLVerifierAbi = [
   },
   {
     "type": "function",
-    "name": "unpause",
-    "inputs": [],
+    "name": "upgradeToAndCall",
+    "inputs": [
+      {
+        "name": "newImplementation",
+        "type": "address"
+      },
+      {
+        "name": "data",
+        "type": "bytes"
+      }
+    ],
     "outputs": [],
-    "stateMutability": "nonpayable"
+    "stateMutability": "payable"
+  },
+  {
+    "type": "function",
+    "name": "useStylusGroth16",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "useStylusVerifier",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "event",
+    "name": "AdminChanged",
+    "inputs": [
+      {
+        "name": "previousAdmin",
+        "type": "address",
+        "indexed": false
+      },
+      {
+        "name": "newAdmin",
+        "type": "address",
+        "indexed": false
+      }
+    ],
+    "anonymous": false
   },
   {
     "type": "event",
@@ -617,40 +865,6 @@ export const teeMLVerifierAbi = [
     "inputs": [
       {
         "name": "enclaveKey",
-        "type": "address",
-        "indexed": true
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "OwnershipTransferStarted",
-    "inputs": [
-      {
-        "name": "previousOwner",
-        "type": "address",
-        "indexed": true
-      },
-      {
-        "name": "newOwner",
-        "type": "address",
-        "indexed": true
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "OwnershipTransferred",
-    "inputs": [
-      {
-        "name": "previousOwner",
-        "type": "address",
-        "indexed": true
-      },
-      {
-        "name": "newOwner",
         "type": "address",
         "indexed": true
       }
@@ -773,6 +987,47 @@ export const teeMLVerifierAbi = [
   },
   {
     "type": "event",
+    "name": "StylusGroth16Toggled",
+    "inputs": [
+      {
+        "name": "enabled",
+        "type": "bool",
+        "indexed": false
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "StylusVerifierToggled",
+    "inputs": [
+      {
+        "name": "enabled",
+        "type": "bool",
+        "indexed": false
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "TimelockChanged",
+    "inputs": [
+      {
+        "name": "previousTimelock",
+        "type": "address",
+        "indexed": false
+      },
+      {
+        "name": "newTimelock",
+        "type": "address",
+        "indexed": false
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "Unpaused",
     "inputs": [
       {
@@ -782,6 +1037,68 @@ export const teeMLVerifierAbi = [
       }
     ],
     "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "Upgraded",
+    "inputs": [
+      {
+        "name": "implementation",
+        "type": "address",
+        "indexed": true
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "error",
+    "name": "AlreadyChallenged",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "AlreadyFinalized",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "AlreadyInitialized",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "AlreadyRegistered",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "AlreadyResolved",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "AlreadyRevoked",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "AmountTooHigh",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ChallengeWindowClosed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ChallengeWindowNotPassed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "DeadlineNotReached",
+    "inputs": []
   },
   {
     "type": "error",
@@ -810,6 +1127,11 @@ export const teeMLVerifierAbi = [
   },
   {
     "type": "error",
+    "name": "EnclaveNotActive",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "EnforcedPause",
     "inputs": []
   },
@@ -820,27 +1142,132 @@ export const teeMLVerifierAbi = [
   },
   {
     "type": "error",
-    "name": "OwnableInvalidOwner",
-    "inputs": [
-      {
-        "name": "owner",
-        "type": "address"
-      }
-    ]
+    "name": "HybridNotEnabled",
+    "inputs": []
   },
   {
     "type": "error",
-    "name": "OwnableUnauthorizedAccount",
-    "inputs": [
-      {
-        "name": "account",
-        "type": "address"
-      }
-    ]
+    "name": "InsufficientBond",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InsufficientStake",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidAddress",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidImplementation",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "MaxExtensionsReached",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NoVerifierSet",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotAdmin",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotChallenged",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotInitializing",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotRegistered",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotSubmitter",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotTimelocked",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "PayoutFailed",
+    "inputs": []
   },
   {
     "type": "error",
     "name": "ReentrancyGuardReentrantCall",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ResultExists",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ResultIsChallenged",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ResultNotFound",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "StakeReturnFailed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "UnregisteredEnclave",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "UpgradeCallFailed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "WindowTooLong",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "WindowTooShort",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ZeroAddress",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ZeroAmount",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ZeroEnclaveKey",
     "inputs": []
   }
 ] as const;
@@ -883,6 +1310,30 @@ export const executionEngineAbi = [
   {
     "type": "function",
     "name": "DEFAULT_EXPIRATION",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_EXPIRATION",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MIN_EXPIRATION",
     "inputs": [],
     "outputs": [
       {
@@ -1211,6 +1662,18 @@ export const executionEngineAbi = [
   },
   {
     "type": "function",
+    "name": "reportBadProof",
+    "inputs": [
+      {
+        "name": "requestId",
+        "type": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "reputation",
     "inputs": [],
     "outputs": [
@@ -1445,6 +1908,28 @@ export const executionEngineAbi = [
   },
   {
     "type": "event",
+    "name": "BadProofReported",
+    "inputs": [
+      {
+        "name": "requestId",
+        "type": "uint256",
+        "indexed": true
+      },
+      {
+        "name": "prover",
+        "type": "address",
+        "indexed": true
+      },
+      {
+        "name": "reporter",
+        "type": "address",
+        "indexed": true
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "CallbackFailed",
     "inputs": [
       {
@@ -1456,6 +1941,11 @@ export const executionEngineAbi = [
         "name": "callbackContract",
         "type": "address",
         "indexed": true
+      },
+      {
+        "name": "reason",
+        "type": "bytes",
+        "indexed": false
       }
     ],
     "anonymous": false
@@ -1703,6 +2193,11 @@ export const executionEngineAbi = [
   },
   {
     "type": "error",
+    "name": "ClaimDeadlineNotPassed",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "ClaimDeadlinePassed",
     "inputs": []
   },
@@ -1734,6 +2229,26 @@ export const executionEngineAbi = [
   {
     "type": "error",
     "name": "ExpirationInPast",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ExpirationOverflow",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ExpirationTooLong",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ExpirationTooShort",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "FeeTooHigh",
     "inputs": []
   },
   {
@@ -1788,6 +2303,11 @@ export const executionEngineAbi = [
   },
   {
     "type": "error",
+    "name": "ReputationNotConfigured",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "RequestExpired",
     "inputs": []
   },
@@ -1836,8 +2356,48 @@ export const programRegistryAbi = [
   },
   {
     "type": "function",
+    "name": "MAX_NAME_LENGTH",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_URL_LENGTH",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "acceptOwnership",
     "inputs": [],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "adminForceUpdateUrl",
+    "inputs": [
+      {
+        "name": "imageId",
+        "type": "bytes32"
+      },
+      {
+        "name": "newUrl",
+        "type": "string"
+      }
+    ],
     "outputs": [],
     "stateMutability": "nonpayable"
   },
@@ -1881,6 +2441,31 @@ export const programRegistryAbi = [
       {
         "name": "owner",
         "type": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32[]"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "getOwnerPrograms",
+    "inputs": [
+      {
+        "name": "owner",
+        "type": "address"
+      },
+      {
+        "name": "offset",
+        "type": "uint256"
+      },
+      {
+        "name": "limit",
+        "type": "uint256"
       }
     ],
     "outputs": [
@@ -2207,6 +2792,23 @@ export const programRegistryAbi = [
   },
   {
     "type": "function",
+    "name": "totalOwnerPrograms",
+    "inputs": [
+      {
+        "name": "owner",
+        "type": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "transferOwnership",
     "inputs": [
       {
@@ -2408,6 +3010,28 @@ export const programRegistryAbi = [
   },
   {
     "type": "event",
+    "name": "ProgramUrlForceUpdated",
+    "inputs": [
+      {
+        "name": "imageId",
+        "type": "bytes32",
+        "indexed": true
+      },
+      {
+        "name": "newUrl",
+        "type": "string",
+        "indexed": false
+      },
+      {
+        "name": "admin",
+        "type": "address",
+        "indexed": false
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "ProgramVerified",
     "inputs": [
       {
@@ -2431,6 +3055,28 @@ export const programRegistryAbi = [
     "anonymous": false
   },
   {
+    "type": "event",
+    "name": "VerifierUpdated",
+    "inputs": [
+      {
+        "name": "programId",
+        "type": "bytes32",
+        "indexed": true
+      },
+      {
+        "name": "oldVerifier",
+        "type": "address",
+        "indexed": false
+      },
+      {
+        "name": "newVerifier",
+        "type": "address",
+        "indexed": false
+      }
+    ],
+    "anonymous": false
+  },
+  {
     "type": "error",
     "name": "EnforcedPause",
     "inputs": []
@@ -2443,6 +3089,11 @@ export const programRegistryAbi = [
   {
     "type": "error",
     "name": "InvalidImageId",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidVerifierContract",
     "inputs": []
   },
   {
@@ -2499,26 +3150,40 @@ export const programRegistryAbi = [
     "type": "error",
     "name": "ProgramNotVerified",
     "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "StringTooLong",
+    "inputs": [
+      {
+        "name": "field",
+        "type": "string"
+      },
+      {
+        "name": "maxLength",
+        "type": "uint256"
+      }
+    ]
   }
 ] as const;
 
 export const remainderVerifierAbi = [
   {
     "type": "constructor",
-    "inputs": [
-      {
-        "name": "_admin",
-        "type": "address"
-      }
-    ],
+    "inputs": [],
     "stateMutability": "nonpayable"
   },
   {
     "type": "function",
-    "name": "acceptOwnership",
+    "name": "admin",
     "inputs": [],
-    "outputs": [],
-    "stateMutability": "nonpayable"
+    "outputs": [
+      {
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -2581,6 +3246,18 @@ export const remainderVerifierAbi = [
       }
     ],
     "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "changeAdmin",
+    "inputs": [
+      {
+        "name": "newAdmin",
+        "type": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -2860,7 +3537,53 @@ export const remainderVerifierAbi = [
   },
   {
     "type": "function",
+    "name": "dagECGroth16InputCounts",
+    "inputs": [
+      {
+        "name": "",
+        "type": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "dagECGroth16Verifiers",
+    "inputs": [
+      {
+        "name": "",
+        "type": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "deactivateCircuit",
+    "inputs": [
+      {
+        "name": "circuitHash",
+        "type": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "deactivateDAGCircuit",
     "inputs": [
       {
         "name": "circuitHash",
@@ -2970,95 +3693,78 @@ export const remainderVerifierAbi = [
               {
                 "name": "sumcheckProof",
                 "type": "tuple",
-                "internalType": "struct CommittedSumcheckVerifier.CommittedSumcheckProof",
                 "components": [
                   {
                     "name": "sum",
                     "type": "tuple",
-                    "internalType": "struct HyraxVerifier.G1Point",
                     "components": [
                       {
                         "name": "x",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       },
                       {
                         "name": "y",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       }
                     ]
                   },
                   {
                     "name": "messages",
                     "type": "tuple[]",
-                    "internalType": "struct HyraxVerifier.G1Point[]",
                     "components": [
                       {
                         "name": "x",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       },
                       {
                         "name": "y",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       }
                     ]
                   },
                   {
                     "name": "podp",
                     "type": "tuple",
-                    "internalType": "struct HyraxVerifier.PODPProof",
                     "components": [
                       {
                         "name": "commitD",
                         "type": "tuple",
-                        "internalType": "struct HyraxVerifier.G1Point",
                         "components": [
                           {
                             "name": "x",
-                            "type": "uint256",
-                            "internalType": "uint256"
+                            "type": "uint256"
                           },
                           {
                             "name": "y",
-                            "type": "uint256",
-                            "internalType": "uint256"
+                            "type": "uint256"
                           }
                         ]
                       },
                       {
                         "name": "commitDDotA",
                         "type": "tuple",
-                        "internalType": "struct HyraxVerifier.G1Point",
                         "components": [
                           {
                             "name": "x",
-                            "type": "uint256",
-                            "internalType": "uint256"
+                            "type": "uint256"
                           },
                           {
                             "name": "y",
-                            "type": "uint256",
-                            "internalType": "uint256"
+                            "type": "uint256"
                           }
                         ]
                       },
                       {
                         "name": "zVector",
-                        "type": "uint256[]",
-                        "internalType": "uint256[]"
+                        "type": "uint256[]"
                       },
                       {
                         "name": "zDelta",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       },
                       {
                         "name": "zBeta",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       }
                     ]
                   }
@@ -3067,100 +3773,82 @@ export const remainderVerifierAbi = [
               {
                 "name": "commitments",
                 "type": "tuple[]",
-                "internalType": "struct HyraxVerifier.G1Point[]",
                 "components": [
                   {
                     "name": "x",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   },
                   {
                     "name": "y",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   }
                 ]
               },
               {
                 "name": "pops",
                 "type": "tuple[]",
-                "internalType": "struct HyraxVerifier.ProofOfProduct[]",
                 "components": [
                   {
                     "name": "alpha",
                     "type": "tuple",
-                    "internalType": "struct HyraxVerifier.G1Point",
                     "components": [
                       {
                         "name": "x",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       },
                       {
                         "name": "y",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       }
                     ]
                   },
                   {
                     "name": "beta",
                     "type": "tuple",
-                    "internalType": "struct HyraxVerifier.G1Point",
                     "components": [
                       {
                         "name": "x",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       },
                       {
                         "name": "y",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       }
                     ]
                   },
                   {
                     "name": "delta",
                     "type": "tuple",
-                    "internalType": "struct HyraxVerifier.G1Point",
                     "components": [
                       {
                         "name": "x",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       },
                       {
                         "name": "y",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       }
                     ]
                   },
                   {
                     "name": "z1",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   },
                   {
                     "name": "z2",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   },
                   {
                     "name": "z3",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   },
                   {
                     "name": "z4",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   },
                   {
                     "name": "z5",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   }
                 ]
               }
@@ -3173,90 +3861,74 @@ export const remainderVerifierAbi = [
               {
                 "name": "commitmentRows",
                 "type": "tuple[]",
-                "internalType": "struct HyraxVerifier.G1Point[]",
                 "components": [
                   {
                     "name": "x",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   },
                   {
                     "name": "y",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   }
                 ]
               },
               {
                 "name": "podp",
                 "type": "tuple",
-                "internalType": "struct HyraxVerifier.PODPProof",
                 "components": [
                   {
                     "name": "commitD",
                     "type": "tuple",
-                    "internalType": "struct HyraxVerifier.G1Point",
                     "components": [
                       {
                         "name": "x",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       },
                       {
                         "name": "y",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       }
                     ]
                   },
                   {
                     "name": "commitDDotA",
                     "type": "tuple",
-                    "internalType": "struct HyraxVerifier.G1Point",
                     "components": [
                       {
                         "name": "x",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       },
                       {
                         "name": "y",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       }
                     ]
                   },
                   {
                     "name": "zVector",
-                    "type": "uint256[]",
-                    "internalType": "uint256[]"
+                    "type": "uint256[]"
                   },
                   {
                     "name": "zDelta",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   },
                   {
                     "name": "zBeta",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   }
                 ]
               },
               {
                 "name": "comEval",
                 "type": "tuple",
-                "internalType": "struct HyraxVerifier.G1Point",
                 "components": [
                   {
                     "name": "x",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   },
                   {
                     "name": "y",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   }
                 ]
               }
@@ -3272,13 +3944,11 @@ export const remainderVerifierAbi = [
             "components": [
               {
                 "name": "x",
-                "type": "uint256",
-                "internalType": "uint256"
+                "type": "uint256"
               },
               {
                 "name": "y",
-                "type": "uint256",
-                "internalType": "uint256"
+                "type": "uint256"
               }
             ]
           }
@@ -3345,95 +4015,78 @@ export const remainderVerifierAbi = [
               {
                 "name": "sumcheckProof",
                 "type": "tuple",
-                "internalType": "struct CommittedSumcheckVerifier.CommittedSumcheckProof",
                 "components": [
                   {
                     "name": "sum",
                     "type": "tuple",
-                    "internalType": "struct HyraxVerifier.G1Point",
                     "components": [
                       {
                         "name": "x",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       },
                       {
                         "name": "y",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       }
                     ]
                   },
                   {
                     "name": "messages",
                     "type": "tuple[]",
-                    "internalType": "struct HyraxVerifier.G1Point[]",
                     "components": [
                       {
                         "name": "x",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       },
                       {
                         "name": "y",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       }
                     ]
                   },
                   {
                     "name": "podp",
                     "type": "tuple",
-                    "internalType": "struct HyraxVerifier.PODPProof",
                     "components": [
                       {
                         "name": "commitD",
                         "type": "tuple",
-                        "internalType": "struct HyraxVerifier.G1Point",
                         "components": [
                           {
                             "name": "x",
-                            "type": "uint256",
-                            "internalType": "uint256"
+                            "type": "uint256"
                           },
                           {
                             "name": "y",
-                            "type": "uint256",
-                            "internalType": "uint256"
+                            "type": "uint256"
                           }
                         ]
                       },
                       {
                         "name": "commitDDotA",
                         "type": "tuple",
-                        "internalType": "struct HyraxVerifier.G1Point",
                         "components": [
                           {
                             "name": "x",
-                            "type": "uint256",
-                            "internalType": "uint256"
+                            "type": "uint256"
                           },
                           {
                             "name": "y",
-                            "type": "uint256",
-                            "internalType": "uint256"
+                            "type": "uint256"
                           }
                         ]
                       },
                       {
                         "name": "zVector",
-                        "type": "uint256[]",
-                        "internalType": "uint256[]"
+                        "type": "uint256[]"
                       },
                       {
                         "name": "zDelta",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       },
                       {
                         "name": "zBeta",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       }
                     ]
                   }
@@ -3442,100 +4095,82 @@ export const remainderVerifierAbi = [
               {
                 "name": "commitments",
                 "type": "tuple[]",
-                "internalType": "struct HyraxVerifier.G1Point[]",
                 "components": [
                   {
                     "name": "x",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   },
                   {
                     "name": "y",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   }
                 ]
               },
               {
                 "name": "pops",
                 "type": "tuple[]",
-                "internalType": "struct HyraxVerifier.ProofOfProduct[]",
                 "components": [
                   {
                     "name": "alpha",
                     "type": "tuple",
-                    "internalType": "struct HyraxVerifier.G1Point",
                     "components": [
                       {
                         "name": "x",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       },
                       {
                         "name": "y",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       }
                     ]
                   },
                   {
                     "name": "beta",
                     "type": "tuple",
-                    "internalType": "struct HyraxVerifier.G1Point",
                     "components": [
                       {
                         "name": "x",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       },
                       {
                         "name": "y",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       }
                     ]
                   },
                   {
                     "name": "delta",
                     "type": "tuple",
-                    "internalType": "struct HyraxVerifier.G1Point",
                     "components": [
                       {
                         "name": "x",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       },
                       {
                         "name": "y",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       }
                     ]
                   },
                   {
                     "name": "z1",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   },
                   {
                     "name": "z2",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   },
                   {
                     "name": "z3",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   },
                   {
                     "name": "z4",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   },
                   {
                     "name": "z5",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   }
                 ]
               }
@@ -3548,90 +4183,74 @@ export const remainderVerifierAbi = [
               {
                 "name": "commitmentRows",
                 "type": "tuple[]",
-                "internalType": "struct HyraxVerifier.G1Point[]",
                 "components": [
                   {
                     "name": "x",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   },
                   {
                     "name": "y",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   }
                 ]
               },
               {
                 "name": "podp",
                 "type": "tuple",
-                "internalType": "struct HyraxVerifier.PODPProof",
                 "components": [
                   {
                     "name": "commitD",
                     "type": "tuple",
-                    "internalType": "struct HyraxVerifier.G1Point",
                     "components": [
                       {
                         "name": "x",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       },
                       {
                         "name": "y",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       }
                     ]
                   },
                   {
                     "name": "commitDDotA",
                     "type": "tuple",
-                    "internalType": "struct HyraxVerifier.G1Point",
                     "components": [
                       {
                         "name": "x",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       },
                       {
                         "name": "y",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       }
                     ]
                   },
                   {
                     "name": "zVector",
-                    "type": "uint256[]",
-                    "internalType": "uint256[]"
+                    "type": "uint256[]"
                   },
                   {
                     "name": "zDelta",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   },
                   {
                     "name": "zBeta",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   }
                 ]
               },
               {
                 "name": "comEval",
                 "type": "tuple",
-                "internalType": "struct HyraxVerifier.G1Point",
                 "components": [
                   {
                     "name": "x",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   },
                   {
                     "name": "y",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   }
                 ]
               }
@@ -3647,13 +4266,11 @@ export const remainderVerifierAbi = [
             "components": [
               {
                 "name": "x",
-                "type": "uint256",
-                "internalType": "uint256"
+                "type": "uint256"
               },
               {
                 "name": "y",
-                "type": "uint256",
-                "internalType": "uint256"
+                "type": "uint256"
               }
             ]
           }
@@ -3673,13 +4290,11 @@ export const remainderVerifierAbi = [
             "components": [
               {
                 "name": "x",
-                "type": "uint256",
-                "internalType": "uint256"
+                "type": "uint256"
               },
               {
                 "name": "y",
-                "type": "uint256",
-                "internalType": "uint256"
+                "type": "uint256"
               }
             ]
           },
@@ -3690,51 +4305,42 @@ export const remainderVerifierAbi = [
               {
                 "name": "commitD",
                 "type": "tuple",
-                "internalType": "struct HyraxVerifier.G1Point",
                 "components": [
                   {
                     "name": "x",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   },
                   {
                     "name": "y",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   }
                 ]
               },
               {
                 "name": "commitDDotA",
                 "type": "tuple",
-                "internalType": "struct HyraxVerifier.G1Point",
                 "components": [
                   {
                     "name": "x",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   },
                   {
                     "name": "y",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   }
                 ]
               },
               {
                 "name": "zVector",
-                "type": "uint256[]",
-                "internalType": "uint256[]"
+                "type": "uint256[]"
               },
               {
                 "name": "zDelta",
-                "type": "uint256",
-                "internalType": "uint256"
+                "type": "uint256"
               },
               {
                 "name": "zBeta",
-                "type": "uint256",
-                "internalType": "uint256"
+                "type": "uint256"
               }
             ]
           },
@@ -3744,13 +4350,11 @@ export const remainderVerifierAbi = [
             "components": [
               {
                 "name": "x",
-                "type": "uint256",
-                "internalType": "uint256"
+                "type": "uint256"
               },
               {
                 "name": "y",
-                "type": "uint256",
-                "internalType": "uint256"
+                "type": "uint256"
               }
             ]
           }
@@ -3774,13 +4378,11 @@ export const remainderVerifierAbi = [
             "components": [
               {
                 "name": "x",
-                "type": "uint256",
-                "internalType": "uint256"
+                "type": "uint256"
               },
               {
                 "name": "y",
-                "type": "uint256",
-                "internalType": "uint256"
+                "type": "uint256"
               }
             ]
           }
@@ -3817,6 +4419,27 @@ export const remainderVerifierAbi = [
       }
     ],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "getCircuitHashes",
+    "inputs": [
+      {
+        "name": "offset",
+        "type": "uint256"
+      },
+      {
+        "name": "limit",
+        "type": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32[]"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -3902,6 +4525,30 @@ export const remainderVerifierAbi = [
   },
   {
     "type": "function",
+    "name": "implementation",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "initialize",
+    "inputs": [
+      {
+        "name": "_admin",
+        "type": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "isCircuitActive",
     "inputs": [
       {
@@ -3936,18 +4583,6 @@ export const remainderVerifierAbi = [
   },
   {
     "type": "function",
-    "name": "owner",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
     "name": "pause",
     "inputs": [],
     "outputs": [],
@@ -3967,19 +4602,31 @@ export const remainderVerifierAbi = [
   },
   {
     "type": "function",
-    "name": "pendingOwner",
+    "name": "proxiableUUID",
     "inputs": [],
     "outputs": [
       {
         "name": "",
-        "type": "address"
+        "type": "bytes32"
       }
     ],
-    "stateMutability": "view"
+    "stateMutability": "pure"
   },
   {
     "type": "function",
     "name": "reactivateCircuit",
+    "inputs": [
+      {
+        "name": "circuitHash",
+        "type": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "reactivateDAGCircuit",
     "inputs": [
       {
         "name": "circuitHash",
@@ -4078,13 +4725,6 @@ export const remainderVerifierAbi = [
         "type": "bytes32"
       }
     ],
-    "outputs": [],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
-    "name": "renounceOwnership",
-    "inputs": [],
     "outputs": [],
     "stateMutability": "nonpayable"
   },
@@ -4208,6 +4848,26 @@ export const remainderVerifierAbi = [
   },
   {
     "type": "function",
+    "name": "setDAGECGroth16Verifier",
+    "inputs": [
+      {
+        "name": "circuitHash",
+        "type": "bytes32"
+      },
+      {
+        "name": "verifier",
+        "type": "address"
+      },
+      {
+        "name": "groth16InputCount",
+        "type": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "setDAGStylusVerifier",
     "inputs": [
       {
@@ -4228,6 +4888,18 @@ export const remainderVerifierAbi = [
     "inputs": [
       {
         "name": "_groth16Verifier",
+        "type": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setTimelock",
+    "inputs": [
+      {
+        "name": "_timelock",
         "type": "address"
       }
     ],
@@ -4257,95 +4929,78 @@ export const remainderVerifierAbi = [
               {
                 "name": "sumcheckProof",
                 "type": "tuple",
-                "internalType": "struct CommittedSumcheckVerifier.CommittedSumcheckProof",
                 "components": [
                   {
                     "name": "sum",
                     "type": "tuple",
-                    "internalType": "struct HyraxVerifier.G1Point",
                     "components": [
                       {
                         "name": "x",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       },
                       {
                         "name": "y",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       }
                     ]
                   },
                   {
                     "name": "messages",
                     "type": "tuple[]",
-                    "internalType": "struct HyraxVerifier.G1Point[]",
                     "components": [
                       {
                         "name": "x",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       },
                       {
                         "name": "y",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       }
                     ]
                   },
                   {
                     "name": "podp",
                     "type": "tuple",
-                    "internalType": "struct HyraxVerifier.PODPProof",
                     "components": [
                       {
                         "name": "commitD",
                         "type": "tuple",
-                        "internalType": "struct HyraxVerifier.G1Point",
                         "components": [
                           {
                             "name": "x",
-                            "type": "uint256",
-                            "internalType": "uint256"
+                            "type": "uint256"
                           },
                           {
                             "name": "y",
-                            "type": "uint256",
-                            "internalType": "uint256"
+                            "type": "uint256"
                           }
                         ]
                       },
                       {
                         "name": "commitDDotA",
                         "type": "tuple",
-                        "internalType": "struct HyraxVerifier.G1Point",
                         "components": [
                           {
                             "name": "x",
-                            "type": "uint256",
-                            "internalType": "uint256"
+                            "type": "uint256"
                           },
                           {
                             "name": "y",
-                            "type": "uint256",
-                            "internalType": "uint256"
+                            "type": "uint256"
                           }
                         ]
                       },
                       {
                         "name": "zVector",
-                        "type": "uint256[]",
-                        "internalType": "uint256[]"
+                        "type": "uint256[]"
                       },
                       {
                         "name": "zDelta",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       },
                       {
                         "name": "zBeta",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       }
                     ]
                   }
@@ -4354,100 +5009,82 @@ export const remainderVerifierAbi = [
               {
                 "name": "commitments",
                 "type": "tuple[]",
-                "internalType": "struct HyraxVerifier.G1Point[]",
                 "components": [
                   {
                     "name": "x",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   },
                   {
                     "name": "y",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   }
                 ]
               },
               {
                 "name": "pops",
                 "type": "tuple[]",
-                "internalType": "struct HyraxVerifier.ProofOfProduct[]",
                 "components": [
                   {
                     "name": "alpha",
                     "type": "tuple",
-                    "internalType": "struct HyraxVerifier.G1Point",
                     "components": [
                       {
                         "name": "x",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       },
                       {
                         "name": "y",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       }
                     ]
                   },
                   {
                     "name": "beta",
                     "type": "tuple",
-                    "internalType": "struct HyraxVerifier.G1Point",
                     "components": [
                       {
                         "name": "x",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       },
                       {
                         "name": "y",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       }
                     ]
                   },
                   {
                     "name": "delta",
                     "type": "tuple",
-                    "internalType": "struct HyraxVerifier.G1Point",
                     "components": [
                       {
                         "name": "x",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       },
                       {
                         "name": "y",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       }
                     ]
                   },
                   {
                     "name": "z1",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   },
                   {
                     "name": "z2",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   },
                   {
                     "name": "z3",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   },
                   {
                     "name": "z4",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   },
                   {
                     "name": "z5",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   }
                 ]
               }
@@ -4460,90 +5097,74 @@ export const remainderVerifierAbi = [
               {
                 "name": "commitmentRows",
                 "type": "tuple[]",
-                "internalType": "struct HyraxVerifier.G1Point[]",
                 "components": [
                   {
                     "name": "x",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   },
                   {
                     "name": "y",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   }
                 ]
               },
               {
                 "name": "podp",
                 "type": "tuple",
-                "internalType": "struct HyraxVerifier.PODPProof",
                 "components": [
                   {
                     "name": "commitD",
                     "type": "tuple",
-                    "internalType": "struct HyraxVerifier.G1Point",
                     "components": [
                       {
                         "name": "x",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       },
                       {
                         "name": "y",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       }
                     ]
                   },
                   {
                     "name": "commitDDotA",
                     "type": "tuple",
-                    "internalType": "struct HyraxVerifier.G1Point",
                     "components": [
                       {
                         "name": "x",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       },
                       {
                         "name": "y",
-                        "type": "uint256",
-                        "internalType": "uint256"
+                        "type": "uint256"
                       }
                     ]
                   },
                   {
                     "name": "zVector",
-                    "type": "uint256[]",
-                    "internalType": "uint256[]"
+                    "type": "uint256[]"
                   },
                   {
                     "name": "zDelta",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   },
                   {
                     "name": "zBeta",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   }
                 ]
               },
               {
                 "name": "comEval",
                 "type": "tuple",
-                "internalType": "struct HyraxVerifier.G1Point",
                 "components": [
                   {
                     "name": "x",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   },
                   {
                     "name": "y",
-                    "type": "uint256",
-                    "internalType": "uint256"
+                    "type": "uint256"
                   }
                 ]
               }
@@ -4559,13 +5180,11 @@ export const remainderVerifierAbi = [
             "components": [
               {
                 "name": "x",
-                "type": "uint256",
-                "internalType": "uint256"
+                "type": "uint256"
               },
               {
                 "name": "y",
-                "type": "uint256",
-                "internalType": "uint256"
+                "type": "uint256"
               }
             ]
           }
@@ -4621,10 +5240,41 @@ export const remainderVerifierAbi = [
   },
   {
     "type": "function",
-    "name": "transferOwnership",
+    "name": "timelock",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "totalCircuitHashes",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "unpause",
+    "inputs": [],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "upgradeTo",
     "inputs": [
       {
-        "name": "newOwner",
+        "name": "newImplementation",
         "type": "address"
       }
     ],
@@ -4633,10 +5283,19 @@ export const remainderVerifierAbi = [
   },
   {
     "type": "function",
-    "name": "unpause",
-    "inputs": [],
+    "name": "upgradeToAndCall",
+    "inputs": [
+      {
+        "name": "newImplementation",
+        "type": "address"
+      },
+      {
+        "name": "data",
+        "type": "bytes"
+      }
+    ],
     "outputs": [],
-    "stateMutability": "nonpayable"
+    "stateMutability": "payable"
   },
   {
     "type": "function",
@@ -4665,7 +5324,7 @@ export const remainderVerifierAbi = [
         "type": "bool"
       }
     ],
-    "stateMutability": "view"
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -4694,7 +5353,81 @@ export const remainderVerifierAbi = [
         "type": "bool"
       }
     ],
-    "stateMutability": "view"
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "verifyDAGProofStylusGroth16",
+    "inputs": [
+      {
+        "name": "proof",
+        "type": "bytes"
+      },
+      {
+        "name": "circuitHash",
+        "type": "bytes32"
+      },
+      {
+        "name": "publicInputs",
+        "type": "bytes"
+      },
+      {
+        "name": "gensData",
+        "type": "bytes"
+      },
+      {
+        "name": "ecGroth16Proof",
+        "type": "uint256[8]"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "valid",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "verifyDAGProofStylusGroth16Chunked",
+    "inputs": [
+      {
+        "name": "proof",
+        "type": "bytes"
+      },
+      {
+        "name": "circuitHash",
+        "type": "bytes32"
+      },
+      {
+        "name": "publicInputs",
+        "type": "bytes"
+      },
+      {
+        "name": "gensData",
+        "type": "bytes"
+      },
+      {
+        "name": "ecGroth16Proofs",
+        "type": "uint256[][]"
+      },
+      {
+        "name": "totalChunks",
+        "type": "uint256"
+      },
+      {
+        "name": "opsDigest",
+        "type": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "valid",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -4726,7 +5459,7 @@ export const remainderVerifierAbi = [
       }
     ],
     "outputs": [],
-    "stateMutability": "view"
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -4815,6 +5548,23 @@ export const remainderVerifierAbi = [
   },
   {
     "type": "event",
+    "name": "AdminChanged",
+    "inputs": [
+      {
+        "name": "previousAdmin",
+        "type": "address",
+        "indexed": false
+      },
+      {
+        "name": "newAdmin",
+        "type": "address",
+        "indexed": false
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "CircuitDeactivated",
     "inputs": [
       {
@@ -4895,6 +5645,28 @@ export const remainderVerifierAbi = [
   },
   {
     "type": "event",
+    "name": "DAGBatchFinalizeProgress",
+    "inputs": [
+      {
+        "name": "sessionId",
+        "type": "bytes32",
+        "indexed": true
+      },
+      {
+        "name": "groupsDone",
+        "type": "uint256",
+        "indexed": false
+      },
+      {
+        "name": "totalGroups",
+        "type": "uint256",
+        "indexed": false
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "DAGBatchFinalized",
     "inputs": [
       {
@@ -4934,6 +5706,45 @@ export const remainderVerifierAbi = [
   },
   {
     "type": "event",
+    "name": "DAGBatchStepCompleted",
+    "inputs": [
+      {
+        "name": "sessionId",
+        "type": "bytes32",
+        "indexed": true
+      },
+      {
+        "name": "batchIdx",
+        "type": "uint256",
+        "indexed": false
+      },
+      {
+        "name": "layersProcessed",
+        "type": "uint256",
+        "indexed": false
+      },
+      {
+        "name": "gasUsed",
+        "type": "uint256",
+        "indexed": false
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "DAGCircuitDeactivated",
+    "inputs": [
+      {
+        "name": "circuitHash",
+        "type": "bytes32",
+        "indexed": true
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "DAGCircuitGroth16VerifierUpdated",
     "inputs": [
       {
@@ -4949,6 +5760,62 @@ export const remainderVerifierAbi = [
       {
         "name": "inputCount",
         "type": "uint256",
+        "indexed": false
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "DAGCircuitReactivated",
+    "inputs": [
+      {
+        "name": "circuitHash",
+        "type": "bytes32",
+        "indexed": true
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "DAGECGroth16VerifierUpdated",
+    "inputs": [
+      {
+        "name": "circuitHash",
+        "type": "bytes32",
+        "indexed": true
+      },
+      {
+        "name": "verifier",
+        "type": "address",
+        "indexed": true
+      },
+      {
+        "name": "inputCount",
+        "type": "uint256",
+        "indexed": false
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "DAGProofVerified",
+    "inputs": [
+      {
+        "name": "circuitHash",
+        "type": "bytes32",
+        "indexed": true
+      },
+      {
+        "name": "valid",
+        "type": "bool",
+        "indexed": false
+      },
+      {
+        "name": "method",
+        "type": "string",
         "indexed": false
       }
     ],
@@ -4990,40 +5857,6 @@ export const remainderVerifierAbi = [
   },
   {
     "type": "event",
-    "name": "OwnershipTransferStarted",
-    "inputs": [
-      {
-        "name": "previousOwner",
-        "type": "address",
-        "indexed": true
-      },
-      {
-        "name": "newOwner",
-        "type": "address",
-        "indexed": true
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
-    "name": "OwnershipTransferred",
-    "inputs": [
-      {
-        "name": "previousOwner",
-        "type": "address",
-        "indexed": true
-      },
-      {
-        "name": "newOwner",
-        "type": "address",
-        "indexed": true
-      }
-    ],
-    "anonymous": false
-  },
-  {
-    "type": "event",
     "name": "Paused",
     "inputs": [
       {
@@ -5053,6 +5886,23 @@ export const remainderVerifierAbi = [
   },
   {
     "type": "event",
+    "name": "TimelockChanged",
+    "inputs": [
+      {
+        "name": "previousTimelock",
+        "type": "address",
+        "indexed": false
+      },
+      {
+        "name": "newTimelock",
+        "type": "address",
+        "indexed": false
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "Unpaused",
     "inputs": [
       {
@@ -5062,6 +5912,108 @@ export const remainderVerifierAbi = [
       }
     ],
     "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "Upgraded",
+    "inputs": [
+      {
+        "name": "implementation",
+        "type": "address",
+        "indexed": true
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "error",
+    "name": "AlreadyInitialized",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "AtomCommitIdxsLengthMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "AtomOffsetsLengthMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "AtomTargetLayersLengthMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "BatchAllComputeDone",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "BatchAlreadyFinalized",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "BatchComputeNotDone",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "BatchNotFinalized",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "BatchPedersenOpeningInvalid",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "BatchPublicClaimCommitmentMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "BatchPublicInputMLEMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "BatchSessionNotFound",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "BatchUnauthorized",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "BindingsLengthMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ChunkVerificationFailed",
+    "inputs": [
+      {
+        "name": "chunkIndex",
+        "type": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "CircuitAlreadyRegistered",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "CircuitHashZero",
+    "inputs": []
   },
   {
     "type": "error",
@@ -5075,7 +6027,77 @@ export const remainderVerifierAbi = [
   },
   {
     "type": "error",
+    "name": "CommittedInputEvalFailed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "CommittedInputVerificationFailed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "CommittedSumcheckFailed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "DAGCircuitAlreadyRegistered",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "DAGCircuitNotRegistered",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "DAGECGroth16VerifierNotSet",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "DAGGroth16OutputsTooShort",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "DAGGroth16VerifierNotSet",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "DataTooLargeForPoint",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "DataTooLargeForPoint",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "EcAddFailed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "EcMulFailed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "EmptyCommitment",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "EnforcedPause",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "EvalProofCountMismatch",
     "inputs": []
   },
   {
@@ -5085,7 +6107,87 @@ export const remainderVerifierAbi = [
   },
   {
     "type": "error",
+    "name": "Groth16OutputsTooShort",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "Groth16VerificationFailed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "Groth16VerificationFailed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "Groth16VerifierNotSet",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "HybridLayerZeroNotInput",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "HybridNeedTwoLayers",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InnerProductLengthMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InputHyraxFailed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InputIsCommittedLengthMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InputPODPEq1Failed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InputPODPEq1Failed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InputPODPEq2Failed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InputPODPEq2Failed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidAddress",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidChunkCount",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "InvalidGenerators",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidImplementation",
     "inputs": []
   },
   {
@@ -5100,27 +6202,347 @@ export const remainderVerifierAbi = [
   },
   {
     "type": "error",
-    "name": "OwnableInvalidOwner",
-    "inputs": [
-      {
-        "name": "owner",
-        "type": "address"
-      }
-    ]
+    "name": "InverseOfZero",
+    "inputs": []
   },
   {
     "type": "error",
-    "name": "OwnableUnauthorizedAccount",
-    "inputs": [
-      {
-        "name": "account",
-        "type": "address"
-      }
-    ]
+    "name": "IsCommittedLengthMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "LCoeffsLengthMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "LTensorOffsetsMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "LayerIndexOutOfBounds",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "LayerPODPFailed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "LayerPoPFailed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "LayerSizesLengthMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "LayerTypesLengthMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "Log2OfZero",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "Log2OfZero",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "Log2OfZero",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "MSMLengthMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "MleEvalMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "MleEvalMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NeedAtLeastOneLayerProof",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NoBindingsForReferencingLayer",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NoCommitments",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NoCommitments",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NoCommitmentsForClaim",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NoComputeLayers",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NoInputLayers",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NoInputProofs",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NoOutputClaimCommitments",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NoOutputClaims",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotAdmin",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotEnoughCommitmentsForPoP",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotEnoughCommitmentsForPoP",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotEnoughCommitsForPoP",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotEnoughCommitsForPoP",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotEnoughGeneratorsForPODP",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotEnoughPublicValueClaims",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotInitializing",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotTimelocked",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NumLayersZero",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NumSumcheckRoundsLengthMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "OnChainMLEMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "OracleExprCoeffsLengthMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "OracleProductOffsetsLengthMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "OracleResultIdxsLengthMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "PODPEq1Failed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "PODPEq1Failed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "PODPEq2Failed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "PODPEq2Failed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "PODPVectorLengthMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "PedersenOpeningInvalid",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "PedersenOpeningInvalid",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "PoPFailed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "PoPFailed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ProofOfProductFailed",
+    "inputs": []
   },
   {
     "type": "error",
     "name": "ProofVerificationFailed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "PtOffsetsLengthMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "PublicClaimCommitmentMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "PublicClaimCommitmentMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "PublicInputClaimMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "PublicInputCommitmentMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "PublicInputMLEMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ReentrancyGuardReentrantCall",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "StylusCallFailed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "StylusVerificationFailed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "StylusVerifierNotConfigured",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "SubtractNeedsTwoCommitments",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "SubtractNeedsTwoCommitments",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "SumcheckFailed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "TooManyComputeLayers",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "TooManyInputLayers",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "UpgradeCallFailed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "WrongNumberOfLayerProofs",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ZVectorLengthMismatch",
     "inputs": []
   },
   {
@@ -5147,6 +6569,61 @@ export const proverRegistryAbi = [
         "type": "uint256"
       }
     ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "MAX_NAME_LENGTH",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_REASON_LENGTH",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_TOP_PROVERS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_URL_LENGTH",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "acceptOwnership",
+    "inputs": [],
+    "outputs": [],
     "stateMutability": "nonpayable"
   },
   {
@@ -5196,6 +6673,48 @@ export const proverRegistryAbi = [
     "inputs": [],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "fulfillProverSelection",
+    "inputs": [
+      {
+        "name": "requestId",
+        "type": "uint256"
+      },
+      {
+        "name": "secret",
+        "type": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "prover",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "getActiveProvers",
+    "inputs": [
+      {
+        "name": "offset",
+        "type": "uint256"
+      },
+      {
+        "name": "limit",
+        "type": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address[]"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -5350,7 +6869,50 @@ export const proverRegistryAbi = [
   },
   {
     "type": "function",
+    "name": "nextRequestId",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "owner",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "pause",
+    "inputs": [],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "paused",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "pendingOwner",
     "inputs": [],
     "outputs": [
       {
@@ -5461,6 +7023,23 @@ export const proverRegistryAbi = [
   },
   {
     "type": "function",
+    "name": "requestProverSelection",
+    "inputs": [
+      {
+        "name": "commitment",
+        "type": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "requestId",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "selectProver",
     "inputs": [
       {
@@ -5472,6 +7051,35 @@ export const proverRegistryAbi = [
       {
         "name": "",
         "type": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "selectionRequests",
+    "inputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "commitment",
+        "type": "bytes32"
+      },
+      {
+        "name": "blockNumber",
+        "type": "uint256"
+      },
+      {
+        "name": "requester",
+        "type": "address"
+      },
+      {
+        "name": "fulfilled",
+        "type": "bool"
       }
     ],
     "stateMutability": "view"
@@ -5604,6 +7212,18 @@ export const proverRegistryAbi = [
   },
   {
     "type": "function",
+    "name": "totalActiveProvers",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "totalStaked",
     "inputs": [],
     "outputs": [
@@ -5628,6 +7248,13 @@ export const proverRegistryAbi = [
   },
   {
     "type": "function",
+    "name": "unpause",
+    "inputs": [],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "withdrawStake",
     "inputs": [
       {
@@ -5637,6 +7264,40 @@ export const proverRegistryAbi = [
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "event",
+    "name": "MinStakeUpdated",
+    "inputs": [
+      {
+        "name": "oldMinStake",
+        "type": "uint256",
+        "indexed": false
+      },
+      {
+        "name": "newMinStake",
+        "type": "uint256",
+        "indexed": false
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "OwnershipTransferStarted",
+    "inputs": [
+      {
+        "name": "previousOwner",
+        "type": "address",
+        "indexed": true
+      },
+      {
+        "name": "newOwner",
+        "type": "address",
+        "indexed": true
+      }
+    ],
+    "anonymous": false
   },
   {
     "type": "event",
@@ -5651,6 +7312,18 @@ export const proverRegistryAbi = [
         "name": "newOwner",
         "type": "address",
         "indexed": true
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "Paused",
+    "inputs": [
+      {
+        "name": "account",
+        "type": "address",
+        "indexed": false
       }
     ],
     "anonymous": false
@@ -5764,6 +7437,67 @@ export const proverRegistryAbi = [
   },
   {
     "type": "event",
+    "name": "SelectionFulfilled",
+    "inputs": [
+      {
+        "name": "requestId",
+        "type": "uint256",
+        "indexed": true
+      },
+      {
+        "name": "prover",
+        "type": "address",
+        "indexed": true
+      },
+      {
+        "name": "seed",
+        "type": "uint256",
+        "indexed": false
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "SelectionRequested",
+    "inputs": [
+      {
+        "name": "requestId",
+        "type": "uint256",
+        "indexed": true
+      },
+      {
+        "name": "requester",
+        "type": "address",
+        "indexed": true
+      },
+      {
+        "name": "commitment",
+        "type": "bytes32",
+        "indexed": false
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "SlashBasisPointsUpdated",
+    "inputs": [
+      {
+        "name": "oldBasisPoints",
+        "type": "uint256",
+        "indexed": false
+      },
+      {
+        "name": "newBasisPoints",
+        "type": "uint256",
+        "indexed": false
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "SlasherUpdated",
     "inputs": [
       {
@@ -5824,8 +7558,40 @@ export const proverRegistryAbi = [
     "anonymous": false
   },
   {
+    "type": "event",
+    "name": "Unpaused",
+    "inputs": [
+      {
+        "name": "account",
+        "type": "address",
+        "indexed": false
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "error",
+    "name": "EnforcedPause",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ExpectedPause",
+    "inputs": []
+  },
+  {
     "type": "error",
     "name": "InsufficientStake",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidSecret",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NoActiveProvers",
     "inputs": []
   },
   {
@@ -5875,6 +7641,16 @@ export const proverRegistryAbi = [
   },
   {
     "type": "error",
+    "name": "RequestAlreadyFulfilled",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "RequestNotFound",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "SafeERC20FailedOperation",
     "inputs": [
       {
@@ -5882,6 +7658,35 @@ export const proverRegistryAbi = [
         "type": "address"
       }
     ]
+  },
+  {
+    "type": "error",
+    "name": "SameBlockReveal",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "SlashBasisPointsTooHigh",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "StringTooLong",
+    "inputs": [
+      {
+        "name": "field",
+        "type": "string"
+      },
+      {
+        "name": "maxLength",
+        "type": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "TooManyTopProversRequested",
+    "inputs": []
   },
   {
     "type": "error",
@@ -6011,7 +7816,67 @@ export const proverReputationAbi = [
   },
   {
     "type": "function",
+    "name": "MAX_COOLDOWN",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_DECAY_PERIOD",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_REASON_LENGTH",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "MAX_SCORE",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_UINT64_TIMESTAMP",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MIN_COOLDOWN",
     "inputs": [],
     "outputs": [
       {
@@ -6056,6 +7921,13 @@ export const proverReputationAbi = [
       }
     ],
     "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "acceptOwnership",
+    "inputs": [],
+    "outputs": [],
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -6244,6 +8116,49 @@ export const proverReputationAbi = [
   },
   {
     "type": "function",
+    "name": "getSlashHistory",
+    "inputs": [
+      {
+        "name": "prover",
+        "type": "address"
+      },
+      {
+        "name": "offset",
+        "type": "uint256"
+      },
+      {
+        "name": "limit",
+        "type": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "tuple[]",
+        "components": [
+          {
+            "name": "timestamp",
+            "type": "uint256"
+          },
+          {
+            "name": "reason",
+            "type": "string"
+          },
+          {
+            "name": "penaltyBps",
+            "type": "uint256"
+          },
+          {
+            "name": "reportedBy",
+            "type": "address"
+          }
+        ]
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "getSuccessRate",
     "inputs": [
       {
@@ -6296,6 +8211,37 @@ export const proverReputationAbi = [
   {
     "type": "function",
     "name": "owner",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "pause",
+    "inputs": [],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "paused",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "pendingOwner",
     "inputs": [],
     "outputs": [
       {
@@ -6383,6 +8329,13 @@ export const proverReputationAbi = [
   },
   {
     "type": "function",
+    "name": "renounceOwnership",
+    "inputs": [],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "reputations",
     "inputs": [
       {
@@ -6460,6 +8413,18 @@ export const proverReputationAbi = [
   },
   {
     "type": "function",
+    "name": "setSlashCooldown",
+    "inputs": [
+      {
+        "name": "newCooldown",
+        "type": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "slash",
     "inputs": [
       {
@@ -6477,6 +8442,18 @@ export const proverReputationAbi = [
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "slashCooldown",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -6525,6 +8502,23 @@ export const proverReputationAbi = [
   },
   {
     "type": "function",
+    "name": "totalSlashEvents",
+    "inputs": [
+      {
+        "name": "prover",
+        "type": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "transferOwnership",
     "inputs": [
       {
@@ -6544,6 +8538,13 @@ export const proverReputationAbi = [
         "type": "address"
       }
     ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "unpause",
+    "inputs": [],
     "outputs": [],
     "stateMutability": "nonpayable"
   },
@@ -6608,6 +8609,52 @@ export const proverReputationAbi = [
       {
         "name": "newScore",
         "type": "uint256",
+        "indexed": false
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "OwnershipTransferStarted",
+    "inputs": [
+      {
+        "name": "previousOwner",
+        "type": "address",
+        "indexed": true
+      },
+      {
+        "name": "newOwner",
+        "type": "address",
+        "indexed": true
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "OwnershipTransferred",
+    "inputs": [
+      {
+        "name": "previousOwner",
+        "type": "address",
+        "indexed": true
+      },
+      {
+        "name": "newOwner",
+        "type": "address",
+        "indexed": true
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "Paused",
+    "inputs": [
+      {
+        "name": "account",
+        "type": "address",
         "indexed": false
       }
     ],
@@ -6707,6 +8754,23 @@ export const proverReputationAbi = [
   },
   {
     "type": "event",
+    "name": "SlashCooldownUpdated",
+    "inputs": [
+      {
+        "name": "oldCooldown",
+        "type": "uint256",
+        "indexed": false
+      },
+      {
+        "name": "newCooldown",
+        "type": "uint256",
+        "indexed": false
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "TierChanged",
     "inputs": [
       {
@@ -6728,8 +8792,35 @@ export const proverReputationAbi = [
     "anonymous": false
   },
   {
+    "type": "event",
+    "name": "Unpaused",
+    "inputs": [
+      {
+        "name": "account",
+        "type": "address",
+        "indexed": false
+      }
+    ],
+    "anonymous": false
+  },
+  {
     "type": "error",
     "name": "AlreadyRegistered",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "EnforcedPause",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ExpectedPause",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidCooldown",
     "inputs": []
   },
   {
@@ -6739,13 +8830,33 @@ export const proverReputationAbi = [
   },
   {
     "type": "error",
+    "name": "InvalidTimestamp",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "NotAuthorized",
     "inputs": []
   },
   {
     "type": "error",
-    "name": "NotOwner",
-    "inputs": []
+    "name": "OwnableInvalidOwner",
+    "inputs": [
+      {
+        "name": "owner",
+        "type": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "OwnableUnauthorizedAccount",
+    "inputs": [
+      {
+        "name": "account",
+        "type": "address"
+      }
+    ]
   },
   {
     "type": "error",
@@ -6755,6 +8866,30 @@ export const proverReputationAbi = [
   {
     "type": "error",
     "name": "ProverNotRegistered",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "SlashCooldownActive",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "StringTooLong",
+    "inputs": [
+      {
+        "name": "field",
+        "type": "string"
+      },
+      {
+        "name": "maxLength",
+        "type": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "TimestampOverflow",
     "inputs": []
   }
 ] as const;

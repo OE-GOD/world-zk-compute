@@ -18,7 +18,7 @@
   ],
   "scripts": {
     "build": "tsup src/index.ts --format cjs,esm --dts",
-    "dev": "tsup --watch",
+    "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
     "lint": "eslint src --ext .ts",
     "test": "vitest",
     "test:integration": "vitest run src/__tests__/anvil-integration.test.ts",

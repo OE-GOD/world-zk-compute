@@ -94,7 +94,8 @@ export interface OnChainProverStats {
  *
  * const engine = new ExecutionEngineClient(publicClient, walletClient, '0x...');
  *
- * const requestId = await engine.submitRequest({
+ * // Returns the transaction hash; the new request ID is `getNextRequestId() - 1n`
+ * const txHash = await engine.submitRequest({
  *   imageId: '0x1234...',
  *   inputDigest: '0xabcd...',
  *   tipEther: '0.001',
