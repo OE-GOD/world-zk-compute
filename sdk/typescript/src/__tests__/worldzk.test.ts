@@ -115,13 +115,21 @@ describe('WorldZK.health()', () => {
   });
 
   it('returns health status', async () => {
-    mockFetch(async () => jsonResponse({ status: 'ok', circuits_loaded: 3 }));
+    mockFetch(async () =>
+      jsonResponse({
+        status: 'healthy',
+        services: [{ name: 'verifier', healthy: true, response_ms: 1 }],
+        healthy_count: 1,
+        total_count: 1,
+      }),
+    );
 
     const zk = new WorldZK();
     const h = await zk.health();
 
-    expect(h.status).toBe('ok');
-    expect(h['circuits_loaded']).toBe(3);
+    expect(h.status).toBe('healthy');
+    expect(h.healthy_count).toBe(1);
+    expect(h.services?.[0].name).toBe('verifier');
   });
 
   it('throws on non-2xx response', async () => {
@@ -141,15 +149,18 @@ describe('WorldZK.uploadModel()', () => {
     restoreFetch();
   });
 
-  it('sends model JSON and returns model_id', async () => {
+  // Shapes below are what the proof-generator returns through the gateway
+  // (checked against the running services).
+  it('sends the model as a JSON object with its name and returns model_id', async () => {
     let capturedBody: Record<string, unknown> = {};
     mockFetch(async (_input: RequestInfo | URL, init?: RequestInit) => {
       capturedBody = JSON.parse(init?.body as string);
       return jsonResponse({
         model_id: 'mdl-001',
-        name: 'test-model',
+        model_hash: '0x9efa',
+        circuit_hash: '0x43e0',
         format: 'xgboost',
-        created_at: '2026-03-27T00:00:00Z',
+        active: true,
       });
     });
 
@@ -157,26 +168,45 @@ describe('WorldZK.uploadModel()', () => {
     const resp = await zk.uploadModel('{"trees":[]}', 'test-model', 'xgboost');
 
     expect(resp.model_id).toBe('mdl-001');
-    expect(resp.name).toBe('test-model');
+    expect(resp.model_hash).toBe('0x9efa');
     expect(resp.format).toBe('xgboost');
-    expect(capturedBody['model_json']).toBe('{"trees":[]}');
+    // The service takes a JSON value: a string would be stored verbatim.
+    expect(capturedBody['model_json']).toEqual({ trees: [] });
     expect(capturedBody['name']).toBe('test-model');
     expect(capturedBody['format']).toBe('xgboost');
   });
 
-  it('omits optional fields when not provided', async () => {
+  it('accepts an already parsed model and omits format when not provided', async () => {
     let capturedBody: Record<string, unknown> = {};
     mockFetch(async (_input: RequestInfo | URL, init?: RequestInit) => {
       capturedBody = JSON.parse(init?.body as string);
-      return jsonResponse({ model_id: 'mdl-002' });
+      return jsonResponse({
+        model_id: 'mdl-002',
+        model_hash: '0x00',
+        circuit_hash: '0x00',
+        format: 'xgboost',
+        active: true,
+      });
     });
 
     const zk = new WorldZK();
-    await zk.uploadModel('{}');
+    await zk.uploadModel({ learner: {} }, 'parsed');
 
-    expect(capturedBody['model_json']).toBe('{}');
-    expect(capturedBody).not.toHaveProperty('name');
+    expect(capturedBody['model_json']).toEqual({ learner: {} });
+    expect(capturedBody['name']).toBe('parsed');
     expect(capturedBody).not.toHaveProperty('format');
+  });
+
+  it('rejects model text that is not JSON before sending anything', async () => {
+    let called = false;
+    mockFetch(async () => {
+      called = true;
+      return jsonResponse({});
+    });
+
+    const zk = new WorldZK();
+    await expect(zk.uploadModel('not json', 'broken')).rejects.toThrow(SyntaxError);
+    expect(called).toBe(false);
   });
 });
 
@@ -193,8 +223,14 @@ describe('WorldZK.listModels()', () => {
     mockFetch(async () =>
       jsonResponse({
         models: [
-          { model_id: 'mdl-001', name: 'A', format: 'xgboost' },
-          { model_id: 'mdl-002', name: 'B', format: 'lightgbm' },
+          {
+            id: 'mdl-001', name: 'A', format: 'xgboost', model_hash: '0x01', circuit_hash: '0x02',
+            active: true, created_at: '2026-11-22T20:35:57Z', file_size_bytes: 1866,
+          },
+          {
+            id: 'mdl-002', name: 'B', format: 'lightgbm', model_hash: '0x03', circuit_hash: '0x04',
+            active: true, created_at: '2026-11-22T20:36:00Z', file_size_bytes: 900,
+          },
         ],
       }),
     );
@@ -203,7 +239,7 @@ describe('WorldZK.listModels()', () => {
     const resp = await zk.listModels();
 
     expect(resp.models).toHaveLength(2);
-    expect(resp.models[0].model_id).toBe('mdl-001');
+    expect(resp.models[0].id).toBe('mdl-001');
     expect(resp.models[1].format).toBe('lightgbm');
   });
 });
@@ -225,9 +261,12 @@ describe('WorldZK.prove()', () => {
       capturedBody = JSON.parse(init?.body as string);
       return jsonResponse({
         proof_id: 'prf-123',
-        model_id: 'mdl-001',
-        status: 'completed',
-        result: 42,
+        model_hash: '0x9efa',
+        circuit_hash: '0x43e0',
+        output: 'approved',
+        mock: true,
+        prove_time_ms: 0,
+        proof_bundle: { proof_hex: '0xbc95', public_inputs_hex: '0xcb04' },
       });
     });
 
@@ -238,8 +277,10 @@ describe('WorldZK.prove()', () => {
     expect(capturedBody['model_id']).toBe('mdl-001');
     expect(capturedBody['features']).toEqual([1.0, 2.5, 3.7]);
     expect(resp.proof_id).toBe('prf-123');
-    expect(resp.result).toBe(42);
-    expect(resp.status).toBe('completed');
+    expect(resp.output).toBe('approved');
+    expect(resp.mock).toBe(true);
+    // Only set when the generator stored the proof in the registry.
+    expect(resp.registry_proof_id).toBeUndefined();
   });
 });
 
@@ -256,12 +297,7 @@ describe('WorldZK.verify()', () => {
     let capturedUrl = '';
     mockFetch(async (input: RequestInfo | URL) => {
       capturedUrl = typeof input === 'string' ? input : (input as Request).url;
-      return jsonResponse({
-        proof_id: 'prf-123',
-        verified: true,
-        circuit_hash: '0xabcd',
-        verification_time_ms: 42,
-      });
+      return jsonResponse({ verified: true, receipt_id: 'rcp-1' });
     });
 
     const zk = new WorldZK('http://localhost:8080');
@@ -269,19 +305,19 @@ describe('WorldZK.verify()', () => {
 
     expect(capturedUrl).toBe('http://localhost:8080/v1/proofs/prf-123/verify');
     expect(resp.verified).toBe(true);
-    expect(resp.proof_id).toBe('prf-123');
-    expect(resp.circuit_hash).toBe('0xabcd');
+    expect(resp.receipt_id).toBe('rcp-1');
   });
 
   it('returns verified=false for invalid proof', async () => {
     mockFetch(async () =>
-      jsonResponse({ proof_id: 'prf-999', verified: false, error: 'invalid seal' }),
+      jsonResponse({ verified: false, receipt_id: 'rcp-2', error: 'sumcheck failed' }),
     );
 
     const zk = new WorldZK();
     const resp = await zk.verify('prf-999');
 
     expect(resp.verified).toBe(false);
+    expect(resp.error).toBe('sumcheck failed');
   });
 });
 
@@ -299,10 +335,15 @@ describe('WorldZK.getReceipt()', () => {
     mockFetch(async (input: RequestInfo | URL) => {
       capturedUrl = typeof input === 'string' ? input : (input as Request).url;
       return jsonResponse({
+        receipt_id: 'rcp-1',
         proof_id: 'prf-123',
-        seal: 'base64seal==',
-        journal: 'base64journal==',
-        image_id: '0xdeadbeef',
+        circuit_hash: '0x8e7c',
+        model_hash: '',
+        verified: true,
+        verified_at: '2026-11-22T20:36:13Z',
+        verifier_version: '0.1.0',
+        verifier_host: 'unknown',
+        signature: '7370dc',
       });
     });
 
@@ -311,9 +352,9 @@ describe('WorldZK.getReceipt()', () => {
 
     expect(capturedUrl).toBe('http://localhost:8080/v1/proofs/prf-123/receipt');
     expect(resp.proof_id).toBe('prf-123');
-    expect(resp.seal).toBe('base64seal==');
-    expect(resp.journal).toBe('base64journal==');
-    expect(resp.image_id).toBe('0xdeadbeef');
+    expect(resp.receipt_id).toBe('rcp-1');
+    expect(resp.verified).toBe(true);
+    expect(resp.signature).toBe('7370dc');
   });
 });
 
@@ -332,9 +373,10 @@ describe('WorldZK.listProofs()', () => {
       capturedUrl = typeof input === 'string' ? input : (input as Request).url;
       return jsonResponse({
         proofs: [
-          { proof_id: 'prf-1', model_id: 'mdl-1', status: 'completed' },
-          { proof_id: 'prf-2', model_id: 'mdl-2', status: 'pending' },
+          { id: 'prf-1', model_hash: '0x01', circuit_hash: '0x02', created_at: '2026-11-22T20:35:57Z', verified: true },
+          { id: 'prf-2', model_hash: '0x03', circuit_hash: '0x04', created_at: '2026-11-22T20:36:00Z' },
         ],
+        count: 2,
       });
     });
 
@@ -343,13 +385,15 @@ describe('WorldZK.listProofs()', () => {
 
     expect(capturedUrl).toBe('http://localhost:8080/v1/proofs');
     expect(resp.proofs).toHaveLength(2);
+    expect(resp.proofs[0].id).toBe('prf-1');
+    expect(resp.count).toBe(2);
   });
 
   it('applies model and limit query params', async () => {
     let capturedUrl = '';
     mockFetch(async (input: RequestInfo | URL) => {
       capturedUrl = typeof input === 'string' ? input : (input as Request).url;
-      return jsonResponse({ proofs: [] });
+      return jsonResponse({ proofs: [], count: 0 });
     });
 
     const zk = new WorldZK('http://localhost:8080');
@@ -375,9 +419,10 @@ describe('WorldZK.stats()', () => {
       capturedUrl = typeof input === 'string' ? input : (input as Request).url;
       return jsonResponse({
         total_proofs: 1234,
-        total_models: 10,
-        total_verifications: 567,
-        uptime_seconds: 86400,
+        active_proofs: 1200,
+        verified_count: 567,
+        failed_count: 3,
+        total_storage_bytes: 86400,
       });
     });
 
@@ -386,8 +431,8 @@ describe('WorldZK.stats()', () => {
 
     expect(capturedUrl).toBe('http://localhost:8080/v1/stats');
     expect(resp.total_proofs).toBe(1234);
-    expect(resp.total_models).toBe(10);
-    expect(resp.uptime_seconds).toBe(86400);
+    expect(resp.verified_count).toBe(567);
+    expect(resp.total_storage_bytes).toBe(86400);
   });
 });
 
@@ -456,23 +501,42 @@ describe('WorldZK full workflow', () => {
     restoreFetch();
   });
 
+  // The generator's `proof_id` is not a registry id: verify() and getReceipt()
+  // take `registry_proof_id`, which prove() carries when the proof was stored.
   it('upload -> prove -> verify -> getReceipt', async () => {
     let callCount = 0;
+    const verifiedUrls: string[] = [];
     mockFetch(async (input: RequestInfo | URL) => {
       callCount++;
       const url = typeof input === 'string' ? input : (input as Request).url;
 
       if (url.endsWith('/v1/models')) {
-        return jsonResponse({ model_id: 'mdl-new', name: 'workflow-test' });
+        return jsonResponse({
+          model_id: 'mdl-new', model_hash: '0x01', circuit_hash: '0x02', format: 'xgboost', active: true,
+        });
       }
       if (url.endsWith('/v1/prove')) {
-        return jsonResponse({ proof_id: 'prf-new', model_id: 'mdl-new', status: 'completed', result: 7 });
+        return jsonResponse({
+          proof_id: 'gen-1',
+          registry_proof_id: 'reg-1',
+          model_hash: '0x01',
+          circuit_hash: '0x02',
+          output: 'approved',
+          mock: false,
+          prove_time_ms: 12,
+          proof_bundle: { proof_hex: '0x00', public_inputs_hex: '0x00' },
+        });
       }
       if (url.includes('/verify')) {
-        return jsonResponse({ proof_id: 'prf-new', verified: true });
+        verifiedUrls.push(url);
+        return jsonResponse({ verified: true, receipt_id: 'rcp-1' });
       }
       if (url.includes('/receipt')) {
-        return jsonResponse({ proof_id: 'prf-new', seal: 'aaa', journal: 'bbb' });
+        verifiedUrls.push(url);
+        return jsonResponse({
+          receipt_id: 'rcp-1', proof_id: 'reg-1', circuit_hash: '0x02', model_hash: '0x01',
+          verified: true, verified_at: '2026-11-22T20:36:13Z', signature: 'aaa',
+        });
       }
 
       return jsonResponse({ error: 'unexpected' }, 404);
@@ -484,15 +548,20 @@ describe('WorldZK full workflow', () => {
     expect(model.model_id).toBe('mdl-new');
 
     const proof = await zk.prove(model.model_id, [1.0, 2.0]);
-    expect(proof.proof_id).toBe('prf-new');
-    expect(proof.result).toBe(7);
+    expect(proof.proof_id).toBe('gen-1');
+    expect(proof.registry_proof_id).toBe('reg-1');
 
-    const verification = await zk.verify(proof.proof_id);
+    const verification = await zk.verify(proof.registry_proof_id!);
     expect(verification.verified).toBe(true);
 
-    const receipt = await zk.getReceipt(proof.proof_id);
-    expect(receipt.seal).toBe('aaa');
+    const receipt = await zk.getReceipt(proof.registry_proof_id!);
+    expect(receipt.receipt_id).toBe(verification.receipt_id);
+    expect(receipt.signature).toBe('aaa');
 
+    expect(verifiedUrls).toEqual([
+      'http://localhost:8080/v1/proofs/reg-1/verify',
+      'http://localhost:8080/v1/proofs/reg-1/receipt',
+    ]);
     expect(callCount).toBe(4);
   });
 });

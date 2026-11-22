@@ -115,7 +115,7 @@ export class WorldZK {
    *
    * ```typescript
    * const h = await zk.health();
-   * console.log(h.status); // "ok"
+   * console.log(h.status); // "healthy"
    * ```
    */
   async health(): Promise<HealthCheckResponse> {
@@ -125,9 +125,10 @@ export class WorldZK {
   /**
    * Upload an ML model for ZK proving.
    *
-   * @param modelJson - Serialized model JSON string.
-   * @param name      - Optional human-readable name.
-   * @param format    - Optional format hint (`"xgboost"`, `"lightgbm"`, etc.).
+   * @param model  - The model file contents: either the JSON text or the parsed object.
+   * @param name   - Human-readable name (required by the proof-generator).
+   * @param format - Optional format hint (`"xgboost"`, `"lightgbm"`, etc.).
+   * @throws SyntaxError if `model` is a string that is not valid JSON.
    *
    * ```typescript
    * const model = await zk.uploadModel(fs.readFileSync('model.json', 'utf-8'), 'my-model', 'xgboost');
@@ -135,12 +136,14 @@ export class WorldZK {
    * ```
    */
   async uploadModel(
-    modelJson: string,
-    name?: string,
+    model: string | Record<string, unknown>,
+    name: string,
     format?: string,
   ): Promise<UploadModelResponse> {
-    const body: UploadModelParams = { model_json: modelJson };
-    if (name !== undefined) body.name = name;
+    // The service takes the model as a JSON value; a JSON-encoded string is
+    // stored as-is and cannot be proven against.
+    const modelJson: unknown = typeof model === 'string' ? JSON.parse(model) : model;
+    const body: UploadModelParams = { model_json: modelJson, name };
     if (format !== undefined) body.format = format;
     return this.request<UploadModelResponse>('POST', '/v1/models', body as unknown as Record<string, unknown>);
   }
@@ -162,9 +165,13 @@ export class WorldZK {
    * @param modelId  - The model identifier (from {@link uploadModel}).
    * @param features - Numeric feature vector for inference.
    *
+   * The returned `proof_id` is the generator's own id. To verify by id use
+   * `registry_proof_id`, which is only set when the generator stored the
+   * proof in the registry.
+   *
    * ```typescript
    * const result = await zk.prove('model-abc', [1.0, 2.5, 3.7]);
-   * console.log(result.proof_id, result.result);
+   * console.log(result.proof_id, result.output, result.mock);
    * ```
    */
   async prove(modelId: string, features: number[]): Promise<ProveResponse> {
@@ -175,9 +182,9 @@ export class WorldZK {
   }
 
   /**
-   * Verify a previously generated proof.
+   * Verify a proof stored in the proof-registry.
    *
-   * @param proofId - The proof identifier (from {@link prove}).
+   * @param proofId - The registry's proof identifier (`registry_proof_id` from {@link prove}, or an id from {@link listProofs}).
    *
    * ```typescript
    * const v = await zk.verify('proof-xyz');
@@ -189,13 +196,13 @@ export class WorldZK {
   }
 
   /**
-   * Retrieve the raw receipt (seal + journal) for a proof.
+   * Retrieve the registry's signed verification receipt for a proof.
    *
-   * @param proofId - The proof identifier.
+   * @param proofId - The registry's proof identifier.
    *
    * ```typescript
    * const receipt = await zk.getReceipt('proof-xyz');
-   * console.log(receipt.seal, receipt.journal);
+   * console.log(receipt.receipt_id, receipt.verified, receipt.signature);
    * ```
    */
   async getReceipt(proofId: string): Promise<ReceiptResponse> {
@@ -205,10 +212,10 @@ export class WorldZK {
   /**
    * List proofs with optional filters.
    *
-   * @param opts - Optional filters: `model` (model ID) and `limit`.
+   * @param opts - Optional filters: `model` (model hash) and `limit`.
    *
    * ```typescript
-   * const { proofs } = await zk.listProofs({ model: 'model-abc', limit: 10 });
+   * const { proofs, count } = await zk.listProofs({ model: '0x...', limit: 10 });
    * ```
    */
   async listProofs(opts?: ListProofsParams): Promise<ListProofsResponse> {
