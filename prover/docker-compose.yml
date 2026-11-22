@@ -22,6 +22,7 @@ services:
       - RUST_LOG=${RUST_LOG:-info}
       - PRIVATE_KEY=${PRIVATE_KEY}
       - RPC_URL=${RPC_URL}
+      - ENGINE_ADDRESS=${ENGINE_ADDRESS}
       - BONSAI_API_KEY=${BONSAI_API_KEY:-}
       - CONTRACT_ADDRESS=${CONTRACT_ADDRESS:-}
     volumes:

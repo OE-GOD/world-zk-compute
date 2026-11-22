@@ -19,7 +19,7 @@
 #   - registry         (port 3001): Proof storage and search
 #   - generator        (port 3002): Proof generation from models (mock by default)
 #   - prometheus       (port 9090): Metrics collection
-#   - grafana          (port 3001, monitoring profile): Dashboards
+#   - grafana          (port 3030, monitoring profile): Dashboards
 #
 # Gateway routes:
 #   /prove, /models  -> generator
@@ -155,8 +155,9 @@ services:
 
   # -- Proof Generator -----------------------------------------------------------
   # Generates proofs from uploaded ML models. Runs in --mock mode by default
-  # so the service can be tested without heavy circuit construction. Remove
-  # the command override to enable real proof generation.
+  # so the service can be tested without heavy circuit construction. For real
+  # proof generation drop --mock and add --prover-url <warm prover>: the image
+  # does not ship the xgboost-remainder binary that --prover-binary expects.
   generator:
     build:
       context: .

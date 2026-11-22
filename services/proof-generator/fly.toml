@@ -4,14 +4,14 @@ primary_region = "iad"
 [build]
   dockerfile = "Dockerfile"
 
+# The binary takes its port and mock mode from flags, not from env. The image
+# CMD is `--mock --host 0.0.0.0 --port 3100`.
 [env]
-  PORT = "3002"
   RUST_LOG = "info"
   LOG_FORMAT = "json"
-  MOCK = "true"
 
 [http_service]
-  internal_port = 3002
+  internal_port = 3100
   force_https = true
   auto_stop_machines = true
   auto_start_machines = true

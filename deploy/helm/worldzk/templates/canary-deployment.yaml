@@ -57,19 +57,19 @@ spec:
             - secretRef:
                 name: {{ include "worldzk.secretName" . }}
           {{- $mergedEnv := merge ($canary.env | default dict) (.Values.operator.env | default dict) }}
-          {{- if $mergedEnv }}
           env:
+            # The health/metrics server defaults to 127.0.0.1:9090; bind it where
+            # the container port, probes and Service expect it.
+            - name: METRICS_PORT
+              value: {{ .Values.operator.port | quote }}
+            - name: METRICS_BIND_ADDR
+              value: "0.0.0.0"
             {{- range $key, $value := $mergedEnv }}
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- end }}
             - name: WORLDZK_CANARY
               value: "true"
-          {{- else }}
-          env:
-            - name: WORLDZK_CANARY
-              value: "true"
-          {{- end }}
           {{- with ($canary.resources | default .Values.operator.resources) }}
           resources:
             {{- toYaml . | nindent 12 }}

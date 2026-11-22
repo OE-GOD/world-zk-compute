@@ -10,7 +10,7 @@ primary_region = "iad"
   REGISTRY_URL = "https://worldzk-registry.fly.dev"
   GENERATOR_URL = "https://worldzk-generator.fly.dev"
   RUST_LOG = "info"
-  LOG_FORMAT = "json"
+  GATEWAY_LOG_FORMAT = "json"
 
 [http_service]
   internal_port = 8080

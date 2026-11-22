@@ -52,10 +52,9 @@ spec:
               value: {{ .Values.indexer.port | quote }}
             - name: CONTRACT_ADDRESS
               valueFrom:
-                secretKeyRef:
-                  name: {{ include "worldzk.secretName" . }}
+                configMapKeyRef:
+                  name: {{ include "worldzk.configMapName" . }}
                   key: TEE_VERIFIER_ADDRESS
-                  optional: true
             - name: RPC_URL
               valueFrom:
                 configMapKeyRef:

@@ -39,9 +39,10 @@ spec:
     - to:
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: enclave
+              {{- include "worldzk.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: enclave
       ports:
-        - port: 8080
+        - port: {{ .Values.enclave.port }}
           protocol: TCP
     # Warm prover service (in-cluster)
     - to:

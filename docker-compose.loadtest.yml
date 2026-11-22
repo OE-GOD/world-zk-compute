@@ -200,6 +200,9 @@ services:
       MODEL_PATH: /app/model/model.json
       PROOFS_DIR: /app/proofs
       PRECOMPUTE_BIN: /usr/local/bin/precompute_proof
+      # Health/metrics server binds 127.0.0.1 by default; the published port
+      # (and Prometheus) can only reach it on 0.0.0.0.
+      METRICS_BIND_ADDR: "0.0.0.0"
       RUST_LOG: "info"
       RUST_LOG_FORMAT: "json"
     healthcheck:
@@ -243,9 +246,18 @@ services:
       - "8081:8081"
     volumes:
       - deployment-data:/deployment:ro
+      - indexer-data:/data
+    # tee-indexer takes the contract from CONTRACT_ADDRESS; read it from the
+    # deployer's shared volume (jq is in the image).
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        CONTRACT_ADDRESS=$$(jq -er '.TEEMLVerifier' /deployment/addresses.json)
+        export CONTRACT_ADDRESS
+        exec tee-indexer
     environment:
-      INDEXER_RPC_URL: "http://anvil:8545"
-      DEPLOYMENT_FILE: "/deployment/addresses.json"
+      RPC_URL: "http://anvil:8545"
       DB_PATH: "/data/indexer.db"
       POLL_INTERVAL_SECS: "2"
       RUST_LOG: "info"
@@ -352,3 +364,4 @@ networks:
 volumes:
   deployment-data:
   proof-storage:
+  indexer-data:

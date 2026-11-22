@@ -12,7 +12,7 @@
 
 # -- Configuration ------------------------------------------------------------
 
-REGISTRY  ?= ghcr.io/worldcoin/world-zk-compute
+REGISTRY  ?= ghcr.io/oe-god/world-zk-compute
 VERSION   ?= $(shell git rev-parse --short HEAD)
 TAG       ?= $(VERSION)
 

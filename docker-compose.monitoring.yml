@@ -36,6 +36,11 @@ services:
     read_only: true
     security_opt:
       - no-new-privileges:true
+    # The scrape targets (operator, enclave, ...) are only attached to the base
+    # file's "backend" network, not to the default one.
+    networks:
+      - default
+      - backend
 
   grafana:
     image: grafana/grafana:11.1.0
@@ -58,6 +63,8 @@ services:
 networks:
   default:
     name: worldzk
+    driver: bridge
+  backend:
     driver: bridge
 
 volumes:

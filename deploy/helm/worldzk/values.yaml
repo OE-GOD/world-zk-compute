@@ -230,7 +230,7 @@ enclave:
     # -- Image pull policy
     pullPolicy: IfNotPresent
   # -- Enclave HTTP port
-  port: 8090
+  port: 8080
   # -- Additional environment variables for the enclave
   env:
     MODEL_FORMAT: "xgboost"

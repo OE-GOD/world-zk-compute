@@ -108,6 +108,9 @@ services:
       MODEL_PATH: /app/model/model.json
       PROOFS_DIR: /app/proofs
       PRECOMPUTE_BIN: /usr/local/bin/precompute_proof
+      # Health/metrics server binds 127.0.0.1 by default; the published port
+      # (and Prometheus) can only reach it on 0.0.0.0.
+      METRICS_BIND_ADDR: "0.0.0.0"
       # Contract addresses (from deployment)
       TEE_VERIFIER_ADDRESS: "${TEE_VERIFIER_ADDRESS:?Set TEE_VERIFIER_ADDRESS in .env.sepolia}"
       EXECUTION_ENGINE_ADDRESS: "${EXECUTION_ENGINE_ADDRESS:?Set EXECUTION_ENGINE_ADDRESS in .env.sepolia}"

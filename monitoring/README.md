@@ -105,10 +105,8 @@ including `OperatorDown`, `EnclaveDown`, and `DisputeResolutionFailed`.
 **Check config syntax:**
 
 ```bash
-# Validate the raw template (will show ${VAR} as literal strings but confirms YAML structure)
-amtool check-config monitoring/alertmanager.yml
-
-# Validate the rendered config (after envsubst)
+# The raw template does not validate: amtool rejects the ${VAR} placeholders
+# ("unsupported scheme"). Validate the rendered config (after envsubst):
 amtool check-config /etc/alertmanager/alertmanager.yml
 ```
 

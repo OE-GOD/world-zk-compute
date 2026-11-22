@@ -171,7 +171,7 @@ services:
       ENGINE_ADDRESS: "0x0000000000000000000000000000000000000000"
       SKIP_CHAIN_VERIFICATION: "true"
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:3001/health || exit 1"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3001/health')"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -253,6 +253,9 @@ services:
       MODEL_PATH: /app/model/model.json
       PROOFS_DIR: /app/proofs
       PRECOMPUTE_BIN: /usr/local/bin/precompute_proof
+      # Health/metrics server binds 127.0.0.1 by default; the published port
+      # (and Prometheus) can only reach it on 0.0.0.0.
+      METRICS_BIND_ADDR: "0.0.0.0"
       RUST_LOG: "info"
       RUST_LOG_FORMAT: "json"
     healthcheck:

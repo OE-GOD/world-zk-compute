@@ -27,6 +27,7 @@ spec:
         {{- end }}
       labels:
         {{- include "worldzk.labels" . | nindent 8 }}
+        {{- include "worldzk.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: enclave
     spec:
       {{- with .Values.imagePullSecrets }}
@@ -55,13 +56,13 @@ spec:
                 name: {{ include "worldzk.configMapName" . }}
             - secretRef:
                 name: {{ include "worldzk.secretName" . }}
-          {{- if .Values.enclave.env }}
           env:
+            - name: PORT
+              value: {{ .Values.enclave.port | quote }}
             {{- range $key, $value := .Values.enclave.env }}
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- end }}
-          {{- end }}
           {{- with .Values.enclave.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
