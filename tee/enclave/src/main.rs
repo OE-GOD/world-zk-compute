@@ -667,12 +667,17 @@ async fn reload_model(
 
     let new_model_hash = keccak256(&new_model_bytes);
 
-    let new_model = model::load_model_with_format(&req.model_path, format).map_err(|e| {
-        (
-            StatusCode::BAD_REQUEST,
-            format!("Failed to parse model '{}': {}", req.model_path, e),
-        )
-    })?;
+    // Parse the bytes that were just hashed, not a second read of the file: the
+    // attested hash must describe the model that is actually loaded.
+    let new_model = std::str::from_utf8(&new_model_bytes)
+        .map_err(|e| e.to_string())
+        .and_then(|text| model::parse_model_with_format(text, format))
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("Failed to parse model '{}': {}", req.model_path, e),
+            )
+        })?;
 
     let num_trees = new_model.trees.len();
     let num_features = new_model.num_features;
@@ -966,7 +971,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Model SHA-256: {}", model_sha256);
 
     let model_hash = keccak256(&model_bytes);
-    let model = match model::load_model_with_format(&config.model_path, config.model_format) {
+    // Parse the bytes that were just hashed, not a second read of the file.
+    let parsed = std::str::from_utf8(&model_bytes)
+        .map_err(|e| e.to_string())
+        .and_then(|text| model::parse_model_with_format(text, config.model_format));
+    let model = match parsed {
         Ok(m) => m,
         Err(e) => {
             tracing::error!(

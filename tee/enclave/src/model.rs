@@ -334,6 +334,10 @@ fn scan_max_feature(node: &Value, max_feat: &mut usize) {
 /// - `ModelFormat::Auto`: tries XGBoost first, then LightGBM.
 /// - `ModelFormat::Xgboost`: only tries XGBoost JSON.
 /// - `ModelFormat::Lightgbm`: only tries LightGBM JSON.
+///
+/// The enclave itself hashes the model bytes and parses those same bytes with
+/// [`parse_model_with_format`], so this file-based wrapper is only used by tests.
+#[cfg(test)]
 pub fn load_model_with_format(path: &str, format: ModelFormat) -> Result<XgboostModel, String> {
     let data =
         std::fs::read_to_string(path).map_err(|e| format!("Failed to read model file: {}", e))?;
