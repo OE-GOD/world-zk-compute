@@ -92,9 +92,8 @@ pub fn verify_hybrid(
     // Step 5: Skip dot_product computation (pure EC)
 
     // Step 6: Replay PODP transcript and compute z_dot_j_star
-    let z_dot_j_star = verify_podp_hybrid(&proof.podp, &j_star, sponge);
 
-    z_dot_j_star
+    verify_podp_hybrid(&proof.podp, &j_star, sponge)
 }
 
 /// Replay PODP transcript operations and compute z_dot_j_star = inner_product(z_vector, j_star).
@@ -102,11 +101,7 @@ pub fn verify_hybrid(
 /// Performs the same transcript absorb/squeeze as `verify_podp_with_transcript`,
 /// but skips EC verification equations. Returns the Fr scalar z_dot_j_star.
 #[cfg(any(feature = "hybrid", not(target_arch = "wasm32")))]
-fn verify_podp_hybrid(
-    podp: &PODPProof,
-    a_vector: &[U256],
-    sponge: &mut PoseidonSponge,
-) -> U256 {
+fn verify_podp_hybrid(podp: &PODPProof, a_vector: &[U256], sponge: &mut PoseidonSponge) -> U256 {
     // Absorb commit_d and commit_d_dot_a (same as full verifier)
     sponge.absorb_u256(&podp.commit_d.x);
     sponge.absorb_u256(&podp.commit_d.y);

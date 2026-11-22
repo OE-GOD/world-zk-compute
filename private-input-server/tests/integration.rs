@@ -553,7 +553,12 @@ async fn test_fetch_returns_octet_stream_content_type() {
     let resp = post_fetch(app.clone(), 60, &auth).await;
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap();
     assert_eq!(ct, "application/octet-stream");
 }
 
@@ -645,7 +650,10 @@ async fn test_file_backed_storage_remove_deletes_file() {
 
     store.remove(66);
     assert!(!file_path.exists(), "file should be deleted after remove");
-    assert!(store.get(66).is_none(), "get should return None after remove");
+    assert!(
+        store.get(66).is_none(),
+        "get should return None after remove"
+    );
 }
 
 // ===========================================================================

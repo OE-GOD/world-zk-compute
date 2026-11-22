@@ -2,7 +2,7 @@
 //!
 //! Compile with:
 //! ```sh
-//! wasm-pack build --target web crates/zkml-verifier
+//! wasm-pack build --target web crates/zkml-verifier -- --features wasm
 //! ```
 //!
 //! Usage from JavaScript:
@@ -13,11 +13,11 @@
 //! console.log(result.verified, result.circuit_hash);
 //! ```
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "wasm"))]
 use wasm_bindgen::prelude::*;
 
 /// WASM-exported verification result.
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "wasm"))]
 #[wasm_bindgen]
 pub struct WasmVerifyResult {
     verified: bool,
@@ -25,7 +25,7 @@ pub struct WasmVerifyResult {
     error: Option<String>,
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "wasm"))]
 #[wasm_bindgen]
 impl WasmVerifyResult {
     #[wasm_bindgen(getter)]
@@ -47,7 +47,7 @@ impl WasmVerifyResult {
 /// Verify a proof bundle from a JSON string.
 ///
 /// Returns a `WasmVerifyResult` with `verified`, `circuit_hash`, and optional `error`.
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "wasm"))]
 #[wasm_bindgen]
 pub fn verify_proof_json(json: &str) -> WasmVerifyResult {
     let bundle = match crate::ProofBundle::from_json(json) {
@@ -76,7 +76,7 @@ pub fn verify_proof_json(json: &str) -> WasmVerifyResult {
 }
 
 /// Return the library version.
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "wasm"))]
 #[wasm_bindgen]
 pub fn version() -> String {
     env!("CARGO_PKG_VERSION").to_string()

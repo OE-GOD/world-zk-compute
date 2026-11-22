@@ -519,6 +519,9 @@ impl ProofManager {
 }
 
 #[cfg(test)]
+// ENV_MUTEX serialises tests that edit process env vars; each #[tokio::test] has its
+// own runtime, so holding the std guard across an await cannot deadlock here.
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
     use std::sync::Mutex;

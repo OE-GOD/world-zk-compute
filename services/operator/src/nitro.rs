@@ -1270,7 +1270,7 @@ mod tests {
     fn test_truncated_cbor_rejected() {
         // Completely malformed base64 that decodes to invalid CBOR.
         use base64::Engine;
-        let b64 = base64::engine::general_purpose::STANDARD.encode(&[0xA1, 0x01, 0x02]);
+        let b64 = base64::engine::general_purpose::STANDARD.encode([0xA1, 0x01, 0x02]);
         let result = parse_attestation(&b64);
         assert!(result.is_err(), "Truncated CBOR should be rejected");
     }

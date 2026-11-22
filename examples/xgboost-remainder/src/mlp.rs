@@ -71,6 +71,7 @@ use std::path::Path;
 /// Activation function identifier.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum Activation {
     /// Rectified Linear Unit: max(0, x).
     Relu,
@@ -78,13 +79,8 @@ pub enum Activation {
     Sigmoid,
     /// Identity (no activation).
     #[serde(alias = "linear")]
+    #[default]
     None,
-}
-
-impl Default for Activation {
-    fn default() -> Self {
-        Activation::None
-    }
 }
 
 /// A single fully-connected layer.
@@ -311,6 +307,7 @@ pub fn mlp_to_xgboost(mlp: &MLPModel) -> Result<XgboostModel, String> {
 /// For a complete binary tree of depth `d`, node `i` has:
 /// * left child  = `2*i + 1`
 /// * right child = `2*i + 2`
+///
 /// Total nodes   = `2^(d+1) - 1`.
 fn build_mlp_lookup_tree(
     mlp: &MLPModel,
@@ -518,8 +515,8 @@ pub fn prepare_mlp_circuit_inputs(mlp: &MLPModel, features: &[f64]) -> MLPCircui
 
         // Quantize biases (scaled by SCALE^2 to match w*x domain)
         let mut biases_q = vec![0i64; n_out_padded];
-        for j in 0..n_out {
-            biases_q[j] =
+        for (j, bias_q) in biases_q.iter_mut().enumerate().take(n_out) {
+            *bias_q =
                 (layer.biases[j] * MLP_FIXED_POINT_SCALE as f64 * MLP_FIXED_POINT_SCALE as f64)
                     .round() as i64;
         }
@@ -624,8 +621,8 @@ pub fn prepare_mlp_circuit_inputs(mlp: &MLPModel, features: &[f64]) -> MLPCircui
 /// Build a native GKR circuit for MLP inference.
 ///
 /// The circuit verifies the full forward pass of a multi-layer perceptron:
-/// matrix multiply + bias + ReLU for each hidden layer, and matrix multiply
-/// + bias for the output layer.  All output entries must be zero for valid
+/// matrix multiply + bias + ReLU for each hidden layer, and matrix multiply +
+/// bias for the output layer.  All output entries must be zero for valid
 /// inference.
 ///
 /// # Arguments
@@ -845,7 +842,7 @@ pub fn build_mlp_circuit(
             gates.push(((offset_pos + i) as u32, i as u32));
         }
         let routed = builder.add_identity_gate_node(check_node, gates, output_total_nv, None);
-        combined_expr = combined_expr + routed.expr();
+        combined_expr += routed.expr();
         offset_pos += count;
     }
 

@@ -52,7 +52,7 @@ pub fn setup_transcript(
 
     // 4. Absorb EC commitment points (pairs of coordinates)
     assert!(
-        input_commit_coords.len() % 2 == 0,
+        input_commit_coords.len().is_multiple_of(2),
         "input_commit_coords must have even length (x,y pairs)"
     );
     for pair in input_commit_coords.chunks(2) {
@@ -197,8 +197,8 @@ mod tests {
         assert_eq!(bytes[0], 0x08);
         assert_eq!(bytes[1], 0x07);
         assert_eq!(bytes[7], 0x01);
-        for i in 8..32 {
-            assert_eq!(bytes[i], 0);
+        for byte in &bytes[8..32] {
+            assert_eq!(*byte, 0);
         }
     }
 

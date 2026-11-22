@@ -26,6 +26,12 @@ pub struct InputStore {
     storage_dir: Option<PathBuf>,
 }
 
+impl Default for InputStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InputStore {
     /// Create a new in-memory store
     pub fn new() -> Self {
@@ -111,6 +117,11 @@ impl InputStore {
     /// Number of stored inputs
     pub fn len(&self) -> usize {
         self.memory.read().unwrap().len()
+    }
+
+    /// Whether the store holds no inputs
+    pub fn is_empty(&self) -> bool {
+        self.memory.read().unwrap().is_empty()
     }
 }
 

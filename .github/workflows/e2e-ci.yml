@@ -36,12 +36,6 @@ jobs:
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
 
-      - name: Install forge dependencies
-        working-directory: contracts
-        run: |
-          forge install foundry-rs/forge-std --no-git
-          forge install risc0/risc0-ethereum --no-git
-
       - name: Run TEE happy path E2E
         run: bash scripts/tee-e2e.sh
 
@@ -62,12 +56,6 @@ jobs:
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
-
-      - name: Install forge dependencies
-        working-directory: contracts
-        run: |
-          forge install foundry-rs/forge-std --no-git
-          forge install risc0/risc0-ethereum --no-git
 
       - name: Install Python (for fixture parsing)
         uses: actions/setup-python@v5
@@ -110,12 +98,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-sdk-e2e-
 
-      - name: Install forge dependencies
-        working-directory: contracts
-        run: |
-          forge install foundry-rs/forge-std --no-git
-          forge install risc0/risc0-ethereum --no-git
-
       - name: Run Rust SDK E2E
         run: bash scripts/tee-sdk-e2e.sh
 
@@ -136,12 +118,6 @@ jobs:
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
-
-      - name: Install forge dependencies
-        working-directory: contracts
-        run: |
-          forge install foundry-rs/forge-std --no-git
-          forge install risc0/risc0-ethereum --no-git
 
       - name: Install Python
         uses: actions/setup-python@v5
@@ -168,12 +144,6 @@ jobs:
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
-
-      - name: Install forge dependencies
-        working-directory: contracts
-        run: |
-          forge install foundry-rs/forge-std --no-git
-          forge install risc0/risc0-ethereum --no-git
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -230,12 +200,6 @@ jobs:
           key: ${{ runner.os }}-cargo-sdk-batch-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-sdk-batch-
-
-      - name: Install forge dependencies
-        working-directory: contracts
-        run: |
-          forge install foundry-rs/forge-std --no-git
-          forge install risc0/risc0-ethereum --no-git
 
       - name: Start Anvil and deploy contracts
         run: |
@@ -318,12 +282,6 @@ jobs:
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
-
-      - name: Install forge dependencies
-        working-directory: contracts
-        run: |
-          forge install foundry-rs/forge-std --no-git
-          forge install risc0/risc0-ethereum --no-git
 
       - name: Start Anvil
         run: |

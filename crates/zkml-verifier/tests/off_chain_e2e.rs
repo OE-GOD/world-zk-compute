@@ -102,9 +102,8 @@ fn test_tampered_proof_fails() {
     bundle.proof_hex = format!("0x{}", hex::encode(&proof_bytes));
 
     let result = verify(&bundle);
-    // Should either return verified=false or an error
-    match result {
-        Ok(r) => assert!(!r.verified, "tampered proof should not verify"),
-        Err(_) => {} // Error is also acceptable
+    // Should either return verified=false or an error (an error is also acceptable)
+    if let Ok(r) = result {
+        assert!(!r.verified, "tampered proof should not verify");
     }
 }

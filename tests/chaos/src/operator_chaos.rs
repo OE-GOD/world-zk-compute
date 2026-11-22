@@ -333,7 +333,7 @@ mod tests {
 
         let mut new_events = Vec::new();
         for event_id in &replayed_events {
-            if !loaded_state.processed_event_ids.contains(*event_id) {
+            if !loaded_state.processed_event_ids.contains(event_id) {
                 new_events.push(event_id.to_string());
             }
         }

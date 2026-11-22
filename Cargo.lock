@@ -6046,6 +6046,7 @@ dependencies = [
  "hex",
  "secrecy",
  "serde",
+ "serde_bytes",
  "serde_cbor",
  "serde_json",
  "serial_test",

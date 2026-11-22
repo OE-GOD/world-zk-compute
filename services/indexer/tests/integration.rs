@@ -522,7 +522,7 @@ mod websocket_tests {
         });
 
         use futures_util::SinkExt;
-        ws.send(Message::Text(subscribe_msg.to_string().into()))
+        ws.send(Message::Text(subscribe_msg.to_string()))
             .await
             .unwrap();
 

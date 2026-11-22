@@ -618,7 +618,7 @@ mod tests {
             .oneshot(
                 HttpRequest::builder()
                     .method("DELETE")
-                    .uri(&format!("/v1/webhooks/{}", reg.id))
+                    .uri(format!("/v1/webhooks/{}", reg.id))
                     .body(Body::empty())
                     .unwrap(),
             )

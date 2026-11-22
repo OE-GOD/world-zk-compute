@@ -1,5 +1,12 @@
 #![cfg_attr(target_arch = "wasm32", no_main)]
 #![cfg_attr(target_arch = "wasm32", no_std)]
+// The verifier mirrors the Solidity implementation step by step: explicit index
+// loops and wide argument lists are kept on purpose so the two stay comparable.
+#![allow(
+    clippy::needless_range_loop,
+    clippy::explicit_counter_loop,
+    clippy::too_many_arguments
+)]
 
 //! Stylus GKR DAG Verifier -- entry point.
 //!
@@ -503,12 +510,7 @@ pub fn encode_hybrid_fr_outputs(result: &HybridVerificationResult) -> Vec<u8> {
 
     // Estimate capacity
     let capacity = 32
-        * (1 + num_layers * 2
-            + 1
-            + num_groups
-            + 1
-            + num_mle
-            + result.input_fr.l_tensor_flat.len());
+        * (1 + num_layers * 2 + 1 + num_groups + 1 + num_mle + result.input_fr.l_tensor_flat.len());
     let mut buf = Vec::with_capacity(capacity);
 
     // Compute layer outputs
@@ -610,8 +612,7 @@ impl GKRVerifier {
             &gens_data,
             &circuit_desc_data,
         );
-        let digest =
-            stylus_sdk::alloy_primitives::FixedBytes::<32>::from(result.transcript_digest);
+        let digest = stylus_sdk::alloy_primitives::FixedBytes::<32>::from(result.transcript_digest);
         let encoded = encode_hybrid_fr_outputs(&result);
         (true, digest, Bytes(encoded))
     }

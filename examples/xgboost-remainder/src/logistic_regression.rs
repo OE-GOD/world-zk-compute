@@ -253,8 +253,8 @@ pub fn prepare_logreg_inputs(
     );
 
     let mut decomp_bits = vec![false; decomp_k];
-    for i in 0..decomp_k {
-        decomp_bits[i] = ((shifted >> i) & 1) != 0;
+    for (i, bit) in decomp_bits.iter_mut().enumerate() {
+        *bit = ((shifted >> i) & 1) != 0;
     }
 
     // Verify reconstruction

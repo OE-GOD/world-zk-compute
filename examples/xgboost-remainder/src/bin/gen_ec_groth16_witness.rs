@@ -585,6 +585,7 @@ fn group_claims_by_r_half(
 // ============================================================================
 
 /// Record PODP EC operations (Check 1 + Check 2)
+#[allow(clippy::too_many_arguments)]
 fn record_podp_ec_ops(
     ec: &mut ECCollector,
     com_x: &Bn256Point, // alpha (for compute) or MSM result (for input)
@@ -620,6 +621,7 @@ fn record_podp_ec_ops(
 }
 
 /// Record PoP EC operations (3 checks per product triple)
+#[allow(clippy::too_many_arguments)]
 fn record_pop_ec_ops(
     ec: &mut ECCollector,
     com_x: &Bn256Point,

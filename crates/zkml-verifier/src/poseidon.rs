@@ -361,9 +361,9 @@ mod tests {
 
     #[test]
     fn test_mds_nonzero() {
-        for i in 0..3 {
-            for j in 0..3 {
-                assert_ne!(rc(&MDS[i][j]), Fq::ZERO, "MDS[{i}][{j}] should not be zero");
+        for (i, row) in MDS.iter().enumerate() {
+            for (j, entry) in row.iter().enumerate() {
+                assert_ne!(rc(entry), Fq::ZERO, "MDS[{i}][{j}] should not be zero");
             }
         }
     }

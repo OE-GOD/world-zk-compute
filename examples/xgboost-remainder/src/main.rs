@@ -16,15 +16,9 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tracing::Level;
 
-mod abi_encode;
-mod circuit;
-mod detect;
-mod lightgbm;
-mod logistic_regression;
-mod mlp;
-mod model;
-mod random_forest;
-mod server;
+use xgboost_remainder::{
+    circuit, detect, lightgbm, logistic_regression, mlp, model, random_forest, server,
+};
 
 /// XGBoost Remainder prover CLI
 #[derive(Parser)]

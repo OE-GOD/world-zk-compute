@@ -1,6 +1,6 @@
-/// BN254 field arithmetic for Fq (base field) and Fr (scalar field).
-/// Uses simple [u64; 4] limb representation with direct modular arithmetic.
-/// Fq/Fr share common implementations via free functions to minimize WASM code size.
+//! BN254 field arithmetic for Fq (base field) and Fr (scalar field).
+//! Uses simple [u64; 4] limb representation with direct modular arithmetic.
+//! Fq/Fr share common implementations via free functions to minimize WASM code size.
 
 /// BN254 base field modulus Fq
 pub const FQ_MOD: [u64; 4] = [

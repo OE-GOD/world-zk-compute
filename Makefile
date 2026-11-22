@@ -76,7 +76,7 @@ test-xgboost: ## Run XGBoost remainder tests (slow)
 	cargo test --manifest-path examples/xgboost-remainder/Cargo.toml
 
 test-stylus: ## Run Stylus GKR verifier tests (native target)
-	cd contracts/stylus/gkr-verifier && cargo test --target $$(rustc -vV | awk '/^host:/{print $$2}')
+	cd contracts/stylus/gkr-verifier && cargo test --no-default-features --target $$(rustc -vV | awk '/^host:/{print $$2}')
 
 # ── DEV ────────────────────────────────────────────────────────────────────
 dev-web: ## Serve development for web

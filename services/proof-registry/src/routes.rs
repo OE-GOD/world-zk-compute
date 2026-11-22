@@ -686,7 +686,7 @@ mod tests {
         assert!(submit_resp["proof_hash"].as_str().unwrap().len() == 64);
 
         // Retrieve the proof by ID.
-        let req = Request::get(&format!("/proofs/{proof_id}"))
+        let req = Request::get(format!("/proofs/{proof_id}"))
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -738,7 +738,7 @@ mod tests {
         assert_eq!(json["status"], "deleted");
 
         // Verify it is now gone (soft-deleted).
-        let req = Request::get(&format!("/proofs/{proof_id}"))
+        let req = Request::get(format!("/proofs/{proof_id}"))
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();

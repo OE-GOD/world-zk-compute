@@ -30,10 +30,7 @@ fn upload_request(request_id: u64, body: &[u8]) -> Request<Body> {
         .unwrap()
 }
 
-async fn make_auth_request(
-    signer: &PrivateKeySigner,
-    request_id: u64,
-) -> AuthRequest {
+async fn make_auth_request(signer: &PrivateKeySigner, request_id: u64) -> AuthRequest {
     let address = signer.address();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -97,7 +94,11 @@ async fn test_upload_returns_digest() {
 async fn test_upload_overwrites_previous() {
     let (app, state) = test_app();
 
-    let _ = app.clone().oneshot(upload_request(7, b"first")).await.unwrap();
+    let _ = app
+        .clone()
+        .oneshot(upload_request(7, b"first"))
+        .await
+        .unwrap();
     let _ = app.oneshot(upload_request(7, b"second")).await.unwrap();
 
     let signer = PrivateKeySigner::random();

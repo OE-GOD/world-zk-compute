@@ -526,7 +526,7 @@ mod tests {
         );
         let attempts = counter.load(Ordering::SeqCst);
         assert!(
-            attempts >= 2 && attempts <= 6,
+            (2..=6).contains(&attempts),
             "unexpected attempt count: {attempts}"
         );
     }

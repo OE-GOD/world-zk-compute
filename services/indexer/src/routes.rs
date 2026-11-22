@@ -1320,7 +1320,7 @@ mod tests {
 
         let long_id = "x".repeat(200);
         let req = axum::http::Request::builder()
-            .uri(&format!("/api/v1/results/{}", long_id))
+            .uri(format!("/api/v1/results/{}", long_id))
             .body(Body::empty())
             .unwrap();
 
@@ -1424,7 +1424,7 @@ mod tests {
 
         let long_status = "a".repeat(300);
         let req = axum::http::Request::builder()
-            .uri(&format!("/api/v1/results?status={}", long_status))
+            .uri(format!("/api/v1/results?status={}", long_status))
             .body(Body::empty())
             .unwrap();
 
@@ -1452,7 +1452,7 @@ mod tests {
 
         let long_submitter = format!("0x{}", "a".repeat(300));
         let req = axum::http::Request::builder()
-            .uri(&format!("/api/v1/results?submitter={}", long_submitter))
+            .uri(format!("/api/v1/results?submitter={}", long_submitter))
             .body(Body::empty())
             .unwrap();
 
@@ -1480,7 +1480,7 @@ mod tests {
 
         let long_hash = "h".repeat(300);
         let req = axum::http::Request::builder()
-            .uri(&format!("/api/v1/results?model_hash={}", long_hash))
+            .uri(format!("/api/v1/results?model_hash={}", long_hash))
             .body(Body::empty())
             .unwrap();
 
@@ -2972,7 +2972,7 @@ mod tests {
 
         let long_id = "x".repeat(200);
         let req = axum::http::Request::builder()
-            .uri(&format!("/api/v1/results?after_id={}", long_id))
+            .uri(format!("/api/v1/results?after_id={}", long_id))
             .body(Body::empty())
             .unwrap();
 

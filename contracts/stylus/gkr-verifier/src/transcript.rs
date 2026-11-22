@@ -47,7 +47,7 @@ pub fn setup_transcript(
 
     // 4. Absorb EC commitment points (pairs of coordinates)
     verify!(
-        input_commit_coords.len() % 2 == 0,
+        input_commit_coords.len().is_multiple_of(2),
         "input_commit_coords must have even length (x,y pairs)"
     );
     for pair in input_commit_coords.chunks(2) {

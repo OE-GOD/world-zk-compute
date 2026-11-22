@@ -438,7 +438,7 @@ mod tests {
         state.cleanup();
 
         let map = state.requests.lock().unwrap();
-        assert!(map.is_empty() || map.get(&ip).map_or(true, |v| v.is_empty()));
+        assert!(map.is_empty() || map.get(&ip).is_none_or(|v| v.is_empty()));
     }
 
     #[test]

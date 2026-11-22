@@ -429,8 +429,7 @@ fn process_one_layer_hybrid(
     } else {
         2
     };
-    let z_dot_j_star =
-        sumcheck::verify_hybrid(&lp.sumcheck_proof, degree, &bindings, sponge);
+    let z_dot_j_star = sumcheck::verify_hybrid(&lp.sumcheck_proof, degree, &bindings, sponge);
 
     // Hybrid PoP: transcript replay only (skip EC equation checks)
     verify_products_hybrid(lp, sponge);
@@ -477,10 +476,7 @@ fn compute_rlc_beta_only(
 
 /// Hybrid PoP verification: replay transcript absorb/squeeze, skip EC equation checks.
 #[cfg(any(feature = "hybrid", not(target_arch = "wasm32")))]
-fn verify_products_hybrid(
-    layer_proof: &CommittedLayerProof,
-    sponge: &mut PoseidonSponge,
-) {
+fn verify_products_hybrid(layer_proof: &CommittedLayerProof, sponge: &mut PoseidonSponge) {
     for pop in &layer_proof.pops {
         // Absorb alpha, beta, delta (same as full)
         sponge.absorb_u256(&pop.alpha.x);

@@ -1155,15 +1155,15 @@ mod tests {
     #[test]
     fn test_per_batch_gas_estimates() {
         // Verify that per-continue-tx gas is within expected range
-        assert!(CONTINUE_GAS_LOWER >= 10_000_000);
-        assert!(CONTINUE_GAS_UPPER <= BLOCK_GAS_LIMIT);
+        const { assert!(CONTINUE_GAS_LOWER >= 10_000_000) };
+        const { assert!(CONTINUE_GAS_UPPER <= BLOCK_GAS_LIMIT) };
 
         // Verify that per-finalize-tx gas is within expected range
-        assert!(FINALIZE_GAS_LOWER >= 5_000_000);
-        assert!(FINALIZE_GAS_UPPER <= BLOCK_GAS_LIMIT);
+        const { assert!(FINALIZE_GAS_LOWER >= 5_000_000) };
+        const { assert!(FINALIZE_GAS_UPPER <= BLOCK_GAS_LIMIT) };
 
         // Start should fit in a block
-        assert!(START_GAS_UPPER < BLOCK_GAS_LIMIT);
+        const { assert!(START_GAS_UPPER < BLOCK_GAS_LIMIT) };
     }
 
     // -----------------------------------------------------------------------
@@ -1265,7 +1265,7 @@ mod tests {
         assert_eq!(cont, 11); // ceil(88 / 8)
                               // Estimated groups from 88 layers: (88*2+4)/5 = 36, ceil(36/16) = 3
         assert!(
-            fin >= 2 && fin <= 4,
+            (2..=4).contains(&fin),
             "Expected 2-4 finalize batches, got {fin}"
         );
     }
@@ -1295,7 +1295,7 @@ mod tests {
         let groups = estimate_input_groups(88);
         // Should be close to 34 (actual for XGBoost)
         assert!(
-            groups >= 30 && groups <= 40,
+            (30..=40).contains(&groups),
             "Expected ~34 groups for 88 layers, got {groups}"
         );
     }

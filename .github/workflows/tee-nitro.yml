@@ -173,15 +173,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
-
-      - name: Install forge dependencies
-        run: |
-          cd contracts
-          forge install foundry-rs/forge-std --no-git
-          forge install risc0/risc0-ethereum --no-git
 
       - name: Build operator binary
         uses: dtolnay/rust-toolchain@master

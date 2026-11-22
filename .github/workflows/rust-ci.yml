@@ -503,10 +503,10 @@ jobs:
             ${{ runner.os }}-cargo-stylus-
 
       - name: Check WASM build
-        run: cargo check --manifest-path contracts/stylus/gkr-verifier/Cargo.toml --target wasm32-unknown-unknown
+        run: cargo check --manifest-path contracts/stylus/gkr-verifier/Cargo.toml --target wasm32-unknown-unknown --lib
 
       - name: Run native tests
-        run: cargo test --manifest-path contracts/stylus/gkr-verifier/Cargo.toml --target x86_64-unknown-linux-gnu
+        run: cargo test --manifest-path contracts/stylus/gkr-verifier/Cargo.toml --target x86_64-unknown-linux-gnu --no-default-features
 
   indexer-postgres:
     name: Indexer (Postgres)

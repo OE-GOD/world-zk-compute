@@ -477,7 +477,7 @@ mod tests {
         let (mut log, _tmp) = make_test_log();
 
         // Append several leaves.
-        let hashes: Vec<[u8; 32]> = (0..5).map(|i| make_hash(i)).collect();
+        let hashes: Vec<[u8; 32]> = (0..5).map(make_hash).collect();
         for (i, h) in hashes.iter().enumerate() {
             log.append(*h, &format!("p{i}")).unwrap();
         }

@@ -1408,7 +1408,7 @@ mod tests {
         let model_id = upload_test_model(&app).await;
 
         let req = axum::http::Request::builder()
-            .uri(&format!("/models/{}", model_id))
+            .uri(format!("/models/{}", model_id))
             .body(Body::empty())
             .unwrap();
 
@@ -1443,7 +1443,7 @@ mod tests {
 
         let req = axum::http::Request::builder()
             .method("DELETE")
-            .uri(&format!("/models/{}", model_id))
+            .uri(format!("/models/{}", model_id))
             .body(Body::empty())
             .unwrap();
 
@@ -1452,7 +1452,7 @@ mod tests {
 
         // Verify deactivated via GET
         let req2 = axum::http::Request::builder()
-            .uri(&format!("/models/{}", model_id))
+            .uri(format!("/models/{}", model_id))
             .body(Body::empty())
             .unwrap();
         let resp2 = app.oneshot(req2).await.unwrap();
@@ -1570,7 +1570,7 @@ mod tests {
         // Deactivate
         let del_req = axum::http::Request::builder()
             .method("DELETE")
-            .uri(&format!("/models/{}", model_id))
+            .uri(format!("/models/{}", model_id))
             .body(Body::empty())
             .unwrap();
         app.clone().oneshot(del_req).await.unwrap();
@@ -1738,7 +1738,7 @@ mod tests {
 
         // v2 should now be deactivated.
         let req = axum::http::Request::builder()
-            .uri(&format!("/models/{}", v2_id))
+            .uri(format!("/models/{}", v2_id))
             .body(Body::empty())
             .unwrap();
         let resp = app.clone().oneshot(req).await.unwrap();
@@ -1769,7 +1769,7 @@ mod tests {
         // Deactivate via POST /models/:id/deactivate
         let req = axum::http::Request::builder()
             .method("POST")
-            .uri(&format!("/models/{}/deactivate", model_id))
+            .uri(format!("/models/{}/deactivate", model_id))
             .body(Body::empty())
             .unwrap();
         let resp = app.clone().oneshot(req).await.unwrap();
@@ -1804,7 +1804,7 @@ mod tests {
         // v2 is active. Activate v1.
         let req = axum::http::Request::builder()
             .method("POST")
-            .uri(&format!("/models/{}/activate", v1_id))
+            .uri(format!("/models/{}/activate", v1_id))
             .body(Body::empty())
             .unwrap();
         let resp = app.clone().oneshot(req).await.unwrap();
@@ -1817,7 +1817,7 @@ mod tests {
 
         // Check v2 is deactivated.
         let req = axum::http::Request::builder()
-            .uri(&format!("/models/{}", v2_id))
+            .uri(format!("/models/{}", v2_id))
             .body(Body::empty())
             .unwrap();
         let resp = app.clone().oneshot(req).await.unwrap();
