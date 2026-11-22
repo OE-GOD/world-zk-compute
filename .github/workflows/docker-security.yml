@@ -8,11 +8,11 @@ on:
   push:
     branches: [main]
     paths:
-      - '**/Dockerfile'
+      - '**/Dockerfile*'
       - '.github/workflows/docker-security.yml'
   pull_request:
     paths:
-      - '**/Dockerfile'
+      - '**/Dockerfile*'
       - '.github/workflows/docker-security.yml'
   workflow_dispatch:
 
@@ -33,6 +33,12 @@ jobs:
           - prover/Dockerfile
           - examples/xgboost-remainder/Dockerfile
           - private-input-server/Dockerfile
+          - services/gateway/Dockerfile
+          - services/proof-generator/Dockerfile
+          - services/proof-registry/Dockerfile
+          - services/verifier/Dockerfile
+          - Dockerfile.verifier
+          - tee/Dockerfile.nitro
 
     steps:
       - name: Checkout
@@ -43,7 +49,7 @@ jobs:
         run: echo "slug=$(echo '${{ matrix.dockerfile }}' | tr '/' '-' | sed 's/\./-/g')" >> "$GITHUB_OUTPUT"
 
       - name: Run Trivy misconfiguration scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: 'fs'
           scan-ref: ${{ matrix.dockerfile }}
@@ -81,7 +87,7 @@ jobs:
       - name: Find all Dockerfiles and compare to matrix
         run: |
           echo "Discovering all Dockerfiles in the repository..."
-          found=$(find . -name Dockerfile -not -path './.git/*' | sort)
+          found=$(find . -name 'Dockerfile*' -not -path './.git/*' -not -path '*/lib/*' -not -path '*/node_modules/*' | sort)
           echo "$found"
           echo ""
           echo "Known Dockerfiles in CI matrix:"
@@ -92,12 +98,18 @@ jobs:
           echo "  prover/Dockerfile"
           echo "  examples/xgboost-remainder/Dockerfile"
           echo "  private-input-server/Dockerfile"
+          echo "  services/gateway/Dockerfile"
+          echo "  services/proof-generator/Dockerfile"
+          echo "  services/proof-registry/Dockerfile"
+          echo "  services/verifier/Dockerfile"
+          echo "  Dockerfile.verifier"
+          echo "  tee/Dockerfile.nitro"
           echo ""
           # Warn about any Dockerfiles not in the matrix
           for df in $found; do
             normalized="${df#./}"
             case "$normalized" in
-              services/admin-cli/Dockerfile|services/indexer/Dockerfile|services/operator/Dockerfile|tee/Dockerfile|prover/Dockerfile|examples/xgboost-remainder/Dockerfile|private-input-server/Dockerfile)
+              services/admin-cli/Dockerfile|services/indexer/Dockerfile|services/operator/Dockerfile|tee/Dockerfile|prover/Dockerfile|examples/xgboost-remainder/Dockerfile|private-input-server/Dockerfile|services/gateway/Dockerfile|services/proof-generator/Dockerfile|services/proof-registry/Dockerfile|services/verifier/Dockerfile|Dockerfile.verifier|tee/Dockerfile.nitro)
                 ;;
               *)
                 echo "::warning::Dockerfile not in scan matrix: $normalized"

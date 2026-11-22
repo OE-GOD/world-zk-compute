@@ -130,24 +130,6 @@ strip_cast() {
     echo "${1%% \[*\]}"
 }
 
-# assert_eq <description> <expected> <actual>
-# shellcheck disable=SC2329
-assert_eq() {
-    local desc="$1" expected="$2" actual="$3"
-    actual=$(strip_cast "$actual")
-    if [ "$expected" = "$actual" ]; then
-        record_pass "$desc"
-    else
-        record_fail "$desc" "expected=$expected, got=$actual"
-    fi
-}
-
-# extract_gas <cast_send_output>
-# shellcheck disable=SC2329
-extract_gas() {
-    echo "$1" | grep -i "gasUsed" | head -1 | awk '{print $NF}'
-}
-
 # tx_status_from_json <cast_send_json_output>
 tx_status_from_json() {
     echo "$1" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo ""

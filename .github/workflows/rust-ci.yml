@@ -47,6 +47,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
@@ -70,6 +72,12 @@ jobs:
 
       - name: Run Clippy
         run: cargo clippy --manifest-path sdk/Cargo.toml -- -D warnings
+
+      - name: Install Foundry (SDK integration tests spawn Anvil)
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Build contract artifacts (loaded by sdk/tests/integration_tee.rs)
+        run: cd contracts && forge build --skip test --skip script
 
       - name: Run tests
         run: cargo test --manifest-path sdk/Cargo.toml
@@ -615,6 +623,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
@@ -635,6 +645,12 @@ jobs:
           key: ${{ runner.os }}-cargo-coverage-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-coverage-
+
+      - name: Install Foundry (SDK integration tests spawn Anvil)
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Build contract artifacts (loaded by sdk/tests/integration_tee.rs)
+        run: cd contracts && forge build --skip test --skip script
 
       - name: Generate coverage report
         run: cargo llvm-cov --workspace --html --output-dir coverage-report

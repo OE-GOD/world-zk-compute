@@ -49,7 +49,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            tee/enclave/target
+            target
           key: ${{ runner.os }}-cargo-tee-nitro-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-tee-nitro-
@@ -90,7 +90,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            services/operator/target
+            target
           key: ${{ runner.os }}-cargo-tee-operator-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-tee-operator-
@@ -190,7 +190,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            services/operator/target
+            target
           key: ${{ runner.os }}-cargo-tee-operator-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-tee-operator-

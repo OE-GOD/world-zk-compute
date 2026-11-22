@@ -59,6 +59,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
@@ -69,6 +71,12 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: workspace-test
+
+      - name: Install Foundry (SDK integration tests spawn Anvil)
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Build contract artifacts (loaded by sdk/tests/integration_tee.rs)
+        run: cd contracts && forge build --skip test --skip script
 
       - name: Run workspace tests
         run: cargo test --workspace
@@ -300,7 +308,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            sdk/target
+            target
           key: ${{ runner.os }}-cargo-sdk-e2e-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-sdk-e2e-
@@ -323,7 +331,7 @@ jobs:
           import json, sys
           data = json.load(open('broadcast/DeployRemainderDAG.s.sol/31337/run-latest.json'))
           for tx in data['transactions']:
-              if tx.get('transactionType') == 'CREATE':
+              if tx.get('transactionType') == 'CREATE' and tx.get('contractName') == 'UUPSProxy':
                   print(tx['contractAddress']); sys.exit(0)
           sys.exit(1)
           ")
