@@ -7,10 +7,9 @@
 # verifies on Etherscan/Blockscout.
 #
 # Usage:
-#   DEPLOYER_PRIVATE_KEY=0x... ./scripts/deploy.sh --chain local
-#   DEPLOYER_PRIVATE_KEY=0x... ./scripts/deploy.sh --chain sepolia --verify
-#   DEPLOYER_PRIVATE_KEY=0x... ./scripts/deploy.sh --chain arbitrum-sepolia --dry-run
-#   DEPLOYER_PRIVATE_KEY=0x... ./scripts/deploy.sh --chain sepolia --with-remainder
+#   DEPLOYER_PRIVATE_KEY=0x... ./scripts/deploy.sh --chain local --with-remainder
+#   REMAINDER_VERIFIER=0x... DEPLOYER_PRIVATE_KEY=0x... ./scripts/deploy.sh --chain sepolia --verify
+#   DEPLOYER_PRIVATE_KEY=0x... ./scripts/deploy.sh --chain local --with-remainder --dry-run
 #   ./scripts/deploy.sh --chain local --private-key 0xac0974bec...
 #   ./scripts/deploy.sh --help
 # =============================================================================
@@ -109,30 +108,35 @@ REQUIRED:
 OPTIONS:
   --verify               Verify contracts on Etherscan/Blockscout after deployment
   --dry-run              Simulate deployment (no transactions broadcast)
-  --with-remainder       Also deploy RemainderVerifier
+  --with-remainder       Also deploy RemainderVerifier (135 KB: the chain must allow
+                         contracts over 24,576 bytes, e.g. a local Anvil started with
+                         --disable-code-size-limit --gas-limit 500000000)
   --private-key <key>    Deployer private key (alternative to DEPLOYER_PRIVATE_KEY env)
   --fee-recipient <addr> Fee recipient address (default: deployer address)
   --help                 Show this help message
 
 ENVIRONMENT:
   DEPLOYER_PRIVATE_KEY   Private key for deployment (if --private-key not given)
+  RPC_URL                RPC endpoint to use instead of the one in chains.json
+                         (must be the same chain)
   FEE_RECIPIENT          Fee recipient address (overridden by --fee-recipient)
-  REMAINDER_VERIFIER     Existing RemainderVerifier address to reuse (skips deploy)
+  REMAINDER_VERIFIER     Existing RemainderVerifier address to reuse. Required unless
+                         --with-remainder is given: TEEMLVerifier rejects address(0)
 
 DEPLOY ORDER:
   1. MockRiscZeroVerifier (for local) or uses existing verifier router
   2. ProgramRegistry(admin)
-  3. TEEMLVerifier(admin, remainderVerifier)
-  4. ExecutionEngine(admin, programRegistry, verifier, feeRecipient)
-  5. [optional] RemainderVerifier(admin)
+  3. [optional] RemainderVerifier: implementation + UUPSProxy, initialize(admin)
+  4. TEEMLVerifier: implementation + UUPSProxy, initialize(admin, remainderVerifier)
+  5. ExecutionEngine(admin, programRegistry, verifier, feeRecipient)
 
 OUTPUT:
   Deployed addresses saved to deployments/<chain-id>.json
 
 EXAMPLES:
-  DEPLOYER_PRIVATE_KEY=0xac09... ./scripts/deploy.sh --chain local
-  DEPLOYER_PRIVATE_KEY=0xac09... ./scripts/deploy.sh --chain sepolia --verify
-  DEPLOYER_PRIVATE_KEY=0xac09... ./scripts/deploy.sh --chain local --dry-run
+  DEPLOYER_PRIVATE_KEY=0xac09... ./scripts/deploy.sh --chain local --with-remainder
+  REMAINDER_VERIFIER=0x... DEPLOYER_PRIVATE_KEY=0xac09... ./scripts/deploy.sh --chain sepolia --verify
+  DEPLOYER_PRIVATE_KEY=0xac09... ./scripts/deploy.sh --chain local --with-remainder --dry-run
   ./scripts/deploy.sh --chain local --private-key 0xac09... --with-remainder
 USAGE
 }
@@ -232,7 +236,9 @@ if [[ -z "$CHAIN_JSON" || "$CHAIN_JSON" == "null" ]]; then
 fi
 
 CHAIN_ID=$(echo "$CHAIN_JSON" | jq -r '.chainId')
-RPC_URL=$(echo "$CHAIN_JSON" | jq -r '.rpcUrl')
+# RPC_URL from the environment wins over the public endpoint in chains.json
+# (deploy-sepolia-tee.sh exports the caller's own provider URL this way).
+RPC_URL="${RPC_URL:-$(echo "$CHAIN_JSON" | jq -r '.rpcUrl')}"
 EXPLORER_URL=$(echo "$CHAIN_JSON" | jq -r '.explorerUrl // empty')
 EXPLORER_API_KEY_ENV=$(echo "$CHAIN_JSON" | jq -r '.explorerApiKey // empty')
 CODE_SIZE_LIMIT=$(echo "$CHAIN_JSON" | jq -r '.codeSizeLimit // 24576')
@@ -256,6 +262,13 @@ DEPLOYER_ADDR=$(cast wallet address --private-key "$PRIVATE_KEY" 2>/dev/null) ||
 # Default fee recipient to deployer
 if [[ -z "$FEE_RECIPIENT" ]]; then
     FEE_RECIPIENT="$DEPLOYER_ADDR"
+fi
+
+# TEEMLVerifier.initialize() rejects address(0) for the remainder verifier
+if [[ "$WITH_REMAINDER" == "false" && "$REMAINDER_VERIFIER_ADDR" == "0x0000000000000000000000000000000000000000" ]]; then
+    err "TEEMLVerifier needs a RemainderVerifier address."
+    err "Pass --with-remainder to deploy one, or set REMAINDER_VERIFIER to an existing deployment."
+    exit 1
 fi
 
 # ---------------------------------------------------------------------------
@@ -318,6 +331,15 @@ check_balance() {
 }
 
 if [[ "$DRY_RUN" == "false" ]]; then
+    # Refuse to deploy when the RPC endpoint is not the chain that was asked for
+    ACTUAL_CHAIN_ID=$(cast chain-id --rpc-url "$RPC_URL" 2>/dev/null) || {
+        err "Cannot reach RPC endpoint: $RPC_URL"
+        exit 1
+    }
+    if [[ "$ACTUAL_CHAIN_ID" != "$CHAIN_ID" ]]; then
+        err "RPC endpoint $RPC_URL is chain $ACTUAL_CHAIN_ID, but '$CHAIN' is chain $CHAIN_ID."
+        exit 1
+    fi
     check_balance
 fi
 
@@ -359,7 +381,8 @@ deploy_contract() {
     fi
 
     # Build forge create command
-    local forge_args="forge create $contract --rpc-url $RPC_URL --private-key $PRIVATE_KEY --json"
+    # --broadcast: without it forge only simulates the deployment
+    local forge_args="forge create $contract --rpc-url $RPC_URL --private-key $PRIVATE_KEY --broadcast --json"
 
     # Add constructor args if any
     if [[ $# -gt 0 ]]; then
@@ -391,6 +414,40 @@ deploy_contract() {
     ok "  $name deployed at: $LAST_DEPLOY_ADDR"
     info "  TX: $LAST_DEPLOY_TX"
     return 0
+}
+
+# ---------------------------------------------------------------------------
+# Deploy helper for UUPS-upgradeable contracts
+# ---------------------------------------------------------------------------
+# TEEMLVerifier and RemainderVerifier have no constructor arguments and lock
+# their implementation: they only work behind a UUPSProxy that calls
+# initialize() in its constructor.
+# Usage: deploy_proxy <name> <source_path:contract_name> <initialize signature> [initialize args...]
+# Records "<name>Implementation" and "<name>" (the proxy, which callers use).
+# Sets: LAST_DEPLOY_ADDR / LAST_DEPLOY_TX (proxy), LAST_IMPL_ADDR, LAST_INIT_DATA
+LAST_IMPL_ADDR=""
+LAST_INIT_DATA=""
+
+deploy_proxy() {
+    local name="$1"
+    local contract="$2"
+    local init_sig="$3"
+    shift 3
+
+    deploy_contract "${name}Implementation" "$contract" || return 1
+    LAST_IMPL_ADDR="$LAST_DEPLOY_ADDR"
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        LAST_INIT_DATA="0x"
+    else
+        LAST_INIT_DATA=$(cast calldata "$init_sig" "$@") || {
+            err "  Failed to encode $init_sig for $name"
+            set_failed "$name"
+            return 1
+        }
+    fi
+
+    deploy_contract "$name" "src/Upgradeable.sol:UUPSProxy" "$LAST_IMPL_ADDR" "$LAST_INIT_DATA"
 }
 
 # ---------------------------------------------------------------------------
@@ -583,7 +640,7 @@ if [[ -n "$VERIFIER_ROUTER" && "$VERIFIER_ROUTER" != "null" ]]; then
     MOCK_VERIFIER_ADDR="$VERIFIER_ROUTER"
     set_deployed "VerifierRouter (existing)" "$VERIFIER_ROUTER" "n/a (pre-existing)"
 elif [[ "$CHAIN" == "local" || "$CHAIN" == "localhost" ]]; then
-    if deploy_contract "MockRiscZeroVerifier" "src/MockRiscZeroVerifier.sol:MockRiscZeroVerifier"; then
+    if deploy_contract "MockRiscZeroVerifier" "src/mocks/MockRiscZeroVerifier.sol:MockRiscZeroVerifier"; then
         MOCK_VERIFIER_ADDR="$LAST_DEPLOY_ADDR"
         save_deployment
     else
@@ -593,7 +650,7 @@ else
     # Non-local chain without verifier router: deploy mock with warning
     warn "No verifierRouter configured for '$CHAIN'. Deploying MockRiscZeroVerifier."
     warn "For production, set verifierRouter in $CHAINS_FILE."
-    if deploy_contract "MockRiscZeroVerifier" "src/MockRiscZeroVerifier.sol:MockRiscZeroVerifier"; then
+    if deploy_contract "MockRiscZeroVerifier" "src/mocks/MockRiscZeroVerifier.sol:MockRiscZeroVerifier"; then
         MOCK_VERIFIER_ADDR="$LAST_DEPLOY_ADDR"
         save_deployment
     else
@@ -633,27 +690,52 @@ else
     exit 1
 fi
 
-header "Step 3/5: Deploy TEEMLVerifier"
-# TEEMLVerifier(admin, remainderVerifier)
-TEE_REMAINDER_ARG="$REMAINDER_VERIFIER_ADDR"
-if deploy_contract "TEEMLVerifier" "src/tee/TEEMLVerifier.sol:TEEMLVerifier" "$DEPLOYER_ADDR" "$TEE_REMAINDER_ARG"; then
+header "Step 3/5: Deploy RemainderVerifier (optional)"
+# Deployed before TEEMLVerifier: TEEMLVerifier.initialize() needs its address.
+if [[ "$WITH_REMAINDER" == "true" ]]; then
+    # RemainderVerifier.initialize(admin)
+    if deploy_proxy "RemainderVerifier" "src/remainder/RemainderVerifier.sol:RemainderVerifier" \
+        "initialize(address)" "$DEPLOYER_ADDR"; then
+        REMAINDER_VERIFIER_DEPLOYED_ADDR="$LAST_DEPLOY_ADDR"
+        REMAINDER_VERIFIER_ADDR="$LAST_DEPLOY_ADDR"
+        validate_contract "RemainderVerifier" "$REMAINDER_VERIFIER_DEPLOYED_ADDR" "admin()(address)" || true
+        verify_contract "RemainderVerifierImplementation" "$LAST_IMPL_ADDR" \
+            "src/remainder/RemainderVerifier.sol:RemainderVerifier"
+        verify_contract "RemainderVerifier" "$REMAINDER_VERIFIER_DEPLOYED_ADDR" "src/Upgradeable.sol:UUPSProxy" \
+            "address,bytes" "$LAST_IMPL_ADDR" "$LAST_INIT_DATA"
+        save_deployment
+    else
+        DEPLOY_FAILED=true
+        set_skipped "TEEMLVerifier"
+        set_skipped "ExecutionEngine"
+        save_deployment
+        print_rollback_info
+        exit 1
+    fi
+else
+    info "Skipped (use --with-remainder to deploy)"
+    set_skipped "RemainderVerifier (not requested)"
+fi
+
+header "Step 4/5: Deploy TEEMLVerifier"
+# TEEMLVerifier.initialize(admin, remainderVerifier)
+if deploy_proxy "TEEMLVerifier" "src/tee/TEEMLVerifier.sol:TEEMLVerifier" \
+    "initialize(address,address)" "$DEPLOYER_ADDR" "$REMAINDER_VERIFIER_ADDR"; then
     TEE_VERIFIER_ADDR="$LAST_DEPLOY_ADDR"
-    validate_contract "TEEMLVerifier" "$TEE_VERIFIER_ADDR" "owner()(address)" || true
-    verify_contract "TEEMLVerifier" "$TEE_VERIFIER_ADDR" "src/tee/TEEMLVerifier.sol:TEEMLVerifier" \
-        "address,address" "$DEPLOYER_ADDR" "$TEE_REMAINDER_ARG"
+    validate_contract "TEEMLVerifier" "$TEE_VERIFIER_ADDR" "admin()(address)" || true
+    verify_contract "TEEMLVerifierImplementation" "$LAST_IMPL_ADDR" "src/tee/TEEMLVerifier.sol:TEEMLVerifier"
+    verify_contract "TEEMLVerifier" "$TEE_VERIFIER_ADDR" "src/Upgradeable.sol:UUPSProxy" \
+        "address,bytes" "$LAST_IMPL_ADDR" "$LAST_INIT_DATA"
     save_deployment
 else
     DEPLOY_FAILED=true
     set_skipped "ExecutionEngine"
-    if [[ "$WITH_REMAINDER" == "true" ]]; then
-        set_skipped "RemainderVerifier"
-    fi
     save_deployment
     print_rollback_info
     exit 1
 fi
 
-header "Step 4/5: Deploy ExecutionEngine"
+header "Step 5/5: Deploy ExecutionEngine"
 # ExecutionEngine(admin, programRegistry, verifier, feeRecipient)
 if deploy_contract "ExecutionEngine" "src/ExecutionEngine.sol:ExecutionEngine" \
     "$DEPLOYER_ADDR" "$PROGRAM_REGISTRY_ADDR" "$MOCK_VERIFIER_ADDR" "$FEE_RECIPIENT"; then
@@ -664,45 +746,9 @@ if deploy_contract "ExecutionEngine" "src/ExecutionEngine.sol:ExecutionEngine" \
     save_deployment
 else
     DEPLOY_FAILED=true
-    if [[ "$WITH_REMAINDER" == "true" ]]; then
-        set_skipped "RemainderVerifier"
-    fi
     save_deployment
     print_rollback_info
     exit 1
-fi
-
-header "Step 5/5: Deploy RemainderVerifier (optional)"
-if [[ "$WITH_REMAINDER" == "true" ]]; then
-    if deploy_contract "RemainderVerifier" "src/remainder/RemainderVerifier.sol:RemainderVerifier" "$DEPLOYER_ADDR"; then
-        REMAINDER_VERIFIER_DEPLOYED_ADDR="$LAST_DEPLOY_ADDR"
-        validate_contract "RemainderVerifier" "$REMAINDER_VERIFIER_DEPLOYED_ADDR" "owner()(address)" || true
-        verify_contract "RemainderVerifier" "$REMAINDER_VERIFIER_DEPLOYED_ADDR" \
-            "src/remainder/RemainderVerifier.sol:RemainderVerifier" \
-            "address" "$DEPLOYER_ADDR"
-        save_deployment
-
-        # Wire RemainderVerifier into TEEMLVerifier
-        if [[ "$DRY_RUN" == "false" ]]; then
-            info "Wiring RemainderVerifier into TEEMLVerifier..."
-            if cast send "$TEE_VERIFIER_ADDR" "setRemainderVerifier(address)" "$REMAINDER_VERIFIER_DEPLOYED_ADDR" \
-                --rpc-url "$RPC_URL" --private-key "$PRIVATE_KEY" 2>&1; then
-                ok "  TEEMLVerifier.remainderVerifier set to $REMAINDER_VERIFIER_DEPLOYED_ADDR"
-            else
-                warn "  Failed to wire RemainderVerifier. You may need to call setRemainderVerifier() manually."
-            fi
-        else
-            warn "  [DRY RUN] Would wire RemainderVerifier into TEEMLVerifier"
-        fi
-    else
-        DEPLOY_FAILED=true
-        save_deployment
-        print_rollback_info
-        exit 1
-    fi
-else
-    info "Skipped (use --with-remainder to deploy)"
-    set_skipped "RemainderVerifier (not requested)"
 fi
 
 # ---------------------------------------------------------------------------

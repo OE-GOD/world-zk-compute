@@ -71,6 +71,11 @@ REQUIRED ENVIRONMENT:
   DEPLOYER_PRIVATE_KEY       Private key for deployer (admin)
   ENCLAVE_PRIVATE_KEY        Private key for the TEE enclave signer
   ALCHEMY_SEPOLIA_RPC_URL    Alchemy (or other provider) RPC URL for Sepolia
+  REMAINDER_VERIFIER         Address TEEMLVerifier calls to resolve disputes.
+                             TEEMLVerifier.initialize() rejects address(0), and
+                             RemainderVerifier itself (135 KB) is over Sepolia's
+                             24,576-byte contract size limit, so deploy.sh cannot
+                             deploy one there.
 
 OPTIONAL ENVIRONMENT:
   ETHERSCAN_API_KEY          Etherscan API key for contract verification
@@ -152,6 +157,11 @@ fi
 
 if [[ -z "${ALCHEMY_SEPOLIA_RPC_URL:-}" ]]; then
     err "ALCHEMY_SEPOLIA_RPC_URL is required (public Sepolia RPCs rate-limit heavily)"
+    MISSING_VARS=true
+fi
+
+if [[ -z "${REMAINDER_VERIFIER:-}" ]]; then
+    err "REMAINDER_VERIFIER is required (TEEMLVerifier cannot be initialized without it)"
     MISSING_VARS=true
 fi
 
@@ -247,7 +257,7 @@ fi
 info "Running: ./scripts/deploy.sh ${DEPLOY_ARGS[*]}"
 echo ""
 
-export DEPLOYER_PRIVATE_KEY
+export DEPLOYER_PRIVATE_KEY REMAINDER_VERIFIER
 "$SCRIPT_DIR/deploy.sh" "${DEPLOY_ARGS[@]}" || {
     err "deploy.sh failed. Check output above for details."
     exit 1
@@ -312,12 +322,12 @@ REGISTER_OUTPUT=$(cast send "$REGISTRY_ADDR" \
 }
 
 # Verify registration
-PROGRAM_EXISTS=$(cast call "$REGISTRY_ADDR" \
-    'programs(bytes32)(string,string,bytes32,bool)' \
+PROGRAM_ACTIVE=$(cast call "$REGISTRY_ADDR" \
+    'isProgramActive(bytes32)(bool)' \
     "$PROGRAM_IMAGE_ID" \
     --rpc-url "$RPC_URL" 2>/dev/null) || true
 
-if [[ -n "$PROGRAM_EXISTS" ]]; then
+if [[ "$PROGRAM_ACTIVE" == "true" ]]; then
     ok "Program registered successfully"
 else
     warn "Could not verify program registration"
@@ -342,13 +352,13 @@ ENCLAVE_OUTPUT=$(cast send "$TEE_ADDR" \
     warn "Output: $ENCLAVE_OUTPUT"
 }
 
-# Verify registration
-ENCLAVE_REGISTERED=$(cast call "$TEE_ADDR" \
-    'registeredEnclaves(address)(bytes32)' \
+# Verify registration: enclaves() returns (registered, active, imageHash, registeredAt)
+ENCLAVE_INFO=$(cast call "$TEE_ADDR" \
+    'enclaves(address)((bool,bool,bytes32,uint256))' \
     "$ENCLAVE_ADDR" \
     --rpc-url "$RPC_URL" 2>/dev/null) || true
 
-if [[ -n "$ENCLAVE_REGISTERED" && "$ENCLAVE_REGISTERED" != "0x0000000000000000000000000000000000000000000000000000000000000000" ]]; then
+if [[ "$ENCLAVE_INFO" == "(true, true,"* ]]; then
     ok "Enclave registered successfully"
 else
     warn "Could not verify enclave registration"

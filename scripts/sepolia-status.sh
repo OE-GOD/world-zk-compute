@@ -61,10 +61,10 @@ echo ""
 # 2. Contract status
 if [ -n "${TEE_VERIFIER_ADDRESS:-}" ]; then
     printf "%bTEEMLVerifier (%s)%b\n" "$BOLD" "$TEE_VERIFIER_ADDRESS" "$RESET"
-    if OWNER=$(cast call "$TEE_VERIFIER_ADDRESS" "owner()(address)" --rpc-url "$RPC_URL" 2>/dev/null); then
-        ok "Owner: $OWNER"
+    if ADMIN=$(cast call "$TEE_VERIFIER_ADDRESS" "admin()(address)" --rpc-url "$RPC_URL" 2>/dev/null); then
+        ok "Admin: $ADMIN"
     else
-        fail "Cannot read owner"
+        fail "Cannot read admin"
     fi
     if PAUSED=$(cast call "$TEE_VERIFIER_ADDRESS" "paused()(bool)" --rpc-url "$RPC_URL" 2>/dev/null); then
         ok "Paused: $PAUSED"

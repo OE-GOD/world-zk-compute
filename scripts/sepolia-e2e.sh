@@ -6,7 +6,7 @@ set -euo pipefail
 #
 # Exercises the TEE lifecycle against live Sepolia contracts:
 #   1. Connectivity check (verify Sepolia is reachable)
-#   2. Contract health (codesize, owner on each contract)
+#   2. Contract health (codesize, admin/owner on each contract)
 #   3. Submit execution request via ExecutionEngine
 #   4. Submit TEE result with attestation via TEEMLVerifier
 #   5. Query result state (challenge window)
@@ -84,7 +84,7 @@ TEST_INPUT_HASH="0x3333333333333333333333333333333333333333333333333333333333333
 INPUT_DIGEST="0x4444444444444444444444444444444444444444444444444444444444444444"
 ENCLAVE_IMAGE_HASH="0x5555555555555555555555555555555555555555555555555555555555555555"
 TEST_RESULT="0xaabbccdd"
-STAKE_VALUE="0.001ether"
+REQUEST_TIP="0.001ether"
 
 # =============================================================================
 # Test result tracking
@@ -140,24 +140,26 @@ tx_gas_from_json() {
     echo "$1" | python3 -c "import sys,json; print(int(json.load(sys.stdin).get('gasUsed','0x0'),16))" 2>/dev/null || echo "n/a"
 }
 
-# sign_attestation <modelHash> <inputHash> <resultData> <privateKey>
-# Mirrors the contract: message = keccak256(encodePacked(modelHash, inputHash, keccak256(result)))
-# cast wallet sign adds the EIP-191 "\x19Ethereum Signed Message:\n32" prefix automatically.
+# sign_attestation <modelHash> <inputHash> <resultData> <privateKey> <verifierAddress>
+# Mirrors TEEMLVerifier.submitResult, which recovers an EIP-712 signature over
+# TEEMLResult(bytes32 modelHash,bytes32 inputHash,bytes32 resultHash) under the
+# contract's own domain separator:
+#   digest = keccak256(0x1901 ++ DOMAIN_SEPARATOR ++ keccak256(abi.encode(RESULT_TYPEHASH, modelHash, inputHash, keccak256(result))))
 sign_attestation() {
-    local model_hash="${1#0x}"
-    local input_hash="${2#0x}"
+    local model_hash="$1"
+    local input_hash="$2"
     local result_data="$3"
     local private_key="$4"
+    local verifier="$5"
 
-    local result_hash
+    local result_hash typehash domain struct_hash digest
     result_hash=$(cast keccak "$result_data")
-    result_hash="${result_hash#0x}"
+    typehash=$(cast call --rpc-url "$RPC_URL" "$verifier" "RESULT_TYPEHASH()(bytes32)")
+    domain=$(cast call --rpc-url "$RPC_URL" "$verifier" "DOMAIN_SEPARATOR()(bytes32)")
+    struct_hash=$(cast keccak "$(cast abi-encode "f(bytes32,bytes32,bytes32,bytes32)" "$typehash" "$model_hash" "$input_hash" "$result_hash")")
+    digest=$(cast keccak "0x1901${domain#0x}${struct_hash#0x}")
 
-    local packed="0x${model_hash}${input_hash}${result_hash}"
-    local message
-    message=$(cast keccak "$packed")
-
-    cast wallet sign --private-key "$private_key" "$message"
+    cast wallet sign --no-hash --private-key "$private_key" "$digest"
 }
 
 # =============================================================================
@@ -234,13 +236,13 @@ if [ -z "$TEE_ADDR" ] || [ -z "$ENGINE_ADDR" ] || [ -z "$REGISTRY_ADDR" ]; then
     if [ -f "$DEPLOYMENTS_FILE" ]; then
         info "Reading addresses from $DEPLOYMENTS_FILE"
         if [ -z "$TEE_ADDR" ]; then
-            TEE_ADDR=$(jq -r '.contracts.TEEMLVerifier // .TEEMLVerifier // empty' "$DEPLOYMENTS_FILE" 2>/dev/null || echo "")
+            TEE_ADDR=$(jq -r '(.contracts.TEEMLVerifier | if type == "object" then .address else . end) // .TEEMLVerifier // empty' "$DEPLOYMENTS_FILE" 2>/dev/null || echo "")
         fi
         if [ -z "$ENGINE_ADDR" ]; then
-            ENGINE_ADDR=$(jq -r '.contracts.ExecutionEngine // .ExecutionEngine // empty' "$DEPLOYMENTS_FILE" 2>/dev/null || echo "")
+            ENGINE_ADDR=$(jq -r '(.contracts.ExecutionEngine | if type == "object" then .address else . end) // .ExecutionEngine // empty' "$DEPLOYMENTS_FILE" 2>/dev/null || echo "")
         fi
         if [ -z "$REGISTRY_ADDR" ]; then
-            REGISTRY_ADDR=$(jq -r '.contracts.ProgramRegistry // .ProgramRegistry // empty' "$DEPLOYMENTS_FILE" 2>/dev/null || echo "")
+            REGISTRY_ADDR=$(jq -r '(.contracts.ProgramRegistry | if type == "object" then .address else . end) // .ProgramRegistry // empty' "$DEPLOYMENTS_FILE" 2>/dev/null || echo "")
         fi
     else
         info "No deployments file found at $DEPLOYMENTS_FILE"
@@ -316,12 +318,13 @@ else
     record_fail "ProgramRegistry has code" "codesize=$REGISTRY_CODESIZE at $REGISTRY_ADDR"
 fi
 
-# --- 2d: Check owner() on each contract ---
-TEE_OWNER=$(cast call --rpc-url "$RPC_URL" "$TEE_ADDR" "owner()(address)" 2>/dev/null || echo "")
-if [ -n "$TEE_OWNER" ]; then
-    record_pass "TEEMLVerifier owner=$TEE_OWNER"
+# --- 2d: Check admin()/owner() on each contract ---
+# TEEMLVerifier is a UUPS proxy with admin(); the other two are Ownable.
+TEE_ADMIN=$(cast call --rpc-url "$RPC_URL" "$TEE_ADDR" "admin()(address)" 2>/dev/null || echo "")
+if [ -n "$TEE_ADMIN" ]; then
+    record_pass "TEEMLVerifier admin=$TEE_ADMIN"
 else
-    record_fail "TEEMLVerifier owner()" "call failed"
+    record_fail "TEEMLVerifier admin()" "call failed"
 fi
 
 ENGINE_OWNER=$(cast call --rpc-url "$RPC_URL" "$ENGINE_ADDR" "owner()(address)" 2>/dev/null || echo "")
@@ -368,7 +371,7 @@ if [ "$IS_ACTIVE" != "true" ]; then
             "sepolia-e2e-program" \
             "file://test" \
             "0x0000000000000000000000000000000000000000000000000000000000000000" \
-            --json 2>&1)
+            --json 2>&1) || true
 
         REG_STATUS=$(tx_status_from_json "$REG_TX")
         REG_GAS=$(tx_gas_from_json "$REG_TX")
@@ -395,7 +398,7 @@ if [ "$DRY_RUN" = true ]; then
     echo "    'https://example.com/sepolia-e2e-input' \\"
     echo "    0x0000000000000000000000000000000000000000 \\"
     echo "    3600 \\"
-    echo "    --value $STAKE_VALUE"
+    echo "    --value $REQUEST_TIP"
     record_pass "Execution request (dry-run)"
 else
     # Read nextRequestId before submission
@@ -412,8 +415,8 @@ else
         "https://example.com/sepolia-e2e-input" \
         "0x0000000000000000000000000000000000000000" \
         3600 \
-        --value "$STAKE_VALUE" \
-        --json 2>&1)
+        --value "$REQUEST_TIP" \
+        --json 2>&1) || true
 
     S3_STATUS=$(tx_status_from_json "$S3_TX")
     S3_GAS=$(tx_gas_from_json "$S3_TX")
@@ -458,7 +461,7 @@ if [ "$ENCLAVE_REGISTERED" != "true" ]; then
             "registerEnclave(address,bytes32)" \
             "$ENCLAVE_ADDR" \
             "$ENCLAVE_IMAGE_HASH" \
-            --json 2>&1)
+            --json 2>&1) || true
 
         EREG_STATUS=$(tx_status_from_json "$EREG_TX")
         EREG_GAS=$(tx_gas_from_json "$EREG_TX")
@@ -473,9 +476,18 @@ else
     record_pass "Enclave already registered"
 fi
 
+# submitResult must carry at least the stake the contract asks for
+if [ "$DRY_RUN" = true ]; then
+    PROVER_STAKE="<proverStake()>"
+else
+    PROVER_STAKE=$(cast call --rpc-url "$RPC_URL" "$TEE_ADDR" "proverStake()(uint256)" 2>/dev/null || echo "")
+    PROVER_STAKE=$(strip_cast "$PROVER_STAKE")
+    info "Prover stake required: ${PROVER_STAKE:-unknown} wei"
+fi
+
 # Sign attestation
 info "Generating attestation signature..."
-ATTESTATION=$(sign_attestation "$TEST_MODEL_HASH" "$TEST_INPUT_HASH" "$TEST_RESULT" "$ENCLAVE_PRIVATE_KEY")
+ATTESTATION=$(sign_attestation "$TEST_MODEL_HASH" "$TEST_INPUT_HASH" "$TEST_RESULT" "$ENCLAVE_PRIVATE_KEY" "$TEE_ADDR")
 info "Attestation: ${ATTESTATION:0:20}..."
 
 # Submit result
@@ -487,7 +499,7 @@ if [ "$DRY_RUN" = true ]; then
     echo "    $TEST_INPUT_HASH \\"
     echo "    $TEST_RESULT \\"
     echo "    $ATTESTATION \\"
-    echo "    --value $STAKE_VALUE"
+    echo "    --value $PROVER_STAKE"
     record_pass "TEE result submitted (dry-run)"
     RESULT_ID="0x0000000000000000000000000000000000000000000000000000000000000000"
 else
@@ -499,8 +511,8 @@ else
         "$TEST_INPUT_HASH" \
         "$TEST_RESULT" \
         "$ATTESTATION" \
-        --value "$STAKE_VALUE" \
-        --json 2>&1)
+        --value "$PROVER_STAKE" \
+        --json 2>&1) || true
 
     S4_STATUS=$(tx_status_from_json "$S4_TX")
     S4_GAS=$(tx_gas_from_json "$S4_TX")

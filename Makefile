@@ -140,8 +140,8 @@ lint-rust: ## Run Rust clippy on all crates
 
 # ── Deploy ───────────────────────────────────────────────────────────────────
 
-deploy-local: ## Deploy to local Anvil (start Anvil first)
-	bash scripts/deploy.sh --chain local --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+deploy-local: ## Deploy to local Anvil (start it first: anvil --disable-code-size-limit --gas-limit 500000000)
+	bash scripts/deploy.sh --chain local --with-remainder --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 
 deploy-mocks: ## Deploy mock contracts to local Anvil for SDK testing
 	cd contracts && forge script script/DeployMocks.s.sol:DeployMocks --rpc-url http://localhost:8545 --broadcast -vvv
