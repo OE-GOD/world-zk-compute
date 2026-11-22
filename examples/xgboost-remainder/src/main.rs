@@ -16,9 +16,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tracing::Level;
 
-use xgboost_remainder::{
-    circuit, detect, lightgbm, logistic_regression, mlp, model, random_forest, server,
-};
+use xgboost_remainder::{circuit, detect, lightgbm, mlp, model, random_forest, server};
 
 /// XGBoost Remainder prover CLI
 #[derive(Parser)]
@@ -40,7 +38,7 @@ struct Cli {
     #[arg(long)]
     execute_only: bool,
 
-    /// Model format: "auto" (detect from JSON), "xgboost", "lightgbm", "random_forest", or "logistic_regression"
+    /// Model format: "auto" (detect from JSON), "xgboost", "lightgbm", or "random_forest"
     #[arg(long, default_value = "auto")]
     model_format: String,
 
@@ -122,7 +120,7 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    // Load model (supports XGBoost, LightGBM, Random Forest, and Logistic Regression JSON formats)
+    // Load model (supports XGBoost, LightGBM, and Random Forest JSON formats)
     let detected_format = if cli.model_format == "auto" {
         let fmt = detect::detect_model_format_from_file(&cli.model)
             .map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -136,18 +134,16 @@ async fn main() -> Result<()> {
         "lightgbm" => {
             lightgbm::load_lightgbm_json(&cli.model).map_err(|e| anyhow::anyhow!("{}", e))?
         }
-        "random_forest" => {
-            random_forest::load_random_forest_json(&cli.model)
-                .map_err(|e| anyhow::anyhow!("{}", e))?
-        }
+        "random_forest" => random_forest::load_random_forest_json(&cli.model)
+            .map_err(|e| anyhow::anyhow!("{}", e))?,
+        // The tree conversion for logistic regression is a placeholder (one leaf, weights
+        // ignored): it predicts the wrong class and panics in circuit construction.
         "logistic_regression" => {
-            let lr = logistic_regression::LogisticRegressionModel::from_file(&cli.model)
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
-            lr.to_xgboost_model()
+            anyhow::bail!("Model format 'logistic_regression' is not supported by this CLI")
         }
         "mlp" => mlp::load_mlp_json(&cli.model).map_err(|e| anyhow::anyhow!("{}", e))?,
         other => anyhow::bail!(
-            "Unknown model format '{}'. Supported: auto, xgboost, lightgbm, random_forest, logistic_regression, mlp",
+            "Unknown model format '{}'. Supported: auto, xgboost, lightgbm, random_forest, mlp",
             other
         ),
     };

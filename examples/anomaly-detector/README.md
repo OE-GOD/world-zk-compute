@@ -24,7 +24,7 @@ fraud detection, geographic anomaly detection.
 
 ```
 anomaly-detector/
-  Cargo.toml              workspace root (members: host, methods/guest)
+  Cargo.toml              workspace root (members: host, methods)
   host/
     src/main.rs            host program -- prepares input, demonstrates
                            the World ZK Compute submission flow

@@ -1,5 +1,5 @@
 BINARY := gnark-wrapper
-MODULE := github.com/worldcoin/world-zk-compute/examples/xgboost-remainder/gnark-wrapper
+MODULE := github.com/OE-GOD/world-zk-compute/examples/xgboost-remainder/gnark-wrapper
 
 .PHONY: build build-linux build-darwin-arm64 test clean
 

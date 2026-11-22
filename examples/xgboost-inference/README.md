@@ -52,7 +52,7 @@ xgboost-inference/
 ## Build
 
 ```bash
-cd examples/xgboost-inference
+cd examples/xgboost-inference/methods
 cargo build --release
 ```
 

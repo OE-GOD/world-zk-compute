@@ -53,7 +53,7 @@ Generate a proof and verify it:
 
 ```bash
 cd examples/anomaly-detector-sp1
-cargo run --release --bin script
+cargo run --release --bin anomaly-detector-sp1-script
 ```
 
 This will:

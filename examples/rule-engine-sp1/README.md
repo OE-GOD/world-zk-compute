@@ -45,7 +45,7 @@ cargo build --release
 
 ```bash
 cd examples/rule-engine-sp1
-cargo run --release --bin script
+cargo run --release --bin rule-engine-sp1-script
 ```
 
 ## Input Format

@@ -44,7 +44,7 @@ sybil-detector/
 ## Build
 
 ```bash
-cd examples/sybil-detector
+cd examples/sybil-detector/methods
 cargo build --release
 ```
 

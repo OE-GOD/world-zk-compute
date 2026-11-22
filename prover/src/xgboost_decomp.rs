@@ -372,6 +372,95 @@ mod tests {
         assert_eq!(output.flagged_ids.len(), 1);
     }
 
+    /// Mirror of `compute_input_hash` in the xgboost-inference guest.
+    fn guest_input_hash(input: &XGBoostInput) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(input.model.num_features.to_le_bytes());
+        hasher.update(input.model.num_classes.to_le_bytes());
+        hasher.update(input.model.base_score.to_le_bytes());
+        for tree in &input.model.trees {
+            hasher.update((tree.nodes.len() as u32).to_le_bytes());
+            for node in &tree.nodes {
+                hasher.update(node.is_leaf.to_le_bytes());
+                hasher.update(node.feature_idx.to_le_bytes());
+                hasher.update(node.threshold.to_le_bytes());
+                hasher.update(node.left_child.to_le_bytes());
+                hasher.update(node.right_child.to_le_bytes());
+                hasher.update(node.value.to_le_bytes());
+            }
+        }
+        for sample in &input.samples {
+            hasher.update(sample.id);
+            for f in &sample.features {
+                hasher.update(f.to_le_bytes());
+            }
+        }
+        hasher.update(input.threshold.to_le_bytes());
+        hasher.finalize().into()
+    }
+
+    /// Journal the guest commits for `input` (scores don't matter here).
+    fn guest_journal(input: &[u8]) -> Vec<u8> {
+        let parsed: XGBoostInput = risc0_deserialize(input).unwrap();
+        let output = XGBoostOutput {
+            total_samples: parsed.samples.len() as u32,
+            predictions: parsed
+                .samples
+                .iter()
+                .map(|s| Prediction {
+                    id: s.id,
+                    score: 0.5,
+                    flagged: 0,
+                })
+                .collect(),
+            flagged_count: 0,
+            flagged_ids: vec![],
+            input_hash: guest_input_hash(&parsed),
+        };
+        risc0_serialize(&output).unwrap()
+    }
+
+    // KNOWN DEFECT (documents current behaviour, see monitor.rs "decomposed path"):
+    // a sub-proof's seal is bound to sha256 of that sub-proof's own journal, and
+    // ExecutionEngine verifies the seal against sha256(submitted journal). The
+    // monitor submits (first_sub_seal, merged_journal), and the merged journal
+    // equals no sub-journal, so that pair cannot verify.
+    #[test]
+    fn test_merged_journal_matches_no_sub_proof_journal() {
+        use sha2::{Digest, Sha256};
+        let strategy = XGBoostDecompStrategy::new();
+        let input = make_test_input(6);
+
+        let chunks = strategy.split(&input, 2).unwrap();
+        let sub_journals: Vec<Vec<u8>> = chunks.iter().map(|c| guest_journal(c)).collect();
+        let merged = strategy.merge_journals(&sub_journals).unwrap();
+
+        for sub_journal in &sub_journals {
+            assert_ne!(Sha256::digest(&merged), Sha256::digest(sub_journal));
+        }
+    }
+
+    // KNOWN DEFECT (documents current behaviour): the merged journal carries the
+    // input hash of the first chunk only, not the hash the guest commits when it
+    // runs on the whole input, so it is not the journal of an undecomposed run.
+    #[test]
+    fn test_merged_input_hash_is_first_chunk_hash() {
+        let strategy = XGBoostDecompStrategy::new();
+        let input = make_test_input(6);
+
+        let chunks = strategy.split(&input, 2).unwrap();
+        let sub_journals: Vec<Vec<u8>> = chunks.iter().map(|c| guest_journal(c)).collect();
+        let merged = strategy.merge_journals(&sub_journals).unwrap();
+        let merged_output: XGBoostOutput = risc0_deserialize(&merged).unwrap();
+
+        let full: XGBoostInput = risc0_deserialize(&input).unwrap();
+        let chunk0: XGBoostInput = risc0_deserialize(&chunks[0]).unwrap();
+        assert_eq!(merged_output.input_hash, guest_input_hash(&chunk0));
+        assert_ne!(merged_output.input_hash, guest_input_hash(&full));
+        assert_ne!(merged, guest_journal(&input));
+    }
+
     #[test]
     fn test_estimate_cycles() {
         let strategy = XGBoostDecompStrategy::new();
@@ -379,7 +468,7 @@ mod tests {
 
         let cycles = strategy.estimate_cycles(&input).unwrap();
         // 100 samples * 1 tree * 1000 + 5M
-        assert_eq!(cycles, 100 * 1 * 1000 + 5_000_000);
+        assert_eq!(cycles, 100 * 1000 + 5_000_000);
     }
 
     #[test]

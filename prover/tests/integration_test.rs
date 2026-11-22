@@ -38,6 +38,12 @@ pub struct MockExecutionEngine {
     prover_balance: Arc<RwLock<u64>>,
 }
 
+impl Default for MockExecutionEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MockExecutionEngine {
     pub fn new() -> Self {
         Self {
@@ -147,6 +153,12 @@ pub struct MockProver {
     pub proof_time: Duration,
     /// Should fail proving?
     pub should_fail: bool,
+}
+
+impl Default for MockProver {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MockProver {
@@ -373,8 +385,10 @@ mod tests {
     async fn test_proof_cache_simulation() {
         use std::collections::HashMap;
 
+        type ProofCache = HashMap<([u8; 32], [u8; 32]), (Vec<u8>, Vec<u8>)>;
+
         let engine = Arc::new(MockExecutionEngine::new());
-        let mut cache: HashMap<([u8; 32], [u8; 32]), (Vec<u8>, Vec<u8>)> = HashMap::new();
+        let mut cache: ProofCache = HashMap::new();
 
         let image_id = [1u8; 32];
         let input_hash = [2u8; 32];

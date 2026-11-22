@@ -95,7 +95,7 @@ PROVING MODES:
   - boundless-fallback: Try Boundless, fall back to local
   - boundless-gpu:      Try Boundless, fall back to GPU
 
-For more information: https://github.com/worldcoin/world-zk-compute
+For more information: https://github.com/OE-GOD/world-zk-compute
 "#)]
 struct Cli {
     #[command(subcommand)]
