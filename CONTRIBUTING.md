@@ -56,16 +56,16 @@ make test-stylus       # Stylus GKR verifier tests
 ### E2E Tests
 
 ```bash
-./scripts/e2e-test.sh --network local    # Local (requires Anvil)
-./scripts/e2e-test.sh --network sepolia  # Sepolia (requires funded wallet)
+./scripts/e2e-test.sh --example rule-engine --network local    # Local (requires Anvil)
+./scripts/e2e-test.sh --example rule-engine --network sepolia  # Sepolia (requires funded wallet)
 ```
 
 ## Code Style
 
 - **Rust**: `cargo fmt` (rustfmt) and `cargo clippy`
 - **Solidity**: `forge fmt`
-- **TypeScript**: Prettier
-- **Python**: Black + Ruff
+- **TypeScript**: ESLint (`npm run lint`)
+- **Python**: Ruff
 
 Run `make fmt` to format all code and `make lint` to check.
 

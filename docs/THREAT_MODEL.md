@@ -46,7 +46,7 @@ User --> Enclave (TEE) --> submitResult(attestation) --> Challenge? --yes--> ZK 
 
 **Mitigation:**
 - Submitter must post `proverStake` (default 0.1 ETH) with every submission.
-- Any observer can challenge within the 1-hour `CHALLENGE_WINDOW`.
+- Any observer can challenge within the 1-hour `challengeWindow`.
 - If challenged, submitter must produce a valid ZK proof within 24 hours or lose the stake to the challenger.
 - The ZK proof verifies the actual computation, not just the TEE attestation, so a wrong result cannot be defended.
 
@@ -150,8 +150,8 @@ User --> Enclave (TEE) --> submitResult(attestation) --> Challenge? --yes--> ZK 
 |---|---|---|
 | `proverStake` | 0.1 ETH | Submitter's skin-in-the-game; lost if ZK proof fails |
 | `challengeBondAmount` | 0.1 ETH | Challenger's skin-in-the-game; lost if ZK proof succeeds |
-| `CHALLENGE_WINDOW` | 1 hour | Time for observers to challenge |
-| `DISPUTE_WINDOW` | 24 hours | Time for submitter to produce ZK proof |
+| `challengeWindow` | 1 hour | Time for observers to challenge |
+| `disputeWindow` | 24 hours | Time for submitter to produce ZK proof |
 | `protocolFeeBps` | 250 (2.5%) | ExecutionEngine protocol fee |
 
 **Cost to submit a fake result:** Submitter loses `proverStake` (0.1 ETH) when challenged and unable to produce a valid ZK proof. There is no scenario where a submitter profits from a fake result -- the ZK fallback is deterministic.

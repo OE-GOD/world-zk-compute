@@ -8,14 +8,14 @@ EIP-170 limits deployed contract bytecode to **24,576 bytes (24 KB)**. Several c
 
 | Contract | Source Size | Status |
 |----------|-----------|--------|
-| `RemainderVerifier.sol` | ~2,285 lines (~99 KB source) | Exceeds limit |
+| `RemainderVerifier.sol` | ~2,784 lines (~125 KB source) | Exceeds limit |
 | `PoseidonSponge.sol` | ~2,569 lines (~119 KB source) | Deployed as library |
 | `DAGRemainderGroth16Verifier.sol` | ~31,261 lines (~2 MB source) | Exceeds limit |
-| `GKRDAGVerifier.sol` | ~895 lines (~38 KB source) | Deployed as library |
-| `GKRDAGHybridVerifier.sol` | ~1,167 lines (~49 KB source) | Deployed as library |
+| `GKRDAGVerifier.sol` | ~905 lines (~39 KB source) | Deployed as library |
+| `GKRDAGHybridVerifier.sol` | ~1,181 lines (~49 KB source) | Deployed as library |
 | `RemainderGroth16Verifier.sol` | ~1,219 lines (~68 KB source) | Exceeds limit |
-| `GKRHybridVerifier.sol` | ~632 lines (~29 KB source) | Deployed as library |
-| `GKRVerifier.sol` | ~564 lines (~25 KB source) | Deployed as library |
+| `GKRHybridVerifier.sol` | ~647 lines (~29 KB source) | Deployed as library |
+| `GKRVerifier.sol` | ~584 lines (~26 KB source) | Deployed as library |
 
 Contracts under the limit:
 - `HyraxVerifier.sol` (~15 KB source)
@@ -56,7 +56,7 @@ Gas per transaction: 9–28M (all under 30M block gas limit).
 A complete GKR DAG verifier is implemented in Rust/WASM for Arbitrum Stylus:
 
 - **Location**: `contracts/stylus/gkr-verifier/`
-- **Size**: 52 KB raw WASM → 24.5 KB Brotli (under 24 KB Stylus limit)
+- **Size**: ~60 KB raw WASM → ~22.8 KB Brotli after `wasm-opt` (under 24 KB Stylus limit)
 - **Integration**: `RemainderVerifier.verifyDAGProofStylus()` delegates to the WASM contract via `staticcall`
 
 This avoids EIP-170 entirely by running verification in WASM rather than EVM bytecode.
@@ -119,9 +119,6 @@ The script notes that `RemainderVerifier` is expected to exceed the limit when d
 
 ## Contract Upgrade Strategy
 
-RemainderVerifier is **non-upgradeable** (`Ownable2Step`). Changes require:
-1. Deploy new contract
-2. Re-register all circuits
-3. Update references in ExecutionEngine/TEEMLVerifier
-
-See `docs/RUNBOOK.md` Section 6 for the upgrade procedure.
+RemainderVerifier is a **UUPS implementation** deployed behind `UUPSProxy` (`contracts/src/Upgradeable.sol`). Changes require:
+1. Deploy the new implementation
+2. Call `upgradeTo()` / `upgradeToAndCall()` on the proxy as the admin (or through the timelock once `setTimelock()` has been called)

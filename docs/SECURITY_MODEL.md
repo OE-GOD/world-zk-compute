@@ -196,7 +196,7 @@ The direct GKR+Hyrax verification path requires NO trusted setup. All commitment
 
 ### 6.1 Single Admin Key
 
-The `TEEMLVerifier` uses `Ownable2Step` with a single owner address. The `RemainderVerifier` uses a UUPS proxy with a single admin. Until a multisig with timelock is deployed, a compromised admin key grants full control over enclave registration, verifier swapping, and contract pausing.
+The `TEEMLVerifier` and the `RemainderVerifier` each use a UUPS proxy with a single admin. Until a multisig with timelock is deployed, a compromised admin key grants full control over enclave registration, verifier swapping, and contract pausing.
 
 **Severity:** High
 **Status:** Documented; multisig deployment recommended before mainnet.
@@ -238,7 +238,7 @@ The enclave signs an extended payload including `chainId`, `nonce`, and `timesta
 
 | Feature | Contract | Implementation |
 |---|---|---|
-| Access control | TEEMLVerifier | `Ownable2Step` (OpenZeppelin) |
+| Access control | TEEMLVerifier | UUPS proxy with `onlyAdmin` modifier |
 | Access control | RemainderVerifier | UUPS proxy with `onlyAdmin` modifier |
 | Reentrancy protection | Both | `ReentrancyGuard` (OpenZeppelin) on all ETH-transferring functions |
 | Emergency pause | Both | `Pausable` (OpenZeppelin); `pause()` / `unpause()` by admin |

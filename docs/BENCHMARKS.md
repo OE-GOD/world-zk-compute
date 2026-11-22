@@ -11,8 +11,7 @@ cargo bench -p zkml-verifier
 # Specific benchmark
 cargo bench -p zkml-verifier -- verify_dag
 
-# HTML report (opens in browser)
-cargo bench -p zkml-verifier -- --output-format html
+# HTML report (written by every run; opens in browser)
 open target/criterion/report/index.html
 ```
 

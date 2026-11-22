@@ -92,7 +92,7 @@ examples/{program-name}/
 
 3. **The host binary** can then access the compiled guest:
    ```rust
-   use rule_engine_methods::{RULE_ENGINE_GUEST_ELF, RULE_ENGINE_IMAGE_ID};
+   use rule_engine_methods::{RULE_ENGINE_GUEST_ELF, RULE_ENGINE_GUEST_ID};
    ```
 
 4. **Copy to programs directory** (named by image ID):
@@ -151,6 +151,7 @@ pub struct ProverConfig {
 Guest program proving can be accelerated with GPU:
 
 ```bash
+cd prover
 cargo build --release --features cuda    # NVIDIA GPU
 cargo build --release --features metal   # Apple GPU (macOS)
 ```

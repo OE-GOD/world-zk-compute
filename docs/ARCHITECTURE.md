@@ -76,7 +76,8 @@ Two verification modes exist side by side:
 
 1. User sends feature vector to TEE Enclave via HTTP (`POST /infer`).
 2. Enclave runs XGBoost/LightGBM inference inside a TEE (AWS Nitro).
-3. Enclave ECDSA-signs `keccak256(modelHash || inputHash || resultHash)`.
+3. Enclave ECDSA-signs the EIP-712 `TEEMLResult(modelHash, inputHash, resultHash)` digest
+   (when it knows the verifier address: `TEE_VERIFIER_ADDRESS` or `verifier_address` in the request).
 4. Submitter calls `submitResult()` with ETH stake (default 0.1 ETH).
    Contract verifies the signature against a registered enclave key.
 5. A 1-hour challenge window opens. If nobody challenges, the submitter
@@ -96,7 +97,7 @@ Two verification modes exist side by side:
    |                |<- proof_hex, circuit_hash, pub_inputs --------|
    |                |               |               |               |
    |                |-- resolveDispute(proof, circuitHash, ...) --->|
-   |                |               |               |-- staticcall ->
+   |                |               |               |-- call ------->
    |                |               |               |    verifyDAGProof()
    |                |               |               |<-- bool valid -|
    |                |               |               |               |
@@ -115,7 +116,7 @@ Two verification modes exist side by side:
 3. Operator requests a ZK proof from the Warm Prover (pre-built GKR circuit).
 4. Operator calls `resolveDispute()` with proof data.
 5. `TEEMLVerifier` delegates to `RemainderVerifier.verifyDAGProof()` via
-   `staticcall`. This runs GKR sumcheck + Hyrax commitment verification.
+   `call`. This runs GKR sumcheck + Hyrax commitment verification.
 6. If the proof is valid, the submitter wins both stakes. Otherwise, the
    challenger wins both stakes.
 7. If no proof is submitted within the dispute window, the challenger can
@@ -155,7 +156,7 @@ single and batch proving, API key auth, rate limiting, CORS, and request
 timeouts.
 
 - Entry point: `examples/xgboost-remainder/src/server.rs`
-- Endpoints: `GET /health`, `POST /prove`, `POST /prove/batch`
+- Endpoints: `GET /health`, `POST /prove`, `POST /prove/bundle`, `POST /prove/batch`
 - Circuit: `src/circuit.rs` -- XGBoost tree inference circuit (leaf
   selection + comparison verification)
 
@@ -164,7 +165,8 @@ timeouts.
 Solidity contract implementing the TEE attestation + ZK dispute protocol.
 Manages enclave registration, result submission with stake, challenge bonds,
 dispute resolution via RemainderVerifier, and timeout-based resolution.
-Uses OpenZeppelin Ownable2Step, Pausable, and ReentrancyGuard.
+Deployed behind a UUPS proxy (`admin()` / `changeAdmin()`, optional timelock);
+uses OpenZeppelin Pausable and ReentrancyGuard.
 
 ### RemainderVerifier Contract (`contracts/src/remainder/RemainderVerifier.sol`)
 
@@ -208,19 +210,22 @@ and result hashes.
 | Field | Type | Computation |
 |-------|------|-------------|
 | `modelHash` | `bytes32` | `keccak256(model_file_bytes)` |
-| `inputHash` | `bytes32` | `keccak256(abi.encode(features))` |
+| `inputHash` | `bytes32` | `keccak256(json_bytes(features))` |
 | `resultHash` | `bytes32` | `keccak256(result_bytes)` |
 | `resultId` | `bytes32` | `keccak256(submitter, modelHash, inputHash, blockNumber)` |
-| `circuitHash` | `bytes32` | Poseidon hash of the GKR circuit structure |
+| `circuitHash` | `bytes32` | SHA-256 of the GKR circuit description |
 
 ### Attestation Format
 
-The TEE enclave produces an ECDSA signature (EIP-191) over:
+The TEE enclave produces an ECDSA signature (EIP-712) over:
 
 ```
-message = keccak256(modelHash || inputHash || resultHash)
-signature = sign(keccak256("\x19Ethereum Signed Message:\n32" || message))
+structHash = keccak256(abi.encode(RESULT_TYPEHASH, modelHash, inputHash, resultHash))
+signature  = sign(keccak256("\x19\x01" || DOMAIN_SEPARATOR || structHash))
 ```
+
+`RESULT_TYPEHASH` is `keccak256("TEEMLResult(bytes32 modelHash,bytes32 inputHash,bytes32 resultHash)")`;
+the domain is name `TEEMLVerifier`, version `1`, the chain ID and the verifier address.
 
 The contract recovers the signer via `ecrecover` and checks it against
 registered enclave keys.
