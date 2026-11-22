@@ -4,8 +4,10 @@
 //! `eth_getLogs`, along with the [`TEEEvent`] enum and log-parsing helpers.
 //! Used by both the operator service and the indexer service.
 
+use std::sync::OnceLock;
+
 use alloy::primitives::{Address, B256};
-use alloy::providers::{Provider, ProviderBuilder};
+use alloy::providers::{DynProvider, Provider, ProviderBuilder};
 use alloy::rpc::types::{Filter, Log};
 
 /// Re-export the low-level, serde-compatible event types from `tee-events`.
@@ -167,6 +169,9 @@ pub fn parse_log_tagged(log: &Log) -> Option<TaggedEvent> {
 pub struct EventWatcher {
     rpc_url: String,
     contract_addresses: Vec<Address>,
+    /// Built on first use and then reused, so every poll shares one HTTP
+    /// client and its connections instead of opening a new one.
+    provider: OnceLock<DynProvider>,
 }
 
 impl EventWatcher {
@@ -175,6 +180,7 @@ impl EventWatcher {
         Self {
             rpc_url: rpc_url.to_string(),
             contract_addresses: vec![contract_address],
+            provider: OnceLock::new(),
         }
     }
 
@@ -193,6 +199,7 @@ impl EventWatcher {
         Self {
             rpc_url: rpc_url.to_string(),
             contract_addresses: addresses,
+            provider: OnceLock::new(),
         }
     }
 
@@ -206,6 +213,18 @@ impl EventWatcher {
         &self.contract_addresses
     }
 
+    /// The RPC provider for `rpc_url`. An invalid URL is reported here, on the
+    /// first call that needs the provider.
+    fn provider(&self) -> anyhow::Result<&DynProvider> {
+        if let Some(provider) = self.provider.get() {
+            return Ok(provider);
+        }
+        let provider = ProviderBuilder::new()
+            .connect_http(self.rpc_url.parse()?)
+            .erased();
+        Ok(self.provider.get_or_init(|| provider))
+    }
+
     /// Build a filter for the watched addresses.
     fn build_address_filter(&self) -> Filter {
         if self.contract_addresses.len() == 1 {
@@ -217,7 +236,7 @@ impl EventWatcher {
 
     /// Poll for new events since `from_block`. Returns events and the next block to poll from.
     pub async fn poll_events(&self, from_block: u64) -> anyhow::Result<(Vec<TEEEvent>, u64)> {
-        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let provider = self.provider()?;
 
         let latest = provider.get_block_number().await?;
         if from_block > latest {
@@ -242,7 +261,7 @@ impl EventWatcher {
         &self,
         from_block: u64,
     ) -> anyhow::Result<(Vec<TaggedEvent>, u64)> {
-        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let provider = self.provider()?;
 
         let latest = provider.get_block_number().await?;
         if from_block > latest {
@@ -266,7 +285,7 @@ impl EventWatcher {
         from_block: u64,
         to_block: u64,
     ) -> anyhow::Result<Vec<(B256, Address)>> {
-        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let provider = self.provider()?;
 
         let filter = self
             .build_address_filter()
@@ -294,7 +313,7 @@ impl EventWatcher {
         from_block: u64,
         to_block: u64,
     ) -> anyhow::Result<Vec<B256>> {
-        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let provider = self.provider()?;
 
         let filter = self
             .build_address_filter()
@@ -403,6 +422,22 @@ mod tests {
         assert_eq!(w.contract_address(), addr);
         assert_eq!(w.contract_addresses().len(), 1);
         assert_eq!(w.contract_addresses()[0], addr);
+    }
+
+    #[test]
+    fn test_provider_is_built_once_and_reused() {
+        let watcher = EventWatcher::new("http://localhost:8545", Address::ZERO);
+        assert!(watcher.provider.get().is_none());
+
+        let first = watcher.provider().unwrap() as *const DynProvider;
+        let second = watcher.provider().unwrap() as *const DynProvider;
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn test_invalid_rpc_url_is_reported_on_first_use() {
+        let watcher = EventWatcher::new("not a url", Address::ZERO);
+        assert!(watcher.provider().is_err());
     }
 
     #[test]
