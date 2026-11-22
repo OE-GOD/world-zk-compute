@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import re
 from pathlib import Path
 
@@ -46,6 +47,16 @@ class TestExports:
     def test_unknown_attribute_raises_attribute_error(self):
         with pytest.raises(AttributeError):
             getattr(worldzk, "does_not_exist")
+
+    def test_getmembers_does_not_raise(self):
+        # inspect.getmembers (and help()) call getattr on every name in dir().
+        names = {name for name, _ in inspect.getmembers(worldzk)}
+        assert "WorldZK" in names
+
+    def test_dir_hides_unresolvable_names_without_web3(self, monkeypatch):
+        monkeypatch.setattr(worldzk, "_WEB3_AVAILABLE", False)
+        unloaded = set(worldzk._WEB3_EXPORTS) - set(vars(worldzk))
+        assert not unloaded & set(dir(worldzk))
 
     def test_web3_exports(self):
         pytest.importorskip("web3")

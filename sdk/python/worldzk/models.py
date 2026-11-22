@@ -16,6 +16,10 @@ class ProofResult:
     model_hash: str
     circuit_hash: str
     output: str
+    #: True when the generator runs in mock mode and no proof was computed.
+    mock: bool = False
+    #: ID under which the generator stored the proof in the registry, if it did.
+    registry_proof_id: Optional[str] = None
 
 
 @dataclass

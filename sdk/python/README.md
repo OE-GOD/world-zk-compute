@@ -100,18 +100,35 @@ from worldzk import WorldZK
 zk = WorldZK("http://localhost:8080", api_key="my-key")
 print(zk.health().status)
 
-result = zk.prove("model-id", [1.0, 2.0, 3.0])
-verification = zk.verify(result.proof_id)
-receipt = zk.get_receipt(result.proof_id)
+model = zk.upload_model("model.json")   # model_id, model_hash, circuit_hash, format, active
+result = zk.prove(model["model_id"], [1.0, 2.0, 3.0])
+print(result.output, result.mock, result.registry_proof_id)
+
+for proof in zk.list_proofs(limit=10):  # proofs stored in the registry
+    verification = zk.verify(proof["id"])
+    receipt = zk.get_receipt(proof["id"])
 ```
+
+`verify()` and `get_receipt()` take a proof-registry ID. `Client` talks to the
+verifier, registry and generator directly (`Client.submit(bundle)` stores a
+proof bundle in the registry and returns its ID).
 
 `WorldZK` and `Client` use the standard library only and raise `RuntimeError`
 for HTTP errors and `ConnectionError` when the service is unreachable.
 
-Known gaps (November 2026): `WorldZK.upload_model()` and
-`WorldZK.transparency_root()` do not match what the proof-generator and
-proof-registry services accept today, and the gateway client has not been run
-against a live gateway from this repository.
+Known gaps (November 2026), from running every `WorldZK` and `Client` method
+against the gateway, verifier, proof-registry and proof-generator built from
+this repository:
+
+- `prove()` returns the generator's own `proof_id`, which the registry does
+  not know. The generator's automatic hand-off to the registry is rejected
+  today (the registry requires `gens_hex` and `dag_circuit_description`, which
+  the generator does not send), so `registry_proof_id` is always `None` and a
+  proof made with `prove()` cannot be verified by ID.
+- `transparency_root()` gets HTTP 404 from the gateway, which does not forward
+  `/transparency/*`. It works when `url` is the proof registry itself.
+- With the generator in `--mock` mode `prove()` returns `mock=True` and no
+  proof is computed.
 
 ## On-chain clients (`web3` extra)
 
@@ -132,6 +149,11 @@ result_id = verifier.submit_result(
 )
 print(verifier.get_result(result_id).finalized)
 ```
+
+`attestation` is the enclave's EIP-712 signature over the model hash, input
+hash and result hash; the contract rejects anything else. See
+[`examples/sdk-python-quickstart`](../../examples/sdk-python-quickstart/) for
+a complete run against a local Anvil chain.
 
 ```python
 from worldzk import TEEEventWatcher
@@ -174,6 +196,14 @@ cd sdk/python
 pip install -e '.[dev,web3]'
 ruff check .
 python -m pytest tests/ --ignore=tests/test_anvil_integration.py --ignore=tests/test_sepolia_integration.py
+```
+
+`tests/test_anvil_integration.py` runs the on-chain client against a local
+Anvil chain. It needs `anvil` on `PATH` and built contracts
+(`cd contracts && forge build`):
+
+```bash
+python -m pytest tests/test_anvil_integration.py
 ```
 
 ## License

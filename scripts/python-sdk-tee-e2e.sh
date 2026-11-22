@@ -6,27 +6,32 @@ set -euo pipefail
 #
 # Tests the Python SDK TEEVerifier against a live Anvil instance:
 #   1. Start Anvil
-#   2. Deploy TEEMLVerifier via forge create
+#   2. Deploy TEEMLVerifier behind its UUPS proxy (forge script)
 #   3. Install Python SDK
 #   4. Run Python E2E covering:
-#      - owner() read
+#      - admin() / implementation() / timelock() reads
 #      - pause / unpause / paused()
 #      - challenge_bond_amount() / prover_stake_amount()
 #      - register_enclave
-#      - submit_result (with ECDSA attestation signed in Python)
+#      - submit_result (with EIP-712 attestation signed in Python)
+#      - submit_result with an invalid attestation (must revert)
 #      - get_result
 #      - is_result_valid (before and after finalize)
 #      - fast-forward past challenge window + finalize
-#      - 2-step ownership transfer (transfer_ownership / pending_owner / accept_ownership)
+#      - admin transfer (change_admin)
 #      - revoke_enclave
+#
+# Environment overrides: PYTHON (default python3), ANVIL_PORT (default 8553),
+# CONTRACTS_DIR (default <repo>/contracts).
 # ═══════════════════════════════════════════════════════════════════════════════
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-CONTRACTS_DIR="$ROOT_DIR/contracts"
+CONTRACTS_DIR="${CONTRACTS_DIR:-$ROOT_DIR/contracts}"
 SDK_DIR="$ROOT_DIR/sdk/python"
+PYTHON="${PYTHON:-python3}"
 
-ANVIL_PORT=8553
+ANVIL_PORT="${ANVIL_PORT:-8553}"
 RPC_URL="http://127.0.0.1:${ANVIL_PORT}"
 
 # Anvil account #0 -- admin / submitter
@@ -37,9 +42,9 @@ ADMIN_ADDR="0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 ENCLAVE_KEY="0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
 ENCLAVE_ADDR="0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
 
-# Anvil account #2 -- new owner for transfer test
-NEW_OWNER_KEY="0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a"
-NEW_OWNER_ADDR="0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
+# Anvil account #2 -- new admin for transfer test
+NEW_ADMIN_KEY="0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a"
+NEW_ADMIN_ADDR="0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
 
 log() { echo "==> $*"; }
 ok()  { echo "  [OK] $*"; }
@@ -58,13 +63,17 @@ trap cleanup EXIT
 log "Step 1: Starting Anvil on port $ANVIL_PORT..."
 anvil --port "$ANVIL_PORT" --silent &
 ANVIL_PID=$!
-sleep 2
 
-if ! curl -s "$RPC_URL" -X POST -H "Content-Type: application/json" \
-    --data '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' > /dev/null 2>&1; then
-    err "Anvil failed to start on port $ANVIL_PORT"
-    exit 1
-fi
+for i in $(seq 1 30); do
+    if cast block-number --rpc-url "$RPC_URL" &>/dev/null; then
+        break
+    fi
+    if [ "$i" -eq 30 ]; then
+        err "Anvil failed to start on port $ANVIL_PORT"
+        exit 1
+    fi
+    sleep 0.5
+done
 ok "Anvil running (PID: $ANVIL_PID)"
 
 # ── Step 2: Deploy TEEMLVerifier ──────────────────────────────────────────────
@@ -72,15 +81,27 @@ ok "Anvil running (PID: $ANVIL_PID)"
 log "Step 2: Deploying TEEMLVerifier..."
 cd "$CONTRACTS_DIR"
 
-TEE_VERIFIER=$(forge create src/tee/TEEMLVerifier.sol:TEEMLVerifier \
-    --broadcast --json \
+# Deploy TEEMLVerifier behind its UUPS proxy.
+# TEEMLVerifier.initialize rejects address(0). This flow never resolves a ZK dispute,
+# so a non-zero placeholder is enough unless a real RemainderVerifier is supplied.
+REMAINDER_VERIFIER="${REMAINDER_VERIFIER:-0xDDdDddDdDdddDDddDDddDDDDdDdDDdDDdDDDDDDd}"
+export REMAINDER_VERIFIER
+# The deploy script reads DEPLOYER_KEY as uint via vm.envUint
+export DEPLOYER_KEY="$ADMIN_KEY"
+DEPLOY_OUTPUT=$(forge script script/DeployTEEMLVerifier.s.sol:DeployTEEMLVerifier \
     --rpc-url "$RPC_URL" \
-    --private-key "$ADMIN_KEY" \
-    --constructor-args "$ADMIN_ADDR" "0x0000000000000000000000000000000000000000" \
-    2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['deployedTo'])")
-
-if [ -z "$TEE_VERIFIER" ]; then
+    --broadcast 2>&1) || {
     err "Failed to deploy TEEMLVerifier"
+    echo "$DEPLOY_OUTPUT" >&2
+    exit 1
+}
+
+# The script prints the proxy address; the broadcast entry named "TEEMLVerifier" is the
+# implementation, which must not be used directly.
+TEE_VERIFIER=$(echo "$DEPLOY_OUTPUT" | grep "TEEMLVerifier deployed at:" | head -1 | awk '{print $NF}')
+if [ -z "$TEE_VERIFIER" ]; then
+    err "TEEMLVerifier proxy address not found in deploy output"
+    echo "$DEPLOY_OUTPUT" >&2
     exit 1
 fi
 ok "TEEMLVerifier deployed at: $TEE_VERIFIER"
@@ -89,20 +110,21 @@ ok "TEEMLVerifier deployed at: $TEE_VERIFIER"
 
 log "Step 3: Installing Python SDK..."
 cd "$SDK_DIR"
-python3 -m pip install ".[web3]" --quiet
+"$PYTHON" -m pip install ".[web3]" --quiet
 ok "Python SDK installed"
 
 # ── Step 4: Run Python E2E tests ──────────────────────────────────────────────
 
 log "Step 4: Running Python SDK TEE E2E tests..."
 
-python3 - "$RPC_URL" "$ADMIN_KEY" "$ADMIN_ADDR" "$ENCLAVE_KEY" "$ENCLAVE_ADDR" \
-          "$NEW_OWNER_KEY" "$NEW_OWNER_ADDR" "$TEE_VERIFIER" << 'PYEOF'
+# The SDK was installed above; run from a directory that does not shadow it.
+cd "$ROOT_DIR"
+
+"$PYTHON" - "$RPC_URL" "$ADMIN_KEY" "$ADMIN_ADDR" "$ENCLAVE_KEY" "$ENCLAVE_ADDR" \
+            "$NEW_ADMIN_KEY" "$NEW_ADMIN_ADDR" "$TEE_VERIFIER" << 'PYEOF'
 import sys
-import requests
 from web3 import Web3
 from eth_account import Account
-from eth_account.messages import encode_defunct
 
 from worldzk.tee_verifier import TEEVerifier
 
@@ -113,8 +135,8 @@ ADMIN_KEY      = sys.argv[2]
 ADMIN_ADDR     = sys.argv[3]
 ENCLAVE_KEY    = sys.argv[4]
 ENCLAVE_ADDR   = sys.argv[5]
-NEW_OWNER_KEY  = sys.argv[6]
-NEW_OWNER_ADDR = sys.argv[7]
+NEW_ADMIN_KEY  = sys.argv[6]
+NEW_ADMIN_ADDR = sys.argv[7]
 CONTRACT_ADDR  = sys.argv[8]
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -140,31 +162,47 @@ def fail(msg):
 
 def anvil_increase_time(seconds):
     """Fast-forward Anvil block time."""
-    requests.post(RPC_URL, json={
-        "jsonrpc": "2.0",
-        "method": "evm_increaseTime",
-        "params": [seconds],
-        "id": 1,
-    })
-    requests.post(RPC_URL, json={
-        "jsonrpc": "2.0",
-        "method": "evm_mine",
-        "params": [],
-        "id": 2,
-    })
+    w3.provider.make_request("evm_increaseTime", [seconds])
+    w3.provider.make_request("evm_mine", [])
 
 
 def sign_attestation(model_hash_bytes, input_hash_bytes, result_data, enclave_private_key):
     """
-    Sign the TEE attestation matching the contract verification logic:
-      message = keccak256(encodePacked(modelHash, inputHash, keccak256(result)))
-      then EIP-191 personal sign of that 32-byte message.
+    Sign the TEE attestation the way TEEMLVerifier.submitResult recovers it (EIP-712):
+      structHash = keccak256(abi.encode(RESULT_TYPEHASH, modelHash, inputHash, keccak256(result)))
+      digest     = keccak256(0x1901 ++ DOMAIN_SEPARATOR ++ structHash)
+    with domain (name "TEEMLVerifier", version "1", chainId, verifyingContract).
     """
-    result_hash = w3.keccak(result_data)
-    packed = model_hash_bytes + input_hash_bytes + result_hash
-    message_hash = w3.keccak(packed)
-    signable = encode_defunct(message_hash)
-    signed = Account.sign_message(signable, private_key=enclave_private_key)
+    signed = Account.sign_typed_data(
+        enclave_private_key,
+        full_message={
+            "types": {
+                "EIP712Domain": [
+                    {"name": "name", "type": "string"},
+                    {"name": "version", "type": "string"},
+                    {"name": "chainId", "type": "uint256"},
+                    {"name": "verifyingContract", "type": "address"},
+                ],
+                "TEEMLResult": [
+                    {"name": "modelHash", "type": "bytes32"},
+                    {"name": "inputHash", "type": "bytes32"},
+                    {"name": "resultHash", "type": "bytes32"},
+                ],
+            },
+            "primaryType": "TEEMLResult",
+            "domain": {
+                "name": "TEEMLVerifier",
+                "version": "1",
+                "chainId": w3.eth.chain_id,
+                "verifyingContract": Web3.to_checksum_address(CONTRACT_ADDR),
+            },
+            "message": {
+                "modelHash": model_hash_bytes,
+                "inputHash": input_hash_bytes,
+                "resultHash": w3.keccak(result_data),
+            },
+        },
+    )
     return signed.signature
 
 
@@ -183,9 +221,9 @@ def compute_result_id(sender, model_hash_bytes, input_hash_bytes, block_number):
 # Tests
 # ══════════════════════════════════════════════════════════════════════════════
 
-# ── Test 1: owner() ──────────────────────────────────────────────────────────
+# ── Test 1: admin() / implementation() / timelock() ─────────────────────────
 
-print("--- Test 1: owner() ---")
+print("--- Test 1: admin() / implementation() / timelock() ---")
 verifier = TEEVerifier(
     rpc_url=RPC_URL,
     private_key=ADMIN_KEY,
@@ -193,11 +231,23 @@ verifier = TEEVerifier(
     gas_limit=1_000_000,
 )
 
-owner = verifier.owner()
-if owner.lower() == ADMIN_ADDR.lower():
-    ok(f"owner() = {owner}")
+admin = verifier.admin()
+if admin.lower() == ADMIN_ADDR.lower():
+    ok(f"admin() = {admin}")
 else:
-    fail(f"owner() expected {ADMIN_ADDR}, got {owner}")
+    fail(f"admin() expected {ADMIN_ADDR}, got {admin}")
+
+implementation = verifier.implementation()
+if int(implementation, 16) != 0 and implementation.lower() != CONTRACT_ADDR.lower():
+    ok(f"implementation() = {implementation} (behind proxy {CONTRACT_ADDR})")
+else:
+    fail(f"implementation() unexpected: {implementation}")
+
+timelock = verifier.timelock()
+if int(timelock, 16) == 0:
+    ok("timelock() = zero address (none set)")
+else:
+    fail(f"timelock() expected zero address, got {timelock}")
 
 # ── Test 2: paused() -- should be false initially ────────────────────────────
 
@@ -261,23 +311,34 @@ result_data = b"\xde\xad\xbe\xef"
 attestation = sign_attestation(model_hash, input_hash, result_data, ENCLAVE_KEY)
 ok(f"attestation signed ({len(attestation)} bytes)")
 
-# Record block number before submission
-pre_block = w3.eth.block_number
+# An attestation that is not a signature by a registered enclave must be rejected
+try:
+    verifier.submit_result(
+        model_hash=model_hash,
+        input_hash=input_hash,
+        result=result_data,
+        attestation=b"\x00" * 65,
+        stake_wei=10**17,
+    )
+    fail("submit_result() accepted an all-zero attestation")
+except RuntimeError as e:
+    ok(f"submit_result() with invalid attestation rejected ({e})"[:90])
 
-result_ref = verifier.submit_result(
+result_id_hex = verifier.submit_result(
     model_hash=model_hash,
     input_hash=input_hash,
     result=result_data,
     attestation=attestation,
     stake_wei=10**17,  # 0.1 ETH
 )
-ok(f"submit_result() returned = {result_ref[:18]}...")
+ok(f"submit_result() returned result ID = {result_id_hex[:18]}...")
 
-# Compute the result_id from on-chain formula
-submit_block = pre_block + 1
-result_id = compute_result_id(ADMIN_ADDR, model_hash, input_hash, submit_block)
-result_id_hex = "0x" + result_id.hex()
-ok(f"computed result_id = {result_id_hex[:18]}...")
+# The SDK reads the ID from the ResultSubmitted event; check it against the on-chain formula
+result_id = compute_result_id(ADMIN_ADDR, model_hash, input_hash, w3.eth.block_number)
+if result_id_hex == "0x" + result_id.hex():
+    ok("result ID matches keccak256(sender, modelHash, inputHash, blockNumber)")
+else:
+    fail(f"result ID mismatch: SDK {result_id_hex}, computed 0x{result_id.hex()}")
 
 # ── Test 7: get_result ──────────────────────────────────────────────────────
 
@@ -344,45 +405,34 @@ if ml_result.finalized:
 else:
     fail("get_result().finalized expected True")
 
-# ── Test 12: 2-step ownership transfer ──────────────────────────────────────
+# ── Test 12: admin transfer ─────────────────────────────────────────────────
 
-print("--- Test 12: 2-step ownership transfer ---")
-tx = verifier.transfer_ownership(NEW_OWNER_ADDR)
-ok(f"transfer_ownership() tx = {tx[:18]}...")
+print("--- Test 12: admin transfer ---")
+tx = verifier.change_admin(NEW_ADMIN_ADDR)
+ok(f"change_admin() tx = {tx[:18]}...")
 
-pending = verifier.pending_owner()
-if pending.lower() == NEW_OWNER_ADDR.lower():
-    ok(f"pending_owner() = {pending}")
-else:
-    fail(f"pending_owner() expected {NEW_OWNER_ADDR}, got {pending}")
-
-# Accept from the new owner's perspective
-new_owner_verifier = TEEVerifier(
+# changeAdmin is single-step: the new admin takes over immediately
+new_admin_verifier = TEEVerifier(
     rpc_url=RPC_URL,
-    private_key=NEW_OWNER_KEY,
+    private_key=NEW_ADMIN_KEY,
     contract_address=CONTRACT_ADDR,
     gas_limit=1_000_000,
 )
-tx = new_owner_verifier.accept_ownership()
-ok(f"accept_ownership() tx = {tx[:18]}...")
-
-owner = new_owner_verifier.owner()
-if owner.lower() == NEW_OWNER_ADDR.lower():
-    ok(f"owner() = {owner} (after transfer)")
+admin = new_admin_verifier.admin()
+if admin.lower() == NEW_ADMIN_ADDR.lower():
+    ok(f"admin() = {admin} (after transfer)")
 else:
-    fail(f"owner() expected {NEW_OWNER_ADDR}, got {owner}")
+    fail(f"admin() expected {NEW_ADMIN_ADDR}, got {admin}")
 
 # Transfer back to original admin
-tx = new_owner_verifier.transfer_ownership(ADMIN_ADDR)
-ok(f"transfer_ownership() back tx = {tx[:18]}...")
-tx = verifier.accept_ownership()
-ok(f"accept_ownership() by admin tx = {tx[:18]}...")
+tx = new_admin_verifier.change_admin(ADMIN_ADDR)
+ok(f"change_admin() back tx = {tx[:18]}...")
 
-owner = verifier.owner()
-if owner.lower() == ADMIN_ADDR.lower():
-    ok(f"owner() = {owner} (restored)")
+admin = verifier.admin()
+if admin.lower() == ADMIN_ADDR.lower():
+    ok(f"admin() = {admin} (restored)")
 else:
-    fail(f"owner() expected {ADMIN_ADDR}, got {owner}")
+    fail(f"admin() expected {ADMIN_ADDR}, got {admin}")
 
 # ── Test 13: revoke_enclave ─────────────────────────────────────────────────
 
@@ -415,8 +465,8 @@ echo "================================================================"
 echo "  Python SDK TEE Verifier E2E -- PASSED"
 echo "================================================================"
 echo "  Contract:  $TEE_VERIFIER"
-echo "  Tested:    owner, paused, pause/unpause, bond/stake amounts,"
+echo "  Tested:    admin, paused, pause/unpause, bond/stake amounts,"
 echo "             register_enclave, submit_result, get_result,"
-echo "             is_result_valid, finalize, 2-step ownership,"
+echo "             is_result_valid, finalize, admin transfer,"
 echo "             revoke_enclave"
 echo "================================================================"

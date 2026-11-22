@@ -7,7 +7,8 @@ Usage (gateway client)::
     zk = WorldZK("http://localhost:8080", api_key="my-key")
     model = zk.upload_model("model.json")
     result = zk.prove(model["model_id"], [1.0, 2.0, 3.0])
-    receipt = zk.verify(result["proof_id"])
+    if result.registry_proof_id:  # set when the generator stored the proof
+        verification = zk.verify(result.registry_proof_id)
 
 Usage (direct-service client, legacy)::
 
@@ -20,6 +21,7 @@ Usage (direct-service client, legacy)::
 """
 
 import json
+import os
 from typing import Any, Optional
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -81,27 +83,31 @@ class WorldZK:
         path:
             Path to a model JSON file on disk.
         name:
-            Human-readable model name (optional).
+            Human-readable model name. The service requires one; defaults
+            to the file name without its extension.
         format:
-            Model format hint, e.g. ``"xgboost"`` (optional).
+            Model format hint, e.g. ``"xgboost"`` (optional; the service
+            detects the format when omitted).
 
         Returns
         -------
         dict
-            Gateway response with at least ``model_id`` and ``model_hash``.
+            ``model_id``, ``model_hash``, ``circuit_hash``, ``format`` and
+            ``active``.
         """
         with open(path) as f:
-            model_json = f.read()
-        payload: dict[str, Any] = {"model_json": model_json}
-        if name:
-            payload["name"] = name
+            model_json = json.load(f)
+        payload: dict[str, Any] = {
+            "name": name or os.path.splitext(os.path.basename(path))[0],
+            "model_json": model_json,
+        }
         if format:
             payload["format"] = format
         return self._post("/models", payload)
 
     def list_models(self) -> list[dict[str, Any]]:
-        """List all uploaded models."""
-        return self._get("/models")
+        """List all uploaded models (each has ``id``, ``name``, ``model_hash``, ...)."""
+        return _unwrap(self._get("/models"), "models")
 
     def get_model(self, model_id: str) -> dict[str, Any]:
         """Retrieve a model by its ID."""
@@ -126,8 +132,11 @@ class WorldZK:
         Returns
         -------
         ProofResult
-            Contains ``proof_id``, ``model_hash``, ``circuit_hash``, and
-            ``output``.
+            Contains ``proof_id``, ``model_hash``, ``circuit_hash``,
+            ``output``, ``mock`` and ``registry_proof_id``. ``proof_id`` is
+            the generator's own identifier; :meth:`verify` and
+            :meth:`get_receipt` take ``registry_proof_id``, which is ``None``
+            when the generator did not store the proof in the registry.
         """
         resp = self._post("/prove", {
             "model_id": model_id,
@@ -138,6 +147,8 @@ class WorldZK:
             model_hash=resp.get("model_hash", ""),
             circuit_hash=resp.get("circuit_hash", ""),
             output=resp.get("output", ""),
+            mock=resp.get("mock", False),
+            registry_proof_id=resp.get("registry_proof_id"),
         )
 
     # -- Verify ---------------------------------------------------------
@@ -148,7 +159,7 @@ class WorldZK:
         Parameters
         ----------
         proof_id:
-            Identifier of the proof to verify.
+            Registry identifier of the proof to verify.
 
         Returns
         -------
@@ -167,7 +178,7 @@ class WorldZK:
         Parameters
         ----------
         proof_id:
-            Identifier of the proof whose receipt to retrieve.
+            Registry identifier of the proof whose receipt to retrieve.
 
         Returns
         -------
@@ -196,7 +207,7 @@ class WorldZK:
         Parameters
         ----------
         model:
-            Filter by model ID or model hash (optional).
+            Filter by exact model hash (optional).
         limit:
             Maximum number of results (default 50).
         """
@@ -204,19 +215,23 @@ class WorldZK:
         if model:
             params.append(f"model={model}")
         query = "&".join(params)
-        return self._get(f"/proofs?{query}")
+        return _unwrap(self._get(f"/proofs?{query}"), "proofs")
 
     # -- Transparency ---------------------------------------------------
 
     def transparency_root(self) -> dict[str, Any]:
         """Get the current transparency log Merkle root.
 
+        The proof registry serves this at ``/transparency/root``. The gateway
+        does not forward that path today (it answers 404), so this call only
+        works when ``url`` points at the proof registry itself.
+
         Returns
         -------
         dict
-            Contains ``root`` hash and ``total_proofs`` count.
+            Contains ``root`` hash and ``tree_size``.
         """
-        return self._get("/proofs/transparency/root")
+        return self._get("/transparency/root")
 
     # -- Stats ----------------------------------------------------------
 
@@ -226,9 +241,9 @@ class WorldZK:
 
     # -- Circuits -------------------------------------------------------
 
-    def list_circuits(self) -> list[dict[str, Any]]:
-        """List registered verification circuits."""
-        return self._get("/circuits")
+    def list_circuits(self) -> list[str]:
+        """List the IDs of the circuits registered with the verifier."""
+        return _unwrap(self._get("/circuits"), "circuits")
 
     # -- Health ---------------------------------------------------------
 
@@ -288,6 +303,13 @@ class WorldZK:
             raise ConnectionError(f"Cannot connect to {url}: {e}") from e
 
 
+def _unwrap(resp: Any, key: str) -> Any:
+    """Return the list inside a ``{key: [...]}`` response envelope."""
+    if isinstance(resp, dict):
+        return resp.get(key, [])
+    return resp
+
+
 # ---------------------------------------------------------------------------
 # Client — direct-service client (legacy, pre-gateway)
 # ---------------------------------------------------------------------------
@@ -338,14 +360,21 @@ class Client:
         model_hash: Optional[str] = None,
         limit: int = 50,
     ) -> dict[str, Any]:
-        """Search proofs in the registry."""
+        """Search proofs in the registry.
+
+        Returns ``{"proofs": [...], "count": n}``. The registry filters by
+        exact ``model_hash``. It has no circuit filter, so ``circuit_hash``
+        is applied here to the (at most ``limit``) proofs it returned.
+        """
         params = [f"limit={limit}"]
-        if circuit_hash:
-            params.append(f"circuit_hash={circuit_hash}")
         if model_hash:
-            params.append(f"model_hash={model_hash}")
+            params.append(f"model={model_hash}")
         query = "&".join(params)
-        return self._get(f"{self.registry_url}/proofs?{query}")
+        resp = self._get(f"{self.registry_url}/proofs?{query}")
+        if circuit_hash:
+            proofs = [p for p in resp.get("proofs", []) if p.get("circuit_hash") == circuit_hash]
+            resp = {**resp, "proofs": proofs, "count": len(proofs)}
+        return resp
 
     def prove(self, model_id: str, features: list[float]) -> dict[str, Any]:
         """Generate a proof via the proof generator service."""

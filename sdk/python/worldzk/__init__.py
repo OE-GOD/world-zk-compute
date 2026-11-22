@@ -82,6 +82,8 @@ try:
 except PackageNotFoundError:  # source checkout on sys.path, package not installed
     __version__ = "0.0.0"
 
+_WEB3_AVAILABLE = find_spec("web3") is not None
+
 # Exports that need the ``web3`` extra: public name -> (submodule, attribute).
 # They are resolved by ``__getattr__`` on first access so that ``import worldzk``
 # works without web3 installed.
@@ -145,7 +147,12 @@ def __getattr__(name: str) -> Any:
 
 
 def __dir__() -> list[str]:
-    return sorted(set(globals()) | set(_WEB3_EXPORTS))
+    # Without web3 the lazy names cannot be resolved, so they are not listed:
+    # ``inspect.getmembers`` and ``help`` call ``getattr`` on every listed name.
+    names = set(globals())
+    if _WEB3_AVAILABLE:
+        names |= set(_WEB3_EXPORTS)
+    return sorted(names)
 
 
 __all__ = [
@@ -235,5 +242,5 @@ __all__ = [
 
 # Without web3 the names above cannot be resolved; drop them from ``__all__``
 # so that ``from worldzk import *`` keeps working without the extra.
-if find_spec("web3") is None:
+if not _WEB3_AVAILABLE:
     __all__ = [name for name in __all__ if name not in _WEB3_EXPORTS]

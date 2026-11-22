@@ -1,18 +1,22 @@
 """Anvil-based integration tests for the TEEVerifier Python SDK.
 
-These tests spin up a local Anvil instance, deploy the TEEMLVerifier contract
-using ``forge create``, and exercise the SDK client against the live contract.
+These tests spin up a local Anvil instance, deploy the TEEMLVerifier
+implementation behind a ``UUPSProxy`` from the Foundry build artifacts in
+``contracts/out``, and exercise the SDK client against the live contract.
 
 Requirements:
     - ``anvil`` on PATH (from Foundry)
-    - ``forge`` on PATH (from Foundry)
-    - ``web3`` Python package installed (``pip install worldzk[web3]``)
+    - built contracts (``cd contracts && forge build``); when the artifacts are
+      missing and ``forge`` is on PATH the fixture builds them
+    - the ``web3`` extra (``pip install -e '.[web3]'``)
 
-All tests are skipped automatically when ``anvil`` or ``forge`` are not found.
+All tests are skipped automatically when ``anvil`` or ``web3`` are not found.
+Set ``ANVIL_PORT`` to move Anvil off its default test port (8546).
 """
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import signal
@@ -29,11 +33,10 @@ if TYPE_CHECKING:
     from worldzk.tee_verifier import TEEVerifier
 
 # ---------------------------------------------------------------------------
-# Skip the entire module when foundry tools or web3 are missing
+# Skip the entire module when anvil or web3 are missing
 # ---------------------------------------------------------------------------
 
 _HAS_ANVIL = shutil.which("anvil") is not None
-_HAS_FORGE = shutil.which("forge") is not None
 
 try:
     from web3 import Web3
@@ -44,18 +47,18 @@ except ImportError:
     _HAS_WEB3 = False
 
 pytestmark = pytest.mark.skipif(
-    not (_HAS_ANVIL and _HAS_FORGE and _HAS_WEB3),
-    reason="Requires anvil, forge, and web3 to be available",
+    not (_HAS_ANVIL and _HAS_WEB3),
+    reason="Requires anvil and web3 to be available",
 )
 
 # ---------------------------------------------------------------------------
 # Constants -- Anvil default funded accounts
 # ---------------------------------------------------------------------------
 
-ANVIL_PORT = 8546
+ANVIL_PORT = int(os.environ.get("ANVIL_PORT", "8546"))
 ANVIL_RPC = f"http://127.0.0.1:{ANVIL_PORT}"
 
-# Anvil account #0 (deployer / owner)
+# Anvil account #0 (deployer / admin)
 DEPLOYER_ADDRESS = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 DEPLOYER_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 
@@ -67,10 +70,17 @@ USER2_KEY = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
 ENCLAVE_ADDRESS = "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC"
 ENCLAVE_KEY = "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a"
 
-# Contracts directory (for forge create)
+# Contracts directory (Foundry project; artifacts are read from ``out/``)
 CONTRACTS_DIR = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "..", "..", "contracts")
 )
+_IMPL_ARTIFACT = os.path.join(CONTRACTS_DIR, "out", "TEEMLVerifier.sol", "TEEMLVerifier.json")
+_PROXY_ARTIFACT = os.path.join(CONTRACTS_DIR, "out", "Upgradeable.sol", "UUPSProxy.json")
+
+# ``initialize`` rejects address(0) for the RemainderVerifier. These tests never
+# resolve a dispute with a proof, so any non-zero address will do.
+REMAINDER_VERIFIER_PLACEHOLDER = "0x000000000000000000000000000000000000dEaD"
+ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 
 # Dummy 32-byte values for tests
 ZERO_BYTES32 = b"\x00" * 32
@@ -104,6 +114,7 @@ def _sign_attestation(
     result_data: bytes,
     contract_address: str,
     chain_id: int = 31337,
+    private_key: str = ENCLAVE_KEY,
 ) -> bytes:
     """Produce an EIP-712 typed-data attestation matching the contract logic.
 
@@ -153,7 +164,7 @@ def _sign_attestation(
     }
 
     signed = Account.sign_typed_data(
-        private_key=ENCLAVE_KEY,
+        private_key=private_key,
         full_message=full_message,
     )
     return signed.signature
@@ -228,53 +239,72 @@ def anvil_process() -> Generator[subprocess.Popen, None, None]:
         proc.wait()
 
 
-@pytest.fixture(scope="module")
-def contract_address(anvil_process: subprocess.Popen) -> str:
-    """Deploy TEEMLVerifier via ``forge create`` and return its address."""
-    result = subprocess.run(
-        [
-            "forge",
-            "create",
-            "--broadcast",
-            "src/tee/TEEMLVerifier.sol:TEEMLVerifier",
-            "--rpc-url",
-            ANVIL_RPC,
-            "--private-key",
-            DEPLOYER_KEY,
-            # Constructor args: admin, remainderVerifier
-            "--constructor-args",
-            DEPLOYER_ADDRESS,
-            "0x0000000000000000000000000000000000000000",
-        ],
-        capture_output=True,
-        text=True,
-        cwd=CONTRACTS_DIR,
-        timeout=120,
+def _load_artifact(path: str) -> dict:
+    """Load a Foundry artifact, building the contracts first if it is missing."""
+    if not os.path.exists(path):
+        if shutil.which("forge") is None:
+            pytest.fail(f"{path} not found; run `forge build` in {CONTRACTS_DIR}")
+        result = subprocess.run(
+            ["forge", "build"],
+            capture_output=True,
+            text=True,
+            cwd=CONTRACTS_DIR,
+            timeout=600,
+        )
+        if result.returncode != 0:
+            pytest.fail(f"forge build failed (exit {result.returncode}):\n{result.stderr}")
+    with open(path) as f:
+        return json.load(f)
+
+
+def _deploy(w3_inst: Web3, artifact: dict, *constructor_args: object) -> str:
+    """Deploy a contract from a Foundry artifact as the deployer; return its address."""
+    from eth_account import Account
+
+    account = Account.from_key(DEPLOYER_KEY)
+    factory = w3_inst.eth.contract(
+        abi=artifact["abi"], bytecode=artifact["bytecode"]["object"]
     )
-    if result.returncode != 0:
-        pytest.fail(
-            f"forge create failed (exit {result.returncode}):\n"
-            f"stdout: {result.stdout}\n"
-            f"stderr: {result.stderr}"
-        )
+    tx = factory.constructor(*constructor_args).build_transaction({
+        "from": account.address,
+        "nonce": w3_inst.eth.get_transaction_count(account.address),
+        "gasPrice": w3_inst.eth.gas_price,
+    })
+    signed = account.sign_transaction(tx)
+    receipt = w3_inst.eth.wait_for_transaction_receipt(
+        w3_inst.eth.send_raw_transaction(signed.raw_transaction)
+    )
+    assert receipt["status"] == 1, f"deployment reverted: {receipt['transactionHash'].hex()}"
+    return receipt["contractAddress"]
 
-    # Parse the "Deployed to: 0x..." line from forge create output
-    addr = None
-    for line in result.stdout.splitlines():
-        if "Deployed to:" in line:
-            addr = line.split("Deployed to:")[-1].strip()
-            break
-    if addr is None:
-        pytest.fail(
-            f"Could not parse deployed address from forge output:\n{result.stdout}"
-        )
 
-    return Web3.to_checksum_address(addr)
+@pytest.fixture(scope="module")
+def implementation_address(anvil_process: subprocess.Popen) -> str:
+    """Deploy the TEEMLVerifier implementation and return its address."""
+    w3_inst = Web3(Web3.HTTPProvider(ANVIL_RPC))
+    return _deploy(w3_inst, _load_artifact(_IMPL_ARTIFACT))
+
+
+@pytest.fixture(scope="module")
+def contract_address(implementation_address: str) -> str:
+    """Deploy a UUPSProxy initialized for the deployer and return its address.
+
+    Mirrors ``contracts/script/DeployTEEMLVerifier.s.sol``:
+    ``UUPSProxy(impl, abi.encodeCall(initialize, (admin, remainderVerifier)))``.
+    """
+    w3_inst = Web3(Web3.HTTPProvider(ANVIL_RPC))
+    impl_abi = _load_artifact(_IMPL_ARTIFACT)["abi"]
+    init_data = w3_inst.eth.contract(abi=impl_abi).encode_abi(
+        "initialize", args=[DEPLOYER_ADDRESS, REMAINDER_VERIFIER_PLACEHOLDER]
+    )
+    return _deploy(
+        w3_inst, _load_artifact(_PROXY_ARTIFACT), implementation_address, init_data
+    )
 
 
 @pytest.fixture(scope="module")
 def deployer_verifier(contract_address: str) -> TEEVerifier:
-    """TEEVerifier instance connected as the deployer/owner."""
+    """TEEVerifier instance connected as the deployer/admin."""
     from worldzk.tee_verifier import TEEVerifier
 
     return TEEVerifier(
@@ -286,7 +316,7 @@ def deployer_verifier(contract_address: str) -> TEEVerifier:
 
 @pytest.fixture(scope="module")
 def user2_verifier(contract_address: str) -> TEEVerifier:
-    """TEEVerifier instance connected as a non-owner user."""
+    """TEEVerifier instance connected as a non-admin user."""
     from worldzk.tee_verifier import TEEVerifier
 
     return TEEVerifier(
@@ -303,45 +333,44 @@ def w3() -> Web3:
 
 
 # ---------------------------------------------------------------------------
-# Tests: ownership
+# Tests: admin / proxy
 # ---------------------------------------------------------------------------
 
 
-class TestOwnership:
-    """Test Ownable2Step functionality via the SDK."""
+class TestAdmin:
+    """Test the UUPS admin functions via the SDK."""
 
-    def test_owner_returns_deployer(self, deployer_verifier: TEEVerifier) -> None:
-        owner = deployer_verifier.owner()
-        assert owner.lower() == DEPLOYER_ADDRESS.lower()
+    def test_admin_returns_deployer(self, deployer_verifier: TEEVerifier) -> None:
+        assert deployer_verifier.admin().lower() == DEPLOYER_ADDRESS.lower()
 
-    def test_pending_owner_initially_zero(
-        self, deployer_verifier: TEEVerifier
+    def test_implementation_returns_implementation(
+        self, deployer_verifier: TEEVerifier, implementation_address: str
     ) -> None:
-        pending = deployer_verifier.pending_owner()
-        assert pending == "0x0000000000000000000000000000000000000000"
+        assert deployer_verifier.implementation().lower() == implementation_address.lower()
 
-    def test_transfer_ownership_sets_pending(
-        self, deployer_verifier: TEEVerifier
+    def test_timelock_initially_zero(self, deployer_verifier: TEEVerifier) -> None:
+        assert deployer_verifier.timelock() == ZERO_ADDRESS
+
+    def test_non_admin_cannot_change_admin(
+        self, w3: Web3, contract_address: str
     ) -> None:
-        tx_hash = deployer_verifier.transfer_ownership(USER2_ADDRESS)
-        assert tx_hash.startswith("0x")
-        pending = deployer_verifier.pending_owner()
-        assert pending.lower() == USER2_ADDRESS.lower()
+        contract = _raw_contract(w3, contract_address)
+        with pytest.raises(ContractLogicError):
+            contract.functions.changeAdmin(USER2_ADDRESS).call({"from": USER2_ADDRESS})
 
-    def test_accept_ownership_completes_transfer(
+    def test_change_admin_transfers_role(
         self,
         deployer_verifier: TEEVerifier,
         user2_verifier: TEEVerifier,
     ) -> None:
-        # user2 accepts ownership
-        tx_hash = user2_verifier.accept_ownership()
+        # changeAdmin is single-step: the new admin takes over immediately
+        tx_hash = deployer_verifier.change_admin(USER2_ADDRESS)
         assert tx_hash.startswith("0x")
-        assert deployer_verifier.owner().lower() == USER2_ADDRESS.lower()
+        assert deployer_verifier.admin().lower() == USER2_ADDRESS.lower()
 
-        # Transfer back to original deployer so other tests work
-        user2_verifier.transfer_ownership(DEPLOYER_ADDRESS)
-        deployer_verifier.accept_ownership()
-        assert deployer_verifier.owner().lower() == DEPLOYER_ADDRESS.lower()
+        # Hand the role back to the deployer so other tests work
+        user2_verifier.change_admin(DEPLOYER_ADDRESS)
+        assert deployer_verifier.admin().lower() == DEPLOYER_ADDRESS.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -355,12 +384,12 @@ class TestPauseUnpause:
     def test_initially_not_paused(self, deployer_verifier: TEEVerifier) -> None:
         assert deployer_verifier.paused() is False
 
-    def test_owner_can_pause(self, deployer_verifier: TEEVerifier) -> None:
+    def test_admin_can_pause(self, deployer_verifier: TEEVerifier) -> None:
         tx_hash = deployer_verifier.pause()
         assert tx_hash.startswith("0x")
         assert deployer_verifier.paused() is True
 
-    def test_owner_can_unpause(self, deployer_verifier: TEEVerifier) -> None:
+    def test_admin_can_unpause(self, deployer_verifier: TEEVerifier) -> None:
         # Ensure it is paused first
         if not deployer_verifier.paused():
             deployer_verifier.pause()
@@ -368,16 +397,12 @@ class TestPauseUnpause:
         assert tx_hash.startswith("0x")
         assert deployer_verifier.paused() is False
 
-    def test_non_owner_cannot_pause(
+    def test_non_admin_cannot_pause(
         self, w3: Web3, contract_address: str
     ) -> None:
-        """Simulate pause() from non-owner via eth_call -- should revert.
-
-        The SDK's _send_tx does not raise on reverted receipts, so we use a
-        raw contract.functions.pause().call() which raises ContractLogicError.
-        """
+        """Simulate pause() from a non-admin via eth_call -- should revert."""
         contract = _raw_contract(w3, contract_address)
-        with pytest.raises((ContractLogicError, Exception)):
+        with pytest.raises(ContractLogicError):
             contract.functions.pause().call({"from": USER2_ADDRESS})
 
 
@@ -415,21 +440,21 @@ class TestRegisterEnclave:
     def test_register_duplicate_reverts(
         self, w3: Web3, contract_address: str
     ) -> None:
-        """Duplicate registration should revert with 'already registered'."""
+        """Duplicate registration should revert (AlreadyRegistered)."""
         contract = _raw_contract(w3, contract_address)
-        with pytest.raises((ContractLogicError, Exception)):
+        with pytest.raises(ContractLogicError):
             contract.functions.registerEnclave(
                 Web3.to_checksum_address(ENCLAVE_ADDRESS),
                 IMAGE_HASH,
             ).call({"from": DEPLOYER_ADDRESS})
 
-    def test_non_owner_cannot_register(
+    def test_non_admin_cannot_register(
         self, w3: Web3, contract_address: str
     ) -> None:
-        """Non-owner should be denied registration."""
+        """A non-admin should be denied registration."""
         contract = _raw_contract(w3, contract_address)
         random_addr = "0x1111111111111111111111111111111111111111"
-        with pytest.raises((ContractLogicError, Exception)):
+        with pytest.raises(ContractLogicError):
             contract.functions.registerEnclave(
                 Web3.to_checksum_address(random_addr),
                 IMAGE_HASH,
@@ -478,14 +503,14 @@ class TestConfigReads:
         # Default is 0.1 ether = 10^17
         assert bond == 10**17
 
-    def test_prover_stake_readable_by_non_owner(
+    def test_prover_stake_readable_by_non_admin(
         self, user2_verifier: TEEVerifier
     ) -> None:
         # View functions should be callable by anyone
         stake = user2_verifier.prover_stake_amount()
         assert stake == 10**17
 
-    def test_challenge_bond_readable_by_non_owner(
+    def test_challenge_bond_readable_by_non_admin(
         self, user2_verifier: TEEVerifier
     ) -> None:
         bond = user2_verifier.challenge_bond_amount()
@@ -639,13 +664,42 @@ class TestSubmitResult:
         )
 
         contract = _raw_contract(w3, contract_address)
-        with pytest.raises((ContractLogicError, Exception)):
+        with pytest.raises(ContractLogicError):
             contract.functions.submitResult(
                 model_hash,
                 input_hash,
                 result_data,
                 attestation,
             ).call({"from": DEPLOYER_ADDRESS, "value": 1})
+
+    def test_submit_with_invalid_attestation_reverts(
+        self, deployer_verifier: TEEVerifier
+    ) -> None:
+        """An all-zero attestation is not a signature: the SDK reports the revert."""
+        with pytest.raises(RuntimeError, match="reverted"):
+            deployer_verifier.submit_result(
+                model_hash=b"\x09" * 32,
+                input_hash=b"\x0a" * 32,
+                result=b"\x00",
+                attestation=b"\x00" * 65,
+                stake_wei=10**17,
+            )
+
+    def test_submit_signed_by_unregistered_key_reverts(
+        self, w3: Web3, contract_address: str
+    ) -> None:
+        """A well-formed signature from a key that is not a registered enclave reverts."""
+        model_hash = b"\x0b" * 32
+        input_hash = b"\x0c" * 32
+        result_data = b"\x01"
+        contract = _raw_contract(w3, contract_address)
+        attestation = _sign_attestation(
+            model_hash, input_hash, result_data, contract_address, private_key=USER2_KEY,
+        )
+        with pytest.raises(ContractLogicError):
+            contract.functions.submitResult(
+                model_hash, input_hash, result_data, attestation
+            ).call({"from": DEPLOYER_ADDRESS, "value": 10**17})
 
     def test_is_result_valid_before_finalize(
         self,
@@ -739,10 +793,10 @@ class TestChallengeFlow:
         w3.provider.make_request("evm_increaseTime", [3601])
         w3.provider.make_request("evm_mine", [])
 
-        # Use raw contract .call() which raises on revert (SDK _send_tx swallows reverts)
+        # Simulate with eth_call, which raises on revert without sending a transaction
         contract = _raw_contract(w3, contract_address)
         result_id_bytes = bytes.fromhex(result_id[2:])
-        with pytest.raises((ContractLogicError, Exception)):
+        with pytest.raises(ContractLogicError):
             contract.functions.challenge(result_id_bytes).call(
                 {"from": USER2_ADDRESS, "value": 10**17}
             )
@@ -841,10 +895,10 @@ class TestFinalizeFlow:
         )
         result_id = returned
 
-        # Use raw contract .call() which raises on revert (SDK _send_tx swallows reverts)
+        # Simulate with eth_call, which raises on revert without sending a transaction
         contract = _raw_contract(w3, contract_address)
         result_id_bytes = bytes.fromhex(result_id[2:])
-        with pytest.raises((ContractLogicError, Exception)):
+        with pytest.raises(ContractLogicError):
             contract.functions.finalize(result_id_bytes).call(
                 {"from": DEPLOYER_ADDRESS}
             )
@@ -921,10 +975,10 @@ class TestDisputeTimeout:
         # Challenge
         user2_verifier.challenge(result_id, bond_wei=10**17)
 
-        # Use raw contract .call() which raises on revert (SDK _send_tx swallows reverts)
+        # Simulate with eth_call, which raises on revert without sending a transaction
         contract = _raw_contract(w3, contract_address)
         result_id_bytes = bytes.fromhex(result_id[2:])
-        with pytest.raises((ContractLogicError, Exception)):
+        with pytest.raises(ContractLogicError):
             contract.functions.resolveDisputeByTimeout(result_id_bytes).call(
                 {"from": USER2_ADDRESS}
             )
