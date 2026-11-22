@@ -103,6 +103,8 @@ contracts/stylus/gkr-verifier/calldata.hex
 # Secrets and credentials
 *.key
 *.pem
+# proof-registry writes its receipt signing key here when run from the repo
+registry_signing_key.hex
 *.p12
 *.pfx
 

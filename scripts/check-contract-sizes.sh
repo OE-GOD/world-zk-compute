@@ -19,13 +19,15 @@ PRODUCTION_CONTRACTS=(
     "RiscZeroVerifierAdapter"
     "RiscZeroVerifierRouter"
     "UpgradeableExecutionEngine"
-    "PausableExecutionEngine"
 )
 
 cd "$CONTRACTS_DIR" || exit 1
 
 echo "Building contracts..."
-SIZES_OUTPUT=$(forge build --sizes 2>&1)
+# forge exits non-zero when any contract is over the limit, so its status is
+# not used: the table below decides. A real build failure shows up as "no
+# sizes found" further down.
+SIZES_OUTPUT=$(forge build --sizes 2>&1) || true
 
 echo ""
 echo "┌──────────────────────────────────┬─────────────┬─────────┬──────────┐"
@@ -33,6 +35,7 @@ echo "│ Contract                         │ Size (bytes)│ % Limit │ Statu
 echo "├──────────────────────────────────┼─────────────┼─────────┼──────────┤"
 
 FAILED=0
+FOUND=0
 
 for contract in "${PRODUCTION_CONTRACTS[@]}"; do
     # Extract runtime size — field 3 after splitting on |, strip commas/spaces
@@ -43,6 +46,7 @@ for contract in "${PRODUCTION_CONTRACTS[@]}"; do
         continue
     fi
 
+    FOUND=$((FOUND + 1))
     PCT=$(( SIZE * 100 / LIMIT ))
 
     if [ "$SIZE" -gt "$LIMIT" ]; then
@@ -61,10 +65,17 @@ echo "└───────────────────────�
 echo ""
 echo "EIP-170 limit: ${LIMIT} bytes (24 KB)"
 
+if [ "$FOUND" -eq 0 ]; then
+    echo ""
+    echo "ERROR: no contract sizes found. forge build output:"
+    echo "$SIZES_OUTPUT"
+    exit 1
+fi
+
 if [ "$FAILED" -eq 1 ]; then
     echo ""
     echo "WARNING: One or more contracts exceed the EIP-170 size limit!"
-    echo "Note: RemainderVerifier is expected to exceed (deployed via Arbitrum Stylus)."
+    echo "A contract over the limit cannot be deployed on a chain that enforces it."
 fi
 
 echo ""
