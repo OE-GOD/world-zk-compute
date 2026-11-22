@@ -20,7 +20,7 @@ env:
 jobs:
   # ── Job 1: TEE Happy Path ────────────────────────────────────────────────
   # Self-contained script: starts Anvil, deploys TEEMLVerifier, runs full
-  # happy path (owner, pause/unpause, input validation, 2-step ownership,
+  # happy path (admin, pause/unpause, input validation, admin transfer,
   # register enclave, submit, finalize, verify).
   tee-happy-path:
     name: TEE Happy Path E2E
@@ -103,8 +103,8 @@ jobs:
 
   # ── Job 4: Python SDK E2E ────────────────────────────────────────────────
   # Starts Anvil, deploys TEEMLVerifier, installs the Python SDK and runs
-  # a comprehensive E2E covering owner, pause, enclave registration,
-  # submit, finalize, ownership transfer, revocation.
+  # a comprehensive E2E covering admin, pause, enclave registration,
+  # submit, finalize, admin transfer, revocation.
   python-sdk-e2e:
     name: Python SDK TEE E2E
     runs-on: ubuntu-latest
@@ -129,8 +129,8 @@ jobs:
 
   # ── Job 5: TypeScript SDK E2E ────────────────────────────────────────────
   # Starts Anvil, deploys TEEMLVerifier, installs the TypeScript SDK and
-  # runs E2E tests covering owner reads, pause/unpause, enclave
-  # registration, submit, finalize, ownership transfer, revocation.
+  # runs E2E tests covering admin reads, pause/unpause, enclave
+  # registration, submit, finalize, admin transfer, revocation.
   typescript-sdk-e2e:
     name: TypeScript SDK TEE E2E
     runs-on: ubuntu-latest
@@ -151,11 +151,6 @@ jobs:
           node-version: '20'
           cache: 'npm'
           cache-dependency-path: sdk/typescript/package-lock.json
-
-      - name: Install Python (needed by forge create JSON parsing)
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
 
       - name: Run TypeScript SDK TEE E2E
         run: bash scripts/typescript-sdk-tee-e2e.sh
