@@ -13,12 +13,7 @@ tokio = { version = "1.0", features = ["full"] }
 anyhow = "1.0"
 ```
 
-When the crate is published, replace the path dependency with a version:
-
-```toml
-[dependencies]
-world-zk-sdk = "0.1"
-```
+The crate (version 1.0.0 in `sdk/Cargo.toml`) is not published on crates.io, so the path dependency is the only way to use it today.
 
 ## Quick Start
 
@@ -29,11 +24,11 @@ use world_zk_sdk::{Client, DAGVerifier, DAGFixture};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // 1. Create a client (RPC URL, private key, contract address)
+    // 1. Create a client (RPC URL, private key, RemainderVerifier proxy address)
     let client = Client::new(
         "http://localhost:8545",
         "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
-        "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+        "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
     )?;
 
     // 2. Load a proof fixture
@@ -48,6 +43,8 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 ```
+
+The address above is the `UUPSProxy` that `contracts/script/DeployRemainderDAG.s.sol` deploys on a fresh Anvil chain started with `anvil --disable-code-size-limit --gas-limit 500000000` (`0x5FbDB...` is the implementation behind it and has no registered circuit). The fixture is `contracts/test/fixtures/phase1a_dag_fixture.json`.
 
 ## API Reference
 
@@ -84,10 +81,10 @@ let verifier = DAGVerifier::new(client);
 | Method | Description |
 |---|---|
 | `DAGVerifier::new(client)` | Create a verifier from a `Client` |
-| `verify_single_tx(&proof)` | Verify a proof in one call (view function, 500M gas) |
+| `verify_single_tx(&proof)` | Verify a proof in one `eth_call` with a 500M gas limit (nothing is sent) |
 | `verify_stylus(&proof)` | Verify via the Stylus (WASM) verifier |
 | `verify_batch(&proof, on_progress)` | Multi-tx batch verification with progress callbacks |
-| `register_circuit(hash, desc, name, gens)` | Register a DAG circuit on-chain |
+| `register_circuit(hash, desc, name, gens)` | Register a DAG circuit on-chain (`gensHash = keccak256(gens)`) |
 | `set_stylus_verifier(hash, address)` | Set the Stylus verifier for a circuit |
 | `set_groth16_verifier(hash, address, input_count)` | Set the Groth16 verifier for a circuit |
 | `get_session_status(session_id)` | Query batch session status |
@@ -144,15 +141,19 @@ use world_zk_sdk::{BatchSession, BatchProgress};
 | `TEEVerifier::new(client)` | Create a TEE verifier |
 | `register_enclave(key, image_hash)` | Register a TEE enclave key |
 | `revoke_enclave(key)` | Revoke an enclave key |
-| `submit_result(model_hash, input_hash, result, attestation, stake)` | Submit a TEE result with stake |
+| `submit_result(model_hash, input_hash, result, attestation, stake)` | Submit a TEE result with stake; returns the transaction hash |
+| `submit_result_with_id(model_hash, input_hash, result, attestation, stake)` | Same, returns `(transaction hash, result ID)` |
+| `prover_stake()` / `challenge_bond_amount()` | The `msg.value` that `submit_result` / `challenge` must carry |
 | `challenge(result_id, bond)` | Challenge a submitted result |
 | `finalize(result_id)` | Finalize after challenge window |
-| `resolve_dispute(result_id, proof, circuit_hash, pub_inputs, gens)` | Resolve dispute with ZK proof |
+| `resolve_dispute(result_id, proof, circuit_hash, pub_inputs, gens)` | Resolve dispute with ZK proof (checks first that the proof verifies; see the method docs for the gas limit) |
+| `resolve_dispute_with_gas(...)` | Same, returns `(transaction hash, gas used)` |
 | `resolve_dispute_by_timeout(result_id)` | Resolve by timeout |
 | `get_result(result_id)` | Query result struct |
 | `is_result_valid(result_id)` | Check if result is valid |
-| `owner()` / `pending_owner()` | Query ownership |
-| `transfer_ownership(new_owner)` / `accept_ownership()` | Transfer ownership (Ownable2Step) |
+| `admin()` / `change_admin(new_admin)` | Query / change the contract admin |
+| `timelock()` / `set_timelock(address)` | Query / set the optional timelock |
+| `implementation()` | Implementation address behind the UUPS proxy |
 | `pause()` / `unpause()` / `paused()` | Pause control |
 | `remainder_verifier()` | Get the linked RemainderVerifier address |
 
@@ -163,6 +164,7 @@ use world_zk_sdk::{BatchSession, BatchProgress};
 | Method | Description |
 |---|---|
 | `TEEEventWatcher::new(rpc_url, contract_address)` | Create a watcher |
+| `with_max_block_range(n)` | Widest block span per `eth_getLogs` call (default 10,000); longer spans are fetched in chunks |
 | `poll_events(from_block)` | One-shot poll, returns `(Vec<TEEEvent>, next_block)` |
 | `watch(callback, poll_interval)` | Start continuous background polling |
 | `stop()` | Signal the background loop to stop |
@@ -206,10 +208,12 @@ use world_zk_sdk::{retry_with_backoff, RetryPolicy, is_retryable};
 
 | Item | Description |
 |---|---|
-| `RetryPolicy` | Configure `max_retries`, `base_delay`, `max_delay`, `jitter` |
-| `RetryPolicy::default()` | 3 retries, 1s base, 30s max, 0.2 jitter |
+| `RetryPolicy` | Configure `max_retries`, `base_delay`, `max_delay`, `jitter`, `timeout` (per attempt), `total_timeout` |
+| `RetryPolicy::default()` | 3 retries, 1s base, 30s max, 0.2 jitter, 30s per attempt, 300s in total |
 | `retry_with_backoff(policy, async_fn)` | Execute with retries on transient errors |
-| `is_retryable(err)` | Returns true for connection errors, 429/5xx, timeouts |
+| `is_retryable(err)` | Returns true for connection errors, 429/5xx, timeouts; never for a contract revert |
+
+`retry_with_backoff` runs the closure again from the start. Wrap reads, not transaction sends: an attempt that timed out may already have broadcast its transaction.
 
 ### Modules
 
@@ -223,8 +227,10 @@ use world_zk_sdk::{retry_with_backoff, RetryPolicy, is_retryable};
 | `fixture` | `DAGFixture` and `ProofData` for loading test data |
 | `gas_estimation` | Gas estimation for DAG batch verification sessions |
 | `hash` | Keccak256 hash utilities matching enclave behavior |
+| `metrics` | Prometheus metric definitions (`metrics` feature; no SDK method records them) |
 | `networks` | Network configuration constants |
-| `precompiles` | EVM precompile helpers |
+| `precompiles` | Git references of RISC Zero's patched crypto crates for zkVM guests (see [PRECOMPILES.md](PRECOMPILES.md)) |
+| `prover_registry` | `ProverRegistryClient` for the ProverRegistry contract |
 | `retry` | `RetryPolicy` and `retry_with_backoff` |
 | `tee` | `TEEVerifier` for TEE result lifecycle |
 | `verifier` | `DAGVerifier`, `BatchSession`, `BatchProgress` |
@@ -233,14 +239,12 @@ use world_zk_sdk::{retry_with_backoff, RetryPolicy, is_retryable};
 
 ### TEE Verification
 
-Submit a TEE-attested ML inference result and handle the challenge lifecycle:
+Submit a TEE-attested ML inference result and handle the challenge lifecycle. `result` and `attestation` come from the enclave: the attestation is its EIP-712 signature over `TEEMLResult(modelHash, inputHash, keccak256(result))` for this chain and this contract, and the contract rejects anything not signed by a key registered with `register_enclave`. [`examples/sdk-rust-quickstart`](../examples/sdk-rust-quickstart/) is a complete version that runs on Anvil, signature included.
 
 ```rust
-use alloy::primitives::U256;
 use world_zk_sdk::{Client, TEEVerifier, compute_model_hash, compute_input_hash};
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn submit(result: &[u8], attestation: &[u8]) -> anyhow::Result<()> {
     let client = Client::new(
         "http://localhost:8545",
         "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
@@ -253,22 +257,19 @@ async fn main() -> anyhow::Result<()> {
     let model_hash = compute_model_hash(b"model file bytes");
     let input_hash = compute_input_hash(&[1.0, 2.5, 3.7]);
 
-    // Submit result with 0.01 ETH stake
-    let stake = U256::from(10_000_000_000_000_000u64); // 0.01 ETH
-    let tx = tee.submit_result(
-        model_hash,
-        input_hash,
-        b"result bytes",
-        b"attestation bytes",
-        stake,
-    ).await?;
-    println!("Submitted: {tx}");
+    // Submit with the stake the contract requires (0.1 ETH by default)
+    let stake = tee.prover_stake().await?;
+    let (tx, result_id) = tee
+        .submit_result_with_id(model_hash, input_hash, result, attestation, stake)
+        .await?;
+    println!("Submitted: {tx}, result ID: {result_id}");
 
-    // Later: finalize after challenge window
+    // Later: finalize after the challenge window (1 hour by default)
     // let tx = tee.finalize(result_id).await?;
 
-    // Query result validity
-    // let valid = tee.is_result_valid(result_id).await?;
+    // Query result validity (false until finalized)
+    let valid = tee.is_result_valid(result_id).await?;
+    println!("Valid: {valid}");
 
     Ok(())
 }
@@ -319,7 +320,7 @@ async fn main() -> anyhow::Result<()> {
     let client = Client::new(
         "http://localhost:8545",
         "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
-        "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+        "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
     )?;
 
     let fixture = DAGFixture::load("path/to/fixture.json")?;
@@ -365,10 +366,11 @@ async fn main() -> anyhow::Result<()> {
         base_delay: Duration::from_millis(500),
         max_delay: Duration::from_secs(10),
         jitter: 0.2,
+        ..RetryPolicy::default()
     };
 
     let result = retry_with_backoff(&policy, || async {
-        // Your RPC call here
+        // Your read-only RPC call here
         Ok::<_, anyhow::Error>(42)
     }).await?;
 
@@ -379,22 +381,24 @@ async fn main() -> anyhow::Result<()> {
 
 ## Running Tests
 
-Unit tests (no network required):
+Unit tests (no network required), from the repository root:
 
 ```bash
-cd sdk
-cargo test
+cargo test -p world-zk-sdk --lib
 ```
 
-Integration tests require a running Anvil instance with deployed contracts:
+The full suite also runs the integration tests in `sdk/tests/`. They start their own Anvil nodes and load the compiled contracts, so Foundry must be installed and the artifacts built first:
 
 ```bash
-# Terminal 1: start Anvil
-anvil
+(cd contracts && forge build --skip test --skip script)
+cargo test -p world-zk-sdk
+```
 
-# Terminal 2: deploy contracts and run tests
-cd sdk
-cargo test -- --ignored
+The `#[ignore]`d tests need an already deployed contract and are run by scripts that deploy it on a local Anvil chain:
+
+```bash
+bash scripts/tee-sdk-e2e.sh     # TEEVerifier lifecycle (tests/e2e_tee_verify.rs)
+bash scripts/rust-sdk-e2e.sh    # batch verification of the fixture proof (tests/e2e_batch_verify.rs)
 ```
 
 ## Related SDKs

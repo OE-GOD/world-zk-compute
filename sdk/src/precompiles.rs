@@ -1,4 +1,8 @@
-//! EVM precompile helpers for SHA-256 and risc0 zkVM acceleration.
+//! Git references of RISC Zero's patched crypto crates ("precompiles").
+//!
+//! Guest programs for the risc0 zkVM that depend on these forks run SHA-256,
+//! ECDSA, RSA, Ed25519 and BLS12-381 in accelerated circuits. They have nothing
+//! to do with EVM precompiled contracts.
 
 /// SHA-256 precompile (~100x faster)
 pub const SHA2_GIT: &str = "https://github.com/risc0/RustCrypto-hashes";
@@ -6,23 +10,23 @@ pub const SHA2_TAG: &str = "sha2-v0.10.8-risczero.0";
 
 /// secp256k1 ECDSA precompile - Ethereum signatures (~100x faster)
 pub const K256_GIT: &str = "https://github.com/risc0/RustCrypto-elliptic-curves";
-pub const K256_TAG: &str = "k256-v0.13.4-risczero.1";
+pub const K256_TAG: &str = "k256/v0.13.4-risczero.1";
 
 /// P-256 ECDSA precompile (~100x faster)
 pub const P256_GIT: &str = "https://github.com/risc0/RustCrypto-elliptic-curves";
-pub const P256_TAG: &str = "p256-v0.13.2-risczero.0";
+pub const P256_TAG: &str = "p256/v0.13.2-risczero.0";
 
 /// RSA precompile (~100x faster)
-pub const RSA_GIT: &str = "https://github.com/risc0/rust-rsa";
-pub const RSA_TAG: &str = "rsa-v0.9.6-risczero.0";
+pub const RSA_GIT: &str = "https://github.com/risc0/RustCrypto-RSA";
+pub const RSA_TAG: &str = "v0.9.6-risczero.0";
 
 /// Ed25519/curve25519 precompile (~100x faster)
 pub const CURVE25519_GIT: &str = "https://github.com/risc0/curve25519-dalek";
-pub const CURVE25519_TAG: &str = "curve25519-dalek-v4.1.3-risczero.0";
+pub const CURVE25519_TAG: &str = "curve25519-4.1.3-risczero.0";
 
 /// BLS12-381 precompile
-pub const BLS12_381_GIT: &str = "https://github.com/risc0/bls12_381";
-pub const BLS12_381_TAG: &str = "bls12_381-v0.8.0-risczero.0";
+pub const BLS12_381_GIT: &str = "https://github.com/risc0/zkcrypto-bls12_381";
+pub const BLS12_381_TAG: &str = "bls12_381/v0.8.0-risczero.0";
 
 /// Generate Cargo.toml dependency line for a precompile
 pub fn cargo_dep(name: &str, git: &str, tag: &str, features: &[&str]) -> String {

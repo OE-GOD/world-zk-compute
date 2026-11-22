@@ -16,16 +16,16 @@ Replace standard crypto crates with RISC Zero's accelerated versions in your **g
 sha2 = { git = "https://github.com/risc0/RustCrypto-hashes", tag = "sha2-v0.10.8-risczero.0" }
 
 # Ethereum signatures - secp256k1 (accelerated)
-k256 = { git = "https://github.com/risc0/RustCrypto-elliptic-curves", tag = "k256-v0.13.4-risczero.1", features = ["ecdsa", "unstable"] }
+k256 = { git = "https://github.com/risc0/RustCrypto-elliptic-curves", tag = "k256/v0.13.4-risczero.1", features = ["ecdsa", "unstable"] }
 
 # RSA signatures (accelerated)
-rsa = { git = "https://github.com/risc0/rust-rsa", tag = "rsa-v0.9.6-risczero.0", features = ["unstable"] }
+rsa = { git = "https://github.com/risc0/RustCrypto-RSA", tag = "v0.9.6-risczero.0", features = ["unstable"] }
 
 # Ed25519 signatures (accelerated)
-curve25519-dalek = { git = "https://github.com/risc0/curve25519-dalek", tag = "curve25519-dalek-v4.1.3-risczero.0" }
+curve25519-dalek = { git = "https://github.com/risc0/curve25519-dalek", tag = "curve25519-4.1.3-risczero.0" }
 
 # BLS signatures (accelerated)
-bls12_381 = { git = "https://github.com/risc0/bls12_381", tag = "bls12_381-v0.8.0-risczero.0" }
+bls12_381 = { git = "https://github.com/risc0/zkcrypto-bls12_381", tag = "bls12_381/v0.8.0-risczero.0" }
 ```
 
 ## Performance Comparison
@@ -62,7 +62,7 @@ fn hash_data(data: &[u8]) -> [u8; 32] {
 
 ```toml
 # Cargo.toml
-k256 = { git = "https://github.com/risc0/RustCrypto-elliptic-curves", tag = "k256-v0.13.4-risczero.1", features = ["ecdsa", "unstable"] }
+k256 = { git = "https://github.com/risc0/RustCrypto-elliptic-curves", tag = "k256/v0.13.4-risczero.1", features = ["ecdsa", "unstable"] }
 ```
 
 ```rust
@@ -82,7 +82,7 @@ fn verify_eth_signature(
 
 ```toml
 # Cargo.toml
-rsa = { git = "https://github.com/risc0/rust-rsa", tag = "rsa-v0.9.6-risczero.0", features = ["unstable"] }
+rsa = { git = "https://github.com/risc0/RustCrypto-RSA", tag = "v0.9.6-risczero.0", features = ["unstable"] }
 ```
 
 ```rust
@@ -105,7 +105,7 @@ fn verify_rsa_signature(
 
 ```toml
 # Cargo.toml
-ed25519-dalek = { git = "https://github.com/risc0/curve25519-dalek", tag = "curve25519-dalek-v4.1.3-risczero.0" }
+ed25519-dalek = { git = "https://github.com/risc0/curve25519-dalek", tag = "curve25519-4.1.3-risczero.0" }
 ```
 
 ```rust
@@ -125,14 +125,14 @@ fn verify_ed25519(
 
 ```toml
 # Cargo.toml
-bls12_381 = { git = "https://github.com/risc0/bls12_381", tag = "bls12_381-v0.8.0-risczero.0" }
+bls12_381 = { git = "https://github.com/risc0/zkcrypto-bls12_381", tag = "bls12_381/v0.8.0-risczero.0" }
 ```
 
 ### 6. P-256 ECDSA (Standard ECDSA)
 
 ```toml
 # Cargo.toml
-p256 = { git = "https://github.com/risc0/RustCrypto-elliptic-curves", tag = "p256-v0.13.2-risczero.0", features = ["ecdsa"] }
+p256 = { git = "https://github.com/risc0/RustCrypto-elliptic-curves", tag = "p256/v0.13.2-risczero.0", features = ["ecdsa"] }
 ```
 
 ## Complete Example: Signature-Verified Detection
@@ -229,7 +229,7 @@ bincode = { version = "1.3", default-features = false }
 
 # ACCELERATED CRYPTO - Use RISC Zero's precompile versions!
 sha2 = { git = "https://github.com/risc0/RustCrypto-hashes", tag = "sha2-v0.10.8-risczero.0" }
-k256 = { git = "https://github.com/risc0/RustCrypto-elliptic-curves", tag = "k256-v0.13.4-risczero.1", features = ["ecdsa", "unstable"] }
+k256 = { git = "https://github.com/risc0/RustCrypto-elliptic-curves", tag = "k256/v0.13.4-risczero.1", features = ["ecdsa", "unstable"] }
 ```
 
 ## Monitoring Precompile Usage
@@ -323,12 +323,12 @@ Ensure risc0-zkvm version matches precompile tags:
 | Crate | Tag | Notes |
 |-------|-----|-------|
 | sha2 | sha2-v0.10.8-risczero.0 | SHA-256/512 |
-| k256 | k256-v0.13.4-risczero.1 | secp256k1 (Ethereum) |
-| p256 | p256-v0.13.2-risczero.0 | P-256/secp256r1 |
-| rsa | rsa-v0.9.6-risczero.0 | RSA-2048/4096 |
-| curve25519-dalek | curve25519-dalek-v4.1.3-risczero.0 | Ed25519/X25519 |
-| bls12_381 | bls12_381-v0.8.0-risczero.0 | BLS signatures |
-| blst | blst-v0.3.14-risczero.0 | Alternative BLS |
+| k256 | k256/v0.13.4-risczero.1 | secp256k1 (Ethereum) |
+| p256 | p256/v0.13.2-risczero.0 | P-256/secp256r1 |
+| rsa | v0.9.6-risczero.0 | RSA-2048/4096 |
+| curve25519-dalek | curve25519-4.1.3-risczero.0 | Ed25519/X25519 |
+| bls12_381 | bls12_381/v0.8.0-risczero.0 | BLS signatures |
+| blst | blst/v0.3.14-risczero.0 | Alternative BLS |
 
 ## Summary
 

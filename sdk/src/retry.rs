@@ -88,9 +88,29 @@ fn pseudo_random_fraction(seed: u32) -> f64 {
     (x as f64) / (u32::MAX as f64)
 }
 
+/// HTTP status codes worth retrying (rate limiting and server-side failures).
+const RETRYABLE_STATUS_CODES: [&str; 5] = ["429", "500", "502", "503", "504"];
+
+/// True if `code` occurs in `msg` as a number of its own, not as part of a
+/// longer number or hex string (a gas amount, an address, a transaction hash).
+fn contains_status_code(msg: &str, code: &str) -> bool {
+    msg.match_indices(code).any(|(start, _)| {
+        let before = msg[..start].chars().next_back();
+        let after = msg[start + code.len()..].chars().next();
+        !before.is_some_and(|c| c.is_ascii_alphanumeric())
+            && !after.is_some_and(|c| c.is_ascii_alphanumeric())
+    })
+}
+
 /// Returns true if the error message suggests a transient/retryable failure.
+///
+/// Every cause in the error chain is inspected, not only the outermost context.
+/// A contract revert is never retryable: the same call reverts again.
 pub fn is_retryable(err: &anyhow::Error) -> bool {
-    let msg = err.to_string().to_lowercase();
+    let msg = format!("{err:#}").to_lowercase();
+    if msg.contains("execution reverted") {
+        return false;
+    }
     // Connection / transport errors
     msg.contains("connection refused")
         || msg.contains("connection reset")
@@ -98,14 +118,12 @@ pub fn is_retryable(err: &anyhow::Error) -> bool {
         || msg.contains("timeout")
         || msg.contains("broken pipe")
         || msg.contains("eof")
-        // HTTP status codes typically retryable
-        || msg.contains("429")
+        // HTTP statuses typically retryable
         || msg.contains("too many requests")
-        || msg.contains("500")
-        || msg.contains("502")
-        || msg.contains("503")
-        || msg.contains("504")
         || msg.contains("rate limit")
+        || RETRYABLE_STATUS_CODES
+            .iter()
+            .any(|code| contains_status_code(&msg, code))
 }
 
 /// Execute an async closure with retries according to the given policy.
@@ -118,6 +136,11 @@ pub fn is_retryable(err: &anyhow::Error) -> bool {
 ///
 /// If `policy.total_timeout` is set, the entire operation (including inter-attempt
 /// delays) will abort once the cumulative elapsed time exceeds the limit.
+///
+/// The closure runs again from the start on every retry, so only wrap operations
+/// that are safe to repeat (reads, `eth_call`, gas estimates). A transaction send
+/// is not: an attempt that timed out or lost its connection may already have
+/// broadcast the transaction, and the retry would broadcast a second one.
 #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
 pub async fn retry_with_backoff<F, Fut, T>(policy: &RetryPolicy, mut f: F) -> anyhow::Result<T>
 where
@@ -358,6 +381,42 @@ mod tests {
         assert!(is_retryable(&anyhow::anyhow!("503 service unavailable")));
         assert!(!is_retryable(&anyhow::anyhow!("invalid argument")));
         assert!(!is_retryable(&anyhow::anyhow!("404 not found")));
+        assert!(is_retryable(&anyhow::anyhow!(
+            "HTTP error 503 with body: upstream unavailable"
+        )));
+        assert!(is_retryable(&anyhow::anyhow!("status code: 502, body: ")));
+    }
+
+    #[test]
+    fn test_is_retryable_ignores_digits_inside_other_values() {
+        // "500", "429", "503" inside a gas amount, an address or a hash are not HTTP statuses.
+        assert!(!is_retryable(&anyhow::anyhow!(
+            "gas required exceeds allowance (25000000)"
+        )));
+        assert!(!is_retryable(&anyhow::anyhow!(
+            "unknown account 0x5030000000000000000000000000000000004290"
+        )));
+        assert!(!is_retryable(&anyhow::anyhow!(
+            "ResultSubmitted event not found in receipt of 0x7a97c6efb019e23d135f790b6065dfc264f8930731d3500bf10c28ec5cf742be"
+        )));
+    }
+
+    #[test]
+    fn test_is_retryable_never_retries_reverts() {
+        // Revert data is arbitrary hex and may look like a status code or "timeout".
+        assert!(!is_retryable(&anyhow::anyhow!(
+            "server returned an error response: error code 3: execution reverted: custom error 0x118cdaa7: 503 504"
+        )));
+        assert!(!is_retryable(&anyhow::anyhow!(
+            "execution reverted: claim timeout not reached"
+        )));
+    }
+
+    #[test]
+    fn test_is_retryable_inspects_error_chain() {
+        let err = anyhow::anyhow!("connection refused").context("submitting the result failed");
+        assert_eq!(err.to_string(), "submitting the result failed");
+        assert!(is_retryable(&err));
     }
 
     #[test]

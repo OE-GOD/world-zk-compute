@@ -31,7 +31,7 @@ use alloy::primitives::{Address, U256};
 use alloy::providers::ProviderBuilder;
 use alloy::sol;
 
-use crate::client::Client;
+use crate::client::{Client, PendingTransactionExt};
 
 // ---------------------------------------------------------------------------
 // ABI bindings generated via alloy sol! macro
@@ -167,7 +167,7 @@ impl ProverRegistryClient {
             .register(stake, endpoint.to_string())
             .send()
             .await?
-            .get_receipt()
+            .get_successful_receipt()
             .await?;
 
         Ok(receipt.transaction_hash)
@@ -182,7 +182,12 @@ impl ProverRegistryClient {
         let provider = self.build_provider();
         let contract = ProverRegistry::new(self.client.contract_address(), provider);
 
-        let receipt = contract.deactivate().send().await?.get_receipt().await?;
+        let receipt = contract
+            .deactivate()
+            .send()
+            .await?
+            .get_successful_receipt()
+            .await?;
 
         Ok(receipt.transaction_hash)
     }
@@ -195,7 +200,12 @@ impl ProverRegistryClient {
         let provider = self.build_provider();
         let contract = ProverRegistry::new(self.client.contract_address(), provider);
 
-        let receipt = contract.reactivate().send().await?.get_receipt().await?;
+        let receipt = contract
+            .reactivate()
+            .send()
+            .await?
+            .get_successful_receipt()
+            .await?;
 
         Ok(receipt.transaction_hash)
     }
@@ -217,7 +227,7 @@ impl ProverRegistryClient {
             .addStake(amount)
             .send()
             .await?
-            .get_receipt()
+            .get_successful_receipt()
             .await?;
 
         Ok(receipt.transaction_hash)
@@ -235,7 +245,7 @@ impl ProverRegistryClient {
             .withdrawStake(amount)
             .send()
             .await?
-            .get_receipt()
+            .get_successful_receipt()
             .await?;
 
         Ok(receipt.transaction_hash)
@@ -389,7 +399,7 @@ impl ProverRegistryClient {
             .setMinStake(min_stake)
             .send()
             .await?
-            .get_receipt()
+            .get_successful_receipt()
             .await?;
 
         Ok(receipt.transaction_hash)
@@ -408,7 +418,7 @@ impl ProverRegistryClient {
             .setSlashBasisPoints(bps)
             .send()
             .await?
-            .get_receipt()
+            .get_successful_receipt()
             .await?;
 
         Ok(receipt.transaction_hash)
@@ -428,7 +438,7 @@ impl ProverRegistryClient {
             .setSlasher(slasher, authorized)
             .send()
             .await?
-            .get_receipt()
+            .get_successful_receipt()
             .await?;
 
         Ok(receipt.transaction_hash)
@@ -455,7 +465,7 @@ impl ProverRegistryClient {
             .slash(prover, reason.to_string())
             .send()
             .await?
-            .get_receipt()
+            .get_successful_receipt()
             .await?;
 
         Ok(receipt.transaction_hash)
@@ -478,7 +488,7 @@ impl ProverRegistryClient {
             .recordSuccess(prover, reward)
             .send()
             .await?
-            .get_receipt()
+            .get_successful_receipt()
             .await?;
 
         Ok(receipt.transaction_hash)

@@ -31,7 +31,7 @@ use alloy::primitives::{Address, Bytes, B256, U256};
 use alloy::providers::ProviderBuilder;
 use alloy::sol;
 
-use crate::client::Client;
+use crate::client::{Client, PendingTransactionExt};
 
 // ---------------------------------------------------------------------------
 // ABI bindings generated via alloy sol! macro
@@ -90,7 +90,7 @@ sol! {
         event ExecutionExpired(uint256 indexed requestId);
         event ExecutionCancelled(uint256 indexed requestId);
         event ClaimExpired(uint256 indexed requestId, address indexed prover);
-        event CallbackFailed(uint256 indexed requestId, address indexed callbackContract);
+        event CallbackFailed(uint256 indexed requestId, address indexed callbackContract, bytes reason);
 
         // --- Errors ---
 
@@ -284,7 +284,7 @@ impl ExecutionEngineClient {
             .value(tip)
             .send()
             .await?
-            .get_receipt()
+            .get_successful_receipt()
             .await?;
 
         Ok(receipt.transaction_hash)
@@ -303,7 +303,7 @@ impl ExecutionEngineClient {
             .cancelExecution(U256::from(request_id))
             .send()
             .await?
-            .get_receipt()
+            .get_successful_receipt()
             .await?;
 
         Ok(receipt.transaction_hash)
@@ -326,7 +326,7 @@ impl ExecutionEngineClient {
             .claimExecution(U256::from(request_id))
             .send()
             .await?
-            .get_receipt()
+            .get_successful_receipt()
             .await?;
 
         Ok(receipt.transaction_hash)
@@ -361,7 +361,7 @@ impl ExecutionEngineClient {
             )
             .send()
             .await?
-            .get_receipt()
+            .get_successful_receipt()
             .await?;
 
         Ok(receipt.transaction_hash)
@@ -488,7 +488,12 @@ impl ExecutionEngineClient {
         let provider = self.build_provider();
         let contract = ExecutionEngine::new(self.client.contract_address(), provider);
 
-        let receipt = contract.pause().send().await?.get_receipt().await?;
+        let receipt = contract
+            .pause()
+            .send()
+            .await?
+            .get_successful_receipt()
+            .await?;
         Ok(receipt.transaction_hash)
     }
 
@@ -498,7 +503,12 @@ impl ExecutionEngineClient {
         let provider = self.build_provider();
         let contract = ExecutionEngine::new(self.client.contract_address(), provider);
 
-        let receipt = contract.unpause().send().await?.get_receipt().await?;
+        let receipt = contract
+            .unpause()
+            .send()
+            .await?
+            .get_successful_receipt()
+            .await?;
         Ok(receipt.transaction_hash)
     }
 
@@ -512,7 +522,7 @@ impl ExecutionEngineClient {
             .setProtocolFee(U256::from(fee_bps))
             .send()
             .await?
-            .get_receipt()
+            .get_successful_receipt()
             .await?;
 
         Ok(receipt.transaction_hash)
@@ -528,7 +538,7 @@ impl ExecutionEngineClient {
             .setFeeRecipient(recipient)
             .send()
             .await?
-            .get_receipt()
+            .get_successful_receipt()
             .await?;
 
         Ok(receipt.transaction_hash)
@@ -546,7 +556,7 @@ impl ExecutionEngineClient {
             .setReputation(reputation)
             .send()
             .await?
-            .get_receipt()
+            .get_successful_receipt()
             .await?;
 
         Ok(receipt.transaction_hash)

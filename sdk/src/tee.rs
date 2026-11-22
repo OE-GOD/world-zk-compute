@@ -4,8 +4,27 @@ use alloy::primitives::{Address, Bytes, B256, U256};
 use alloy::providers::ProviderBuilder;
 use alloy::sol_types::SolEvent;
 
-use crate::abi::TEEMLVerifier;
-use crate::client::Client;
+use crate::abi::{RemainderVerifier, TEEMLVerifier};
+use crate::client::{Client, PendingTransactionExt};
+
+/// Gas kept on top of the computed `resolveDispute` limit for the differences
+/// between the estimated and the real execution (cold account access, the
+/// caller being the verifier contract instead of an externally owned account).
+const DISPUTE_GAS_MARGIN: u64 = 100_000;
+
+/// Gas limit for `resolveDispute`, given `eth_estimateGas` of `resolveDispute`
+/// itself (`outer_estimate`) and of the proof verification it runs in an inner
+/// call (`verification_gas`).
+///
+/// `outer_estimate` covers everything except the verification (it may come from
+/// a run in which the inner call ran out of gas). The inner call receives at
+/// most 63/64 of the remaining gas, so `verification_gas * 64 / 63` is added.
+fn dispute_gas_limit(outer_estimate: u64, verification_gas: u64) -> u64 {
+    outer_estimate
+        .saturating_add(verification_gas)
+        .saturating_add(verification_gas / 63 + 1)
+        .saturating_add(DISPUTE_GAS_MARGIN)
+}
 
 /// TEE ML Verifier — wraps the `TEEMLVerifier` contract.
 pub struct TEEVerifier {
@@ -29,7 +48,7 @@ impl TEEVerifier {
             .registerEnclave(key, image_hash)
             .send()
             .await?
-            .get_receipt()
+            .get_successful_receipt()
             .await?;
 
         Ok(receipt.transaction_hash)
@@ -45,7 +64,7 @@ impl TEEVerifier {
             .revokeEnclave(key)
             .send()
             .await?
-            .get_receipt()
+            .get_successful_receipt()
             .await?;
 
         Ok(receipt.transaction_hash)
@@ -98,7 +117,7 @@ impl TEEVerifier {
             .value(stake)
             .send()
             .await?
-            .get_receipt()
+            .get_successful_receipt()
             .await?;
 
         let result_id = receipt
@@ -133,7 +152,7 @@ impl TEEVerifier {
             .value(bond)
             .send()
             .await?
-            .get_receipt()
+            .get_successful_receipt()
             .await?;
 
         Ok(receipt.transaction_hash)
@@ -151,7 +170,7 @@ impl TEEVerifier {
             .finalize(result_id)
             .send()
             .await?
-            .get_receipt()
+            .get_successful_receipt()
             .await?;
 
         Ok(receipt.transaction_hash)
@@ -160,6 +179,9 @@ impl TEEVerifier {
     // -- Dispute --
 
     /// Resolve a dispute by submitting a ZK proof.
+    ///
+    /// See [`Self::resolve_dispute_with_gas`] for how the gas limit is chosen and
+    /// for the check that runs before anything is sent.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(result_id = %result_id)))]
     pub async fn resolve_dispute(
         &self,
@@ -169,23 +191,10 @@ impl TEEVerifier {
         pub_inputs: &[u8],
         gens: &[u8],
     ) -> anyhow::Result<B256> {
-        let provider = self.build_provider();
-        let contract = TEEMLVerifier::new(self.client.contract_address(), provider);
-
-        let receipt = contract
-            .resolveDispute(
-                result_id,
-                Bytes::copy_from_slice(proof),
-                circuit_hash,
-                Bytes::copy_from_slice(pub_inputs),
-                Bytes::copy_from_slice(gens),
-            )
-            .send()
-            .await?
-            .get_receipt()
+        let (tx_hash, _gas_used) = self
+            .resolve_dispute_with_gas(result_id, proof, circuit_hash, pub_inputs, gens)
             .await?;
-
-        Ok(receipt.transaction_hash)
+        Ok(tx_hash)
     }
 
     /// Resolve a dispute by submitting a ZK proof, returning both the
@@ -193,6 +202,18 @@ impl TEEVerifier {
     ///
     /// This is useful for classifying dispute resolution paths (e.g. Stylus
     /// vs Solidity) based on gas consumption.
+    ///
+    /// `resolveDispute` runs the proof verification in an inner call and settles
+    /// the dispute for the challenger when that call fails, including when it
+    /// only ran out of gas. `eth_estimateGas` on `resolveDispute` cannot tell the
+    /// two outcomes apart (the transaction succeeds either way) and returns a
+    /// limit that is too low for the verification. So this method:
+    ///
+    /// 1. estimates the verification call on the RemainderVerifier itself and
+    ///    checks with `eth_call` that the proof verifies with that much gas
+    ///    (an error is returned, and nothing is sent, if it does not);
+    /// 2. sends `resolveDispute` with a gas limit that leaves the inner call
+    ///    that much gas (EIP-150 forwards at most 63/64 of what is left).
     #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(result_id = %result_id)))]
     pub async fn resolve_dispute_with_gas(
         &self,
@@ -203,19 +224,47 @@ impl TEEVerifier {
         gens: &[u8],
     ) -> anyhow::Result<(B256, u64)> {
         let provider = self.build_provider();
-        let contract = TEEMLVerifier::new(self.client.contract_address(), provider);
+        let contract = TEEMLVerifier::new(self.client.contract_address(), provider.clone());
 
-        let receipt = contract
-            .resolveDispute(
-                result_id,
-                Bytes::copy_from_slice(proof),
+        let proof = Bytes::copy_from_slice(proof);
+        let pub_inputs = Bytes::copy_from_slice(pub_inputs);
+        let gens = Bytes::copy_from_slice(gens);
+
+        // The verification exactly as resolveDispute will run it.
+        let remainder_address = contract.remainderVerifier().call().await?;
+        let remainder = RemainderVerifier::new(remainder_address, provider);
+        let (verification_gas, verifies) = if contract.useStylusVerifier().call().await? {
+            let call = remainder.verifyDAGProofStylus(
+                proof.clone(),
                 circuit_hash,
-                Bytes::copy_from_slice(pub_inputs),
-                Bytes::copy_from_slice(gens),
-            )
+                pub_inputs.clone(),
+                gens.clone(),
+            );
+            let gas = call.estimate_gas().await?;
+            (gas, call.gas(gas).call().await?)
+        } else {
+            let call = remainder.verifyDAGProof(
+                proof.clone(),
+                circuit_hash,
+                pub_inputs.clone(),
+                gens.clone(),
+            );
+            let gas = call.estimate_gas().await?;
+            (gas, call.gas(gas).call().await?)
+        };
+        anyhow::ensure!(
+            verifies,
+            "the proof does not verify on RemainderVerifier {remainder_address}; \
+             resolveDispute would settle the dispute for the challenger, nothing was sent"
+        );
+
+        let call = contract.resolveDispute(result_id, proof, circuit_hash, pub_inputs, gens);
+        let gas_limit = dispute_gas_limit(call.estimate_gas().await?, verification_gas);
+        let receipt = call
+            .gas(gas_limit)
             .send()
             .await?
-            .get_receipt()
+            .get_successful_receipt()
             .await?;
 
         Ok((receipt.transaction_hash, receipt.gas_used))
@@ -231,7 +280,7 @@ impl TEEVerifier {
             .resolveDisputeByTimeout(result_id)
             .send()
             .await?
-            .get_receipt()
+            .get_successful_receipt()
             .await?;
 
         Ok(receipt.transaction_hash)
@@ -279,7 +328,7 @@ impl TEEVerifier {
             .changeAdmin(new_admin)
             .send()
             .await?
-            .get_receipt()
+            .get_successful_receipt()
             .await?;
         Ok(receipt.transaction_hash)
     }
@@ -302,7 +351,7 @@ impl TEEVerifier {
             .setTimelock(addr)
             .send()
             .await?
-            .get_receipt()
+            .get_successful_receipt()
             .await?;
         Ok(receipt.transaction_hash)
     }
@@ -321,7 +370,12 @@ impl TEEVerifier {
     pub async fn pause(&self) -> anyhow::Result<B256> {
         let provider = self.build_provider();
         let contract = TEEMLVerifier::new(self.client.contract_address(), provider);
-        let receipt = contract.pause().send().await?.get_receipt().await?;
+        let receipt = contract
+            .pause()
+            .send()
+            .await?
+            .get_successful_receipt()
+            .await?;
         Ok(receipt.transaction_hash)
     }
 
@@ -330,7 +384,12 @@ impl TEEVerifier {
     pub async fn unpause(&self) -> anyhow::Result<B256> {
         let provider = self.build_provider();
         let contract = TEEMLVerifier::new(self.client.contract_address(), provider);
-        let receipt = contract.unpause().send().await?.get_receipt().await?;
+        let receipt = contract
+            .unpause()
+            .send()
+            .await?
+            .get_successful_receipt()
+            .await?;
         Ok(receipt.transaction_hash)
     }
 
@@ -352,11 +411,58 @@ impl TEEVerifier {
         Ok(addr)
     }
 
+    /// Get the stake `submitResult` requires as `msg.value` (wei).
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
+    pub async fn prover_stake(&self) -> anyhow::Result<U256> {
+        let provider = self.build_provider();
+        let contract = TEEMLVerifier::new(self.client.contract_address(), provider);
+        let stake = contract.proverStake().call().await?;
+        Ok(stake)
+    }
+
+    /// Get the bond `challenge` requires as `msg.value` (wei).
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
+    pub async fn challenge_bond_amount(&self) -> anyhow::Result<U256> {
+        let provider = self.build_provider();
+        let contract = TEEMLVerifier::new(self.client.contract_address(), provider);
+        let bond = contract.challengeBondAmount().call().await?;
+        Ok(bond)
+    }
+
     // -- Internal --
 
     fn build_provider(&self) -> impl alloy::providers::Provider + Clone {
         ProviderBuilder::new()
             .wallet(self.client.wallet.clone())
             .connect_http(self.client.rpc_url.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// With the limit from `dispute_gas_limit`, the inner call must be able to
+    /// receive `verification_gas` under EIP-150 even when every unit of the
+    /// outer estimate is spent outside the inner call.
+    #[test]
+    fn dispute_gas_limit_leaves_verification_gas_for_inner_call() {
+        // Measured on Anvil for the phase1a fixture.
+        let outer_estimate = 195_956_031u64;
+        let verification_gas = 254_000_000u64;
+        let limit = dispute_gas_limit(outer_estimate, verification_gas);
+
+        let available_at_call = limit - outer_estimate;
+        let forwarded = available_at_call - available_at_call / 64;
+        assert!(forwarded >= verification_gas);
+        assert!(limit > outer_estimate + verification_gas);
+        // The plain estimate, which the SDK used to send, is not enough.
+        assert!(outer_estimate - outer_estimate / 64 < verification_gas);
+    }
+
+    #[test]
+    fn dispute_gas_limit_saturates() {
+        assert_eq!(dispute_gas_limit(u64::MAX, u64::MAX), u64::MAX);
+        assert_eq!(dispute_gas_limit(0, 0), DISPUTE_GAS_MARGIN + 1);
     }
 }

@@ -1,12 +1,11 @@
 //! DAGVerifier client for on-chain DAG circuit verification.
 
-use alloy::primitives::{Address, Bytes, B256, U256};
+use alloy::primitives::{keccak256, Address, Bytes, B256, U256};
 use alloy::providers::ProviderBuilder;
 use alloy::sol_types::SolType;
-use sha2::{Digest, Sha256};
 
 use crate::abi::RemainderVerifier::{self, DAGCircuitDescription};
-use crate::client::Client;
+use crate::client::{Client, PendingTransactionExt};
 use crate::fixture::ProofData;
 
 /// Batch verification progress updates.
@@ -37,6 +36,12 @@ pub struct BatchSession {
     pub finalize_groups_done: u64,
 }
 
+/// Hash of the Pedersen generators as `RemainderVerifier` stores and checks it:
+/// `keccak256(gensData)`.
+pub fn gens_hash(gens_data: &[u8]) -> B256 {
+    keccak256(gens_data)
+}
+
 /// DAG verification orchestrator — wraps the `RemainderVerifier` contract.
 pub struct DAGVerifier {
     client: Client,
@@ -52,7 +57,8 @@ impl DAGVerifier {
     /// Register a DAG circuit on-chain.
     ///
     /// `description` is ABI-encoded into `descData`.
-    /// `gens_data` is hashed to produce `gensHash`.
+    /// `gens_data` is hashed with keccak256 to produce `gensHash`, the value the
+    /// contract compares against `keccak256(gensData)` on every verification.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(circuit_hash = %circuit_hash, name = %name)))]
     pub async fn register_circuit(
         &self,
@@ -65,13 +71,13 @@ impl DAGVerifier {
         let contract = RemainderVerifier::new(self.client.contract_address(), provider);
 
         let desc_data = DAGCircuitDescription::abi_encode(description);
-        let gens_hash = B256::from_slice(&Sha256::digest(gens_data));
+        let gens_hash = gens_hash(gens_data);
 
         let receipt = contract
             .registerDAGCircuit(circuit_hash, desc_data.into(), name.to_string(), gens_hash)
             .send()
             .await?
-            .get_receipt()
+            .get_successful_receipt()
             .await?;
 
         Ok(receipt.transaction_hash)
@@ -91,7 +97,7 @@ impl DAGVerifier {
             .setDAGStylusVerifier(circuit_hash, stylus_address)
             .send()
             .await?
-            .get_receipt()
+            .get_successful_receipt()
             .await?;
 
         Ok(receipt.transaction_hash)
@@ -112,7 +118,7 @@ impl DAGVerifier {
             .setDAGCircuitGroth16Verifier(circuit_hash, verifier_address, U256::from(input_count))
             .send()
             .await?
-            .get_receipt()
+            .get_successful_receipt()
             .await?;
 
         Ok(receipt.transaction_hash)
@@ -120,8 +126,10 @@ impl DAGVerifier {
 
     // -- Single-TX Verification --
 
-    /// Verify a DAG proof in a single call (view function, no gas limit on-chain).
-    /// Uses `.gas(500_000_000)` for Anvil compatibility.
+    /// Verify a DAG proof in a single `eth_call` (nothing is sent on-chain).
+    /// The call is made with `.gas(500_000_000)`: verifying the 88-layer fixture
+    /// takes about 200M gas. The scripts in this repository start Anvil with
+    /// `--gas-limit 500000000` for it.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(circuit_hash = %proof.circuit_hash)))]
     pub async fn verify_single_tx(&self, proof: &ProofData) -> anyhow::Result<bool> {
         let provider = self.build_provider();
@@ -188,7 +196,7 @@ impl DAGVerifier {
             )
             .send()
             .await?
-            .get_receipt()
+            .get_successful_receipt()
             .await?;
 
         // Extract session ID from event log
@@ -223,7 +231,7 @@ impl DAGVerifier {
                 )
                 .send()
                 .await?
-                .get_receipt()
+                .get_successful_receipt()
                 .await?;
 
             on_progress(BatchProgress::Computing {
@@ -235,7 +243,7 @@ impl DAGVerifier {
         // 3. Finalize (may take multiple txs)
         let mut finalize_step = 0u64;
         loop {
-            let result = contract
+            contract
                 .finalizeDAGBatchVerify(
                     session_id,
                     proof_bytes.clone(),
@@ -244,7 +252,7 @@ impl DAGVerifier {
                 )
                 .send()
                 .await?
-                .get_receipt()
+                .get_successful_receipt()
                 .await?;
 
             finalize_step += 1;
@@ -262,9 +270,6 @@ impl DAGVerifier {
             if finalize_step > 100 {
                 anyhow::bail!("Finalization exceeded 100 steps");
             }
-
-            // Use result to avoid unused variable warning
-            let _ = result;
         }
 
         // 4. Cleanup
@@ -272,7 +277,7 @@ impl DAGVerifier {
             .cleanupDAGBatchSession(session_id)
             .send()
             .await?
-            .get_receipt()
+            .get_successful_receipt()
             .await?;
 
         on_progress(BatchProgress::Complete);
@@ -321,5 +326,22 @@ impl DAGVerifier {
             finalize_input_idx: result.finalizeInputIdx.to::<u64>(),
             finalize_groups_done: result.finalizeGroupsDone.to::<u64>(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// RemainderVerifier reverts with `InvalidGenerators` unless
+    /// `keccak256(gensData) == gensHash` (see `registerDAGCircuit`).
+    #[test]
+    fn gens_hash_is_keccak256() {
+        assert_eq!(gens_hash(b"generators"), keccak256(b"generators"));
+        // keccak256("") -- not SHA-256, whose empty digest starts with 0xe3b0c442.
+        let expected: B256 = "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"
+            .parse()
+            .unwrap();
+        assert_eq!(gens_hash(b""), expected);
     }
 }

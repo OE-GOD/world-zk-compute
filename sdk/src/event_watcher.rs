@@ -196,6 +196,67 @@ pub fn parse_log(log: &Log) -> Option<TEEEvent> {
 // TEEEventWatcher
 // ---------------------------------------------------------------------------
 
+/// Default for [`TEEEventWatcher::with_max_block_range`]: the widest block span
+/// requested from `eth_getLogs` in one call.
+pub const DEFAULT_MAX_BLOCK_RANGE: u64 = 10_000;
+
+/// Fetch and parse the watched contract's events in `from_block..=to_block`,
+/// asking for at most `max_block_range` blocks per `eth_getLogs` call.
+async fn fetch_events<P: Provider>(
+    provider: &P,
+    contract_address: Address,
+    from_block: u64,
+    to_block: u64,
+    max_block_range: u64,
+) -> anyhow::Result<Vec<TEEEvent>> {
+    let span = max_block_range.max(1);
+    let mut events = Vec::new();
+    let mut start = from_block;
+    while start <= to_block {
+        let end = to_block.min(start.saturating_add(span - 1));
+        let filter = Filter::new()
+            .address(contract_address)
+            .from_block(start)
+            .to_block(end);
+        let logs = provider.get_logs(&filter).await?;
+        events.extend(logs.iter().filter_map(parse_log));
+        match end.checked_add(1) {
+            Some(next) => start = next,
+            None => break,
+        }
+    }
+    Ok(events)
+}
+
+/// One iteration of the background watch loop.
+///
+/// `next_block` is the first block not yet delivered (`None` until the chain
+/// head has been read once; watching starts at that head). It only moves
+/// forward when the whole range was fetched, so a failed RPC call makes the
+/// next iteration retry the same blocks instead of skipping them.
+async fn poll_new_events<P: Provider>(
+    provider: &P,
+    contract_address: Address,
+    next_block: &mut Option<u64>,
+    max_block_range: u64,
+) -> anyhow::Result<Vec<TEEEvent>> {
+    let latest = provider.get_block_number().await?;
+    let from_block = *next_block.get_or_insert(latest);
+    if from_block > latest {
+        return Ok(vec![]);
+    }
+    let events = fetch_events(
+        provider,
+        contract_address,
+        from_block,
+        latest,
+        max_block_range,
+    )
+    .await?;
+    *next_block = Some(latest.saturating_add(1));
+    Ok(events)
+}
+
 /// Watches TEEMLVerifier events via `eth_getLogs` polling.
 ///
 /// Supports one-shot polling via [`poll_events`](TEEEventWatcher::poll_events) and
@@ -203,6 +264,7 @@ pub fn parse_log(log: &Log) -> Option<TEEEvent> {
 pub struct TEEEventWatcher {
     rpc_url: String,
     contract_address: Address,
+    max_block_range: u64,
     stop_flag: Arc<AtomicBool>,
 }
 
@@ -212,8 +274,19 @@ impl TEEEventWatcher {
         Self {
             rpc_url: rpc_url.to_string(),
             contract_address,
+            max_block_range: DEFAULT_MAX_BLOCK_RANGE,
             stop_flag: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Set the widest block span requested from `eth_getLogs` in one call
+    /// (default [`DEFAULT_MAX_BLOCK_RANGE`], minimum 1).
+    ///
+    /// RPC providers reject log queries over too many blocks, and the limit
+    /// differs per provider. Longer spans are fetched in consecutive chunks.
+    pub fn with_max_block_range(mut self, max_block_range: u64) -> Self {
+        self.max_block_range = max_block_range.max(1);
+        self
     }
 
     /// Returns the watched contract address.
@@ -226,6 +299,9 @@ impl TEEEventWatcher {
     /// Returns a tuple of `(events, next_block)` where `next_block` is the block
     /// number to use for the next call (latest + 1). If `from_block` is beyond the
     /// latest block, returns an empty vec and `from_block` unchanged.
+    ///
+    /// The range is fetched in chunks of at most
+    /// [`with_max_block_range`](TEEEventWatcher::with_max_block_range) blocks.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(from_block)))]
     pub async fn poll_events(&self, from_block: u64) -> anyhow::Result<(Vec<TEEEvent>, u64)> {
         let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
@@ -235,69 +311,62 @@ impl TEEEventWatcher {
             return Ok((vec![], from_block));
         }
 
-        let filter = Filter::new()
-            .address(self.contract_address)
-            .from_block(from_block)
-            .to_block(latest);
+        let events = fetch_events(
+            &provider,
+            self.contract_address,
+            from_block,
+            latest,
+            self.max_block_range,
+        )
+        .await?;
 
-        let logs = provider.get_logs(&filter).await?;
-        let events: Vec<TEEEvent> = logs.iter().filter_map(parse_log).collect();
-
-        Ok((events, latest + 1))
+        Ok((events, latest.saturating_add(1)))
     }
 
     /// Start a continuous polling loop in a background task.
     ///
-    /// Calls `callback` for each new event. The loop polls every `poll_interval`.
-    /// Use [`stop`](TEEEventWatcher::stop) to signal the loop to exit.
+    /// Calls `callback` for each new event, starting at the chain head as of the
+    /// first successful poll. The loop polls every `poll_interval`. A poll that
+    /// fails (RPC error) is retried on the next interval over the same blocks, so
+    /// events are delayed rather than dropped. Use
+    /// [`stop`](TEEEventWatcher::stop) to signal the loop to exit.
     ///
-    /// Returns a `JoinHandle` that resolves when the loop finishes.
+    /// Returns a `JoinHandle` that resolves when the loop finishes. It resolves
+    /// immediately if the RPC URL cannot be parsed.
     pub fn watch<F>(&self, mut callback: F, poll_interval: Duration) -> JoinHandle<()>
     where
         F: FnMut(TEEEvent) + Send + 'static,
     {
         let rpc_url = self.rpc_url.clone();
         let contract_address = self.contract_address;
+        let max_block_range = self.max_block_range;
         let stop_flag = self.stop_flag.clone();
 
         // Reset the stop flag so watch can be called again after a stop.
         stop_flag.store(false, Ordering::SeqCst);
 
         tokio::spawn(async move {
-            let mut from_block: u64 = 0;
-
-            // Attempt to get the current block number for the starting point.
-            if let Ok(provider) = rpc_url
-                .parse()
-                .map(|url| ProviderBuilder::new().connect_http(url))
-            {
-                if let Ok(latest) = provider.get_block_number().await {
-                    from_block = latest;
-                }
-            }
+            let Ok(url) = rpc_url.parse() else {
+                #[cfg(feature = "tracing")]
+                tracing::error!(%rpc_url, "event watcher: invalid RPC URL, not watching");
+                return;
+            };
+            let provider = ProviderBuilder::new().connect_http(url);
+            let mut next_block: Option<u64> = None;
 
             while !stop_flag.load(Ordering::SeqCst) {
-                if let Ok(provider) = rpc_url
-                    .parse()
-                    .map(|url| ProviderBuilder::new().connect_http(url))
+                match poll_new_events(
+                    &provider,
+                    contract_address,
+                    &mut next_block,
+                    max_block_range,
+                )
+                .await
                 {
-                    if let Ok(latest) = provider.get_block_number().await {
-                        if from_block <= latest {
-                            let filter = Filter::new()
-                                .address(contract_address)
-                                .from_block(from_block)
-                                .to_block(latest);
-
-                            if let Ok(logs) = provider.get_logs(&filter).await {
-                                for log in &logs {
-                                    if let Some(event) = parse_log(log) {
-                                        callback(event);
-                                    }
-                                }
-                            }
-
-                            from_block = latest + 1;
-                        }
+                    Ok(events) => events.into_iter().for_each(&mut callback),
+                    Err(_err) => {
+                        #[cfg(feature = "tracing")]
+                        tracing::warn!(error = %_err, "event watcher: poll failed, will retry");
                     }
                 }
 
@@ -630,6 +699,107 @@ mod tests {
         assert!(!watcher.is_stopped());
         watcher.stop();
         assert!(watcher.is_stopped());
+    }
+
+    #[test]
+    fn test_watcher_max_block_range() {
+        let watcher = TEEEventWatcher::new("http://localhost:8545", Address::ZERO);
+        assert_eq!(watcher.max_block_range, DEFAULT_MAX_BLOCK_RANGE);
+        assert_eq!(watcher.with_max_block_range(0).max_block_range, 1);
+    }
+
+    // -- Polling against a mocked RPC transport --
+
+    /// A `ResultFinalized` log as `eth_getLogs` would return it.
+    fn finalized_log(id: u8, block_number: u64) -> Log {
+        mock_log(
+            vec![topic_result_finalized(), B256::from([id; 32])],
+            vec![],
+            block_number,
+        )
+    }
+
+    fn mocked_provider(asserter: &alloy::transports::mock::Asserter) -> impl Provider {
+        ProviderBuilder::new().connect_mocked_client(asserter.clone())
+    }
+
+    #[tokio::test]
+    async fn test_fetch_events_splits_wide_ranges() {
+        let asserter = alloy::transports::mock::Asserter::new();
+        let provider = mocked_provider(&asserter);
+
+        // Blocks 0..=24 with at most 10 blocks per call: 0-9, 10-19, 20-24.
+        asserter.push_success(&vec![finalized_log(1, 3)]);
+        asserter.push_success(&vec![finalized_log(2, 12)]);
+        asserter.push_success(&vec![finalized_log(3, 24)]);
+
+        let events = fetch_events(&provider, Address::ZERO, 0, 24, 10)
+            .await
+            .expect("three eth_getLogs calls");
+        let blocks: Vec<u64> = events
+            .iter()
+            .map(|event| match event {
+                TEEEvent::ResultFinalized { block_number, .. } => *block_number,
+                other => panic!("unexpected event {other:?}"),
+            })
+            .collect();
+        assert_eq!(blocks, vec![3, 12, 24]);
+        assert!(asserter.read_q().is_empty(), "one response per chunk");
+
+        // A range that fits is a single call, also at the top of the u64 range.
+        asserter.push_success(&Vec::<Log>::new());
+        let events = fetch_events(&provider, Address::ZERO, u64::MAX - 2, u64::MAX, 10)
+            .await
+            .expect("one eth_getLogs call");
+        assert!(events.is_empty());
+        assert!(asserter.read_q().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_poll_new_events_retries_range_after_rpc_error() {
+        let asserter = alloy::transports::mock::Asserter::new();
+        let provider = mocked_provider(&asserter);
+        let mut next_block = None;
+
+        // First poll: learns the chain head (block 7) and reads that block.
+        asserter.push_success(&7u64);
+        asserter.push_success(&Vec::<Log>::new());
+        let events = poll_new_events(&provider, Address::ZERO, &mut next_block, 100)
+            .await
+            .unwrap();
+        assert!(events.is_empty());
+        assert_eq!(next_block, Some(8));
+
+        // Second poll: the head moved to 9 but eth_getLogs fails.
+        asserter.push_success(&9u64);
+        asserter.push_failure_msg("upstream unavailable");
+        let err = poll_new_events(&provider, Address::ZERO, &mut next_block, 100).await;
+        assert!(err.is_err());
+        assert_eq!(next_block, Some(8), "a failed poll must not skip blocks");
+
+        // Third poll: blocks 8..=9 are fetched again and the event is delivered.
+        asserter.push_success(&9u64);
+        asserter.push_success(&vec![finalized_log(5, 8)]);
+        let events = poll_new_events(&provider, Address::ZERO, &mut next_block, 100)
+            .await
+            .unwrap();
+        assert_eq!(
+            events,
+            vec![TEEEvent::ResultFinalized {
+                result_id: B256::from([5; 32]),
+                block_number: 8,
+            }]
+        );
+        assert_eq!(next_block, Some(10));
+
+        // Fourth poll: nothing new, no eth_getLogs call at all.
+        asserter.push_success(&9u64);
+        let events = poll_new_events(&provider, Address::ZERO, &mut next_block, 100)
+            .await
+            .unwrap();
+        assert!(events.is_empty());
+        assert_eq!(next_block, Some(10));
+        assert!(asserter.read_q().is_empty());
     }
 
     #[test]

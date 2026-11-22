@@ -439,10 +439,9 @@ pub fn estimate_total_batches(num_layers: u32, layers_per_batch: u32) -> (u32, u
 ///
 /// For precise values, query the on-chain circuit description instead.
 pub fn estimate_input_groups(num_layers: u32) -> u32 {
-    if num_layers == 0 {
-        return 0;
-    }
-    (num_layers * 2).div_ceil(5)
+    // Widened so that `num_layers * 2` cannot overflow; the result
+    // (at most 2/5 of u32::MAX) always fits back into u32.
+    (u64::from(num_layers) * 2).div_ceil(5) as u32
 }
 
 // ---------------------------------------------------------------------------
@@ -453,7 +452,7 @@ use alloy::primitives::{Bytes, B256};
 use alloy::providers::ProviderBuilder;
 
 use crate::abi::RemainderVerifier;
-use crate::client::Client;
+use crate::client::{Client, PendingTransactionExt};
 use crate::fixture::ProofData;
 
 /// Result of an RPC-based gas estimate for a full DAG batch verification session.
@@ -805,7 +804,7 @@ impl<'a> RpcGasEstimator<'a> {
             )
             .send()
             .await?
-            .get_receipt()
+            .get_successful_receipt()
             .await?;
 
         // Extract session ID from event log
@@ -849,7 +848,7 @@ impl<'a> RpcGasEstimator<'a> {
                 )
                 .send()
                 .await?
-                .get_receipt()
+                .get_successful_receipt()
                 .await?;
         }
 
@@ -879,7 +878,7 @@ impl<'a> RpcGasEstimator<'a> {
                 )
                 .send()
                 .await?
-                .get_receipt()
+                .get_successful_receipt()
                 .await?;
 
             finalize_count += 1;
@@ -905,7 +904,7 @@ impl<'a> RpcGasEstimator<'a> {
             .cleanupDAGBatchSession(session_id)
             .send()
             .await?
-            .get_receipt()
+            .get_successful_receipt()
             .await?;
 
         // Sum totals
@@ -1303,6 +1302,16 @@ mod tests {
     #[test]
     fn test_estimate_input_groups_zero() {
         assert_eq!(estimate_input_groups(0), 0);
+    }
+
+    #[test]
+    fn test_estimate_input_groups_does_not_overflow() {
+        // `num_layers * 2` used to overflow u32 above 2^31 - 1 layers
+        // (a panic in debug builds, a wrapped count in release builds).
+        assert_eq!(estimate_input_groups(u32::MAX), 1_717_986_918);
+        let (num_continue, num_finalize) = estimate_total_batches(u32::MAX, 8);
+        assert_eq!(num_continue, 536_870_912);
+        assert_eq!(num_finalize, 107_374_183);
     }
 
     #[test]
