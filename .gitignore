@@ -63,6 +63,9 @@ cache/
 # Forge broadcast artifacts
 contracts/broadcast/
 
+# Local-chain output of scripts/deploy.sh (addresses are only valid for that Anvil run)
+deployments/31337.json
+
 # Gnark/Groth16 build artifacts
 *.bin
 !programs/*.bin
