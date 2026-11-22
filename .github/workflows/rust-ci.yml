@@ -127,7 +127,9 @@ jobs:
           solc-select use 0.8.20
 
       - name: Run watcher integration tests (requires Anvil + solc)
-        run: cargo test --manifest-path services/operator/Cargo.toml watcher_integration -- --ignored
+        # --test selects the integration-test binary; as a bare argument the name
+        # is a test-name filter that matches nothing, so no test ran.
+        run: cargo test --manifest-path services/operator/Cargo.toml --test watcher_integration -- --ignored
 
   admin-cli:
     name: Admin CLI
