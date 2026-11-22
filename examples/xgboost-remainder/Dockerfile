@@ -7,8 +7,10 @@ WORKDIR /build
 # Copy manifest + lockfile first for layer caching
 COPY Cargo.toml Cargo.lock ./
 
-# Copy source code
+# Copy source code (benches/ too: Cargo.toml declares a [[bench]] target and
+# cargo rejects the manifest when its source file is missing)
 COPY src/ src/
+COPY benches/ benches/
 
 # Build in release mode (only the main binary)
 RUN cargo build --release --bin xgboost-remainder

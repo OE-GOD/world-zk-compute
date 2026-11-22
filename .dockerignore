@@ -50,9 +50,14 @@ deployments/
 monitoring/
 
 # Test suites
+# (tests/chaos is a Cargo workspace member: cargo cannot load the workspace
+# without its manifest, so it must stay in the context. benches/ directories
+# are not excluded either: sdk, crates/zkml-verifier, prover and
+# examples/xgboost-remainder declare [[bench]] targets that cargo resolves
+# when it parses the manifest.)
 tests/
+!tests/chaos/
 **/test_data/
-**/benches/
 
 # Scripts (not needed in containers)
 scripts/

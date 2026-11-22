@@ -1,5 +1,8 @@
 FROM rust:1.92-slim AS builder
 
+# reqwest's default native-tls backend links OpenSSL (openssl-sys)
+RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Copy workspace files needed for build
@@ -28,16 +31,25 @@ RUN mkdir -p sdk/src && echo "" > sdk/src/lib.rs && \
     mkdir -p tee/enclave/src && echo "" > tee/enclave/src/lib.rs && echo "fn main(){}" > tee/enclave/src/main.rs && \
     printf '[package]\nname = "tee-enclave"\nversion = "0.1.0"\nedition = "2021"\n[lib]\nname = "tee_enclave"\npath = "src/lib.rs"\n[[bin]]\nname = "tee-enclave"\npath = "src/main.rs"' > tee/enclave/Cargo.toml && \
     mkdir -p tests/chaos/src && echo "" > tests/chaos/src/lib.rs && \
-    printf '[package]\nname = "chaos-tests"\nversion = "0.1.0"\nedition = "2021"' > tests/chaos/Cargo.toml
+    printf '[package]\nname = "chaos-tests"\nversion = "0.1.0"\nedition = "2021"' > tests/chaos/Cargo.toml && \
+    mkdir -p cli/src && echo "fn main(){}" > cli/src/main.rs && \
+    printf '[package]\nname = "worldzk-cli"\nversion = "0.1.0"\nedition = "2021"' > cli/Cargo.toml && \
+    mkdir -p services/gateway/src && echo "fn main(){}" > services/gateway/src/main.rs && \
+    printf '[package]\nname = "api-gateway"\nversion = "0.1.0"\nedition = "2021"' > services/gateway/Cargo.toml
 
 RUN cargo build --release -p proof-registry
 
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+# ca-certificates: webhooks are delivered over HTTPS; curl: container healthcheck
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/proof-registry /usr/local/bin/
 
 RUN groupadd -r registry && useradd -r -g registry registry
 RUN mkdir -p /data/proof-store && chown -R registry:registry /data
+# The transparency log and the receipt signing key default to the working
+# directory. Without this it is /, which the registry user cannot write, and
+# the service exits at start-up.
+WORKDIR /data
 USER registry
 
 ENV PORT=3001
