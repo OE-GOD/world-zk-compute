@@ -154,7 +154,13 @@ fn verify_committed_input_batch_eval(
     sponge: &mut PoseidonSponge,
     gens: &PedersenGens,
 ) {
-    let _num_claims = claim_points.len();
+    // Every claim forms one group and every group needs one eval proof. Check
+    // the counts before the sorting and grouping below, whose cost is quadratic
+    // in the number of claims (a number the circuit description controls).
+    assert!(
+        claim_points.len() == dag_proof.podps.len(),
+        "eval proof count mismatch"
+    );
     let num_rows = dag_proof.commitment_rows.len();
     let n = claim_points[0].len();
     let l_half_len = log2(if num_rows > 0 { num_rows } else { 1 });
@@ -199,6 +205,10 @@ fn verify_one_eval_group(
     sponge: &mut PoseidonSponge,
 ) {
     let group_size = group_claim_indices.len();
+    assert!(
+        r_tensor_len_matches(log_n_cols, dag_proof.podps[group_idx].z_vector.len()),
+        "eval proof z_vector length does not match the claim point"
+    );
 
     // Squeeze RLC coefficients
     let mut rlc_coeffs = Vec::with_capacity(group_size);
@@ -384,6 +394,12 @@ fn verify_committed_input_batch_eval_hybrid(
     sponge: &mut PoseidonSponge,
     outputs: &mut InputFrOutputs,
 ) {
+    // One eval proof is consumed per claim; fail before the quadratic
+    // sorting and grouping when the proof does not carry enough of them.
+    assert!(
+        claim_points.len() <= dag_proof.podps.len(),
+        "eval proof count mismatch"
+    );
     let num_rows = dag_proof.commitment_rows.len();
     let n = claim_points[0].len();
     let l_half_len = log2(if num_rows > 0 { num_rows } else { 1 });
@@ -423,6 +439,10 @@ fn verify_one_eval_group_hybrid(
     outputs: &mut InputFrOutputs,
 ) {
     let group_size = group_claim_indices.len();
+    assert!(
+        r_tensor_len_matches(log_n_cols, dag_proof.podps[group_idx].z_vector.len()),
+        "eval proof z_vector length does not match the claim point"
+    );
 
     // Squeeze RLC coefficients (same as full)
     let mut rlc_coeffs = Vec::with_capacity(group_size);
@@ -464,6 +484,15 @@ fn verify_one_eval_group_hybrid(
 // ============================================================
 // Tensor Products
 // ============================================================
+
+/// True if a tensor over `log_len` variables has exactly `len` entries.
+///
+/// The R tensor is paired with the eval proof's `z_vector`, so the two must
+/// have the same length. Checking this first keeps a long point template in
+/// the circuit description from allocating 2^n field elements.
+fn r_tensor_len_matches(log_len: usize, len: usize) -> bool {
+    log_len < usize::BITS as usize && (1usize << log_len) == len
+}
 
 /// Tensor product matching Rust's initialize_tensor (reverse order).
 pub fn initialize_tensor(coords: &[U256]) -> Vec<U256> {
@@ -655,4 +684,106 @@ fn log2(x: usize) -> usize {
         result += 1;
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn input_proof(num_evals: usize, z_len: usize) -> DAGInputLayerProof {
+        let podp = || PODPProof {
+            commit_d: G1Point::INFINITY,
+            commit_d_dot_a: G1Point::INFINITY,
+            z_vector: vec![U256::ZERO; z_len],
+            z_delta: U256::ZERO,
+            z_beta: U256::ZERO,
+        };
+        DAGInputLayerProof {
+            commitment_rows: vec![G1Point::INFINITY],
+            podps: (0..num_evals).map(|_| podp()).collect(),
+            com_evals: vec![G1Point::INFINITY; num_evals],
+        }
+    }
+
+    fn empty_gens() -> PedersenGens {
+        PedersenGens {
+            message_gens: Vec::new(),
+            scalar_gen: G1Point::INFINITY,
+            blinding_gen: G1Point::INFINITY,
+        }
+    }
+
+    fn empty_outputs() -> InputFrOutputs {
+        InputFrOutputs {
+            l_tensor_flat: Vec::new(),
+            z_dot_rs: Vec::new(),
+            mle_evals: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_r_tensor_len_matches() {
+        assert!(r_tensor_len_matches(0, 1));
+        assert!(r_tensor_len_matches(4, 16));
+        assert!(!r_tensor_len_matches(4, 15));
+        assert!(!r_tensor_len_matches(40, 16));
+        // Shift amounts at or above the word size must not wrap around.
+        assert!(!r_tensor_len_matches(usize::BITS as usize, 1));
+        assert!(!r_tensor_len_matches(usize::MAX, 1));
+    }
+
+    /// A 40-variable claim point would need a 2^40-entry tensor (32 TB). The
+    /// verifier must reject it from the z_vector length, without allocating.
+    #[test]
+    #[should_panic(expected = "z_vector length does not match the claim point")]
+    fn test_long_claim_point_rejected_before_allocation() {
+        let claim_points = vec![vec![U256::ZERO; 40]];
+        let mut sponge = PoseidonSponge::init();
+        verify_committed_input_batch_eval(
+            &input_proof(1, 2),
+            &claim_points,
+            &mut sponge,
+            &empty_gens(),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "z_vector length does not match the claim point")]
+    fn test_long_claim_point_rejected_before_allocation_hybrid() {
+        let claim_points = vec![vec![U256::ZERO; 40]];
+        let mut sponge = PoseidonSponge::init();
+        verify_committed_input_batch_eval_hybrid(
+            &input_proof(1, 2),
+            &claim_points,
+            &mut sponge,
+            &mut empty_outputs(),
+        );
+    }
+
+    /// More claims than eval proofs is rejected up front (before sorting).
+    #[test]
+    #[should_panic(expected = "eval proof count mismatch")]
+    fn test_claims_without_eval_proofs_rejected() {
+        let claim_points = vec![vec![U256::ZERO; 1]; 3];
+        let mut sponge = PoseidonSponge::init();
+        verify_committed_input_batch_eval(
+            &input_proof(1, 2),
+            &claim_points,
+            &mut sponge,
+            &empty_gens(),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "eval proof count mismatch")]
+    fn test_claims_without_eval_proofs_rejected_hybrid() {
+        let claim_points = vec![vec![U256::ZERO; 1]; 3];
+        let mut sponge = PoseidonSponge::init();
+        verify_committed_input_batch_eval_hybrid(
+            &input_proof(1, 2),
+            &claim_points,
+            &mut sponge,
+            &mut empty_outputs(),
+        );
+    }
 }

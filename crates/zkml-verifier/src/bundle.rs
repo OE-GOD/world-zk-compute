@@ -79,8 +79,9 @@ impl ProofBundle {
 
     /// Serialize to compressed JSON (gzip).
     ///
-    /// Typically achieves 85-95% size reduction on proof bundles because the
-    /// hex-encoded proof/gens data compresses extremely well.
+    /// Roughly halves a proof bundle (49.5% smaller for the 88-layer XGBoost
+    /// fixture): the hex encoding compresses, the underlying field elements
+    /// do not.
     pub fn to_compressed_json(&self) -> Result<Vec<u8>> {
         let json = serde_json::to_vec(self)
             .map_err(|e| VerifyError::BundleParse(format!("serialize: {}", e)))?;
@@ -282,7 +283,7 @@ mod tests {
             100.0 - (compressed_size as f64 / original_size as f64 * 100.0)
         );
 
-        // Hex-encoded proof data compresses very well; expect at least 30% reduction
+        // The hex encoding is redundant, so gzip must make the bundle smaller
         assert!(
             compressed_size < original_size,
             "compressed ({compressed_size}) should be smaller than original ({original_size})"

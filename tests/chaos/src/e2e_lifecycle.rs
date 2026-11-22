@@ -6,9 +6,15 @@
 //!
 //! Prerequisites:
 //!   - `anvil` must be on PATH (part of foundry)
-//!   - The TEEMLVerifier forge artifact must exist at
-//!     `contracts/out/TEEMLVerifier.sol/TEEMLVerifier.json`
+//!   - The forge artifacts must exist at
+//!     `contracts/out/TEEMLVerifier.sol/TEEMLVerifier.json` and
+//!     `contracts/out/Upgradeable.sol/UUPSProxy.json`
 //!     (run `cd contracts && forge build --skip test --skip script`)
+//!
+//! The contract is deployed the way the deploy scripts do it: the
+//! implementation, then a `UUPSProxy` whose constructor calls
+//! `initialize(admin, remainderVerifier)`. Attestations are EIP-712
+//! signatures over `TEEMLResult(modelHash, inputHash, resultHash)`.
 //!
 //! All tests are marked `#[ignore]` because they require foundry tooling and
 //! compiled contracts that may not be available in every CI environment.
@@ -18,11 +24,15 @@
 //! cd contracts && forge build --skip test --skip script
 //! cargo test -p chaos-tests --test e2e_lifecycle -- --ignored --nocapture
 //! ```
+//!
+//! Anvil and the mock enclave listen on OS-assigned ports. Set
+//! `CHAOS_E2E_PORT_BASE` to use consecutive ports from that number instead.
 
 #[cfg(test)]
 mod tests {
     use std::net::SocketAddr;
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU16, Ordering};
     use std::sync::Arc;
 
     use alloy::{
@@ -34,7 +44,7 @@ mod tests {
         signers::local::PrivateKeySigner,
         signers::SignerSync,
         sol,
-        sol_types::SolValue,
+        sol_types::{eip712_domain, SolCall, SolStruct, SolValue},
     };
 
     // -----------------------------------------------------------------------
@@ -120,7 +130,16 @@ mod tests {
             function disputeResolved(bytes32 resultId) external view returns (bool);
             function disputeProverWon(bytes32 resultId) external view returns (bool);
 
-            constructor(address _admin, address _remainderVerifier);
+            function initialize(address _admin, address _remainderVerifier) external;
+        }
+    }
+
+    sol! {
+        /// EIP-712 message the enclave signs (RESULT_TYPEHASH in TEEMLVerifier.sol).
+        struct TEEMLResult {
+            bytes32 modelHash;
+            bytes32 inputHash;
+            bytes32 resultHash;
         }
     }
 
@@ -128,13 +147,16 @@ mod tests {
     // Helpers
     // -----------------------------------------------------------------------
 
-    /// Load the compiled TEEMLVerifier creation bytecode from the forge artifact.
-    fn load_tee_bytecode() -> Bytes {
+    /// Load a contract's creation bytecode from its forge artifact
+    /// (`contracts/out/<sol_file>/<contract>.json`).
+    fn load_bytecode(sol_file: &str, contract: &str) -> Bytes {
         let artifact_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../contracts/out/TEEMLVerifier.sol/TEEMLVerifier.json");
+            .join("../../contracts/out")
+            .join(sol_file)
+            .join(format!("{contract}.json"));
         assert!(
             artifact_path.exists(),
-            "TEEMLVerifier artifact not found at {artifact_path:?}. \
+            "{contract} artifact not found at {artifact_path:?}. \
              Run: cd contracts && forge build --skip test --skip script"
         );
         let artifact: serde_json::Value =
@@ -149,23 +171,59 @@ mod tests {
         key.parse::<PrivateKeySigner>().unwrap()
     }
 
+    /// Port for the next listener. 0 (OS-assigned) unless `CHAOS_E2E_PORT_BASE`
+    /// is set, in which case each call takes the next port from that base
+    /// (the tests in this file run in parallel).
+    fn next_port() -> u16 {
+        static NEXT: AtomicU16 = AtomicU16::new(0);
+        match std::env::var("CHAOS_E2E_PORT_BASE")
+            .ok()
+            .and_then(|v| v.parse::<u16>().ok())
+        {
+            Some(base) => base + NEXT.fetch_add(1, Ordering::SeqCst),
+            None => 0,
+        }
+    }
+
+    /// EIP-712 digest that TEEMLVerifier.submitResult recovers the enclave from.
+    fn attestation_digest(
+        verifier: Address,
+        chain_id: u64,
+        model_hash: FixedBytes<32>,
+        input_hash: FixedBytes<32>,
+        result_hash: FixedBytes<32>,
+    ) -> FixedBytes<32> {
+        let domain = eip712_domain! {
+            name: "TEEMLVerifier",
+            version: "1",
+            chain_id: chain_id,
+            verifying_contract: verifier,
+        };
+        TEEMLResult {
+            modelHash: model_hash,
+            inputHash: input_hash,
+            resultHash: result_hash,
+        }
+        .eip712_signing_hash(&domain)
+    }
+
     /// Build an ECDSA attestation matching TEEMLVerifier.submitResult's expectations.
     fn sign_attestation(
         enclave_signer: &PrivateKeySigner,
+        ctx: &TestCtx,
         model_hash: FixedBytes<32>,
         input_hash: FixedBytes<32>,
         result_data: &[u8],
     ) -> Bytes {
-        let result_hash = keccak256(result_data);
-        let mut packed = Vec::with_capacity(96);
-        packed.extend_from_slice(model_hash.as_slice());
-        packed.extend_from_slice(input_hash.as_slice());
-        packed.extend_from_slice(result_hash.as_slice());
-        let message = keccak256(&packed);
-
-        // sign_message_sync applies EIP-191 prefix internally
+        let digest = attestation_digest(
+            ctx.contract_addr,
+            ctx.chain_id,
+            model_hash,
+            input_hash,
+            keccak256(result_data),
+        );
         let sig = enclave_signer
-            .sign_message_sync(message.as_slice())
+            .sign_hash_sync(&digest)
             .expect("attestation signing failed");
 
         Bytes::from(sig.as_bytes().to_vec())
@@ -195,16 +253,19 @@ mod tests {
         /// Keep Anvil alive for the duration of the test.
         _anvil: alloy::node_bindings::AnvilInstance,
         rpc_url: String,
+        chain_id: u64,
+        /// The UUPS proxy address (what users call and what signatures bind to).
         contract_addr: Address,
         #[allow(dead_code)]
         admin_addr: Address,
     }
 
     impl TestCtx {
-        /// Spawn a fresh Anvil and deploy TEEMLVerifier.
+        /// Spawn a fresh Anvil and deploy TEEMLVerifier behind a UUPS proxy.
         async fn new() -> Self {
-            let anvil = Anvil::new().spawn();
+            let anvil = Anvil::new().port(next_port()).spawn();
             let rpc_url = anvil.endpoint();
+            let chain_id = anvil.chain_id();
 
             let admin_signer = parse_signer(ADMIN_KEY);
             let admin_addr = admin_signer.address();
@@ -214,13 +275,38 @@ mod tests {
                 .wallet(wallet)
                 .connect_http(rpc_url.parse().unwrap());
 
-            // Build deployment tx: creation code + constructor(admin, remainderVerifier=0)
-            let creation_code = load_tee_bytecode();
-            let constructor_args = (admin_addr, Address::ZERO).abi_encode_params();
-            let mut deploy_data = creation_code.to_vec();
-            deploy_data.extend_from_slice(&constructor_args);
+            // 1. Implementation: no constructor arguments.
+            let implementation = Self::deploy(
+                &provider,
+                load_bytecode("TEEMLVerifier.sol", "TEEMLVerifier").to_vec(),
+            )
+            .await;
 
-            let tx = TransactionRequest::default().with_deploy_code(deploy_data);
+            // 2. Proxy: constructor(implementation, initialize(admin, remainderVerifier)).
+            //    initialize rejects address(0); these tests never call the
+            //    remainder verifier, so a placeholder address is enough.
+            let init_call = TEEMLVerifier::initializeCall {
+                _admin: admin_addr,
+                _remainderVerifier: Address::repeat_byte(0x11),
+            }
+            .abi_encode();
+            let mut proxy_code = load_bytecode("Upgradeable.sol", "UUPSProxy").to_vec();
+            proxy_code
+                .extend_from_slice(&(implementation, Bytes::from(init_call)).abi_encode_params());
+            let contract_addr = Self::deploy(&provider, proxy_code).await;
+
+            Self {
+                _anvil: anvil,
+                rpc_url,
+                chain_id,
+                contract_addr,
+                admin_addr,
+            }
+        }
+
+        /// Send a contract-creation transaction and return the new address.
+        async fn deploy(provider: &impl Provider, code: Vec<u8>) -> Address {
+            let tx = TransactionRequest::default().with_deploy_code(code);
             let receipt = provider
                 .send_transaction(tx)
                 .await
@@ -228,17 +314,10 @@ mod tests {
                 .get_receipt()
                 .await
                 .expect("deploy receipt failed");
-
-            let contract_addr = receipt
+            assert!(receipt.status(), "deployment reverted");
+            receipt
                 .contract_address
-                .expect("no contract address in deploy receipt");
-
-            Self {
-                _anvil: anvil,
-                rpc_url,
-                contract_addr,
-                admin_addr,
-            }
+                .expect("no contract address in deploy receipt")
         }
 
         fn provider_with(&self, key: &str) -> impl Provider + Clone {
@@ -330,6 +409,7 @@ mod tests {
         // -- Simulate inference: sign attestation --
         let attestation = sign_attestation(
             &enclave_signer(),
+            &ctx,
             model_hash(),
             input_hash(),
             &result_data(),
@@ -410,6 +490,7 @@ mod tests {
 
         let attestation = sign_attestation(
             &enclave_signer(),
+            &ctx,
             model_hash(),
             input_hash(),
             &result_data(),
@@ -502,6 +583,7 @@ mod tests {
 
         let attestation = sign_attestation(
             &enclave_signer(),
+            &ctx,
             model_hash(),
             input_hash(),
             &result_data(),
@@ -562,6 +644,9 @@ mod tests {
     #[derive(serde::Serialize)]
     struct MockInferRequest {
         features: Vec<f64>,
+        /// TEEMLVerifier (proxy) address the attestation is bound to.
+        verifier_address: String,
+        chain_id: u64,
     }
 
     /// JSON response from the mock enclave /infer endpoint.
@@ -618,16 +703,28 @@ mod tests {
             let result_bytes = serde_json::to_vec(&scores).unwrap();
             let result_hash = keccak256(&result_bytes);
 
-            // Sign attestation: keccak256(modelHash || inputHash || resultHash)
-            let mut packed = Vec::with_capacity(96);
-            packed.extend_from_slice(state.model_hash.as_slice());
-            packed.extend_from_slice(input_hash.as_slice());
-            packed.extend_from_slice(result_hash.as_slice());
-            let message = keccak256(&packed);
+            // Sign the EIP-712 attestation for the verifier and chain named in
+            // the request (the real enclave takes `verifier_address` the same way).
+            let verifier: Address = req
+                .get("verifier_address")
+                .and_then(|v| v.as_str())
+                .and_then(|v| v.parse().ok())
+                .expect("request must carry verifier_address");
+            let chain_id = req
+                .get("chain_id")
+                .and_then(|v| v.as_u64())
+                .expect("request must carry chain_id");
+            let digest = attestation_digest(
+                verifier,
+                chain_id,
+                state.model_hash,
+                input_hash,
+                result_hash,
+            );
 
             let sig = state
                 .signer
-                .sign_message_sync(message.as_slice())
+                .sign_hash_sync(&digest)
                 .expect("signing failed");
 
             Json(serde_json::json!({
@@ -644,7 +741,7 @@ mod tests {
             .route("/infer", post(infer_handler))
             .with_state(state);
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", next_port()))
             .await
             .expect("failed to bind mock enclave");
         let addr = listener.local_addr().unwrap();
@@ -684,6 +781,8 @@ mod tests {
             .post(format!("{}/infer", enclave_url))
             .json(&MockInferRequest {
                 features: vec![1.0, 2.0, 3.0, 4.0],
+                verifier_address: ctx.contract_addr.to_string(),
+                chain_id: ctx.chain_id,
             })
             .send()
             .await

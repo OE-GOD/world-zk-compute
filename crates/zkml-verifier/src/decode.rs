@@ -44,6 +44,12 @@ impl<'a> ProofDecoder<'a> {
         self.offset = offset;
     }
 
+    /// Number of bytes left between the current offset and the end of the data.
+    #[inline]
+    pub fn remaining(&self) -> usize {
+        self.data.len().saturating_sub(self.offset)
+    }
+
     // --------------------------------------------------------
     // Primitive readers
     // --------------------------------------------------------

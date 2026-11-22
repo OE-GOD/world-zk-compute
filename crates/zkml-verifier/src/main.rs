@@ -1,9 +1,13 @@
 //! CLI entry point for zkml-verifier.
 //!
 //! Usage:
-//!   zkml-verifier verify <proof_bundle.json>
-//!   zkml-verifier verify <proof_bundle.json> --hybrid
+//!   zkml-verifier verify <proof_bundle.json> [--json]
+//!   zkml-verifier verify <proof_bundle.json> --hybrid [--json]
 //!   zkml-verifier bundle --proof <hex_file> --gens <hex_file> --desc <json_file> -o <output.json>
+//!
+//! Exit status: 0 on success, 1 on any failure (bad arguments, unreadable or
+//! malformed bundle, proof rejected). With `--json`, failures are also
+//! reported on stdout as `{"verified": false, "error": "..."}`.
 
 use std::process;
 use zkml_verifier::{verify, verify_hybrid, ProofBundle};
@@ -11,57 +15,109 @@ use zkml_verifier::{verify, verify_hybrid, ProofBundle};
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        print_usage();
+        eprint!("{USAGE}");
         process::exit(1);
     }
 
     match args[1].as_str() {
         "verify" => cmd_verify(&args[2..]),
         "bundle" => cmd_bundle(&args[2..]),
-        "--help" | "-h" => print_usage(),
+        "--help" | "-h" | "help" => print!("{USAGE}"),
+        "--version" | "-V" => println!("zkml-verifier {}", env!("CARGO_PKG_VERSION")),
         // Legacy: treat first arg as a file path for backward compat
         path if path.ends_with(".json") || path.ends_with(".json.gz") => cmd_verify(&args[1..]),
         _ => {
             eprintln!("Unknown command: {}", args[1]);
-            print_usage();
+            eprint!("{USAGE}");
             process::exit(1);
         }
     }
 }
 
-fn print_usage() {
-    eprintln!("Usage:");
-    eprintln!("  zkml-verifier verify <proof_bundle.json|.json.gz> [--hybrid] [--json]");
-    eprintln!(
-        "  zkml-verifier bundle --proof <file> --gens <file> --desc <file> [-o <output.json>] [--compress]"
-    );
-    eprintln!();
-    eprintln!("Commands:");
-    eprintln!("  verify   Verify a proof bundle (auto-detects gzip-compressed files)");
-    eprintln!("  bundle   Assemble proof components into a ProofBundle JSON file");
-    eprintln!();
-    eprintln!("Options:");
-    eprintln!("  --compress   Output gzip-compressed bundle (adds .gz suffix if needed)");
-    eprintln!("               Compressed bundles are auto-detected on verify");
+const USAGE: &str = "\
+Usage:
+  zkml-verifier verify <proof_bundle.json|.json.gz> [--hybrid] [--json]
+  zkml-verifier bundle --proof <file> --gens <file> --desc <file>
+                       [--pub-inputs <file>] [-o <output.json>] [--compress]
+
+Commands:
+  verify   Verify a proof bundle (auto-detects gzip-compressed files)
+  bundle   Assemble proof components into a ProofBundle JSON file
+
+Options for verify:
+  --json       Print the result as JSON on stdout (also on failure)
+  --hybrid     Replay the transcript and print the field outputs only.
+               This skips every elliptic-curve check, so it does NOT verify
+               the proof and exits 0 for proofs that `verify` rejects.
+
+Options for bundle:
+  -p, --proof <file>     Proof bytes (raw binary, or 0x-prefixed hex text)
+  -g, --gens <file>      Pedersen generators (raw binary or hex text)
+  -d, --desc <file>      DAG circuit description (JSON)
+  --pub-inputs <file>    Public inputs (raw binary or hex text, optional)
+  -o, --output <file>    Output path (default: stdout)
+  --compress             Output gzip-compressed bundle (adds .gz suffix if needed)
+                         Compressed bundles are auto-detected on verify
+
+Other:
+  -h, --help       Show this help
+  -V, --version    Show the version
+
+Exit status: 0 on success, 1 on any error or rejected proof.
+";
+
+/// Report a failure and exit with status 1. With `--json` the error also goes
+/// to stdout as a JSON object so scripts can parse both outcomes.
+fn fail(json_output: bool, hybrid: bool, context: &str, err: &dyn std::fmt::Display) -> ! {
+    eprintln!("{context}: {err}");
+    if json_output {
+        let out = if hybrid {
+            serde_json::json!({ "error": err.to_string() })
+        } else {
+            serde_json::json!({ "verified": false, "error": err.to_string() })
+        };
+        println!("{}", serde_json::to_string_pretty(&out).unwrap());
+    }
+    process::exit(1);
 }
 
 fn cmd_verify(args: &[String]) {
-    if args.is_empty() {
+    let mut path: Option<&str> = None;
+    let mut hybrid = false;
+    let mut json_output = false;
+    for arg in args {
+        match arg.as_str() {
+            "--hybrid" => hybrid = true,
+            "--json" => json_output = true,
+            "--help" | "-h" => {
+                print!("{USAGE}");
+                return;
+            }
+            opt if opt.starts_with('-') => {
+                eprintln!("Unknown verify option: {opt}");
+                process::exit(1);
+            }
+            p if path.is_none() => path = Some(p),
+            extra => {
+                eprintln!("Error: unexpected argument: {extra}");
+                process::exit(1);
+            }
+        }
+    }
+    let path = path.unwrap_or_else(|| {
         eprintln!("Error: verify requires a proof bundle path");
         process::exit(1);
-    }
-
-    let path = &args[0];
-    let hybrid = args.iter().any(|a| a == "--hybrid");
-    let json_output = args.iter().any(|a| a == "--json");
+    });
 
     let bundle = match ProofBundle::from_file(path) {
         Ok(b) => b,
-        Err(e) => {
-            eprintln!("Error loading bundle: {e}");
-            process::exit(1);
-        }
+        Err(e) => fail(json_output, hybrid, "Error loading bundle", &e),
     };
+
+    // The library reports a failed check by catching an internal panic and
+    // returning Err. Silence the default hook so a rejected proof prints one
+    // error line instead of a panic message and a backtrace hint.
+    std::panic::set_hook(Box::new(|_| {}));
 
     if hybrid {
         match verify_hybrid(&bundle) {
@@ -95,10 +151,7 @@ fn cmd_verify(args: &[String]) {
                     );
                 }
             }
-            Err(e) => {
-                eprintln!("Hybrid verification error: {e}");
-                process::exit(1);
-            }
+            Err(e) => fail(json_output, hybrid, "Hybrid verification error", &e),
         }
     } else {
         match verify(&bundle) {
@@ -120,10 +173,7 @@ fn cmd_verify(args: &[String]) {
                     process::exit(1);
                 }
             }
-            Err(e) => {
-                eprintln!("Verification error: {e}");
-                process::exit(1);
-            }
+            Err(e) => fail(json_output, hybrid, "Verification error", &e),
         }
     }
 }
@@ -161,6 +211,10 @@ fn cmd_bundle(args: &[String]) {
             }
             "--compress" => {
                 compress = true;
+            }
+            "--help" | "-h" => {
+                print!("{USAGE}");
+                return;
             }
             _ => {
                 eprintln!("Unknown bundle option: {}", args[i]);

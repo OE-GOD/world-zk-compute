@@ -15,6 +15,10 @@
 //! worldzk health
 //! worldzk stats
 //! ```
+//!
+//! Proof IDs for `verify`, `receipt` and `proofs` are proof-registry IDs. The
+//! ID printed by `prove` is the generator's own and is only usable there when
+//! the response also carries a `registry_proof_id`.
 
 use clap::{Parser, Subcommand};
 use colored::Colorize;
@@ -114,19 +118,20 @@ async fn main() {
 
     let client = builder.build().expect("failed to build HTTP client");
 
+    // "http://host:8080/" and "http://host:8080" must hit the same routes.
+    let url = cli.url.trim_end_matches('/');
+
     let result = match cli.command {
         Commands::UploadModel { path, name, format } => {
-            cmd_upload_model(&client, &cli.url, &path, name, format).await
+            cmd_upload_model(&client, url, &path, name, format).await
         }
-        Commands::Models => cmd_models(&client, &cli.url).await,
-        Commands::Prove { model, features } => {
-            cmd_prove(&client, &cli.url, &model, &features).await
-        }
-        Commands::Verify { proof } => cmd_verify(&client, &cli.url, &proof).await,
-        Commands::Receipt { proof_id } => cmd_receipt(&client, &cli.url, &proof_id).await,
-        Commands::Proofs { model, limit } => cmd_proofs(&client, &cli.url, model, limit).await,
-        Commands::Health => cmd_health(&client, &cli.url).await,
-        Commands::Stats => cmd_stats(&client, &cli.url).await,
+        Commands::Models => cmd_models(&client, url).await,
+        Commands::Prove { model, features } => cmd_prove(&client, url, &model, &features).await,
+        Commands::Verify { proof } => cmd_verify(&client, url, &proof).await,
+        Commands::Receipt { proof_id } => cmd_receipt(&client, url, &proof_id).await,
+        Commands::Proofs { model, limit } => cmd_proofs(&client, url, model, limit).await,
+        Commands::Health => cmd_health(&client, url).await,
+        Commands::Stats => cmd_stats(&client, url).await,
     };
 
     if let Err(e) = result {
@@ -153,21 +158,32 @@ fn extract_error(body: &Value) -> String {
 }
 
 /// Send a request and handle non-success status codes uniformly.
+///
+/// Error responses are not always JSON (an unknown path gets an empty 404
+/// from the gateway), so the status is reported even when the body cannot
+/// be parsed.
 async fn check_response(resp: reqwest::Response) -> Result<Value, String> {
     let status = resp.status();
-    let body: Value = resp
-        .json()
+    let text = resp
+        .text()
         .await
-        .map_err(|e| format!("failed to parse response: {e}"))?;
+        .map_err(|e| format!("failed to read response: {e}"))?;
+    interpret_response(status.as_u16(), &text)
+}
 
-    if !status.is_success() {
-        return Err(format!(
-            "HTTP {} -- {}",
-            status.as_u16(),
-            extract_error(&body)
-        ));
+/// Turn an HTTP status and body into the JSON payload or an error message.
+fn interpret_response(status: u16, text: &str) -> Result<Value, String> {
+    let body: Result<Value, _> = serde_json::from_str(text);
+
+    if !(200..300).contains(&status) {
+        let detail = match &body {
+            Ok(json) => extract_error(json),
+            Err(_) if text.trim().is_empty() => "empty response body".to_string(),
+            Err(_) => text.trim().chars().take(200).collect(),
+        };
+        return Err(format!("HTTP {status} -- {detail}"));
     }
-    Ok(body)
+    body.map_err(|e| format!("HTTP {status} -- response is not JSON: {e}"))
 }
 
 fn load_json(path: &str) -> Result<Value, String> {
@@ -317,8 +333,12 @@ async fn cmd_prove(
             .unwrap_or_else(|| "?".to_string()),
     );
 
-    if let Some(reg_id) = result["registry_proof_id"].as_str() {
-        kv("registry_proof_id", reg_id);
+    match result["registry_proof_id"].as_str() {
+        Some(reg_id) => kv("registry_proof_id", reg_id),
+        None => kv(
+            "registry_proof_id",
+            "(none: the proof was not stored in the registry, so `verify`/`receipt` cannot look it up)",
+        ),
     }
 
     Ok(())
@@ -382,21 +402,30 @@ async fn cmd_receipt(client: &reqwest::Client, url: &str, proof_id: &str) -> Res
     let result = check_response(resp).await?;
 
     println!("{}", "Verification Receipt".cyan().bold());
-    kv("proof_id", result["proof_id"].as_str().unwrap_or("?"));
-    kv("verified", &result["verified"].to_string());
-    kv(
-        "circuit_hash",
-        result["circuit_hash"].as_str().unwrap_or("?"),
-    );
-    kv("model_hash", result["model_hash"].as_str().unwrap_or("?"));
-    kv("timestamp", result["timestamp"].as_str().unwrap_or("?"));
-    kv("signature", result["signature"].as_str().unwrap_or("?"));
-
-    if let Some(err) = result["error"].as_str() {
-        kv("error", err);
+    for (key, value) in receipt_fields(&result) {
+        kv(key, &value);
     }
 
     Ok(())
+}
+
+/// The fields of a registry verification receipt, in display order.
+fn receipt_fields(receipt: &Value) -> Vec<(&'static str, String)> {
+    let text = |key: &str| receipt[key].as_str().unwrap_or("?").to_string();
+    let mut fields = vec![
+        ("receipt_id", text("receipt_id")),
+        ("proof_id", text("proof_id")),
+        ("verified", receipt["verified"].to_string()),
+        ("circuit_hash", text("circuit_hash")),
+        ("model_hash", text("model_hash")),
+        ("verified_at", text("verified_at")),
+        ("verifier_version", text("verifier_version")),
+        ("signature", text("signature")),
+    ];
+    if let Some(err) = receipt["error"].as_str() {
+        fields.push(("error", err.to_string()));
+    }
+    fields
 }
 
 async fn cmd_proofs(
@@ -405,13 +434,14 @@ async fn cmd_proofs(
     model: Option<String>,
     limit: usize,
 ) -> Result<(), String> {
-    let mut query = format!("{url}/v1/proofs?limit={limit}");
-    if let Some(ref m) = model {
-        query.push_str(&format!("&model={m}"));
+    let mut query = vec![("limit", limit.to_string())];
+    if let Some(m) = model {
+        query.push(("model", m));
     }
 
     let resp = client
-        .get(&query)
+        .get(format!("{url}/v1/proofs"))
+        .query(&query)
         .send()
         .await
         .map_err(|e| format!("request failed: {e}"))?;
@@ -426,10 +456,7 @@ async fn cmd_proofs(
             println!("  {}", "(none)".dimmed());
         }
         for p in proofs {
-            let id = p["id"].as_str().unwrap_or("?");
-            let model_hash = p["model_hash"].as_str().unwrap_or("?");
-            let verified = p["verified"].as_bool();
-            let ts = p["submitted_at"].as_str().unwrap_or("?");
+            let (id, model_hash, verified, created_at) = proof_row(p);
 
             let status = match verified {
                 Some(true) => "verified".green().to_string(),
@@ -442,12 +469,22 @@ async fn cmd_proofs(
                 id.bold(),
                 model_hash,
                 status,
-                ts
+                created_at
             );
         }
     }
 
     Ok(())
+}
+
+/// One entry of the registry's proof listing: (id, model hash, verified, created_at).
+fn proof_row(proof: &Value) -> (&str, &str, Option<bool>, &str) {
+    (
+        proof["id"].as_str().unwrap_or("?"),
+        proof["model_hash"].as_str().unwrap_or("?"),
+        proof["verified"].as_bool(),
+        proof["created_at"].as_str().unwrap_or("?"),
+    )
 }
 
 async fn cmd_health(client: &reqwest::Client, url: &str) -> Result<(), String> {
@@ -535,4 +572,139 @@ async fn cmd_stats(client: &reqwest::Client, url: &str) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+
+    /// Serve one canned HTTP response on a local port and return the base URL
+    /// plus a handle that yields the raw request the client sent.
+    fn serve_once(status_line: &str, body: &str) -> (String, std::thread::JoinHandle<String>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let response = format!(
+            "HTTP/1.1 {status_line}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buf = [0u8; 4096];
+            // Read until the end of the headers (the commands under test send no body).
+            while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = stream.read(&mut buf).unwrap();
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buf[..n]);
+            }
+            stream.write_all(response.as_bytes()).unwrap();
+            String::from_utf8_lossy(&request).to_string()
+        });
+        (url, handle)
+    }
+
+    // Response bodies below were captured from the gateway, proof-registry and
+    // proof-generator built from this repository.
+
+    #[test]
+    fn proof_row_reads_registry_listing_fields() {
+        let listing: Value = serde_json::from_str(
+            r#"{"proofs":[{"id":"4d7b629e-41d5-420e-88a9-ede094a11f3b","model_hash":"","circuit_hash":"","created_at":"2026-11-22T21:08:09.248575+00:00","verified":true,"verified_at":"2026-11-22T21:08:41.495499+00:00","proof_size_bytes":348029,"deleted":false}],"count":1}"#,
+        )
+        .unwrap();
+        let (id, model_hash, verified, created_at) = proof_row(&listing["proofs"][0]);
+        assert_eq!(id, "4d7b629e-41d5-420e-88a9-ede094a11f3b");
+        assert_eq!(model_hash, "");
+        assert_eq!(verified, Some(true));
+        assert_eq!(created_at, "2026-11-22T21:08:09.248575+00:00");
+
+        // A proof that has not been verified yet has `verified: null`.
+        let pending: Value =
+            serde_json::from_str(r#"{"id":"x","verified":null,"created_at":"t"}"#).unwrap();
+        assert_eq!(proof_row(&pending).2, None);
+    }
+
+    #[test]
+    fn receipt_fields_read_registry_receipt() {
+        let receipt: Value = serde_json::from_str(
+            r#"{"receipt_id":"9a8d8981-3f13-443c-8124-994ce6ebf904","proof_id":"4d7b629e-41d5-420e-88a9-ede094a11f3b","circuit_hash":"0x8e7c338859ba0bcb6911e6b68794f5449c0bb36a0e2ce47cb5dc96e8eb56e909","model_hash":"","verified":true,"verified_at":"2026-11-22T21:08:41.494633+00:00","verifier_version":"0.1.0","verifier_host":"unknown","signature":"db4a"}"#,
+        )
+        .unwrap();
+        let fields = receipt_fields(&receipt);
+        let get = |key: &str| {
+            fields
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| v.as_str())
+                .unwrap_or_else(|| panic!("missing field {key}"))
+        };
+        assert_eq!(get("receipt_id"), "9a8d8981-3f13-443c-8124-994ce6ebf904");
+        assert_eq!(get("verified"), "true");
+        assert_eq!(get("verified_at"), "2026-11-22T21:08:41.494633+00:00");
+        assert_eq!(get("verifier_version"), "0.1.0");
+        assert_eq!(get("signature"), "db4a");
+        // Every field the registry sends is found: nothing falls back to "?".
+        assert!(fields.iter().all(|(_, v)| v != "?"), "{fields:?}");
+    }
+
+    #[test]
+    fn interpret_response_reports_status_for_any_body() {
+        assert_eq!(
+            interpret_response(200, r#"{"models":[]}"#).unwrap()["models"],
+            serde_json::json!([])
+        );
+        assert_eq!(
+            interpret_response(401, r#"{"error":"invalid or missing API key"}"#).unwrap_err(),
+            "HTTP 401 -- invalid or missing API key"
+        );
+        // The gateway answers an unknown path with an empty 404.
+        assert_eq!(
+            interpret_response(404, "").unwrap_err(),
+            "HTTP 404 -- empty response body"
+        );
+        assert_eq!(
+            interpret_response(502, "Bad Gateway").unwrap_err(),
+            "HTTP 502 -- Bad Gateway"
+        );
+        assert!(interpret_response(200, "<html>")
+            .unwrap_err()
+            .starts_with("HTTP 200 -- response is not JSON"));
+    }
+
+    #[tokio::test]
+    async fn proofs_sends_encoded_query_to_gateway_route() {
+        let (url, server) = serve_once("200 OK", r#"{"proofs":[],"count":0}"#);
+        let client = reqwest::Client::new();
+        cmd_proofs(&client, &url, Some("0xab&limit=999 x".to_string()), 7)
+            .await
+            .unwrap();
+        let request = server.join().unwrap();
+        let request_line = request.lines().next().unwrap();
+        assert_eq!(
+            request_line,
+            "GET /v1/proofs?limit=7&model=0xab%26limit%3D999+x HTTP/1.1"
+        );
+    }
+
+    #[tokio::test]
+    async fn error_status_becomes_err() {
+        let (url, server) = serve_once(
+            "401 Unauthorized",
+            r#"{"error":"invalid or missing API key"}"#,
+        );
+        let client = reqwest::Client::new();
+        let err = cmd_models(&client, &url).await.unwrap_err();
+        assert_eq!(err, "HTTP 401 -- invalid or missing API key");
+        assert!(server
+            .join()
+            .unwrap()
+            .starts_with("GET /v1/models HTTP/1.1"));
+    }
 }

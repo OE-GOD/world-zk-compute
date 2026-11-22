@@ -8,6 +8,9 @@ publish = false
 [lib]
 name = "chaos_tests"
 path = "src/mod.rs"
+# Every module is also a [[test]] target below; without this each test ran twice.
+test = false
+doctest = false
 
 [dependencies]
 # Operator library (circuit breaker, state store, notifications, etc.)
