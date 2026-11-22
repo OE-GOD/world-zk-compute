@@ -68,10 +68,14 @@ jobs:
       - name: Install pip-audit
         run: pip install pip-audit
 
+      # worldzk itself is not on PyPI, and pip-audit --strict treats a package
+      # it cannot look up as fatal: install it to pull in its dependencies,
+      # then remove it so only the dependencies are audited.
       - name: Install Python SDK dependencies
         run: |
           cd sdk/python
           pip install -e '.[web3]'
+          pip uninstall -y worldzk
 
       - name: Run pip-audit
         run: |

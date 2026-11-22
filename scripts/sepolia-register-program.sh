@@ -96,7 +96,7 @@ EXAMPLES:
     ./scripts/sepolia-register-program.sh \
       --image-id 0xf85c194e1a8e2c2e38746c6d81c7ac9ddf25848a8dfc049db7f4725b3ab56e33 \
       --name "xgboost-rule-engine" \
-      --url "https://github.com/worldcoin/world-zk-compute" \
+      --url "https://github.com/OE-GOD/world-zk-compute" \
       --rpc-url https://eth-sepolia.g.alchemy.com/v2/KEY \
       --registry-address 0x1234...
 USAGE

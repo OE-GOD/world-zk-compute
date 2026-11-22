@@ -303,7 +303,7 @@ REGISTER_OUTPUT=$(cast send "$REGISTRY_ADDR" \
     'registerProgram(bytes32,string,string,bytes32)' \
     "$PROGRAM_IMAGE_ID" \
     "xgboost-rule-engine" \
-    "https://github.com/worldcoin/world-zk-compute" \
+    "https://github.com/OE-GOD/world-zk-compute" \
     "0x0000000000000000000000000000000000000000000000000000000000000000" \
     --rpc-url "$RPC_URL" \
     --private-key "$DEPLOYER_PRIVATE_KEY" 2>&1) || {
