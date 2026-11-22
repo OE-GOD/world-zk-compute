@@ -57,12 +57,14 @@ forge script script/DeployRemainderDAG.s.sol:DeployRemainderDAG \
     --disable-code-size-limit \
     -vvv 2>&1
 
-# Extract deployed contract address from broadcast
+# Extract the deployed address from the broadcast file. RemainderVerifier sits
+# behind a UUPS proxy, and the proxy is the address callers use (the first
+# CREATE is the implementation, which has no registered circuits).
 CONTRACT_ADDR=$(python3 -c "
 import json, sys
 data = json.load(open('broadcast/DeployRemainderDAG.s.sol/31337/run-latest.json'))
 for tx in data['transactions']:
-    if tx.get('transactionType') == 'CREATE':
+    if tx.get('transactionType') == 'CREATE' and tx.get('contractName') == 'UUPSProxy':
         print(tx['contractAddress'])
         sys.exit(0)
 print('NOT_FOUND', file=sys.stderr)
