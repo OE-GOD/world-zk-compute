@@ -7,9 +7,8 @@
 import type {
   PublicClient,
   WalletClient,
-  GetContractReturnType,
 } from 'viem';
-import { getContract, parseEther } from 'viem';
+import { parseEther } from 'viem';
 import { executionEngineAbi } from './abi';
 
 // ---------------------------------------------------------------------------
@@ -107,9 +106,6 @@ export class ExecutionEngineClient {
   private readonly walletClient: WalletClient | undefined;
   private readonly contractAddress: Hex;
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private readonly readContract: GetContractReturnType<typeof executionEngineAbi, any, Hex>;
-
   constructor(
     publicClient: PublicClient,
     walletClient: WalletClient | undefined,
@@ -118,12 +114,6 @@ export class ExecutionEngineClient {
     this.publicClient = publicClient;
     this.walletClient = walletClient;
     this.contractAddress = contractAddress;
-
-    this.readContract = getContract({
-      address: contractAddress,
-      abi: executionEngineAbi,
-      client: publicClient,
-    });
   }
 
   // -----------------------------------------------------------------------

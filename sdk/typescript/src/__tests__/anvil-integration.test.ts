@@ -42,6 +42,7 @@ try {
 // ---------------------------------------------------------------------------
 const CONTRACTS_ROOT = join(__dirname, '..', '..', '..', '..', 'contracts');
 let contractBytecode: Hex = '0x';
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let contractAbi: readonly any[] = [];
 
 try {
@@ -279,6 +280,7 @@ describeIfAnvil('TEEMLVerifier Anvil Integration Tests', () => {
       abi: contractAbi,
       functionName: 'enclaves',
       args: [enclaveAccount.address],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     }) as any;
 
     // If not yet registered, register
@@ -335,6 +337,7 @@ describeIfAnvil('TEEMLVerifier Anvil Integration Tests', () => {
       abi: contractAbi,
       functionName: 'getResult',
       args: [resultId],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     }) as any;
 
     expect(getAddress(result.submitter)).toBe(getAddress(proverAccount.address));
@@ -422,6 +425,7 @@ describeIfAnvil('TEEMLVerifier Anvil Integration Tests', () => {
       abi: contractAbi,
       functionName: 'getResult',
       args: [resultId],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     }) as any;
     expect(result.finalized).toBe(true);
 
@@ -502,6 +506,7 @@ describeIfAnvil('TEEMLVerifier Anvil Integration Tests', () => {
       abi: contractAbi,
       functionName: 'getResult',
       args: [resultId],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     }) as any;
     expect(result.challenged).toBe(true);
     expect(getAddress(result.challenger)).toBe(getAddress(challengerAccount.address));
@@ -559,6 +564,7 @@ describeIfAnvil('TEEMLVerifier Anvil Integration Tests', () => {
       abi: contractAbi,
       functionName: 'getResult',
       args: [resultId],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     }) as any;
     expect(result.challenged).toBe(true);
   });
@@ -702,6 +708,7 @@ describeIfAnvil('TEEMLVerifier Anvil Integration Tests', () => {
 
     expect(logs.length).toBeGreaterThanOrEqual(1);
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const firstLog = logs[0] as any;
     expect(firstLog.args.resultId).toMatch(/^0x[0-9a-f]{64}$/);
     expect(firstLog.args.modelHash).toMatch(/^0x[0-9a-f]{64}$/);
@@ -953,6 +960,7 @@ describeIfAnvil('TEEMLVerifier Anvil Integration Tests', () => {
     });
 
     const unknownId: Hex = '0x' + '00'.repeat(32) as Hex;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const result = await verifier.getResult(unknownId) as any;
 
     // submittedAt should be 0 for non-existent results

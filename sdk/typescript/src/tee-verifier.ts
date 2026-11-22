@@ -189,6 +189,7 @@ export class TEEVerifier {
       functionName,
       args,
       ...(value !== undefined ? { value } : {}),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any);
     await this.publicClient.waitForTransactionReceipt({ hash });
     return hash;

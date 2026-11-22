@@ -597,6 +597,7 @@ export class BatchVerifier {
           functionName,
           args,
           gas,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any);
 
         const receipt = await this.publicClient.waitForTransactionReceipt({
@@ -635,6 +636,7 @@ export class BatchVerifier {
       abi: batchVerifierAbi,
       functionName,
       args,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any);
   }
 
@@ -719,6 +721,7 @@ export class DAGBatchVerifier {
       abi: batchVerifierAbi,
       functionName: 'startDAGBatchVerify',
       args: [proof, circuitHash, '0x' as Hex, '0x' as Hex],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any);
 
     const receipt = await this.client.waitForTransactionReceipt({ hash });
@@ -751,6 +754,7 @@ export class DAGBatchVerifier {
       abi: batchVerifierAbi,
       functionName: 'continueDAGBatchVerify',
       args: [sessionId, proof, '0x' as Hex, '0x' as Hex],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any);
 
     const receipt = await this.client.waitForTransactionReceipt({ hash });
@@ -775,6 +779,7 @@ export class DAGBatchVerifier {
       abi: batchVerifierAbi,
       functionName: 'finalizeDAGBatchVerify',
       args: [sessionId, proof, '0x' as Hex, '0x' as Hex],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any);
 
     const receipt = await this.client.waitForTransactionReceipt({ hash });
@@ -940,8 +945,8 @@ function sleep(ms: number): Promise<void> {
 
 // --- CLI ---
 async function main() {
-  const { parseArgs } = require('node:util') as typeof import('node:util');
-  const fs = require('node:fs') as typeof import('node:fs');
+  const { parseArgs } = await import('node:util');
+  const fs = await import('node:fs');
 
   const { values } = parseArgs({
     options: {
@@ -957,7 +962,7 @@ async function main() {
 
   if (!values['rpc-url'] || !values['private-key'] || !values.contract || !values.fixture) {
     console.error(
-      'Usage: npx ts-node src/batch-verifier.ts \\\n' +
+      'Usage: npx tsx src/batch-verifier.ts \\\n' +
         '  --rpc-url <url> --private-key <key> --contract <addr> --fixture <path> \\\n' +
         '  [--gas-limit <gas>] [--resume <sessionId>] [--skip-cleanup]',
     );
@@ -1039,7 +1044,7 @@ async function main() {
   }
 }
 
-// Run CLI when executed directly
-if (require.main === module) {
+// Run CLI when executed directly (CommonJS only; `module` does not exist in the ESM build)
+if (typeof module !== 'undefined' && require.main === module) {
   main();
 }
