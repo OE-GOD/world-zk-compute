@@ -51,21 +51,28 @@ trap cleanup EXIT
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+# Sign a TEE attestation the way TEEMLVerifier.submitResult checks it (EIP-712):
+#   structHash = keccak256(abi.encode(RESULT_TYPEHASH, modelHash, inputHash, keccak256(result)))
+#   digest     = keccak256("\x19\x01" || DOMAIN_SEPARATOR || structHash)
+# The domain separator binds the signature to this chain and this verifier, so it is
+# read from the deployed contract.
+# sign_attestation <modelHash> <inputHash> <resultData> <privateKey> <teeVerifierAddress>
 sign_attestation() {
-    local model_hash="${1#0x}"
-    local input_hash="${2#0x}"
+    local model_hash="$1"
+    local input_hash="$2"
     local result_data="$3"
     local private_key="$4"
+    local verifier="$5"
 
-    local result_hash
+    local result_hash typehash domain struct_hash digest
     result_hash=$(cast keccak "$result_data")
-    result_hash="${result_hash#0x}"
+    typehash=$(cast call --rpc-url "$RPC_URL" "$verifier" "RESULT_TYPEHASH()(bytes32)")
+    domain=$(cast call --rpc-url "$RPC_URL" "$verifier" "DOMAIN_SEPARATOR()(bytes32)")
+    struct_hash=$(cast keccak "$(cast abi-encode "f(bytes32,bytes32,bytes32,bytes32)" \
+        "$typehash" "$model_hash" "$input_hash" "$result_hash")")
+    digest=$(cast keccak "0x1901${domain#0x}${struct_hash#0x}")
 
-    local packed="0x${model_hash}${input_hash}${result_hash}"
-    local message
-    message=$(cast keccak "$packed")
-
-    cast wallet sign --private-key "$private_key" "$message"
+    cast wallet sign --no-hash --private-key "$private_key" "$digest"
 }
 
 compute_result_id() {
@@ -98,18 +105,12 @@ ok "Anvil running (PID: $ANVIL_PID)"
 log "Step 2: Deploying RemainderVerifier and registering DAG circuit..."
 cd "$CONTRACTS_DIR"
 
-DEPLOYER_KEY="$ADMIN_KEY" \
+# RemainderVerifier is UUPS-upgradeable: the script prints the proxy address. The first
+# CREATE in the broadcast file is the implementation, which must not be used directly.
+REMAINDER_VERIFIER=$(DEPLOYER_KEY="$ADMIN_KEY" \
     forge script script/DeployRemainderDAG.s.sol:DeployRemainderDAG \
-    --rpc-url "$RPC_URL" --broadcast --disable-code-size-limit > /dev/null 2>&1
-
-REMAINDER_VERIFIER=$(python3 -c "
-import json, sys
-data = json.load(open('broadcast/DeployRemainderDAG.s.sol/31337/run-latest.json'))
-for tx in data['transactions']:
-    if tx.get('transactionType') == 'CREATE':
-        print(tx['contractAddress']); sys.exit(0)
-sys.exit(1)
-")
+    --rpc-url "$RPC_URL" --broadcast --disable-code-size-limit 2>/dev/null \
+    | grep "RemainderVerifier deployed at:" | head -1 | awk '{print $NF}')
 
 if [ -z "$REMAINDER_VERIFIER" ]; then
     err "Failed to extract RemainderVerifier address"
@@ -135,12 +136,12 @@ ok "DAG circuit active (hash: ${CIRCUIT_HASH:0:18}...)"
 
 log "Step 3: Deploying TEEMLVerifier (with RemainderVerifier)..."
 
-TEE_VERIFIER=$(forge create src/tee/TEEMLVerifier.sol:TEEMLVerifier \
-    --broadcast --json \
-    --rpc-url "$RPC_URL" \
-    --private-key "$ADMIN_KEY" \
-    --constructor-args "$ADMIN_ADDR" "$REMAINDER_VERIFIER" \
-    2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['deployedTo'])")
+# TEEMLVerifier is UUPS-upgradeable: deploy the implementation behind a proxy and
+# initialize it through the proxy.
+TEE_VERIFIER=$(DEPLOYER_KEY="$ADMIN_KEY" REMAINDER_VERIFIER="$REMAINDER_VERIFIER" \
+    forge script script/DeployTEEMLVerifier.s.sol:DeployTEEMLVerifier \
+    --rpc-url "$RPC_URL" --broadcast 2>/dev/null \
+    | grep "TEEMLVerifier deployed at:" | head -1 | awk '{print $NF}')
 
 if [ -z "$TEE_VERIFIER" ]; then
     err "Failed to deploy TEEMLVerifier"
@@ -171,7 +172,7 @@ MODEL_HASH=$(cast keccak "xgboost-model-weights")
 INPUT_HASH=$(cast keccak "test-input-data")
 RESULT_DATA="0xdeadbeef"
 
-ATTESTATION=$(sign_attestation "$MODEL_HASH" "$INPUT_HASH" "$RESULT_DATA" "$ENCLAVE_KEY")
+ATTESTATION=$(sign_attestation "$MODEL_HASH" "$INPUT_HASH" "$RESULT_DATA" "$ENCLAVE_KEY" "$TEE_VERIFIER")
 
 cast send "$TEE_VERIFIER" \
     "submitResult(bytes32,bytes32,bytes,bytes)" \

@@ -459,7 +459,7 @@ async fn health_single(
 /// Optional API-key authentication middleware.
 ///
 /// If `GATEWAY_API_KEYS` is set, every request must include a valid key in
-/// the `Authorization: Bearer <key>` header. Health endpoints are exempt.
+/// the `Authorization: Bearer <key>` header. Health and docs endpoints are exempt.
 async fn auth_middleware(
     State(state): State<GatewayState>,
     req: Request,
@@ -470,11 +470,10 @@ async fn auth_middleware(
         return Ok(next.run(req).await);
     }
 
-    // Health, admin, and docs endpoints are always public.
+    // Health and docs endpoints are always public.
     let path = req.uri().path();
     if path == "/health"
         || path.starts_with("/health/")
-        || path.starts_with("/admin/")
         || path == "/docs"
         || path.starts_with("/docs/")
     {
@@ -1313,6 +1312,41 @@ mod tests {
     }
 
     // -- Auth tests (root paths — backward compat) --
+
+    #[tokio::test]
+    async fn test_auth_required_on_admin_routes() {
+        let state = test_state(
+            "http://127.0.0.1:19990",
+            "http://127.0.0.1:19991",
+            "http://127.0.0.1:19992",
+            vec!["secret-key-1".to_string()],
+        );
+
+        // No auth header -> 401 (per-tenant usage must not be public)
+        let resp = build_app(state.clone())
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/admin/usage")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        // Valid key -> 200
+        let resp = build_app(state)
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/admin/usage")
+                    .header("Authorization", "Bearer secret-key-1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
 
     #[tokio::test]
     async fn test_auth_required_when_keys_configured() {
