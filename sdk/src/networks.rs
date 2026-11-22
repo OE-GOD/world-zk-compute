@@ -39,7 +39,9 @@ pub const WORLD_CHAIN_SEPOLIA: NetworkConfig = NetworkConfig {
     tee_verifier_address: "0x0000000000000000000000000000000000000000",
     execution_engine_address: "0x0000000000000000000000000000000000000000",
     explorer_url: "https://sepolia.worldscan.org",
-    tee_only: false,
+    // The chain enforces the 24,576-byte contract size limit, so the 135 KB
+    // RemainderVerifier cannot be deployed there (checked against the public RPC).
+    tee_only: true,
 };
 
 /// World Chain mainnet (chainId 480).
@@ -50,7 +52,8 @@ pub const WORLD_CHAIN_MAINNET: NetworkConfig = NetworkConfig {
     tee_verifier_address: "0x0000000000000000000000000000000000000000",
     execution_engine_address: "0x0000000000000000000000000000000000000000",
     explorer_url: "https://worldscan.org",
-    tee_only: false,
+    // Same 24,576-byte contract size limit as World Chain Sepolia.
+    tee_only: true,
 };
 
 /// Local Anvil development network.
