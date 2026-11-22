@@ -415,7 +415,7 @@ async fn onboard(
         tenant_id: tenant.id.clone(),
         api_key: tenant.api_key.clone(),
         quickstart: format!(
-            "curl -X POST {url}/verify \\\n  -H 'Authorization: Bearer {key}' \\\n  -H 'Content-Type: application/json' \\\n  -d @proof_bundle.json",
+            "curl -X POST {url}/verify \\\n  -H 'X-API-Key: {key}' \\\n  -H 'Content-Type: application/json' \\\n  -d @proof_bundle.json",
             url = "https://api.worldzk.io",
             key = tenant.api_key,
         ),
@@ -1594,6 +1594,45 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(json["total_requests"], 1);
+    }
+
+    /// The quickstart returned by `/onboard` must name the header this service
+    /// checks: it used to print `Authorization: Bearer <key>`, which is rejected
+    /// with "Missing X-API-Key header".
+    #[tokio::test]
+    async fn test_onboard_quickstart_header_authenticates() {
+        let app = build_app_with_admin("admin-secret");
+
+        let body = serde_json::json!({ "name": "Onboarded", "email": "dev@example.com" });
+        let req = Request::post("/onboard")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+        // Take the auth header exactly as the quickstart prints it.
+        let quickstart = json["quickstart"].as_str().unwrap();
+        let header_line = quickstart
+            .lines()
+            .find(|line| line.contains(json["api_key"].as_str().unwrap()))
+            .expect("quickstart shows the API key");
+        let header = header_line
+            .split('\'')
+            .nth(1)
+            .expect("header is single-quoted");
+        let (name, value) = header.split_once(": ").unwrap();
+
+        let req = Request::get("/circuits")
+            .header(name, value)
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]

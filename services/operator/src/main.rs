@@ -28,6 +28,7 @@ use tee_operator::alerting::{AlertConfig, AlertManager, AlertSeverity};
 use tee_operator::audit;
 use tee_operator::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 use watcher::{EventWatcher, TEEEvent};
+use world_zk_sdk::abi::TEEMLVerifier::MLResult;
 
 /// Cached attestation verification result with TTL.
 struct CachedAttestation {
@@ -333,12 +334,29 @@ async fn verify_enclave_attestation(
     Ok(())
 }
 
-#[tracing::instrument(skip(config, features_json, model))]
 async fn cmd_submit(
     config: &Config,
     features_json: &str,
     model: &ModelConfig,
 ) -> anyhow::Result<()> {
+    let background = submit(config, features_json, model).await?;
+    // `submit` is a one-shot command: the process exits when this returns, which
+    // would cancel the archive write and the proof pre-computation mid-way.
+    for task in background {
+        let _ = task.await;
+    }
+    Ok(())
+}
+
+/// Run one inference and submit it on-chain. Returns the handles of the
+/// best-effort follow-up tasks (archive write, proof pre-computation), which keep
+/// running in the background.
+#[tracing::instrument(skip(config, features_json, model))]
+async fn submit(
+    config: &Config,
+    features_json: &str,
+    model: &ModelConfig,
+) -> anyhow::Result<Vec<tokio::task::JoinHandle<()>>> {
     let request_id = Uuid::new_v4();
     let _submit_span = tracing::info_span!("submit", request_id = %request_id).entered();
 
@@ -405,6 +423,8 @@ async fn cmd_submit(
         feats.len(),
     );
 
+    let mut background = Vec::new();
+
     // 3a. Archive the submission (best-effort, non-blocking)
     if !config.proof_archive_dir.is_empty() {
         let archive_dir = config.proof_archive_dir.clone();
@@ -430,7 +450,7 @@ async fn cmd_submit(
             disputed: false,
             finalized: false,
         };
-        tokio::spawn(async move {
+        background.push(tokio::spawn(async move {
             match tee_operator::proof_archive::ProofArchive::new(&archive_dir).await {
                 Ok(archive) => {
                     if let Err(e) = archive.store(&archive_entry).await {
@@ -441,7 +461,7 @@ async fn cmd_submit(
                 }
                 Err(e) => tracing::warn!("Failed to init proof archive: {}", e),
             }
-        });
+        }));
     }
 
     // 4. Trigger proof pre-computation (best-effort, uses warm prover if PROVER_URL is set)
@@ -458,14 +478,14 @@ async fn cmd_submit(
     // looks it up by when the result is challenged.
     let result_id = format!("0x{}", hex::encode(result_id));
     let features_owned = features_json.to_string();
-    tokio::spawn(async move {
+    background.push(tokio::spawn(async move {
         if let Err(e) = proof_mgr.generate_proof(&result_id, &features_owned).await {
             tracing::warn!("Proof pre-computation failed (best-effort): {}", e);
         }
-    });
+    }));
 
     println!("tx_hash={}", tx_hash);
-    Ok(())
+    Ok(background)
 }
 
 /// Print all registered models from the configuration.
@@ -1198,11 +1218,11 @@ async fn cmd_run(
     metrics_port: u16,
     model: &ModelConfig,
 ) -> anyhow::Result<()> {
-    // 1. Submit (same as cmd_submit)
-    let submit_result = cmd_submit(config, features_json, model).await;
-    if let Err(e) = &submit_result {
+    // 1. Submit (same as cmd_submit, but the follow-up tasks stay in the
+    //    background while the watch loop runs)
+    if let Err(e) = submit(config, features_json, model).await {
         tracing::error!("Submit failed: {}", e);
-        return submit_result;
+        return Err(e);
     }
 
     // 2. Start watching (Run command never uses dry-run)
@@ -1530,21 +1550,63 @@ async fn auto_finalize(
         }
     };
 
+    // The scan above returns every result of the window again on each pass, and
+    // `finalize` reverts for all but pending results past their challenge window.
+    // Read the state first so that those expected reverts are not sent and do not
+    // count as chain failures.
+    let now = chain_now(chain).await;
     for event in &events {
         if let TEEEvent::ResultSubmitted { result_id, .. } = event {
             if chain_cb.allow_request().is_err() {
                 break; // Chain circuit breaker is open
+            }
+            match chain.get_result(*result_id).await {
+                Ok(result) => {
+                    rpc_cb.record_success();
+                    if !is_finalizable(&result, now) {
+                        continue;
+                    }
+                }
+                Err(e) => {
+                    rpc_cb.record_failure();
+                    tracing::warn!("Failed to read result {}: {}", result_id, e);
+                    break;
+                }
             }
             match chain.finalize(*result_id).await {
                 Ok(tx) => {
                     chain_cb.record_success();
                     tracing::info!("Auto-finalized {}, tx={}", result_id, tx);
                 }
-                Err(_) => {
+                Err(e) => {
                     chain_cb.record_failure();
+                    tracing::warn!("Failed to auto-finalize {}: {}", result_id, e);
                 }
             }
         }
+    }
+}
+
+/// Whether `TEEMLVerifier.finalize` can succeed for a result in this state: it
+/// reverts for unknown, finalized or challenged results and before the challenge
+/// deadline.
+fn is_finalizable(result: &MLResult, now: u64) -> bool {
+    !result.submittedAt.is_zero()
+        && !result.finalized
+        && !result.challenged
+        && U256::from(now) >= result.challengeDeadline
+}
+
+/// The time a transaction sent now would see: the later of the wall clock and the
+/// latest block's timestamp (a dev chain can be warped ahead of the wall clock).
+async fn chain_now(chain: &chain::ChainClient) -> u64 {
+    let wall = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    match chain.latest_block_timestamp().await {
+        Ok(ts) => ts.max(wall),
+        Err(_) => wall,
     }
 }
 
@@ -1839,5 +1901,356 @@ mod tests {
         state.signal_shutdown_with_reason("test");
         // SeqCst ensures this is immediately visible
         assert!(state.is_shutting_down());
+    }
+
+    // -----------------------------------------------------------------------
+    // auto_finalize / submit against a stub chain and a stub enclave
+    // -----------------------------------------------------------------------
+
+    use alloy::sol_types::{SolCall, SolEvent};
+    use std::sync::atomic::AtomicUsize;
+    use world_zk_sdk::abi::TEEMLVerifier;
+
+    /// Throwaway key and its address (Anvil account 0); holds no funds anywhere.
+    const TEST_KEY: &str = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+    const TEST_SENDER: &str = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
+    const TEST_CONTRACT: &str = "0xA51c1fc2f0D1a1b8494Ed1FE312d7C3a78Ed91C0";
+
+    /// JSON-RPC stub of a chain with one TEEMLVerifier holding `results`.
+    struct StubChain {
+        results: Vec<(B256, MLResult)>,
+        /// When true, `eth_estimateGas` answers "execution reverted" (what a node
+        /// returns for a `finalize` the contract rejects).
+        estimate_gas_reverts: bool,
+        /// Number of transactions the client tried to send.
+        estimate_gas_calls: AtomicUsize,
+    }
+
+    fn ml_result(deadline: u64, finalized: bool, challenged: bool) -> MLResult {
+        MLResult {
+            enclave: Address::ZERO,
+            submitter: TEST_SENDER.parse().unwrap(),
+            modelHash: B256::repeat_byte(0x11),
+            inputHash: B256::repeat_byte(0x22),
+            resultHash: B256::repeat_byte(0x33),
+            result: vec![1u8].into(),
+            submittedAt: U256::from(1_700_000_000u64),
+            challengeDeadline: U256::from(deadline),
+            disputeDeadline: U256::ZERO,
+            challengeBond: U256::ZERO,
+            proverStakeAmount: U256::ZERO,
+            finalized,
+            challenged,
+            challenger: Address::ZERO,
+        }
+    }
+
+    fn submitted_log(result_id: B256, index: usize) -> serde_json::Value {
+        let sender: Address = TEST_SENDER.parse().unwrap();
+        serde_json::json!({
+            "address": TEST_CONTRACT,
+            "topics": [
+                TEEMLVerifier::ResultSubmitted::SIGNATURE_HASH,
+                result_id,
+                B256::repeat_byte(0x11),
+                sender.into_word(),
+            ],
+            "data": B256::repeat_byte(0x22),
+            "blockHash": B256::repeat_byte(0xbb),
+            "blockNumber": "0x10",
+            "transactionHash": B256::repeat_byte(0xcc),
+            "transactionIndex": "0x0",
+            "logIndex": format!("0x{:x}", index),
+            "removed": false,
+        })
+    }
+
+    async fn stub_rpc(
+        axum::extract::State(chain): axum::extract::State<Arc<StubChain>>,
+        axum::Json(req): axum::Json<serde_json::Value>,
+    ) -> axum::Json<serde_json::Value> {
+        let reply = |result: Result<serde_json::Value, &str>| {
+            let mut body = serde_json::json!({ "jsonrpc": "2.0", "id": req["id"] });
+            match result {
+                Ok(value) => body["result"] = value,
+                Err(msg) => body["error"] = serde_json::json!({ "code": 3, "message": msg }),
+            }
+            axum::Json(body)
+        };
+        let logs = || -> Vec<serde_json::Value> {
+            chain
+                .results
+                .iter()
+                .enumerate()
+                .map(|(i, (id, _))| submitted_log(*id, i))
+                .collect()
+        };
+        match req["method"].as_str().unwrap_or_default() {
+            "eth_chainId" => reply(Ok("0x7a69".into())),
+            "eth_blockNumber" => reply(Ok("0x64".into())),
+            "eth_getTransactionCount" => reply(Ok("0x0".into())),
+            "eth_getLogs" => reply(Ok(logs().into())),
+            "eth_call" => {
+                let call = &req["params"][0];
+                let input = call["input"].as_str().or(call["data"].as_str()).unwrap();
+                let input = hex::decode(input.trim_start_matches("0x")).unwrap();
+                let id = TEEMLVerifier::getResultCall::abi_decode(&input)
+                    .unwrap()
+                    .resultId;
+                let result = chain
+                    .results
+                    .iter()
+                    .find(|(rid, _)| *rid == id)
+                    .map(|(_, r)| r.clone())
+                    .unwrap_or_else(|| ml_result(0, false, false));
+                let encoded = TEEMLVerifier::getResultCall::abi_encode_returns(&result);
+                reply(Ok(format!("0x{}", hex::encode(encoded)).into()))
+            }
+            "eth_estimateGas" => {
+                chain.estimate_gas_calls.fetch_add(1, Ordering::SeqCst);
+                if chain.estimate_gas_reverts {
+                    reply(Err("execution reverted"))
+                } else {
+                    reply(Ok("0x30000".into()))
+                }
+            }
+            "eth_feeHistory" => reply(Ok(serde_json::json!({
+                "oldestBlock": "0x5a",
+                "baseFeePerGas": vec!["0x1"; 11],
+                "gasUsedRatio": vec![0.5; 10],
+                "reward": vec![vec!["0x1"]; 10],
+            }))),
+            "eth_sendRawTransaction" => reply(Ok(serde_json::json!(B256::repeat_byte(0xcc)))),
+            "eth_getTransactionReceipt" => reply(Ok(serde_json::json!({
+                "type": "0x2",
+                "status": "0x1",
+                "cumulativeGasUsed": "0x30000",
+                "logs": logs(),
+                "logsBloom": format!("0x{}", "00".repeat(256)),
+                "transactionHash": B256::repeat_byte(0xcc),
+                "transactionIndex": "0x0",
+                "blockHash": B256::repeat_byte(0xbb),
+                "blockNumber": "0x10",
+                "gasUsed": "0x30000",
+                "effectiveGasPrice": "0x1",
+                "from": TEST_SENDER,
+                "to": TEST_CONTRACT,
+                "contractAddress": null,
+            }))),
+            // eth_getBlockByNumber included: `chain_now` then uses the wall clock.
+            _ => reply(Err("method not supported by stub")),
+        }
+    }
+
+    /// Serve `app` on an ephemeral local port and return its base URL.
+    async fn serve_stub(app: axum::Router) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        url
+    }
+
+    async fn serve_stub_chain(
+        results: Vec<(B256, MLResult)>,
+        estimate_gas_reverts: bool,
+    ) -> (String, Arc<StubChain>) {
+        let chain = Arc::new(StubChain {
+            results,
+            estimate_gas_reverts,
+            estimate_gas_calls: AtomicUsize::new(0),
+        });
+        let app = axum::Router::new()
+            .route("/", axum::routing::post(stub_rpc))
+            .with_state(chain.clone());
+        (serve_stub(app).await, chain)
+    }
+
+    fn chain_breaker() -> CircuitBreaker {
+        // Same settings as the chain breaker in `cmd_watch`.
+        CircuitBreaker::new(CircuitBreakerConfig {
+            failure_threshold: 3,
+            recovery_timeout: std::time::Duration::from_secs(60),
+            success_threshold_for_close: 1,
+        })
+    }
+
+    async fn run_auto_finalize(rpc_url: &str, chain_cb: &CircuitBreaker) {
+        let watcher = EventWatcher::new(rpc_url, TEST_CONTRACT.parse().unwrap());
+        let chain = chain::ChainClient::new(rpc_url, TEST_KEY, TEST_CONTRACT).unwrap();
+        let rpc_cb = CircuitBreaker::new(CircuitBreakerConfig::default());
+        auto_finalize(&watcher, &chain, 0, &rpc_cb, chain_cb).await;
+    }
+
+    #[test]
+    fn test_is_finalizable() {
+        let now = 2_000_000_000u64;
+        assert!(is_finalizable(&ml_result(now - 1, false, false), now));
+        assert!(is_finalizable(&ml_result(now, false, false), now));
+        // Challenge window still open
+        assert!(!is_finalizable(&ml_result(now + 1, false, false), now));
+        // Already finalized / under dispute
+        assert!(!is_finalizable(&ml_result(now - 1, true, false), now));
+        assert!(!is_finalizable(&ml_result(now - 1, false, true), now));
+        // Unknown result (getResult returns an all-zero struct)
+        let mut unknown = ml_result(0, false, false);
+        unknown.submittedAt = U256::ZERO;
+        assert!(!is_finalizable(&unknown, now));
+    }
+
+    /// Results that were already handled, or whose challenge window is still open,
+    /// are scanned again on every pass. They must not be sent to `finalize`, whose
+    /// reverts used to open the chain circuit breaker after three of them.
+    #[tokio::test]
+    async fn test_auto_finalize_skips_results_that_cannot_be_finalized() {
+        let far_future = u64::MAX / 2;
+        let results = vec![
+            (B256::repeat_byte(1), ml_result(1, true, false)),
+            (B256::repeat_byte(2), ml_result(1, true, false)),
+            (B256::repeat_byte(3), ml_result(1, true, false)),
+            (B256::repeat_byte(4), ml_result(1, false, true)),
+            (B256::repeat_byte(5), ml_result(far_future, false, false)),
+        ];
+        let (rpc_url, stub) = serve_stub_chain(results, true).await;
+        let chain_cb = chain_breaker();
+
+        run_auto_finalize(&rpc_url, &chain_cb).await;
+
+        assert_eq!(
+            stub.estimate_gas_calls.load(Ordering::SeqCst),
+            0,
+            "no finalize transaction must be attempted"
+        );
+        assert_eq!(chain_cb.consecutive_failures(), 0);
+        assert!(chain_cb.allow_request().is_ok(), "breaker must stay closed");
+    }
+
+    /// A pending result past its challenge window is still sent to `finalize`,
+    /// also when it comes after results that are skipped.
+    #[tokio::test]
+    async fn test_auto_finalize_attempts_pending_result_past_deadline() {
+        let results = vec![
+            (B256::repeat_byte(1), ml_result(1, true, false)),
+            (B256::repeat_byte(2), ml_result(1, true, false)),
+            (B256::repeat_byte(3), ml_result(1, true, false)),
+            (B256::repeat_byte(4), ml_result(1, false, false)),
+        ];
+        // The stub rejects the transaction, which is enough to see the attempt.
+        let (rpc_url, stub) = serve_stub_chain(results, true).await;
+        let chain_cb = chain_breaker();
+
+        run_auto_finalize(&rpc_url, &chain_cb).await;
+
+        assert_eq!(stub.estimate_gas_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(chain_cb.consecutive_failures(), 1);
+    }
+
+    fn submit_test_config(rpc_url: &str, enclave_url: &str, dir: &std::path::Path) -> Config {
+        let model = ModelConfig {
+            name: "default".to_string(),
+            path: "model.json".to_string(),
+            model_format: "auto".to_string(),
+            model_hash: None,
+        };
+        Config {
+            rpc_url: rpc_url.to_string(),
+            private_key: TEST_KEY.to_string().into(),
+            tee_verifier_address: TEST_CONTRACT.to_string(),
+            enclave_url: enclave_url.to_string(),
+            model_path: model.path.clone(),
+            proofs_dir: dir.join("proofs").display().to_string(),
+            prover_stake_wei: "0".to_string(),
+            precompute_bin: dir.join("prover.sh").display().to_string(),
+            nitro_verification: false,
+            expected_pcr0: None,
+            attestation_cache_ttl: 300,
+            attestation_freshness_secs: 600,
+            max_proof_retries: 0,
+            proof_retry_delay_secs: 1,
+            webhook_url: None,
+            retry_base_delay_ms: 1000,
+            retry_max_delay_ms: 30000,
+            models: vec![model],
+            state_file: dir.join("state.json").display().to_string(),
+            contract_addresses: vec![TEST_CONTRACT.to_string()],
+            enclave_timeout_secs: 5,
+            prover_timeout_secs: 30,
+            escalation_timeout_secs: 900,
+            prover_url: None,
+            metrics_port: 0,
+            metrics_bind_addr: "127.0.0.1".to_string(),
+            dry_run: false,
+            retry_max_attempts: 0,
+            prover_max_retries: 0,
+            prover_retry_delay_secs: 1,
+            prover_retry_max_delay_secs: 1,
+            circuit_desc_dir: String::new(),
+            proof_archive_dir: dir.join("archive").display().to_string(),
+        }
+    }
+
+    /// `submit` is a one-shot command: when it returns the process exits. The
+    /// pre-computed proof and the archive entry must exist by then, otherwise they
+    /// are never written and a later challenge finds no proof.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_cmd_submit_waits_for_proof_and_archive() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let result_id = B256::repeat_byte(0x77);
+        let (rpc_url, _stub) =
+            serve_stub_chain(vec![(result_id, ml_result(1, false, false))], false).await;
+
+        let word = |b: u8| format!("0x{}", hex::encode([b; 32]));
+        let infer = serde_json::json!({
+            "result": "0x01",
+            "model_hash": word(0x11),
+            "input_hash": word(0x22),
+            "result_hash": word(0x33),
+            "attestation": format!("0x{}", "00".repeat(65)),
+            "enclave_address": TEST_SENDER,
+        });
+        let enclave = axum::Router::new()
+            .route("/health", axum::routing::get(|| async { "ok" }))
+            .route(
+                "/infer",
+                axum::routing::post(move || async move { axum::Json(infer) }),
+            );
+        let enclave_url = serve_stub(enclave).await;
+
+        // Stand-in prover: takes a moment, then writes the file named by --output.
+        let dir = tempfile::tempdir().unwrap();
+        let prover = dir.path().join("prover.sh");
+        std::fs::write(
+            &prover,
+            "#!/bin/sh\nwhile [ $# -gt 0 ]; do\n  [ \"$1\" = --output ] && out=\"$2\"\n  shift\ndone\nsleep 0.3\necho '{}' > \"$out\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&prover, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let config = submit_test_config(&rpc_url, &enclave_url, dir.path());
+        cmd_submit(&config, "[1.0, 2.0]", &config.models[0])
+            .await
+            .unwrap();
+
+        let proof = dir
+            .path()
+            .join("proofs")
+            .join(format!("0x{}.json", hex::encode(result_id)));
+        assert!(
+            proof.exists(),
+            "proof must be written before submit returns"
+        );
+
+        let archived: Vec<_> = std::fs::read_dir(dir.path().join("archive"))
+            .unwrap()
+            .flat_map(|day| std::fs::read_dir(day.unwrap().path()).unwrap())
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(archived.len(), 1, "one archive entry: {:?}", archived);
+        assert!(
+            archived[0].starts_with("proof-") && archived[0].ends_with(".json"),
+            "archive entry must be complete, not a temp file: {:?}",
+            archived
+        );
     }
 }

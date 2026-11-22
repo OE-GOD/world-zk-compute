@@ -1,4 +1,7 @@
+use alloy::eips::BlockNumberOrTag;
 use alloy::primitives::{Address, B256, U256};
+use alloy::providers::{Provider, ProviderBuilder};
+use world_zk_sdk::abi::TEEMLVerifier::MLResult;
 use world_zk_sdk::{Client, TEEVerifier};
 
 /// On-chain operations via the TEEMLVerifier contract.
@@ -8,6 +11,7 @@ use world_zk_sdk::{Client, TEEVerifier};
 /// transaction hash (`B256::ZERO`).
 pub struct ChainClient {
     tee_verifier: TEEVerifier,
+    rpc_url: String,
     /// When true, skip on-chain submission and log instead.
     dry_run: bool,
 }
@@ -17,6 +21,7 @@ impl ChainClient {
         let client = Client::new(rpc_url, private_key, contract_address)?;
         Ok(Self {
             tee_verifier: TEEVerifier::new(client),
+            rpc_url: rpc_url.to_string(),
             dry_run: false,
         })
     }
@@ -35,6 +40,7 @@ impl ChainClient {
         let client = Client::new(rpc_url, private_key, contract_address)?;
         Ok(Self {
             tee_verifier: TEEVerifier::new(client),
+            rpc_url: rpc_url.to_string(),
             dry_run,
         })
     }
@@ -152,6 +158,21 @@ impl ChainClient {
             return Ok(B256::ZERO);
         }
         self.tee_verifier.finalize(result_id).await
+    }
+
+    /// Read a result's on-chain state (a view call: nothing is submitted).
+    pub async fn get_result(&self, result_id: B256) -> anyhow::Result<MLResult> {
+        self.tee_verifier.get_result(result_id).await
+    }
+
+    /// Timestamp of the latest block.
+    pub async fn latest_block_timestamp(&self) -> anyhow::Result<u64> {
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let block = provider
+            .get_block_by_number(BlockNumberOrTag::Latest)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("RPC returned no latest block"))?;
+        Ok(block.header.timestamp)
     }
 
     /// Register an enclave key.

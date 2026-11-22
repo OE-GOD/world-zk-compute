@@ -1084,6 +1084,12 @@ fn build_router(state: Arc<AppState>, enable_cors: bool) -> Router {
         .route("/v1/prove/async", post(async_prove_handler))
         .route("/v1/jobs", get(list_jobs_handler))
         .route("/v1/jobs/:id", get(get_job_handler))
+        // The API gateway strips the `/v1` prefix before forwarding, so the
+        // same routes are also served without it.
+        .route("/prove/batch", post(batch_prove_handler))
+        .route("/prove/async", post(async_prove_handler))
+        .route("/jobs", get(list_jobs_handler))
+        .route("/jobs/:id", get(get_job_handler))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
@@ -1233,6 +1239,51 @@ mod tests {
             start_time: Instant::now(),
         });
         (build_router(state, false), tmp)
+    }
+
+    /// The gateway forwards `/v1/prove/batch`, `/v1/prove/async` and `/v1/jobs`
+    /// without the `/v1` prefix; those paths must reach the same handlers.
+    #[tokio::test]
+    async fn test_batch_async_and_jobs_served_without_v1_prefix() {
+        let (app, _tmp) = test_app().await;
+        let model_id = upload_test_model(&app).await;
+
+        let post = |uri: &str, body: serde_json::Value| {
+            axum::http::Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap()
+        };
+
+        let batch = serde_json::json!({ "model_id": model_id, "inputs": [[1.0, 2.0]] });
+        let resp = app
+            .clone()
+            .oneshot(post("/prove/batch", batch))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let single = serde_json::json!({ "model_id": model_id, "features": [1.0, 2.0] });
+        let resp = app
+            .clone()
+            .oneshot(post("/prove/async", single))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let job: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let job_id = job["job_id"].as_str().unwrap();
+
+        for uri in ["/jobs".to_string(), format!("/jobs/{job_id}")] {
+            let req = axum::http::Request::builder()
+                .uri(&uri)
+                .body(Body::empty())
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "GET {uri}");
+        }
     }
 
     /// Helper to upload a model and return its ID.

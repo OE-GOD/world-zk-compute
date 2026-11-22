@@ -5,7 +5,7 @@
 //! a library, we communicate with it over HTTP:
 //!
 //! - **Managed mode** (default): On model registration the manager spawns an
-//!   `xgboost-remainder serve` child process bound to a free port. Proof
+//!   `xgboost-remainder --serve` child process bound to a free port. Proof
 //!   requests are forwarded to that process via its `/prove/bundle` endpoint.
 //!   When the model is deactivated, the child process is killed.
 //!
@@ -43,6 +43,23 @@ pub struct RealProofResult {
     pub prove_time_ms: u64,
 }
 
+/// Arguments that start `xgboost-remainder` as a warm prover HTTP server.
+///
+/// Server mode is the `--serve` flag of that CLI; it has no `serve` subcommand.
+fn serve_args(model_path: &std::path::Path, port: u16) -> Vec<std::ffi::OsString> {
+    vec![
+        "--serve".into(),
+        "--model".into(),
+        model_path.into(),
+        "--host".into(),
+        "127.0.0.1".into(),
+        "--port".into(),
+        port.to_string().into(),
+        "--rate-limit".into(),
+        "0".into(), // No rate limiting for internal use
+    ]
+}
+
 /// Handle to a single prover instance (either a managed child process or an
 /// external URL).
 struct ProverHandle {
@@ -58,7 +75,7 @@ struct ProverHandle {
 
 /// Manages prover instances for registered models.
 ///
-/// In managed mode, each model gets its own `xgboost-remainder serve` child
+/// In managed mode, each model gets its own `xgboost-remainder --serve` child
 /// process. In external mode, a single shared URL is used for all models.
 pub struct ProverManager {
     /// model_id -> prover handle
@@ -97,7 +114,7 @@ impl ProverManager {
 
     /// Register a model and start its prover instance.
     ///
-    /// In managed mode, this spawns an `xgboost-remainder serve` child process
+    /// In managed mode, this spawns an `xgboost-remainder --serve` child process
     /// with the model JSON written to a temp file. In external mode, this is a
     /// no-op that records the model_id -> external_url mapping.
     ///
@@ -166,15 +183,7 @@ impl ProverManager {
 
         // Spawn the warm prover process
         let child = tokio::process::Command::new(&self.binary_path)
-            .arg("serve")
-            .arg("--model")
-            .arg(&model_path)
-            .arg("--host")
-            .arg("127.0.0.1")
-            .arg("--port")
-            .arg(port.to_string())
-            .arg("--rate-limit")
-            .arg("0") // No rate limiting for internal use
+            .args(serve_args(&model_path, port))
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
@@ -321,6 +330,29 @@ impl ProverManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The prover CLI (examples/xgboost-remainder/src/main.rs) takes `--serve`
+    /// as a flag. A positional `serve` makes it exit with "unexpected argument",
+    /// so the managed prover never came up.
+    #[test]
+    fn test_serve_args_use_serve_flag() {
+        let args = serve_args(std::path::Path::new("/tmp/m/model.json"), 13100);
+        let args: Vec<&str> = args.iter().map(|a| a.to_str().unwrap()).collect();
+        assert_eq!(
+            args,
+            [
+                "--serve",
+                "--model",
+                "/tmp/m/model.json",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "13100",
+                "--rate-limit",
+                "0"
+            ]
+        );
+    }
 
     #[test]
     fn test_real_proof_result_serialization() {

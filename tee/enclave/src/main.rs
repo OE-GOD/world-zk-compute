@@ -897,6 +897,27 @@ async fn unload_model_handler(
 }
 
 // ---------------------------------------------------------------------------
+// Router
+// ---------------------------------------------------------------------------
+
+/// Build the HTTP router (used by `main` and by the tests).
+fn build_router(state: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/health", get(health))
+        .route("/health/detailed", get(health_detailed))
+        .route("/info", get(info))
+        .route("/attestation", get(attestation))
+        .route("/infer", post(infer))
+        .route("/metrics", get(metrics_handler))
+        .route("/admin/reload-model", post(reload_model))
+        .route("/models", get(list_models))
+        .route("/models/load", post(load_model_handler))
+        .route("/models/:model_id", delete(unload_model_handler))
+        .layer(DefaultBodyLimit::max(10 * 1024 * 1024)) // 10 MB limit
+        .with_state(state)
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -1121,19 +1142,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    let app = Router::new()
-        .route("/health", get(health))
-        .route("/health/detailed", get(health_detailed))
-        .route("/info", get(info))
-        .route("/attestation", get(attestation))
-        .route("/infer", post(infer))
-        .route("/metrics", get(metrics_handler))
-        .route("/admin/reload-model", post(reload_model))
-        .route("/models", get(list_models))
-        .route("/models/load", post(load_model_handler))
-        .route("/models/{model_id}", delete(unload_model_handler))
-        .layer(DefaultBodyLimit::max(10 * 1024 * 1024)) // 10 MB limit
-        .with_state(state);
+    let app = build_router(state);
 
     let addr = format!("0.0.0.0:{}", config.port);
     tracing::info!("Listening on {}", addr);
@@ -1245,21 +1254,46 @@ mod tests {
         })
     }
 
-    /// Build a Router wired to the test AppState.
+    /// Build the production Router wired to the test AppState.
     fn test_app(state: Arc<AppState>) -> Router {
-        Router::new()
-            .route("/health", get(health))
-            .route("/health/detailed", get(health_detailed))
-            .route("/info", get(info))
-            .route("/attestation", get(attestation))
-            .route("/infer", post(infer))
-            .route("/metrics", get(metrics_handler))
-            .route("/admin/reload-model", post(reload_model))
-            .route("/models", get(list_models))
-            .route("/models/load", post(load_model_handler))
-            .route("/models/{model_id}", delete(unload_model_handler))
-            .layer(DefaultBodyLimit::max(10 * 1024 * 1024)) // 10 MB limit
-            .with_state(state)
+        build_router(state)
+    }
+
+    /// `DELETE /models/:model_id` must reach the unload handler. The route was
+    /// written with `{model_id}`, which axum 0.7 treats as a literal segment, so
+    /// every unload request got 404.
+    #[tokio::test]
+    async fn test_unload_model_route_matches_model_id() {
+        let state = test_app_state_with_admin_key(Some("admin-key".to_string()));
+        let model_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-model/model.json");
+        state
+            .model_registry
+            .load_model("extra", model_path.to_str().unwrap(), None)
+            .unwrap();
+
+        let delete_extra = |key: Option<&str>| {
+            let mut req = Request::builder().method("DELETE").uri("/models/extra");
+            if let Some(key) = key {
+                req = req.header("authorization", format!("Bearer {key}"));
+            }
+            req.body(Body::empty()).unwrap()
+        };
+
+        // Without the admin key the handler answers 401 (not the router's 404).
+        let resp = test_app(state.clone())
+            .oneshot(delete_extra(None))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert!(state.model_registry.get_model("extra").is_some());
+
+        let resp = test_app(state.clone())
+            .oneshot(delete_extra(Some("admin-key")))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(state.model_registry.get_model("extra").is_none());
     }
 
     #[tokio::test]

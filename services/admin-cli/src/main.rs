@@ -25,8 +25,8 @@ sol! {
         function transferOwnership(address newOwner) external;
         function acceptOwnership() external;
 
-        function owner() external view returns (address);
-        function pendingOwner() external view returns (address);
+        function admin() external view returns (address);
+        function timelock() external view returns (address);
         function paused() external view returns (bool);
         function remainderVerifier() external view returns (address);
         function challengeBondAmount() external view returns (uint256);
@@ -92,7 +92,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug, Clone)]
 enum Command {
-    /// Print contract status: owner, paused, proverStake, challengeBondAmount, remainderVerifier.
+    /// Print contract status: admin, timelock, paused, proverStake, challengeBondAmount, remainderVerifier.
     Status,
 
     /// Pause the contract (onlyOwner).
@@ -241,16 +241,17 @@ async fn run_status(cli: &Cli) -> Result<()> {
     let provider = ProviderBuilder::new().connect_http(rpc_url);
     let contract = TEEMLVerifier::new(contract_addr, &provider);
 
-    let owner = contract
-        .owner()
+    // TEEMLVerifier is admin-controlled (UUPS): it has no owner()/pendingOwner().
+    let admin = contract
+        .admin()
         .call()
         .await
-        .context("owner() call failed")?;
-    let pending = contract
-        .pendingOwner()
+        .context("admin() call failed")?;
+    let timelock = contract
+        .timelock()
         .call()
         .await
-        .context("pendingOwner() call failed")?;
+        .context("timelock() call failed")?;
     let is_paused = contract
         .paused()
         .call()
@@ -273,8 +274,8 @@ async fn run_status(cli: &Cli) -> Result<()> {
         .context("remainderVerifier() call failed")?;
 
     println!("TEEMLVerifier @ {contract_addr}");
-    println!("  owner:              {owner}");
-    println!("  pendingOwner:       {pending}");
+    println!("  admin:              {admin}");
+    println!("  timelock:           {timelock}");
     println!("  paused:             {is_paused}");
     println!(
         "  proverStake:        {} wei ({} ETH)",
@@ -838,6 +839,101 @@ mod tests {
             }
             _ => panic!("expected SetVerifier"),
         }
+    }
+
+    /// Answer JSON-RPC `eth_call`s the way a deployed TEEMLVerifier does: the
+    /// getters it has return a word, anything else (e.g. `owner()`) reverts.
+    async fn serve_tee_verifier_stub() -> String {
+        use alloy::sol_types::SolCall;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let known: Vec<[u8; 4]> = vec![
+            TEEMLVerifier::adminCall::SELECTOR,
+            TEEMLVerifier::timelockCall::SELECTOR,
+            TEEMLVerifier::pausedCall::SELECTOR,
+            TEEMLVerifier::proverStakeCall::SELECTOR,
+            TEEMLVerifier::challengeBondAmountCall::SELECTOR,
+            TEEMLVerifier::remainderVerifierCall::SELECTOR,
+        ];
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+
+        tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let known = known.clone();
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 4096];
+                    // One request per connection: read headers, then the body.
+                    let body = loop {
+                        let n = socket.read(&mut chunk).await.unwrap();
+                        if n == 0 {
+                            return;
+                        }
+                        buf.extend_from_slice(&chunk[..n]);
+                        let text = String::from_utf8_lossy(&buf).to_string();
+                        let Some((head, body)) = text.split_once("\r\n\r\n") else {
+                            continue;
+                        };
+                        let len: usize = head
+                            .lines()
+                            .find_map(|l| {
+                                let (k, v) = l.split_once(':')?;
+                                k.eq_ignore_ascii_case("content-length")
+                                    .then(|| v.trim().parse().unwrap())
+                            })
+                            .unwrap_or(0);
+                        if body.len() >= len {
+                            break body.to_string();
+                        }
+                    };
+
+                    let req: serde_json::Value = serde_json::from_str(&body).unwrap();
+                    let call = &req["params"][0];
+                    let input = call["input"].as_str().or(call["data"].as_str()).unwrap();
+                    let selector = input.trim_start_matches("0x").get(..8).unwrap_or("");
+                    let is_known = known.iter().any(|s| {
+                        selector.eq_ignore_ascii_case(
+                            &s.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                        )
+                    });
+                    let mut resp = serde_json::json!({ "jsonrpc": "2.0", "id": req["id"] });
+                    if is_known {
+                        resp["result"] = format!("0x{}", "00".repeat(32)).into();
+                    } else {
+                        resp["error"] =
+                            serde_json::json!({ "code": 3, "message": "execution reverted" });
+                    }
+                    let resp = resp.to_string();
+                    let http = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                        resp.len(),
+                        resp
+                    );
+                    socket.write_all(http.as_bytes()).await.unwrap();
+                });
+            }
+        });
+        url
+    }
+
+    /// `status` used to call `owner()` and `pendingOwner()`, which TEEMLVerifier
+    /// does not have, so the command always failed.
+    #[tokio::test]
+    async fn test_status_reads_only_getters_the_contract_has() {
+        let url = serve_tee_verifier_stub().await;
+        let cli = try_parse(&[
+            "admin-cli",
+            "--rpc-url",
+            &url,
+            "--contract",
+            "0x0000000000000000000000000000000000000001",
+            "status",
+        ])
+        .unwrap();
+
+        run_status(&cli).await.unwrap();
     }
 
     #[test]

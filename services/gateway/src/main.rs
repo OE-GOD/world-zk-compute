@@ -12,8 +12,10 @@
 //! |------------------|--------------------|------------------------------|
 //! | `/v1/prove`      | proof-generator    | `http://localhost:3002`      |
 //! | `/v1/models`     | proof-generator    | `http://localhost:3002`      |
+//! | `/v1/jobs`       | proof-generator    | `http://localhost:3002`      |
 //! | `/v1/proofs`     | proof-registry     | `http://localhost:3001`      |
 //! | `/v1/stats`      | proof-registry     | `http://localhost:3001`      |
+//! | `/v1/transparency` | proof-registry   | `http://localhost:3001`      |
 //! | `/v1/verify`     | verifier-api       | `http://localhost:3000`      |
 //! | `/v1/circuits`   | verifier-api       | `http://localhost:3000`      |
 //! | `/health`        | aggregated health  | (built-in)                   |
@@ -154,8 +156,10 @@ fn route_to_backend(path: &str) -> Option<&'static str> {
     match segment {
         "prove" => Some("generator"),
         "models" => Some("generator"),
+        "jobs" => Some("generator"),
         "proofs" => Some("registry"),
         "stats" => Some("registry"),
+        "transparency" => Some("registry"),
         "verify" => Some("verifier"),
         "circuits" => Some("verifier"),
         _ => None,
@@ -533,8 +537,8 @@ fn build_app(state: GatewayState) -> Router {
     //   1. request_logger     — outermost: captures total latency including auth
     //   2. TraceLayer         — tower-http span tracing
     //   3. CorsLayer          — CORS headers
-    //   4. metering_middleware — usage counting (after auth, so only authed reqs counted)
-    //   5. auth_middleware     — API-key gating
+    //   4. auth_middleware     — API-key gating
+    //   5. metering_middleware — usage counting (after auth, so only authed reqs counted)
     Router::new()
         .route("/health", get(health_aggregate))
         .route("/health/:service", get(health_single))
@@ -556,12 +560,12 @@ fn build_app(state: GatewayState) -> Router {
         )
         .fallback(proxy_handler)
         .layer(middleware::from_fn_with_state(
-            state.clone(),
-            auth_middleware,
-        ))
-        .layer(middleware::from_fn_with_state(
             state.metering.clone(),
             metering::metering_middleware,
+        ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
         ))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
@@ -711,6 +715,17 @@ mod tests {
     fn test_route_to_backend_circuits() {
         assert_eq!(route_to_backend("/circuits"), Some("verifier"));
         assert_eq!(route_to_backend("/circuits/abc"), Some("verifier"));
+    }
+
+    #[test]
+    fn test_route_to_backend_jobs_and_transparency() {
+        assert_eq!(route_to_backend("/jobs"), Some("generator"));
+        assert_eq!(route_to_backend("/v1/jobs/abc"), Some("generator"));
+        assert_eq!(route_to_backend("/transparency/root"), Some("registry"));
+        assert_eq!(
+            route_to_backend("/v1/transparency/proof/0"),
+            Some("registry")
+        );
     }
 
     #[test]
@@ -1090,6 +1105,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_proxy_v1_batch_and_jobs_route_to_generator() {
+        let mock_server = MockServer::start().await;
+        // Backend sees the paths without the /v1 prefix.
+        Mock::given(method("POST"))
+            .and(path("/prove/batch"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "batch_id": "b1"
+            })))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/jobs/j1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "job_id": "j1"
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let state = test_state(
+            "http://127.0.0.1:19990",
+            "http://127.0.0.1:19991",
+            &mock_server.uri(),
+            vec![],
+        );
+
+        let resp = build_app(state.clone())
+            .oneshot(
+                HttpRequest::builder()
+                    .method(http::Method::POST)
+                    .uri("/v1/prove/batch")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"model_id":"m1","inputs":[[1.0]]}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let resp = build_app(state)
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/v1/jobs/j1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_proxy_transparency_routes_to_registry() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/transparency/root"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "root": "00", "tree_size": 0
+            })))
+            .mount(&mock_server)
+            .await;
+
+        let state = test_state(
+            "http://127.0.0.1:19990",
+            &mock_server.uri(),
+            "http://127.0.0.1:19992",
+            vec![],
+        );
+
+        for uri in ["/transparency/root", "/v1/transparency/root"] {
+            let resp = build_app(state.clone())
+                .oneshot(HttpRequest::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "GET {uri}");
+        }
+    }
+
+    #[tokio::test]
     async fn test_proxy_v1_proofs_routes_to_registry() {
         let mock_server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -1346,6 +1439,35 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    /// A request that authentication rejects must leave no usage record: it is
+    /// not a tenant's usage, and the caller chooses the tenant id it is filed under.
+    #[tokio::test]
+    async fn test_rejected_requests_are_not_metered() {
+        let state = test_state(
+            "http://127.0.0.1:19990",
+            "http://127.0.0.1:19991",
+            "http://127.0.0.1:19992",
+            vec!["secret-key-1".to_string()],
+        );
+
+        for auth in [None, Some("Bearer made-up-key")] {
+            let mut req = HttpRequest::builder()
+                .method(http::Method::POST)
+                .uri("/v1/prove");
+            if let Some(value) = auth {
+                req = req.header("Authorization", value);
+            }
+            let resp = build_app(state.clone())
+                .oneshot(req.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        }
+
+        let records = state.metering.query(None, None, None).await;
+        assert!(records.is_empty(), "unexpected records: {records:?}");
     }
 
     #[tokio::test]
