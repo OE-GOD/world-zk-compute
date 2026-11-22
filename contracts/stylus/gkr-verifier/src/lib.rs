@@ -54,10 +54,10 @@ extern crate alloc;
 macro_rules! verify {
     ($cond:expr $(, $msg:expr)* $(,)?) => {
         if !$cond {
-            // SAFETY: We are aborting because a verification check failed.
-            // The WASM `unreachable` trap is the correct abort mechanism in
-            // the Stylus runtime. No code executes after this point.
-            unsafe { core::arch::wasm32::unreachable() }
+            // Abort because a verification check failed. The WASM `unreachable`
+            // trap is the correct abort mechanism in the Stylus runtime; no code
+            // executes after this point.
+            core::arch::wasm32::unreachable()
         }
     };
 }
@@ -564,7 +564,9 @@ sol_storage! {
     pub struct GKRVerifier {}
 }
 
-#[cfg(feature = "stylus")]
+// stylus-sdk allows one `#[public]` impl per contract, so the hybrid build gets its own
+// block that repeats `verify_dag_proof` instead of adding a second impl.
+#[cfg(all(feature = "stylus", not(feature = "hybrid")))]
 #[public]
 impl GKRVerifier {
     /// Verify a DAG GKR proof on-chain.
@@ -593,6 +595,28 @@ impl GKRVerifier {
 #[cfg(all(feature = "stylus", feature = "hybrid"))]
 #[public]
 impl GKRVerifier {
+    /// Verify a DAG GKR proof on-chain.
+    ///
+    /// # Arguments
+    ///
+    /// * `proof_data` -- Proof blob with 4-byte "REM1" selector prefix.
+    /// * `public_inputs` -- ABI-encoded public input values.
+    /// * `gens_data` -- ABI-encoded Pedersen generators.
+    /// * `circuit_desc_data` -- ABI-encoded DAG circuit description.
+    ///
+    /// # Returns
+    ///
+    /// `true` if verification passes; reverts otherwise.
+    pub fn verify_dag_proof(
+        &self,
+        proof_data: Bytes,
+        public_inputs: Bytes,
+        gens_data: Bytes,
+        circuit_desc_data: Bytes,
+    ) -> bool {
+        verify_dag_proof_inner(&proof_data, &public_inputs, &gens_data, &circuit_desc_data)
+    }
+
     /// Hybrid DAG GKR verification: transcript replay + Fr outputs, no EC ops.
     ///
     /// Returns `(success, transcript_digest, encoded_fr_outputs)`:

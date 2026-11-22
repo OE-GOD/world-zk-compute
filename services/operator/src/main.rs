@@ -370,7 +370,9 @@ async fn cmd_submit(
         verify_enclave_attestation(config, &enclave_client).await?;
     }
 
-    let response = enclave_client.infer(&feats).await?;
+    let response = enclave_client
+        .infer(&feats, Some(&config.tee_verifier_address))
+        .await?;
     tracing::info!(
         "Enclave response: model_hash={}, result_hash={}",
         response.model_hash,
@@ -391,10 +393,10 @@ async fn cmd_submit(
     let stake = U256::from_str_radix(&config.prover_stake_wei, 10)
         .map_err(|e| anyhow::anyhow!("Invalid stake: {}", e))?;
 
-    let tx_hash = chain_client
+    let (tx_hash, result_id) = chain_client
         .submit_result(model_hash, input_hash, &result_bytes, &attestation, stake)
         .await?;
-    tracing::info!("Submitted on-chain: tx={}", tx_hash);
+    tracing::info!("Submitted on-chain: tx={} result_id={}", tx_hash, result_id);
 
     // Audit log: result submission
     audit::log_result_submitted(
@@ -415,7 +417,7 @@ async fn cmd_submit(
                     .unwrap_or_default()
                     .as_secs()
             ),
-            result_id: format!("0x{}", hex::encode(tx_hash)),
+            result_id: format!("0x{}", hex::encode(result_id)),
             model_hash: response.model_hash.clone(),
             input_hash: response.input_hash.clone(),
             result_hash: response.result_hash.clone(),
@@ -452,7 +454,9 @@ async fn cmd_submit(
         config.prover_timeout_secs,
         config.prover_url.as_deref(),
     )?;
-    let result_id = format!("0x{}", hex::encode(tx_hash));
+    // Key the pre-computed proof by the on-chain result ID: that is what the watcher
+    // looks it up by when the result is challenged.
+    let result_id = format!("0x{}", hex::encode(result_id));
     let features_owned = features_json.to_string();
     tokio::spawn(async move {
         if let Err(e) = proof_mgr.generate_proof(&result_id, &features_owned).await {

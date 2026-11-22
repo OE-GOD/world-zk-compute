@@ -115,6 +115,8 @@ struct AppState {
     attestor: Attestor,
     nitro_attestor: std::sync::Mutex<NitroAttestor>,
     enclave_address: alloy_primitives::Address,
+    /// TEEMLVerifier contract this enclave signs for, if configured.
+    tee_verifier_address: Option<alloy_primitives::Address>,
     /// Metrics counters (lock-free atomics). Wrapped in `Arc` so the
     /// watchdog background task can hold a reference independently.
     metrics: Arc<Metrics>,
@@ -144,6 +146,12 @@ struct InferRequest {
     /// enclave-wide CHAIN_ID env var (default: 1 for Ethereum mainnet).
     #[serde(default)]
     chain_id: Option<u64>,
+    /// Address of the TEEMLVerifier contract the result will be submitted to.
+    /// When given (or configured via TEE_VERIFIER_ADDRESS) the attestation is the
+    /// EIP-712 signature that `TEEMLVerifier.submitResult` recovers. If both are
+    /// set they must agree.
+    #[serde(default)]
+    verifier_address: Option<String>,
     /// Client-provided nonce for replay protection.
     /// When both nonce and timestamp are provided, the server validates
     /// uniqueness and freshness before processing.
@@ -479,15 +487,56 @@ async fn infer(
         }
     }
 
-    // Sign attestation (includes chain_id, nonce, and timestamp for replay protection)
-    let attestation = state
-        .attestor
-        .sign_attestation(model_hash, input_hash, &result_bytes)
-        .map_err(|e| {
-            let elapsed = start.elapsed();
-            state.metrics.record_error(elapsed);
-            (StatusCode::INTERNAL_SERVER_ERROR, e)
-        })?;
+    // Verifier contract the signature is bound to: configured (TEE_VERIFIER_ADDRESS)
+    // or supplied with the request. If both are present they must agree.
+    let verifier_address = match req.verifier_address.as_deref() {
+        None => state.tee_verifier_address,
+        Some(raw) => {
+            let requested: alloy_primitives::Address = raw.parse().map_err(|e| {
+                let elapsed = start.elapsed();
+                state.metrics.record_error(elapsed);
+                (
+                    StatusCode::BAD_REQUEST,
+                    format!("Invalid verifier_address '{}': {}", raw, e),
+                )
+            })?;
+            if let Some(configured) = state.tee_verifier_address {
+                if configured != requested {
+                    let elapsed = start.elapsed();
+                    state.metrics.record_error(elapsed);
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        format!(
+                            "Requested verifier_address {} does not match enclave's configured \
+                             TEE_VERIFIER_ADDRESS {}",
+                            requested, configured,
+                        ),
+                    ));
+                }
+            }
+            Some(requested)
+        }
+    };
+
+    // Sign the attestation. With a verifier address this is the EIP-712 signature that
+    // TEEMLVerifier.submitResult recovers. Without one it is the legacy EIP-191
+    // attestation over (hashes, chain_id, nonce, timestamp), which the contract does
+    // not accept.
+    let attestation = match verifier_address {
+        Some(verifier) => {
+            state
+                .attestor
+                .sign_eip712_attestation(model_hash, input_hash, &result_bytes, verifier)
+        }
+        None => state
+            .attestor
+            .sign_attestation(model_hash, input_hash, &result_bytes),
+    }
+    .map_err(|e| {
+        let elapsed = start.elapsed();
+        state.metrics.record_error(elapsed);
+        (StatusCode::INTERNAL_SERVER_ERROR, e)
+    })?;
 
     let elapsed = start.elapsed();
     state.metrics.record_inference(elapsed);
@@ -930,6 +979,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Set chain ID from configuration for replay protection
     attestor.set_chain_id(config.chain_id);
     tracing::info!("Chain ID: {}", config.chain_id);
+    match config.tee_verifier_address {
+        Some(addr) => tracing::info!("TEEMLVerifier address: {} (EIP-712 attestations)", addr),
+        None => tracing::warn!(
+            "TEE_VERIFIER_ADDRESS not set: /infer signs for the contract only when the \
+             request carries verifier_address"
+        ),
+    }
 
     let enclave_address = attestor.address();
 
@@ -1013,6 +1069,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         attestor,
         nitro_attestor: std::sync::Mutex::new(nitro_attestor),
         enclave_address,
+        tee_verifier_address: config.tee_verifier_address,
         metrics,
         admin_api_key: config.admin_api_key,
         rate_limiter: RateLimiter::new(config.max_requests_per_minute),
@@ -1139,6 +1196,14 @@ mod tests {
 
     /// Build a test AppState with an optional admin API key.
     fn test_app_state_with_admin_key(admin_api_key: Option<String>) -> Arc<AppState> {
+        test_app_state_with(admin_api_key, None)
+    }
+
+    /// Build a test AppState with an optional admin API key and configured verifier address.
+    fn test_app_state_with(
+        admin_api_key: Option<String>,
+        tee_verifier_address: Option<alloy_primitives::Address>,
+    ) -> Arc<AppState> {
         let model_path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-model/model.json");
         let model_path_str = model_path.to_str().unwrap();
@@ -1166,6 +1231,7 @@ mod tests {
             attestor,
             nitro_attestor: std::sync::Mutex::new(nitro_attestor),
             enclave_address,
+            tee_verifier_address,
             metrics,
             admin_api_key,
             rate_limiter: RateLimiter::new(120), // generous limit for tests
@@ -1939,5 +2005,132 @@ mod tests {
             "Expected 'Replay protection failed' in response body, got: {}",
             resp_str
         );
+    }
+
+    /// POST /infer and return (status, body).
+    async fn post_infer(state: Arc<AppState>, body: &str) -> (StatusCode, Vec<u8>) {
+        let req = Request::builder()
+            .method("POST")
+            .uri("/infer")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = test_app(state).oneshot(req).await.unwrap();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        (status, bytes.to_vec())
+    }
+
+    fn hex_b256(v: &serde_json::Value) -> alloy_primitives::B256 {
+        v.as_str().unwrap().parse().unwrap()
+    }
+
+    /// With a verifier address the attestation must be the EIP-712 signature that
+    /// TEEMLVerifier.submitResult recovers: digest = keccak256("\x19\x01" || domain || struct).
+    #[tokio::test]
+    async fn test_infer_with_verifier_address_signs_eip712() {
+        let state = test_app_state();
+        let verifier: alloy_primitives::Address = "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+            .parse()
+            .unwrap();
+        let body = format!(
+            r#"{{"features":[5.0,3.5,1.5,0.3],"verifier_address":"{}"}}"#,
+            verifier
+        );
+        let (status, bytes) = post_infer(state.clone(), &body).await;
+        assert_eq!(status, StatusCode::OK);
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+        let struct_hash = keccak256(Attestor::abi_encode_struct(
+            keccak256(b"TEEMLResult(bytes32 modelHash,bytes32 inputHash,bytes32 resultHash)"),
+            hex_b256(&json["model_hash"]),
+            hex_b256(&json["input_hash"]),
+            hex_b256(&json["result_hash"]),
+        ));
+        let domain = Attestor::compute_domain_separator(state.attestor.chain_id(), verifier);
+        let mut digest_input = Vec::new();
+        digest_input.extend_from_slice(b"\x19\x01");
+        digest_input.extend_from_slice(domain.as_slice());
+        digest_input.extend_from_slice(struct_hash.as_slice());
+        let digest = keccak256(&digest_input);
+
+        let sig_hex = json["attestation"].as_str().unwrap();
+        let sig_bytes = hex::decode(sig_hex.strip_prefix("0x").unwrap_or(sig_hex)).unwrap();
+        let sig = alloy_primitives::Signature::try_from(sig_bytes.as_slice()).unwrap();
+        let recovered = sig.recover_address_from_prehash(&digest).unwrap();
+        assert_eq!(recovered, state.enclave_address);
+    }
+
+    /// A configured TEE_VERIFIER_ADDRESS is used when the request does not name one.
+    #[tokio::test]
+    async fn test_infer_uses_configured_verifier_address() {
+        let verifier: alloy_primitives::Address = "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+            .parse()
+            .unwrap();
+        let configured = test_app_state_with(None, Some(verifier));
+        let per_request = test_app_state();
+
+        // Same enclave key is not shared between the two states, so compare each
+        // signature against its own signer instead of against each other.
+        for (state, body) in [
+            (configured, r#"{"features":[5.0,3.5,1.5,0.3]}"#.to_string()),
+            (
+                per_request,
+                format!(
+                    r#"{{"features":[5.0,3.5,1.5,0.3],"verifier_address":"{}"}}"#,
+                    verifier
+                ),
+            ),
+        ] {
+            let (status, bytes) = post_infer(state.clone(), &body).await;
+            assert_eq!(status, StatusCode::OK);
+            let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            let struct_hash = keccak256(Attestor::abi_encode_struct(
+                keccak256(b"TEEMLResult(bytes32 modelHash,bytes32 inputHash,bytes32 resultHash)"),
+                hex_b256(&json["model_hash"]),
+                hex_b256(&json["input_hash"]),
+                hex_b256(&json["result_hash"]),
+            ));
+            let domain = Attestor::compute_domain_separator(state.attestor.chain_id(), verifier);
+            let mut digest_input = Vec::new();
+            digest_input.extend_from_slice(b"\x19\x01");
+            digest_input.extend_from_slice(domain.as_slice());
+            digest_input.extend_from_slice(struct_hash.as_slice());
+            let sig_hex = json["attestation"].as_str().unwrap();
+            let sig_bytes = hex::decode(sig_hex.strip_prefix("0x").unwrap_or(sig_hex)).unwrap();
+            let sig = alloy_primitives::Signature::try_from(sig_bytes.as_slice()).unwrap();
+            let recovered = sig
+                .recover_address_from_prehash(&keccak256(&digest_input))
+                .unwrap();
+            assert_eq!(recovered, state.enclave_address);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_infer_rejects_verifier_address_mismatch() {
+        let configured: alloy_primitives::Address = "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+            .parse()
+            .unwrap();
+        let state = test_app_state_with(None, Some(configured));
+        let (status, bytes) = post_infer(
+            state,
+            r#"{"features":[5.0,3.5,1.5,0.3],"verifier_address":"0x70997970C51812dc3A010C7d01b50e0d17dc79C8"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(String::from_utf8_lossy(&bytes).contains("does not match"));
+    }
+
+    #[tokio::test]
+    async fn test_infer_rejects_invalid_verifier_address() {
+        let (status, bytes) = post_infer(
+            test_app_state(),
+            r#"{"features":[5.0,3.5,1.5,0.3],"verifier_address":"not-an-address"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(String::from_utf8_lossy(&bytes).contains("Invalid verifier_address"));
     }
 }

@@ -48,7 +48,11 @@ echo ""
 echo "=== Step 2: Deploy TEEMLVerifier ==="
 cd "$ROOT_DIR/contracts"
 
-# Deploy TEEMLVerifier (with address(0) for remainderVerifier since we don't need it)
+# Deploy TEEMLVerifier behind its UUPS proxy.
+# TEEMLVerifier.initialize rejects address(0). This flow never resolves a ZK dispute,
+# so a non-zero placeholder is enough unless a real RemainderVerifier is supplied.
+REMAINDER_VERIFIER="${REMAINDER_VERIFIER:-0xDDdDddDdDdddDDddDDddDDDDdDdDDdDDdDDDDDDd}"
+export REMAINDER_VERIFIER
 # The deploy script reads DEPLOYER_KEY as uint via vm.envUint
 export DEPLOYER_KEY="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
 DEPLOY_OUTPUT=$(forge script script/DeployTEEMLVerifier.s.sol:DeployTEEMLVerifier \
@@ -56,18 +60,12 @@ DEPLOY_OUTPUT=$(forge script script/DeployTEEMLVerifier.s.sol:DeployTEEMLVerifie
     --broadcast \
     --code-size-limit 200000 2>&1)
 
-echo "$DEPLOY_OUTPUT" | grep -E "(TEEMLVerifier deployed|Owner verified)" || true
-
-# Extract contract address from broadcast
-BROADCAST_FILE=$(find broadcast/DeployTEEMLVerifier.s.sol -name "run-latest.json" 2>/dev/null | head -1)
-if [ -z "$BROADCAST_FILE" ]; then
-    echo "ERROR: No broadcast file found"
-    exit 1
-fi
-
-TEE_CONTRACT=$(jq -r '.transactions[] | select(.contractName == "TEEMLVerifier") | .contractAddress // empty' "$BROADCAST_FILE" | head -1)
+# The script prints the proxy address; the broadcast entry named "TEEMLVerifier" is the
+# implementation, which must not be used directly.
+TEE_CONTRACT=$(echo "$DEPLOY_OUTPUT" | grep "TEEMLVerifier deployed at:" | head -1 | awk '{print $NF}')
 if [ -z "$TEE_CONTRACT" ]; then
-    echo "ERROR: TEEMLVerifier address not found in broadcast"
+    echo "ERROR: TEEMLVerifier proxy address not found in deploy output"
+    echo "$DEPLOY_OUTPUT"
     exit 1
 fi
 

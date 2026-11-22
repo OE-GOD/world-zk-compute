@@ -10,8 +10,12 @@ contract DeployTEEMLVerifier is Script {
         uint256 deployerKey = vm.envUint("DEPLOYER_KEY");
         address deployer = vm.addr(deployerKey);
 
-        // Use existing RemainderVerifier deployment, or address(0) if not yet deployed
+        // Existing RemainderVerifier deployment (required: TEEMLVerifier.initialize rejects address(0))
         address remainderVerifier = vm.envOr("REMAINDER_VERIFIER", address(0));
+        require(
+            remainderVerifier != address(0),
+            "REMAINDER_VERIFIER must be set: TEEMLVerifier.initialize rejects address(0)"
+        );
 
         // Optional: transfer admin to a separate address after deploy
         address adminAddress = vm.envOr("ADMIN_ADDRESS", address(0));

@@ -2,6 +2,7 @@
 
 use alloy::primitives::{Address, Bytes, B256, U256};
 use alloy::providers::ProviderBuilder;
+use alloy::sol_types::SolEvent;
 
 use crate::abi::TEEMLVerifier;
 use crate::client::Client;
@@ -52,7 +53,10 @@ impl TEEVerifier {
 
     // -- Submit --
 
-    /// Submit a TEE-attested ML result with a prover stake.
+    /// Submit a TEE-attested ML result with a prover stake. Returns the transaction hash.
+    ///
+    /// The transaction hash is NOT the result ID. Use [`Self::submit_result_with_id`]
+    /// when the result has to be referenced later (challenge, finalize, dispute).
     #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(model_hash = %model_hash, input_hash = %input_hash)))]
     pub async fn submit_result(
         &self,
@@ -62,8 +66,27 @@ impl TEEVerifier {
         attestation: &[u8],
         stake: U256,
     ) -> anyhow::Result<B256> {
+        let (tx_hash, _result_id) = self
+            .submit_result_with_id(model_hash, input_hash, result, attestation, stake)
+            .await?;
+        Ok(tx_hash)
+    }
+
+    /// Submit a TEE-attested ML result and return `(transaction hash, result ID)`.
+    ///
+    /// The result ID is read from the `ResultSubmitted` event of the receipt. It is the
+    /// identifier the contract uses for `challenge`, `finalize` and dispute resolution.
+    pub async fn submit_result_with_id(
+        &self,
+        model_hash: B256,
+        input_hash: B256,
+        result: &[u8],
+        attestation: &[u8],
+        stake: U256,
+    ) -> anyhow::Result<(B256, B256)> {
         let provider = self.build_provider();
-        let contract = TEEMLVerifier::new(self.client.contract_address(), provider);
+        let contract_address = self.client.contract_address();
+        let contract = TEEMLVerifier::new(contract_address, provider);
 
         let receipt = contract
             .submitResult(
@@ -78,7 +101,23 @@ impl TEEVerifier {
             .get_receipt()
             .await?;
 
-        Ok(receipt.transaction_hash)
+        let result_id = receipt
+            .inner
+            .logs()
+            .iter()
+            .find(|log| {
+                log.address() == contract_address
+                    && log.topic0() == Some(&TEEMLVerifier::ResultSubmitted::SIGNATURE_HASH)
+            })
+            .and_then(|log| log.topics().get(1).copied())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "ResultSubmitted event not found in receipt of {}",
+                    receipt.transaction_hash
+                )
+            })?;
+
+        Ok((receipt.transaction_hash, result_id))
     }
 
     // -- Challenge --

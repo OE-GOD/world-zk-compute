@@ -8,10 +8,11 @@
 //!   RPC_URL=http://127.0.0.1:8549 TEE_CONTRACT_ADDRESS=0x... \
 //!     cargo test --test e2e_tee_verify -- --ignored --nocapture
 
-use alloy::primitives::{keccak256, B256, U256};
+use alloy::primitives::{keccak256, Address, B256, U256};
 use alloy::providers::{Provider, ProviderBuilder};
 use alloy::signers::local::PrivateKeySigner;
 use alloy::signers::Signer;
+use alloy::sol_types::SolValue;
 use world_zk_sdk::{Client, TEEVerifier};
 
 /// Anvil pre-funded accounts.
@@ -20,24 +21,53 @@ const ENCLAVE_KEY_1: &str = "59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f
 const ENCLAVE_KEY_2: &str = "7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6";
 const CHALLENGER_KEY: &str = "5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a";
 
-/// Build an ECDSA attestation (Ethereum signed message) that the contract expects.
+/// Build an ECDSA attestation matching what TEEMLVerifier.submitResult expects:
+/// an EIP-712 signature bound to the chain and to the verifier contract.
 async fn build_attestation(
     enclave_key: &str,
     model_hash: B256,
     input_hash: B256,
     result: &[u8],
+    rpc_url: &str,
+    verifying_contract: &str,
 ) -> Vec<u8> {
     let signer: PrivateKeySigner = enclave_key.parse().unwrap();
-    let result_hash = keccak256(result);
-    let message = keccak256(
+    let verifying_contract: Address = verifying_contract.parse().unwrap();
+    let provider = ProviderBuilder::new().connect_http(rpc_url.parse().unwrap());
+    let chain_id = provider.get_chain_id().await.unwrap();
+
+    // domainSeparator = keccak256(abi.encode(typehash, nameHash, versionHash, chainId, verifyingContract))
+    let domain_separator = keccak256(
+        (
+            keccak256(
+                "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)",
+            ),
+            keccak256("TEEMLVerifier"),
+            keccak256("1"),
+            U256::from(chain_id),
+            verifying_contract,
+        )
+            .abi_encode_params(),
+    );
+
+    // structHash = keccak256(abi.encode(RESULT_TYPEHASH, modelHash, inputHash, keccak256(result)))
+    let result_typehash =
+        keccak256("TEEMLResult(bytes32 modelHash,bytes32 inputHash,bytes32 resultHash)");
+    let struct_hash =
+        keccak256((result_typehash, model_hash, input_hash, keccak256(result)).abi_encode_params());
+
+    // digest = keccak256("\x19\x01" || domainSeparator || structHash)
+    let digest = keccak256(
         [
-            model_hash.as_slice(),
-            input_hash.as_slice(),
-            result_hash.as_slice(),
+            b"\x19\x01".as_slice(),
+            domain_separator.as_slice(),
+            struct_hash.as_slice(),
         ]
         .concat(),
     );
-    let sig = signer.sign_message(message.as_slice()).await.unwrap();
+
+    // Sign the raw EIP-712 digest (no personal message prefix)
+    let sig = signer.sign_hash(&digest).await.unwrap();
     sig.as_bytes().to_vec()
 }
 
@@ -87,15 +117,23 @@ async fn test_tee_happy_path_submit_and_finalize() {
     let model_hash = B256::from([0x01u8; 32]);
     let input_hash = B256::from([0x02u8; 32]);
     let result_data = b"prediction:class_0";
-    let attestation = build_attestation(ENCLAVE_KEY_1, model_hash, input_hash, result_data).await;
+    let attestation = build_attestation(
+        ENCLAVE_KEY_1,
+        model_hash,
+        input_hash,
+        result_data,
+        &rpc_url,
+        &contract_addr,
+    )
+    .await;
 
     let submitter_client =
         Client::new(&rpc_url, ADMIN_KEY, &contract_addr).expect("Failed to create submitter");
     let submitter = TEEVerifier::new(submitter_client);
 
     let stake = U256::from(100_000_000_000_000_000u128); // 0.1 ETH
-    let tx = submitter
-        .submit_result(model_hash, input_hash, result_data, &attestation, stake)
+    let (tx, sdk_result_id) = submitter
+        .submit_result_with_id(model_hash, input_hash, result_data, &attestation, stake)
         .await
         .expect("Failed to submit result");
     println!("Result submitted: tx={tx}");
@@ -114,6 +152,14 @@ async fn test_tee_happy_path_submit_and_finalize() {
     // Extract resultId from ResultSubmitted event log
     let result_id = receipt.inner.logs()[0].topics()[1];
     println!("Result ID: {result_id}");
+    assert_eq!(
+        sdk_result_id, result_id,
+        "submit_result_with_id must return the on-chain result ID"
+    );
+    assert_ne!(
+        sdk_result_id, tx,
+        "the result ID is not the transaction hash"
+    );
 
     // Fast-forward past the challenge window (1 hour = 3600s)
     advance_time(&rpc_url, 3601).await;
@@ -159,7 +205,15 @@ async fn test_tee_challenge_flow() {
     let model_hash = B256::from([0x11u8; 32]);
     let input_hash = B256::from([0x22u8; 32]);
     let result_data = b"prediction:class_1";
-    let attestation = build_attestation(ENCLAVE_KEY_2, model_hash, input_hash, result_data).await;
+    let attestation = build_attestation(
+        ENCLAVE_KEY_2,
+        model_hash,
+        input_hash,
+        result_data,
+        &rpc_url,
+        &contract_addr,
+    )
+    .await;
 
     let submitter_client =
         Client::new(&rpc_url, ADMIN_KEY, &contract_addr).expect("Failed to create submitter");

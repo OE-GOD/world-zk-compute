@@ -45,9 +45,12 @@ impl ChainClient {
         self.dry_run
     }
 
-    /// Submit a TEE-attested result on-chain. Returns the transaction hash.
+    /// Submit a TEE-attested result on-chain. Returns `(transaction hash, result ID)`.
     ///
-    /// In dry-run mode, logs the call parameters and returns `B256::ZERO`.
+    /// The result ID (from the `ResultSubmitted` event) is what the contract and the
+    /// event watcher use to refer to this result; the transaction hash is not.
+    ///
+    /// In dry-run mode, logs the call parameters and returns `(B256::ZERO, B256::ZERO)`.
     pub async fn submit_result(
         &self,
         model_hash: B256,
@@ -55,7 +58,7 @@ impl ChainClient {
         result: &[u8],
         attestation: &[u8],
         stake: U256,
-    ) -> anyhow::Result<B256> {
+    ) -> anyhow::Result<(B256, B256)> {
         if self.dry_run {
             tracing::info!(
                 dry_run = true,
@@ -68,10 +71,10 @@ impl ChainClient {
                 result_hex = %format!("0x{}", hex::encode(result)),
                 "[DRY RUN] Would submit result on-chain"
             );
-            return Ok(B256::ZERO);
+            return Ok((B256::ZERO, B256::ZERO));
         }
         self.tee_verifier
-            .submit_result(model_hash, input_hash, result, attestation, stake)
+            .submit_result_with_id(model_hash, input_hash, result, attestation, stake)
             .await
     }
 
@@ -425,7 +428,11 @@ mod tests {
             )
             .await
             .expect("dry-run submit_result should succeed");
-        assert_eq!(tx, B256::ZERO, "dry-run should return B256::ZERO");
+        assert_eq!(
+            tx,
+            (B256::ZERO, B256::ZERO),
+            "dry-run should return zero tx hash and result ID"
+        );
     }
 
     #[tokio::test]
@@ -440,7 +447,7 @@ mod tests {
             .submit_result(model, input, result_data, attestation, stake)
             .await
             .expect("dry-run submit_result should succeed with non-trivial data");
-        assert_eq!(tx, B256::ZERO);
+        assert_eq!(tx, (B256::ZERO, B256::ZERO));
     }
 
     #[tokio::test]
@@ -450,7 +457,7 @@ mod tests {
             .submit_result(B256::ZERO, B256::ZERO, b"", b"", U256::ZERO)
             .await
             .expect("dry-run should handle empty byte slices");
-        assert_eq!(tx, B256::ZERO);
+        assert_eq!(tx, (B256::ZERO, B256::ZERO));
     }
 
     // ---------------------------------------------------------------------------
@@ -612,7 +619,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            assert_eq!(tx1, B256::ZERO);
+            assert_eq!(tx1, (B256::ZERO, B256::ZERO));
             assert_eq!(tx2, B256::ZERO);
             assert_eq!(tx3, B256::ZERO);
             assert_eq!(tx4, B256::ZERO);
