@@ -66,16 +66,8 @@ fn load_model(path: &std::path::Path, model_format: &str) -> Result<XgboostModel
             eprintln!("  (loading as random forest format)");
             random_forest::load_random_forest_json(path).map_err(|e| anyhow::anyhow!("{}", e))
         }
+        // Accepts both the xgb.save_model format and the XgboostModel layout.
         "xgboost" => {
-            let data = std::fs::read_to_string(path)?;
-
-            // Try direct XgboostModel deserialization first
-            if let Ok(m) = serde_json::from_str::<XgboostModel>(&data) {
-                eprintln!("  (loaded as XgboostModel format)");
-                return Ok(m);
-            }
-
-            // Fall back to XGBoost native format
             model::load_xgboost_json(path).map_err(|e| anyhow::anyhow!("Failed to load model: {e}"))
         }
         other => anyhow::bail!(

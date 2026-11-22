@@ -97,10 +97,15 @@ struct XgbTree {
     base_weights: Vec<f64>,
 }
 
-/// Load an XGBoost model from a JSON file (saved with `xgb.save_model("model.json")`).
+/// Load an XGBoost model from a JSON file: either the file written by
+/// `xgb.save_model("model.json")` or this crate's own serialized
+/// [`XgboostModel`] layout (the one `sample_model.json` uses).
 pub fn load_xgboost_json(path: &Path) -> Result<XgboostModel, String> {
     let data =
         std::fs::read_to_string(path).map_err(|e| format!("Failed to read model file: {}", e))?;
+    if let Ok(model) = serde_json::from_str::<XgboostModel>(&data) {
+        return Ok(model);
+    }
     parse_xgboost_json(&data)
 }
 
