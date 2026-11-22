@@ -47,8 +47,9 @@ Runs inside AWS Nitro / Intel TDX. Loads an XGBoost/LightGBM model,
 serves inference via HTTP, returns ECDSA-signed attestations.
 
 **Endpoints:** `GET /health`, `GET /health/detailed`, `GET /info`,
-`GET /attestation`, `POST /infer`, `GET /metrics`,
-`POST /admin/reload` (Bearer), `POST|DELETE|GET /admin/models` (Bearer)
+`GET /attestation`, `POST /infer`, `GET /metrics` (JSON), `GET /models`,
+`POST /admin/reload-model` (Bearer), `POST /models/load` (Bearer),
+`DELETE /models/:model_id` (Bearer)
 
 **Key env vars:** `MODEL_PATH` (/app/model/model.json), `PORT` (8080),
 `ENCLAVE_PRIVATE_KEY`, `NITRO_ENABLED` (false), `CHAIN_ID` (1),
@@ -61,13 +62,14 @@ Orchestrates inference-to-proof pipeline. Submits results on-chain,
 watches for disputes, resolves them with ZK proofs. Supports webhooks
 and Prometheus metrics.
 
-**Subcommands:** `submit`, `watch`, `run` (submit+watch), `register`, `models`
+**Subcommands:** `submit`, `watch`, `run` (submit+watch), `register`, `models`,
+`export-audit`, `rotate-proofs`
 
-**Metrics endpoints (port 9090):** `GET /health`, `GET /metrics` (Prometheus),
+**Metrics endpoints (port 9090):** `GET /health`, `GET /ready`, `GET /metrics` (Prometheus),
 `GET /metrics/json`
 
-**Key env vars:** `RPC_URL`, `PRIVATE_KEY` (required),
-`TEE_VERIFIER_ADDRESS` (required), `ENCLAVE_URL` (http://localhost:8080),
+**Key env vars:** `OPERATOR_RPC_URL`, `OPERATOR_PRIVATE_KEY` (required),
+`TEE_VERIFIER_ADDRESS` (required), `ENCLAVE_URL` (http://127.0.0.1:8080),
 `MODEL_PATH`, `PROOFS_DIR` (./proofs), `PROVER_STAKE`,
 `PROVER_URL` (optional warm prover), `WEBHOOK_URL` (Slack-compatible),
 `NITRO_VERIFICATION` (false), `ALERT_CONFIG_JSON` (multi-channel alerting JSON;
@@ -81,7 +83,7 @@ Also supports TOML config via `--config <path>` with `[[models]]` multi-model re
 Polls TEEMLVerifier contract events, stores in SQLite/Postgres,
 serves REST API and WebSocket stream.
 
-**REST endpoints:** `GET /health`, `GET /api/v1/results` (query: status,
+**REST endpoints:** `GET /health`, `GET /ready`, `GET /api/v1/results` (query: status,
 submitter, model_hash, limit), `GET /api/v1/results/:id`,
 `GET /api/v1/stats`. Backward-compat aliases at `/results`, `/stats`.
 

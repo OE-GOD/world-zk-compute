@@ -21,8 +21,8 @@
 |-----------|---------|-------|-------|
 | `proverStake` | 0.1 ETH | 0 < x <= 100 ETH | Stake locked per `submitResult` |
 | `challengeBondAmount` | 0.1 ETH | 0 < x <= 100 ETH | Bond required to challenge |
-| `CHALLENGE_WINDOW` | 1 hour | constant | Time for challengers to act |
-| `DISPUTE_WINDOW` | 24 hours | constant | Time for prover to submit ZK proof |
+| `challengeWindow` | 1 hour | 10 min <= x <= 7 days (`setChallengeWindow`) | Time for challengers to act |
+| `disputeWindow` | 24 hours | 1 hour <= x <= 30 days (`setDisputeWindow`) | Time for prover to submit ZK proof |
 | `EXTENSION_PERIOD` | 30 minutes | constant | Per-extension time added |
 | `MAX_EXTENSIONS` | 1 | constant | Max dispute extensions allowed |
 
@@ -31,19 +31,19 @@
 ```bash
 # 1. Deploy RemainderVerifier (DAG proof verifier)
 # 2. Deploy TEEMLVerifier with admin + RemainderVerifier address
+cd contracts
 DEPLOYER_KEY=0x... \
 REMAINDER_VERIFIER=0x... \
 ADMIN_ADDRESS=0x...  \
-forge script contracts/script/DeployTEEMLVerifier.s.sol:DeployTEEMLVerifier \
+forge script script/DeployTEEMLVerifier.s.sol:DeployTEEMLVerifier \
   --rpc-url $RPC_URL \
   --private-key $DEPLOYER_KEY \
   --broadcast \
   --verify
 
-# 3. Accept ownership from multisig (if ADMIN_ADDRESS was set)
-cast send $TEE_VERIFIER "acceptOwnership()" \
-  --rpc-url $RPC_URL \
-  --private-key $ADMIN_KEY
+# 3. Confirm the admin (the script calls changeAdmin(ADMIN_ADDRESS) itself;
+#    the transfer is one-step, there is no acceptOwnership on this contract)
+cast call $TEE_VERIFIER "admin()(address)" --rpc-url $RPC_URL
 
 # 4. Register enclave key
 cast send $TEE_VERIFIER \
@@ -62,10 +62,10 @@ cast send $TEE_VERIFIER "setChallengeBondAmount(uint256)" $BOND_WEI \
 ### Verify Deployment
 
 ```bash
-bash scripts/verify-deployment.sh $RPC_URL $TEE_VERIFIER_ADDRESS
+TEE_VERIFIER_ADDR=$TEE_VERIFIER_ADDRESS bash scripts/verify-deployment.sh --rpc-url $RPC_URL
 ```
 
-This runs 8 checks: contract deployed, owner set, not paused, proverStake > 0, challengeBondAmount > 0, remainderVerifier set, CHALLENGE_WINDOW > 0, DISPUTE_WINDOW > 0.
+For TEEMLVerifier this runs 3 checks: contract has code, admin set, not paused. ExecutionEngine, ProgramRegistry, ProverRegistry and ProverReputation are checked the same way (plus their wiring) when `EXECUTION_ENGINE_ADDR`, `PROGRAM_REGISTRY_ADDR`, `PROVER_REGISTRY_ADDR`, `PROVER_REPUTATION_ADDR` are set.
 
 ---
 
@@ -281,8 +281,8 @@ Pipe to your log aggregator (Datadog, Grafana Loki, CloudWatch, etc.).
 ### 1. Run Health Check Script
 
 ```bash
-bash scripts/verify-deployment.sh $RPC_URL $TEE_VERIFIER_ADDRESS
-# Expected: 8/8 checks passed
+TEE_VERIFIER_ADDR=$TEE_VERIFIER_ADDRESS bash scripts/verify-deployment.sh --rpc-url $RPC_URL
+# Expected: RESULT: PASS
 ```
 
 ### 2. Verify Enclave is Responsive

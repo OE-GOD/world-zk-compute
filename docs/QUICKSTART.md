@@ -7,9 +7,10 @@ plain cURL -- and follow along.
 ## What You Need
 
 1. A **proof bundle** JSON file. The repository ships a test fixture at
-   `contracts/test/fixtures/phase1a_dag_fixture.json`, or you can use the
-   minimal sample at `examples/quickstart/sample_proof.json`.
-2. One of: Python 3.8+, Rust 1.75+, Node.js 20+, or cURL.
+   `contracts/test/fixtures/phase1a_dag_fixture.json`. (The minimal sample at
+   `examples/quickstart/sample_proof.json` only shows the format; it does not
+   verify.)
+2. One of: Python 3.8+, Rust 1.92+, Node.js 20+, or cURL.
 
 A proof bundle is a self-contained JSON object with these keys:
 
@@ -30,13 +31,14 @@ A proof bundle is a self-contained JSON object with these keys:
 ### Install
 
 ```bash
-pip install zkml-verifier
+# The package is not published on PyPI; use it from a checkout of this repository
+cargo build --release -p zkml-verifier
+export ZKML_LIB_DIR=$PWD/target/release
+export PYTHONPATH=$PWD/crates/zkml-verifier/python
 ```
 
 > **Note:** The Python package wraps a native Rust shared library via ctypes.
-> If you're building from source instead of pip, first run
-> `cargo build --release -p zkml-verifier` and set
-> `ZKML_LIB_DIR=target/release` so the library can be found.
+> `ZKML_LIB_DIR` tells it where `cargo build` put that library.
 
 ### Verify from a file
 
@@ -107,12 +109,8 @@ complete runnable script.
 
 ### Add to Cargo.toml
 
-```toml
-[dependencies]
-zkml-verifier = "0.1"
-```
-
-Or, if using a local checkout:
+The crate is not published by this project on crates.io (the `zkml-verifier`
+name there belongs to an unrelated project); depend on a local checkout:
 
 ```toml
 [dependencies]
@@ -162,8 +160,8 @@ println!("Verified: {}", result.verified);
 The crate includes a binary that can verify proof bundles from the command line:
 
 ```bash
-# Install
-cargo install zkml-verifier
+# Install (from a checkout of this repository)
+cargo install --path crates/zkml-verifier
 
 # Verify (human-readable output)
 zkml-verifier verify proof_bundle.json
@@ -187,7 +185,9 @@ The JavaScript package uses WebAssembly compiled from the same Rust verifier.
 ### Install
 
 ```bash
-npm install zkml-verifier
+# The package is not published on npm; build it from a checkout of this repository
+wasm-pack build --target web crates/zkml-verifier -- --features wasm
+npm install ./crates/zkml-verifier/pkg
 ```
 
 ### Verify in the browser
@@ -368,7 +368,7 @@ FIXTURE=contracts/test/fixtures/phase1a_dag_fixture.json
 # Rust CLI
 cargo run -p zkml-verifier -- verify $FIXTURE --json
 
-# Python (with native library)
+# Python (with native library; needs ZKML_LIB_DIR and PYTHONPATH as set above)
 python examples/quickstart/verify.py $FIXTURE
 
 # Node.js (with REST API)
@@ -386,10 +386,9 @@ curl -s -X POST http://localhost:3000/verify \
 
 ### Python: "Could not find libzkml_verifier.dylib"
 
-The native library was not found. Either:
-- Install via pip: `pip install zkml-verifier`
-- Or build from source: `cargo build --release -p zkml-verifier`
-  and set `ZKML_LIB_DIR` to the directory containing the `.so`/`.dylib`
+The native library was not found. Build it from source:
+`cargo build --release -p zkml-verifier`, and set `ZKML_LIB_DIR` to the
+directory containing the `.so`/`.dylib` (`target/release`)
 
 ### JavaScript: "WASM module not initialized"
 

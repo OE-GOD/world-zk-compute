@@ -227,10 +227,12 @@ The enclave reads all configuration from environment variables. These are set in
 | `PORT` | `8080` (dev) / `5000` (Nitro) | HTTP listen port |
 | `NITRO_ENABLED` | `false` (dev) / `true` (Nitro) | Enable real NSM attestation |
 | `CHAIN_ID` | `1` | Chain ID for replay protection |
+| `TEE_VERIFIER_ADDRESS` | (none) | TEEMLVerifier address; when set (or sent as `verifier_address` in the request) `/infer` returns the EIP-712 signature that `submitResult` recovers |
 | `ENCLAVE_PRIVATE_KEY` | (random) | Hex-encoded secp256k1 key; omit for auto-generation |
 | `ADMIN_API_KEY` | (none) | API key for admin endpoints; unset = disabled |
 | `MAX_REQUESTS_PER_MINUTE` | `120` | Rate limit for `/infer` endpoint |
 | `WATCHDOG_ENABLED` | `true` | Background health monitor |
+| `MAX_MODELS` | `5` | Capacity of the multi-model registry (`/models`) |
 | `EXPECTED_MODEL_HASH` | (none) | SHA-256 hex hash; rejects mismatched models |
 | `RUST_LOG` | `info` | Log level (`debug`, `info`, `warn`, `error`) |
 
@@ -240,14 +242,14 @@ The enclave reads all configuration from environment variables. These are set in
 |---|---|---|
 | GET | `/health` | Basic health check |
 | GET | `/health/detailed` | Detailed health with watchdog status |
-| GET | `/info` | Enclave info (address, model hash, features) |
+| GET | `/info` | Enclave info (address, model hash) |
 | GET | `/attestation` | Nitro attestation document (CBOR COSE_Sign1) |
 | POST | `/infer` | Run inference, return signed result |
 | GET | `/metrics` | Request counters and latency stats |
 | POST | `/admin/reload-model` | Hot-reload model (requires `ADMIN_API_KEY`) |
 | GET | `/models` | List loaded models |
-| POST | `/models/load` | Load a new model |
-| DELETE | `/models/{model_id}` | Unload a model |
+| POST | `/models/load` | Load a new model (requires `ADMIN_API_KEY`) |
+| DELETE | `/models/{model_id}` | Unload a model (requires `ADMIN_API_KEY`) |
 
 ## Monitoring and Troubleshooting
 
@@ -307,11 +309,14 @@ Access detailed health via `GET /health/detailed`:
 ```json
 {
   "status": "healthy",
-  "uptime_secs": 3600,
-  "total_requests": 1234,
-  "error_count": 2,
+  "error_rate": 0.0016,
   "avg_latency_ms": 5.2,
-  "watchdog": { "status": "ok", "last_check": "2025-01-01T12:00:00Z" }
+  "uptime_secs": 3600,
+  "total_rate_limited": 0,
+  "total_inferences": 1234,
+  "total_errors": 2,
+  "memory_rss_bytes": 52428800,
+  "checks": { "error_rate": "ok", "latency": "ok" }
 }
 ```
 

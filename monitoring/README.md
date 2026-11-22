@@ -204,7 +204,7 @@ documented in the table above.
 | File | Purpose |
 |------|---------|
 | `alertmanager.yml` | Alertmanager routing, receivers, and inhibition rules |
-| `alerting-rules.yml` | Prometheus alerting rules (operator, enclave, prover) |
+| `alerting-rules.yml` | Prometheus alerting rules (operator, enclave) |
 | `alerting-rules-sepolia.yml` | Prometheus alerting rules for Sepolia testnet |
 | `prometheus.yml` | Prometheus scrape configuration |
 | `grafana-operator.json` | Grafana dashboard for operator service metrics |

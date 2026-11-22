@@ -31,6 +31,10 @@ DEPLOYER_PRIVATE_KEY=0x...
 # Required: TEE enclave signer private key
 ENCLAVE_PRIVATE_KEY=0x...
 
+# Required by deploy-sepolia-tee.sh and deploy.sh: address TEEMLVerifier calls to
+# resolve disputes (TEEMLVerifier.initialize rejects address(0))
+REMAINDER_VERIFIER=0x...
+
 # Optional: separate requester key (defaults to deployer)
 # REQUESTER_PRIVATE_KEY=0x...
 EOF
@@ -105,12 +109,14 @@ Register the program image ID in the on-chain ProgramRegistry:
 Or register manually with `cast`:
 
 ```bash
-# Compute the program hash (keccak256 of the model JSON)
-PROGRAM_HASH=$(cast keccak "$(cat path/to/model.json)")
+# Programs are registered in ProgramRegistry by image ID
+# (address: .contracts.ProgramRegistry.address in deployments/11155111.json)
+IMAGE_ID=0xf85c194e1a8e2c2e38746c6d81c7ac9ddf25848a8dfc049db7f4725b3ab56e33
 
-cast send $EXECUTION_ENGINE_ADDRESS \
-  "registerProgram(bytes32)" \
-  "$PROGRAM_HASH" \
+cast send $PROGRAM_REGISTRY_ADDRESS \
+  "registerProgram(bytes32,string,string,bytes32)" \
+  "$IMAGE_ID" "xgboost-rule-engine" "" \
+  0x0000000000000000000000000000000000000000000000000000000000000000 \
   --rpc-url "$ALCHEMY_SEPOLIA_RPC_URL" \
   --private-key "$DEPLOYER_PRIVATE_KEY"
 ```
@@ -141,10 +147,14 @@ Submit a TEE inference request on-chain:
 Or manually:
 
 ```bash
+# requestExecution(imageId, inputDigest, inputUrl, callbackContract, expirationSeconds)
 cast send $EXECUTION_ENGINE_ADDRESS \
-  "submitRequest(bytes32,bytes)" \
-  "$PROGRAM_HASH" \
-  "$(cast abi-encode 'f(int256[])' '[1000000,2000000,3000000]')" \
+  "requestExecution(bytes32,bytes32,string,address,uint256)" \
+  "$IMAGE_ID" \
+  0x3333333333333333333333333333333333333333333333333333333333333333 \
+  "" \
+  0x0000000000000000000000000000000000000000 \
+  3600 \
   --rpc-url "$ALCHEMY_SEPOLIA_RPC_URL" \
   --private-key "$REQUESTER_PRIVATE_KEY" \
   --value 0.001ether
@@ -168,12 +178,12 @@ Or query directly:
 REQUEST_ID=$(cast logs \
   --rpc-url "$ALCHEMY_SEPOLIA_RPC_URL" \
   --address "$EXECUTION_ENGINE_ADDRESS" \
-  "RequestSubmitted(uint256,address,bytes32)" \
-  --from-block latest | jq -r '.[0].topics[1]')
+  "ExecutionRequested(uint256,address,bytes32,bytes32,string,uint8,uint256,uint256)" \
+  --from-block latest --json | jq -r '.[0].topics[1]')
 
-# Query the result
+# Query the request (status, prover, deadlines)
 cast call $EXECUTION_ENGINE_ADDRESS \
-  "getResult(uint256)(uint8,bytes)" \
+  "getRequest(uint256)" \
   "$REQUEST_ID" \
   --rpc-url "$ALCHEMY_SEPOLIA_RPC_URL"
 ```
@@ -309,17 +319,19 @@ The enclave public key must be registered in the TEEMLVerifier contract:
 ```bash
 ENCLAVE_ADDRESS=$(cast wallet address "$ENCLAVE_PRIVATE_KEY")
 cast call $TEE_VERIFIER_ADDRESS \
-  "isRegisteredEnclave(address)(bool)" \
+  "enclaves(address)((bool,bool,bytes32,uint256))" \
   "$ENCLAVE_ADDRESS" \
   --rpc-url "$ALCHEMY_SEPOLIA_RPC_URL"
 ```
 
-If it returns `false`, register it:
+If the first two fields (`registered`, `active`) are not `true`, register it
+(the second argument is the enclave image hash, e.g. the first 32 bytes of PCR0):
 
 ```bash
 cast send $TEE_VERIFIER_ADDRESS \
-  "registerEnclave(address)" \
+  "registerEnclave(address,bytes32)" \
   "$ENCLAVE_ADDRESS" \
+  "$ENCLAVE_IMAGE_HASH" \
   --rpc-url "$ALCHEMY_SEPOLIA_RPC_URL" \
   --private-key "$DEPLOYER_PRIVATE_KEY"
 ```
@@ -345,7 +357,7 @@ Sepolia. For full GKR/Groth16 verification, deploy to Arbitrum Sepolia instead:
 If you see HTTP 429 errors, your RPC provider is rate-limiting requests. Solutions:
 - Use a paid Alchemy/Infura plan.
 - Add `--rpc-url` to point to a different provider.
-- Increase poll intervals for event watching (`--interval 30`).
+- Increase poll intervals for event watching (`--poll 30`).
 
 ### Cast version mismatch
 

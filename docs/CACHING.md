@@ -40,7 +40,7 @@ Both the indexer and operator poll the chain via JSON-RPC. Key cacheable calls:
 
 ## 3. Proof Caching
 
-The operator already caches proofs on disk (`PROOF_CACHE_DIR`). Additional caching layers:
+The operator already caches proofs on disk (`PROOFS_DIR`). Additional caching layers:
 
 | Cache Layer | What | Key | TTL |
 |-------------|------|-----|-----|

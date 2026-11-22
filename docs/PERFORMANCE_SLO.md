@@ -12,9 +12,9 @@ end users perceive near-instant results.
 
 | Percentile | Target    | Measurement Point                       |
 |------------|-----------|------------------------------------------|
-| P50        | < 100 ms  | Enclave `POST /inference` response time  |
-| P99        | < 500 ms  | Enclave `POST /inference` response time  |
-| P99.9      | < 2 s     | Enclave `POST /inference` response time  |
+| P50        | < 100 ms  | Enclave `POST /infer` response time      |
+| P99        | < 500 ms  | Enclave `POST /infer` response time      |
+| P99.9      | < 2 s     | Enclave `POST /infer` response time      |
 
 **Scope:** Time from the enclave receiving the HTTP request to returning the
 signed attestation. Does **not** include network round-trip or on-chain
@@ -22,7 +22,7 @@ submission.
 
 **How to measure:**
 - Enclave exposes Prometheus histogram `inference_duration_seconds`.
-- Load test with `scripts/load-test-prover.sh` against a running enclave.
+- Load test with `scripts/load-test-enclave.sh` against a running enclave.
 
 **Owner:** `tee/enclave/`
 
@@ -109,7 +109,7 @@ Equals `poll_interval + RPC latency`.
 
 **How to measure:**
 - Operator: `operator_last_block_polled` Prometheus metric vs chain head.
-- Indexer: Compare `GET /status` block number against chain head.
+- Indexer: Compare `GET /health` `last_indexed_block` against chain head.
 - SDK: Instrument `poll_events()` / `watch()` call latency.
 
 **Owner:** `services/operator/`, `services/indexer/`, `sdk/`
@@ -130,7 +130,7 @@ the prover API or RPC endpoint.
 
 **Source files:**
 - TypeScript: `sdk/typescript/src/client.ts` (`DEFAULT_TIMEOUT = 30000`)
-- Python: `sdk/python/worldzk/client.py` (`DEFAULT_TIMEOUT = 30.0`)
+- Python: `sdk/python/worldzk/indexer.py` (`DEFAULT_TIMEOUT = 30.0`)
 - Rust: `sdk/src/retry.rs` (`base_delay: 1s, max_delay: 30s`)
 
 **Owner:** `sdk/`
@@ -178,13 +178,13 @@ The table below holds measured values from CI benchmark runs. Rows marked with
 
 | Test                                         | Gas         |
 |----------------------------------------------|-------------|
-| `DAGBatchVerifierTest:test_dag_batch_e2e`    | 281,553,679 |
-| `DAGBatchVerifierTest:test_dag_batch_gas`    | 281,567,979 |
-| `GasProfileTest:test_gas_requestExecution`   | 188,510     |
-| `GasProfileTest:test_gas_claimExecution`     | 237,537     |
-| `GasProfileTest:test_gas_submitProof`        | 361,409     |
-| `GasProfileTest:test_gas_submitResult`       | 257,457     |
-| `GasProfileTest:test_gas_finalize`           | 290,678     |
+| `DAGBatchVerifierTest:test_dag_batch_e2e`    | 272,873,812 |
+| `DAGBatchVerifierTest:test_dag_batch_gas_per_batch` | 272,883,136 |
+| `GasProfileTest:test_gas_requestExecution`   | 188,659     |
+| `GasProfileTest:test_gas_claimExecution`     | 237,850     |
+| `GasProfileTest:test_gas_submitProof`        | 361,667     |
+| `GasProfileTest:test_gas_submitResult`       | 246,804     |
+| `GasProfileTest:test_gas_finalize`           | 259,078     |
 
 > Gas values sourced from `contracts/.gas-snapshot`. Updated by running
 > `forge snapshot` in `contracts/`.
@@ -214,5 +214,5 @@ catch regressions before they become user-facing.
 - `services/operator/src/main.rs` -- operator poll loop (5s interval)
 - `services/indexer/src/main.rs` -- indexer poll loop (`POLL_INTERVAL_SECS`)
 - `sdk/typescript/src/client.ts` -- TypeScript SDK timeouts
-- `sdk/python/worldzk/client.py` -- Python SDK timeouts
+- `sdk/python/worldzk/indexer.py` -- Python SDK timeouts
 - `sdk/src/retry.rs` -- Rust SDK retry configuration

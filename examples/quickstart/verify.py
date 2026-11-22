@@ -2,7 +2,7 @@
 """Quickstart: Verify a ZKML proof bundle in Python.
 
 This script demonstrates three verification methods:
-1. Native library (via zkml-verifier pip package)
+1. Native library (zkml_verifier package in crates/zkml-verifier/python)
 2. REST API (via the verifier Docker service)
 3. Direct file loading + JSON verification
 
@@ -13,6 +13,7 @@ Usage:
 Environment variables:
     VERIFIER_URL  -- REST API base URL (default: http://localhost:3000)
     ZKML_LIB_DIR  -- Directory containing libzkml_verifier.{so,dylib}
+    PYTHONPATH    -- Must include crates/zkml-verifier/python (not on PyPI)
 """
 
 import json
@@ -33,9 +34,10 @@ def find_proof_bundle() -> str:
     # Try test fixtures in order of preference
     script_dir = Path(__file__).resolve().parent
     candidates = [
-        script_dir / "sample_proof.json",
+        # Real proof first: sample_proof.json only shows the format and does not verify.
         script_dir.parent.parent / "contracts" / "test" / "fixtures" / "phase1a_dag_fixture.json",
         script_dir.parent.parent / "web" / "sample_proof.json",
+        script_dir / "sample_proof.json",
     ]
     for candidate in candidates:
         if candidate.exists():
@@ -52,8 +54,8 @@ def find_proof_bundle() -> str:
 def verify_native(bundle_path: str) -> bool:
     """Verify using the native Rust library via ctypes FFI.
 
-    Requires: pip install zkml-verifier
-    Or: cargo build --release -p zkml-verifier + set ZKML_LIB_DIR
+    Requires: cargo build --release -p zkml-verifier, ZKML_LIB_DIR=target/release
+    and PYTHONPATH=crates/zkml-verifier/python (the package is not on PyPI)
     """
     try:
         from zkml_verifier import verify_file, version
@@ -65,7 +67,7 @@ def verify_native(bundle_path: str) -> bool:
             print(f"  Error detail: {result['error']}")
         return result["verified"]
     except ImportError:
-        print("Native library not available (pip install zkml-verifier)")
+        print("Native library not available (set PYTHONPATH=crates/zkml-verifier/python)")
         return False
     except Exception as e:
         print(f"Native verification failed: {e}")

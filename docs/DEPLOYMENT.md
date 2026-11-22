@@ -51,20 +51,25 @@ cd contracts
 forge install
 
 # Deploy MockVerifier (for testing)
-forge create src/MockRiscZeroVerifier.sol:MockRiscZeroVerifier \
+forge create src/mocks/MockRiscZeroVerifier.sol:MockRiscZeroVerifier \
   --rpc-url $RPC_URL \
-  --private-key $PRIVATE_KEY
+  --private-key $PRIVATE_KEY \
+  --broadcast
 
-# Note the verifier address, then deploy ProgramRegistry
+# Note the verifier address, then deploy ProgramRegistry (constructor: admin)
 forge create src/ProgramRegistry.sol:ProgramRegistry \
   --rpc-url $RPC_URL \
-  --private-key $PRIVATE_KEY
+  --private-key $PRIVATE_KEY \
+  --broadcast \
+  --constructor-args $ADMIN_ADDRESS
 
 # Note the registry address, then deploy ExecutionEngine
+# (constructor: admin, registry, verifier, feeRecipient)
 forge create src/ExecutionEngine.sol:ExecutionEngine \
   --rpc-url $RPC_URL \
   --private-key $PRIVATE_KEY \
-  --constructor-args $REGISTRY_ADDRESS $VERIFIER_ADDRESS $FEE_RECIPIENT
+  --broadcast \
+  --constructor-args $ADMIN_ADDRESS $REGISTRY_ADDRESS $VERIFIER_ADDRESS $FEE_RECIPIENT
 ```
 
 ### 3. Verify Contracts (Optional)
@@ -191,6 +196,7 @@ cp .env.sepolia.example .env.sepolia
 #   ALCHEMY_SEPOLIA_RPC_URL=https://eth-sepolia.g.alchemy.com/v2/YOUR_KEY
 #   DEPLOYER_PRIVATE_KEY=0x...
 #   ENCLAVE_PRIVATE_KEY=0x...
+#   REMAINDER_VERIFIER=0x...  (required by deploy-sepolia-tee.sh; TEEMLVerifier.initialize rejects address(0))
 #   ETHERSCAN_API_KEY=...  (optional)
 ```
 

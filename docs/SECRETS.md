@@ -205,7 +205,7 @@ export OPERATOR_PRIVATE_KEY
 
 ### 4.1 Registry Signing Key (ECDSA)
 
-The `REGISTRY_SIGNING_KEY` is a secp256k1 key used by the proof-registry service to sign proof receipts. If unset, the service auto-generates an ephemeral key on startup.
+The `REGISTRY_SIGNING_KEY` is a secp256k1 key used by the proof-registry service to sign proof receipts. If unset, the service reads the key from `REGISTRY_KEY_FILE` (default `./registry_signing_key.hex`), generating and saving one there on first start.
 
 **When to rotate**: Quarterly, or immediately if the key may have been exposed.
 
@@ -214,8 +214,8 @@ The `REGISTRY_SIGNING_KEY` is a secp256k1 key used by the proof-registry service
 ./scripts/rotate-keys.sh --registry
 
 # This outputs:
-#   NEW_REGISTRY_SIGNING_KEY=<hex>
-#   NEW_REGISTRY_PUBLIC_KEY=<hex>
+#   REGISTRY_SIGNING_KEY=<hex>
+#   Derived address:     0x...
 
 # Update the encrypted env file
 sops deploy/secrets.env.encrypted
@@ -325,14 +325,15 @@ The admin key is the highest-value secret. It controls contract upgrades, enclav
 **Production requirement**: Use a multisig (Gnosis Safe) as contract owner. Never use a single EOA in production.
 
 ```bash
-# Transfer ownership to a multisig (one-time setup)
-cast send $TEE_VERIFIER_ADDRESS "transferOwnership(address)" \
+# Transfer the admin role to a multisig (one-time setup)
+cast send $TEE_VERIFIER_ADDRESS "changeAdmin(address)" \
   $MULTISIG_ADDRESS \
   --private-key $ADMIN_PRIVATE_KEY --rpc-url $RPC_URL
 
-# The new owner must accept (Ownable2Step):
-# Submit this from the multisig:
-# TEEMLVerifier.acceptOwnership()
+# changeAdmin is one-step and takes effect immediately (TEEMLVerifier has no
+# transferOwnership/acceptOwnership), so check $MULTISIG_ADDRESS before
+# sending. Confirm afterwards:
+cast call $TEE_VERIFIER_ADDRESS "admin()(address)" --rpc-url $RPC_URL
 ```
 
 After transferring to a multisig, "rotation" means changing the multisig signers via the Safe UI, not changing the contract owner address.
@@ -390,8 +391,8 @@ cast send $TEE_VERIFIER_ADDRESS "setAuthorizedSubmitter(address,bool)" \
 This is the worst-case scenario. If the admin key is a single EOA:
 
 ```bash
-# Race condition: try to transfer ownership before the attacker does
-cast send $TEE_VERIFIER_ADDRESS "transferOwnership(address)" \
+# Race condition: try to change the admin before the attacker does
+cast send $TEE_VERIFIER_ADDRESS "changeAdmin(address)" \
   $EMERGENCY_MULTISIG_ADDRESS \
   --private-key $ADMIN_PRIVATE_KEY --rpc-url $RPC_URL \
   --gas-price $(cast gas-price --rpc-url $RPC_URL | awk '{print $1 * 2}')

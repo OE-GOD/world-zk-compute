@@ -48,10 +48,10 @@ docker compose -f docker-compose.offchain.yml up -d
 
 ```bash
 # 1. Provision new infrastructure
-cd deploy/terraform && terraform apply
+terraform -chdir=deploy/terraform apply
 
 # 2. Deploy services
-cd deploy/helm && helm install worldzk .
+helm install worldzk deploy/helm/worldzk
 
 # 3. Restore data
 ./scripts/restore.sh /backups/worldzk/backup-latest
@@ -65,7 +65,7 @@ worldzk health
 1. **Pause** contracts immediately: `admin-cli --contract <addr> pause`
 2. Deploy new implementation behind UUPS proxy
 3. Verify new implementation with test suite
-4. Upgrade proxy: `admin-cli --contract <addr> upgrade <new-impl>`
+4. Upgrade proxy: `cast send <addr> "upgradeTo(address)" <new-impl>` (admin-cli has no upgrade command)
 5. Unpause: `admin-cli --contract <addr> unpause`
 
 ## Testing

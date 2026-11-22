@@ -78,6 +78,6 @@ CONCURRENCY=10 REQUESTS=100 docker compose -f docker-compose.loadtest.yml up
 
 - **Connection refused**: Service not running. Check `docker compose ps`.
 - **HTTP 429 (rate limited)**: Enclave rate limiter active. Set `MAX_REQUESTS_PER_MINUTE=1000` on the enclave or reduce `--concurrency`.
-- **Timeouts**: Increase `--timeout` or reduce `--concurrency`. Prover is CPU-bound.
+- **Timeouts**: Reduce `--concurrency` (the scripts have no `--timeout` flag). Prover is CPU-bound.
 - **Empty responses**: Check service health with `--health-only` first.
 - **"model_loaded: false"**: Enclave hasn't loaded a model. Check `MODEL_PATH` env var.

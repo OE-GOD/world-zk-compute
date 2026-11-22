@@ -38,11 +38,11 @@ Production incident response procedures for World ZK Compute.
 
 ### Who Can Pause
 
-Only the contract **owner** (Ownable2Step) can call `pause()` and `unpause()`.
+Only the contract **admin** can call `pause()` and `unpause()` (TEEMLVerifier exposes `admin()`, not `owner()`).
 
 ```bash
-# Verify the current owner
-cast call $TEE_VERIFIER "owner()(address)" --rpc-url $RPC
+# Verify the current admin
+cast call $TEE_VERIFIER "admin()(address)" --rpc-url $RPC
 ```
 
 ### Resolution
@@ -84,9 +84,6 @@ docker compose stop operator
 # Edit docker-compose.yml: add DRY_RUN: "true" to operator.environment
 docker compose up -d operator
 
-# Or set it as an environment override without editing the file
-DRY_RUN=true docker compose up -d operator
-
 # Kubernetes
 kubectl -n world-zk set env deployment/worldzk-operator DRY_RUN=true
 ```
@@ -126,9 +123,9 @@ The operator has built-in circuit breakers that automatically halt RPC and chain
 - **RPC circuit breaker**: Opens after 5 consecutive RPC failures. Blocks polling for 30 seconds, then retries.
 - **Chain circuit breaker**: Opens after 3 consecutive chain call failures. Blocks dispute resolution and finalization for 60 seconds.
 
-Monitor via Prometheus metrics:
+The breakers export no Prometheus metrics; watch the operator logs:
 ```bash
-curl -s http://localhost:9090/metrics | grep circuit_breaker
+docker compose logs operator | grep -i "circuit breaker"
 ```
 
 ### Verification
@@ -254,7 +251,7 @@ If the key is compromised, **revoke first**, then deploy a new enclave:
 ### Verification
 
 - [ ] New enclave submits results successfully
-- [ ] Old enclave submissions revert with `TEEMLVerifier: enclave revoked`
+- [ ] Old enclave submissions revert with `EnclaveNotActive`
 - [ ] Operator logs show successful event polling
 
 ---
@@ -272,7 +269,7 @@ If the key is compromised, **revoke first**, then deploy a new enclave:
 - [ ] Determine if disputes are from one challenger (griefing) or many (systemic):
   ```bash
   # Query indexer for recent challenges
-  curl -s "http://$INDEXER:8081/results?status=challenged&limit=20" | jq '.[].challenger'
+  curl -s "http://$INDEXER:8081/results?status=challenged&limit=20" | jq '.data[].challenger'
   # Or query on-chain logs
   cast logs $TEE_VERIFIER "ResultChallenged(bytes32,address)" \
     --from-block $RECENT_BLOCK --rpc-url $RPC
@@ -290,7 +287,7 @@ If the key is compromised, **revoke first**, then deploy a new enclave:
   ```
 - [ ] Check if proofs are succeeding (submitter wins valid disputes):
   ```bash
-  cast logs $TEE_VERIFIER "DisputeResolved(bytes32,address,bool)" \
+  cast logs $TEE_VERIFIER "DisputeResolved(bytes32,bool)" \
     --from-block $RECENT_BLOCK --rpc-url $RPC
   ```
 - [ ] Check operator logs:
@@ -585,7 +582,8 @@ kubectl -n world-zk rollout restart deployment worldzk-indexer
 ```bash
 forge create src/Upgradeable.sol:UpgradeableExecutionEngineV2 \
   --rpc-url $RPC \
-  --private-key $DEPLOYER_KEY
+  --private-key $DEPLOYER_KEY \
+  --broadcast
 # Record: $NEW_IMPL
 ```
 
@@ -605,7 +603,7 @@ cast send $PROXY "upgradeTo(address)" $NEW_IMPL \
   --private-key $ADMIN_KEY
 
 # With re-initialization
-INIT_DATA=$(cast calldata "reinitialize(uint256)" 2)
+INIT_DATA=$(cast calldata "reinitialize(uint8)" 2)
 cast send $PROXY "upgradeToAndCall(address,bytes)" $NEW_IMPL $INIT_DATA \
   --rpc-url $RPC \
   --private-key $ADMIN_KEY
@@ -789,7 +787,7 @@ kubectl -n world-zk patch hpa worldzk-operator-hpa \
 
 **Multi-replica considerations:**
 
-- Each replica polls for events independently using its own state file (stored in pod-local `emptyDir`)
+- Each replica polls for events independently using its own state file (on the pod's own filesystem)
 - Event deduplication via `processed_event_ids` prevents double-processing within a single instance
 - For dispute resolution, ensure only one replica submits `resolveDispute` to avoid nonce conflicts. Use a leader election pattern or designate one replica as the resolver.
 - Each replica needs access to proof data (`PROOFS_DIR`)
@@ -814,7 +812,7 @@ The indexer uses **SQLite** (single-writer) and runs as **1 replica** with `Recr
 **To scale the indexer beyond 1 replica:**
 
 1. Migrate from SQLite to PostgreSQL (the `Storage` trait in `services/indexer/src/main.rs` is designed for swappable backends)
-2. Update `DB_PATH` to a PostgreSQL connection string
+2. Set `DB_TYPE=postgres` and `DATABASE_URL` to a PostgreSQL connection string
 3. Switch deployment strategy to `RollingUpdate`
 4. Add replicas
 
@@ -896,7 +894,7 @@ Before deploying to Sepolia or production:
 
 - **Connection refused**: Service not running. Check `docker compose ps`.
 - **HTTP 429**: Rate limit active. Increase `MAX_REQUESTS_PER_MINUTE` or reduce `--concurrency`.
-- **Timeouts**: Prover is CPU-bound. Increase `--timeout` or reduce `--concurrency`.
+- **Timeouts**: Prover is CPU-bound. Reduce `--concurrency` (the scripts have no `--timeout` flag).
 - **"model_loaded: false"**: Enclave hasn't loaded a model. Check `MODEL_PATH` env var.
 
 ---
@@ -1028,24 +1026,24 @@ curl -s http://localhost:8081/health | jq .
 
 **Location:** Configured by `STATE_FILE` env var (default: `./operator-state.json`).
 
-**Warning:** In K8s, the operator state file lives in an `emptyDir` volume, which is lost on pod restart. For durable state across restarts, mount a PersistentVolumeClaim.
+**Warning:** The container images run in `/app` and no manifest sets `STATE_FILE`, so the state file is `/app/operator-state.json` on the container filesystem, which is lost when the container or pod is recreated. For durable state across restarts, mount a volume and point `STATE_FILE` at it.
 
 **Backup:**
 
 ```bash
 # Docker Compose
-docker compose cp operator:/app/proofs/operator-state.json ./operator-state-backup-$(date +%Y%m%d).json
+docker compose cp operator:/app/operator-state.json ./operator-state-backup-$(date +%Y%m%d).json
 
 # Kubernetes (from running pod)
 OPERATOR_POD=$(kubectl -n world-zk get pod -l app=worldzk-operator -o jsonpath='{.items[0].metadata.name}')
-kubectl -n world-zk cp $OPERATOR_POD:/app/proofs/operator-state.json ./operator-state-backup.json
+kubectl -n world-zk cp $OPERATOR_POD:/app/operator-state.json ./operator-state-backup.json
 ```
 
 **Restore:**
 
 ```bash
 # Copy backup into container before or after restart
-docker compose cp ./operator-state-backup.json operator:/app/proofs/operator-state.json
+docker compose cp ./operator-state-backup.json operator:/app/operator-state.json
 docker compose restart operator
 ```
 
@@ -1231,7 +1229,7 @@ The operator verifies enclave attestations when `NITRO_VERIFICATION=true`. Attes
 2. **Nonce** -- `keccak256(chainId || blockNumber || enclaveAddress)` prevents replay
 3. **PCR0** -- matches expected enclave image hash (if `EXPECTED_PCR0` is set)
 4. **Freshness** -- attestation document must be less than a configured age:
-   - **On submit:** 600 seconds (10 minutes) (`validate_freshness(&verified, 600)`)
+   - **On submit:** 600 seconds (10 minutes) by default, set with `ATTESTATION_FRESHNESS_SECS` (`validate_freshness(&verified, config.attestation_freshness_secs)`)
    - **On register:** 300 seconds (5 minutes) (`validate_freshness(&verified, 300)`)
 
 ### Attestation Cache TTL
@@ -1369,7 +1367,7 @@ admin-cli --rpc-url $RPC --contract $CONTRACT --private-key $KEY \
 
 # Contract queries
 cast call $CONTRACT "paused()(bool)" --rpc-url $RPC
-cast call $CONTRACT "owner()(address)" --rpc-url $RPC
+cast call $CONTRACT "admin()(address)" --rpc-url $RPC
 cast call $CONTRACT "remainderVerifier()(address)" --rpc-url $RPC
 cast call $CONTRACT "challengeBondAmount()(uint256)" --rpc-url $RPC
 cast call $CONTRACT "proverStake()(uint256)" --rpc-url $RPC

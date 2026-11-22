@@ -32,7 +32,7 @@ cargo build --release --lib -p zkml-verifier
 # 2. Build the Python wheel (skipping Rust build since we already built)
 cd crates/zkml-verifier/python
 pip install build wheel
-ZKML_SKIP_BUILD=1 ZKML_LIB_DIR=../../target/release python -m build --wheel
+ZKML_SKIP_BUILD=1 ZKML_LIB_DIR=../../../target/release python -m build --wheel
 ```
 
 The wheel is written to `crates/zkml-verifier/python/dist/`.

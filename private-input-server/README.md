@@ -85,9 +85,10 @@ RPC_URL=https://eth-mainnet.g.alchemy.com/v2/KEY \
 ENGINE_ADDRESS=0x... \
 cargo run --release
 
-# Docker
+# Docker: the Dockerfile does not build this crate. It runs the in-memory Python
+# stub server.py on port 3001 (POST /inputs, GET /inputs/<sha256>, no authentication).
 docker build -t private-input-server .
-docker run -p 8090:8090 -e RPC_URL=... -e ENGINE_ADDRESS=... private-input-server
+docker run -p 3001:3001 private-input-server
 ```
 
 ## Testing

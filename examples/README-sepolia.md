@@ -22,6 +22,10 @@ export ALCHEMY_SEPOLIA_RPC_URL="https://eth-sepolia.g.alchemy.com/v2/YOUR_API_KE
 # Required -- deployer/admin wallet private key (must hold Sepolia ETH)
 export DEPLOYER_PRIVATE_KEY="0x..."
 
+# Required by deploy-sepolia-tee.sh -- address TEEMLVerifier calls to resolve
+# disputes (TEEMLVerifier.initialize rejects address(0))
+export REMAINDER_VERIFIER="0x..."
+
 # Set after deployment (or loaded from deployments/11155111.json)
 export TEE_VERIFIER_ADDRESS="0x..."
 export EXECUTION_ENGINE_ADDRESS="0x..."

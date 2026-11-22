@@ -3,7 +3,7 @@
  * Quickstart: Verify a ZKML proof bundle in JavaScript.
  *
  * This script demonstrates two verification methods:
- * 1. WASM library (npm install zkml-verifier) -- browser and Node.js
+ * 1. WASM library (built from crates/zkml-verifier with wasm-pack) -- browser and Node.js
  * 2. REST API (docker compose up) -- any HTTP client
  *
  * Usage:
@@ -33,9 +33,10 @@ function findProofBundle() {
   // Try test fixtures in order of preference
   const scriptDir = __dirname;
   const candidates = [
-    path.join(scriptDir, 'sample_proof.json'),
+    // Real proof first: sample_proof.json only shows the format and does not verify.
     path.join(scriptDir, '../../contracts/test/fixtures/phase1a_dag_fixture.json'),
     path.join(scriptDir, '../../web/sample_proof.json'),
+    path.join(scriptDir, 'sample_proof.json'),
   ];
 
   for (const candidate of candidates) {
@@ -52,7 +53,8 @@ function findProofBundle() {
 }
 
 /**
- * Verify using the WASM library (requires: npm install zkml-verifier).
+ * Verify using the WASM library (requires: npm install ./crates/zkml-verifier/pkg
+ * after wasm-pack build; the package is not on npm).
  */
 async function verifyWasm(bundleJson) {
   try {
@@ -74,7 +76,7 @@ async function verifyWasm(bundleJson) {
     return result.verified;
   } catch (err) {
     if (err.code === 'ERR_MODULE_NOT_FOUND' || err.code === 'MODULE_NOT_FOUND') {
-      console.log('WASM library not available (npm install zkml-verifier)');
+      console.log('WASM library not available (build it with wasm-pack, see docs/QUICKSTART.md)');
     } else {
       console.log(`WASM verification failed: ${err.message}`);
     }

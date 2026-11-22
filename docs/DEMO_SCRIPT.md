@@ -27,11 +27,13 @@ Expected output:
 ```json
 {
   "status": "healthy",
-  "services": {
-    "verifier": "healthy",
-    "registry": "healthy",
-    "generator": "healthy"
-  }
+  "services": [
+    { "name": "generator", "healthy": true, "response_ms": 5 },
+    { "name": "registry", "healthy": true, "response_ms": 2 },
+    { "name": "verifier", "healthy": true, "response_ms": 3 }
+  ],
+  "healthy_count": 3,
+  "total_count": 3
 }
 ```
 
@@ -60,26 +62,25 @@ Register a credit scoring model with the proof generator. This records the
 model hash (SHA-256 of the JSON weights) and auto-detects the model format.
 
 ```bash
+# Run from the repository root; the request must carry the model file as "model_json"
 curl -s -X POST http://localhost:8080/models \
   -H "Content-Type: application/json" \
-  -d '{
-    "name": "credit-scoring-v1",
-    "format": "xgboost",
-    "num_features": 6,
-    "description": "Credit scoring XGBoost ensemble (88 trees)"
-  }' | python3 -m json.tool
+  -d "{
+    \"name\": \"credit-scoring-v1\",
+    \"format\": \"xgboost\",
+    \"model_json\": $(cat examples/bank-demo/models/credit_scoring.json)
+  }" | python3 -m json.tool
 ```
 
 Expected output:
 
 ```json
 {
-  "id": "credit-scoring-v1",
-  "name": "credit-scoring-v1",
+  "model_id": "cdabc04c-6495-4201-bc2f-c41120e38fbb",
+  "model_hash": "0x200f...9a4a",
+  "circuit_hash": "0xfb9d...4c9f",
   "format": "xgboost",
-  "model_hash": "0x7a3f...c821",
-  "status": "active",
-  "created_at": "2026-03-27T10:00:00Z"
+  "active": true
 }
 ```
 
@@ -93,25 +94,32 @@ and generates a GKR+Hyrax zero-knowledge proof that the inference was computed
 correctly.
 
 ```bash
+# MODEL_ID is the "model_id" returned by Step 2
+MODEL_ID="cdabc04c-6495-4201-bc2f-c41120e38fbb"
+
 curl -s -X POST http://localhost:8080/prove \
   -H "Content-Type: application/json" \
-  -d '{
-    "model_id": "credit-scoring-v1",
-    "features": [52000, 0.38, 710, 4, 85000, 1]
-  }' | python3 -m json.tool
+  -d "{
+    \"model_id\": \"${MODEL_ID}\",
+    \"features\": [52000, 0.38, 710, 4, 85000, 1]
+  }" | python3 -m json.tool
 ```
 
-Expected output:
+Expected output (`docker-compose.offchain.yml` starts the generator with `--mock`):
 
 ```json
 {
-  "model_id": "credit-scoring-v1",
-  "output": [0.87],
-  "proof_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-  "model_hash": "0x7a3f...c821",
-  "circuit_hash": "0x8e7c...4f21",
-  "proving_time_ms": 4200,
-  "proof_size_bytes": 48576
+  "proof_id": "dd5084a8-ba4d-45eb-a2a3-42f40dc7d403",
+  "model_hash": "0x200f...9a4a",
+  "circuit_hash": "0xfb9d...4c9f",
+  "output": "approved",
+  "mock": true,
+  "prove_time_ms": 0,
+  "proof_bundle": {
+    "proof_hex": "0xe2e3...c37c",
+    "public_inputs_hex": "0xc3eb...d83c",
+    "proof_size_bytes": 32
+  }
 }
 ```
 
