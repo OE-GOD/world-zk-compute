@@ -172,17 +172,25 @@ mod tests {
 
     // ===== This crate's XgboostModel layout =====
 
+    /// Read a model file that ships with the crate. The files are read at test
+    /// time instead of with `include_str!` so that building the crate needs
+    /// nothing outside `src/` (the Dockerfile copies only that).
+    fn crate_file(relative: &str) -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    }
+
     #[test]
     fn test_detect_sample_model_file() {
         // The file the README, the Dockerfile and scripts/remainder-e2e.sh use.
-        let json = include_str!("../sample_model.json");
-        assert_eq!(detect_model_format(json).unwrap(), FORMAT_XGBOOST);
+        let json = crate_file("sample_model.json");
+        assert_eq!(detect_model_format(&json).unwrap(), FORMAT_XGBOOST);
     }
 
     #[test]
     fn test_random_forest_with_trees_is_not_taken_for_xgboost() {
-        let json = include_str!("../test-model/random_forest_sample.json");
-        assert_eq!(detect_model_format(json).unwrap(), FORMAT_RANDOM_FOREST);
+        let json = crate_file("test-model/random_forest_sample.json");
+        assert_eq!(detect_model_format(&json).unwrap(), FORMAT_RANDOM_FOREST);
     }
 
     // ===== Unknown / error cases =====
