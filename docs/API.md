@@ -218,15 +218,17 @@ curl "http://localhost:8080/attestation?nonce=deadbeef"
 
 ### POST /infer
 
-Run ML inference on the provided feature vector. Requires an `Authorization`
-header when `API_KEY` is configured on the enclave. The enclave signs the result
+Run ML inference on the provided feature vector. The enclave signs the result
 with its ECDSA key, producing an attestation compatible with `TEEMLVerifier.sol`.
+
+This endpoint has no authentication. The enclave reads no API key for it, so
+anyone who can reach the port receives signed results; keep the port private or
+put an authenticating proxy in front of it. Only the rate limiter applies.
 
 **Headers**
 
 | Name          | Value            | Required                   |
 |---------------|------------------|----------------------------|
-| Authorization | Bearer {api_key} | Yes (when API_KEY is set)  |
 | Content-Type  | application/json | Yes                        |
 
 **Request body**
@@ -268,7 +270,7 @@ with its ECDSA key, producing an attestation compatible with `TEEMLVerifier.sol`
 
 | Status | Condition                    |
 |--------|------------------------------|
-| 401    | Missing or invalid API key   |
+| 400    | Wrong number of features, or the `nonce`/`timestamp` pair fails replay protection (plain-text body) |
 | 429    | Rate limited (see `retry_after_secs` in the JSON body) |
 | 500    | Model inference error        |
 
@@ -277,7 +279,6 @@ with its ECDSA key, producing an attestation compatible with `TEEMLVerifier.sol`
 ```bash
 curl -X POST http://localhost:8080/infer \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer my-api-key" \
   -d '{"features": [5.1, 3.5, 1.4, 0.2]}'
 ```
 
@@ -799,10 +800,14 @@ websocat ws://localhost:8081/ws/events
 
 ### Authentication
 
-The TEE enclave supports API key authentication via the `Authorization: Bearer <key>`
-header. Set the `API_KEY` environment variable on the enclave to enable it.
+The TEE enclave has no API key for `POST /infer` or for its read-only endpoints
+(`/health`, `/info`, `/attestation`, `/metrics`, `GET /models`); it does not read
+an `API_KEY` variable.
 
-Admin endpoints (e.g., `/admin/reload-model`) require the `ADMIN_API_KEY` env var.
+The endpoints that change the loaded models (`POST /admin/reload-model`,
+`POST /models/load`, `DELETE /models/{model_id}`) require
+`Authorization: Bearer <ADMIN_API_KEY>` and return `403` when `ADMIN_API_KEY` is
+not set.
 
 ### Rate Limiting
 
