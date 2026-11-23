@@ -372,6 +372,11 @@ pub fn detect_model_format(json_str: &str) -> anyhow::Result<&'static str> {
     if v.get("weights").is_some() {
         return Ok(FORMAT_LOGISTIC_REGRESSION);
     }
+    // The prover's own serialized model (examples/xgboost-remainder/sample_model.json),
+    // which its "xgboost" loader accepts next to the xgb.save_model format.
+    if v.get("num_features").is_some() && v.get("trees").is_some() {
+        return Ok(FORMAT_XGBOOST);
+    }
 
     Err(anyhow::anyhow!(
         "Could not detect model format from JSON structure. \
@@ -422,6 +427,23 @@ mod tests {
             detect_model_format(json).unwrap(),
             FORMAT_LOGISTIC_REGRESSION
         );
+    }
+
+    #[test]
+    fn test_detect_prover_sample_model() {
+        // The model file the prover's README and Dockerfile use.
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/xgboost-remainder/sample_model.json");
+        let json =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        assert_eq!(detect_model_format(&json).unwrap(), FORMAT_XGBOOST);
+    }
+
+    #[test]
+    fn test_detect_random_forest_with_trees_and_num_features() {
+        // "n_estimators" is checked first, so a forest export is not taken for XGBoost.
+        let json = r#"{"n_estimators": 3, "num_features": 4, "trees": []}"#;
+        assert_eq!(detect_model_format(json).unwrap(), FORMAT_RANDOM_FOREST);
     }
 
     #[test]
