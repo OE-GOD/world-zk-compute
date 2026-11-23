@@ -179,6 +179,7 @@ EXECUTION_ENGINE_ABI: list[dict[str, Any]] = [
         "inputs": [
             {"name": "requestId", "type": "uint256", "indexed": True},
             {"name": "callbackContract", "type": "address", "indexed": True},
+            {"name": "reason", "type": "bytes", "indexed": False},
         ],
         "anonymous": False,
     },
