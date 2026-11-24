@@ -24,7 +24,7 @@
 
 use async_trait::async_trait;
 use aws_sdk_s3::primitives::ByteStream;
-use aws_sdk_s3::types::{ObjectLockMode, ObjectLockRetention};
+use aws_sdk_s3::types::{ObjectLockMode, ObjectLockRetention, ObjectLockRetentionMode};
 use aws_sdk_s3::Client;
 use chrono::Utc;
 
@@ -64,7 +64,7 @@ impl S3Storage {
 
         let retention_mode = match mode.to_uppercase().as_str() {
             "COMPLIANCE" => ObjectLockMode::Compliance,
-            "GOVERNANCE" | _ => ObjectLockMode::Governance,
+            _ => ObjectLockMode::Governance,
         };
 
         Ok(Self {
@@ -88,8 +88,13 @@ impl S3Storage {
         let retain_until_aws =
             aws_sdk_s3::primitives::DateTime::from_millis(retain_until.timestamp_millis());
 
+        // The retention API has its own mode type with the same two values.
+        let mode = match self.retention_mode {
+            ObjectLockMode::Compliance => ObjectLockRetentionMode::Compliance,
+            _ => ObjectLockRetentionMode::Governance,
+        };
         ObjectLockRetention::builder()
-            .mode(self.retention_mode.clone())
+            .mode(mode)
             .retain_until_date(retain_until_aws)
             .build()
     }
@@ -278,20 +283,20 @@ mod tests {
         // Verify our mode parsing logic.
         let governance = match "GOVERNANCE".to_uppercase().as_str() {
             "COMPLIANCE" => ObjectLockMode::Compliance,
-            "GOVERNANCE" | _ => ObjectLockMode::Governance,
+            _ => ObjectLockMode::Governance,
         };
         assert_eq!(governance, ObjectLockMode::Governance);
 
         let compliance = match "COMPLIANCE".to_uppercase().as_str() {
             "COMPLIANCE" => ObjectLockMode::Compliance,
-            "GOVERNANCE" | _ => ObjectLockMode::Governance,
+            _ => ObjectLockMode::Governance,
         };
         assert_eq!(compliance, ObjectLockMode::Compliance);
 
         // Unknown defaults to Governance.
         let unknown = match "UNKNOWN".to_uppercase().as_str() {
             "COMPLIANCE" => ObjectLockMode::Compliance,
-            "GOVERNANCE" | _ => ObjectLockMode::Governance,
+            _ => ObjectLockMode::Governance,
         };
         assert_eq!(unknown, ObjectLockMode::Governance);
     }
