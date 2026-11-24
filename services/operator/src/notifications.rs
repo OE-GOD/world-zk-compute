@@ -164,7 +164,8 @@ impl WebhookNotifier {
                         return;
                     }
                     Err(e) => {
-                        // Connection error — retryable
+                        // Connection error — retryable.
+                        let e = delivery_error_text(e);
                         if attempt < MAX_RETRIES {
                             let delay = base_delay * 2u32.pow(attempt);
                             tracing::warn!(
@@ -319,6 +320,13 @@ pub fn maybe_notify_dispute_resolved(
     if let Some(n) = notifier {
         n.notify_dispute_resolved(result_id, winner);
     }
+}
+
+/// The text logged for a failed delivery. reqwest puts the request URL into
+/// its error text, and a webhook URL carries its secret token (Slack puts it
+/// in the path), so the URL is removed.
+fn delivery_error_text(e: reqwest::Error) -> String {
+    e.without_url().to_string()
 }
 
 #[cfg(test)]
@@ -513,6 +521,25 @@ mod tests {
             notifier.notification_failures() >= 1,
             "Expected at least 1 failure, got {}",
             notifier.notification_failures()
+        );
+    }
+
+    /// A webhook URL is a credential (Slack puts the token in the path), so
+    /// the text logged for a failed send must not contain it.
+    #[tokio::test]
+    async fn test_delivery_error_text_omits_webhook_url() {
+        // Port 1 on localhost refuses the connection at once.
+        let url = "http://127.0.0.1:1/services/T00/B00/SECRETTOKEN";
+        let send = || async { reqwest::Client::new().post(url).send().await.unwrap_err() };
+
+        let raw = send().await.to_string();
+        assert!(raw.contains("SECRETTOKEN"), "reqwest's own text: {raw}");
+
+        let logged = delivery_error_text(send().await);
+        assert!(!logged.is_empty());
+        assert!(
+            !logged.contains("SECRETTOKEN") && !logged.contains("127.0.0.1"),
+            "webhook URL must not be logged: {logged}"
         );
     }
 

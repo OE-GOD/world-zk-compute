@@ -1,7 +1,7 @@
 //! Append-only proof archive storage.
 //!
 //! Archives proof bundles in a date-partitioned directory structure:
-//! `$PROOFS_DIR/YYYY-MM-DD/proof-{uuid}.json`
+//! `$PROOF_ARCHIVE_DIR/YYYY-MM-DD/proof-{uuid}.json`
 //!
 //! Each proof file contains the inference result, attestation, and
 //! metadata needed to reproduce the verification.
@@ -15,7 +15,7 @@ use std::time::SystemTime;
 pub struct ProofArchiveEntry {
     /// Unique identifier for this proof entry.
     pub id: String,
-    /// ISO-8601 timestamp when the proof was archived.
+    /// Unix timestamp (seconds) as a string, taken when the proof was archived.
     pub archived_at: String,
     /// Result ID from on-chain submission (hex).
     pub result_id: String,

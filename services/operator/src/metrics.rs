@@ -296,7 +296,7 @@ async fn json_metrics_handler(State(state): State<Arc<MetricsState>>) -> Json<Me
 
 /// Serve the metrics HTTP server with graceful shutdown support.
 ///
-/// Listens on `0.0.0.0:{port}` and shuts down when the `shutdown_rx` watch
+/// Listens on `{bind_addr}:{port}` and shuts down when the `shutdown_rx` watch
 /// channel receives `true`. On shutdown, the `MetricsState.shutting_down` flag
 /// is set so that the health endpoint reports unhealthy (503) before the
 /// server finishes draining connections.

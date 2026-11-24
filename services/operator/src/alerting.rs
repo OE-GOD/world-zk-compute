@@ -1,7 +1,8 @@
 //! Advanced alerting module with multi-channel routing, dedup, and escalation.
 //!
-//! Supports Slack webhooks, PagerDuty Events API v2, email (SMTP), and
-//! generic webhooks. Alerts are routed by severity:
+//! Channel types exist for Slack webhooks, PagerDuty Events API v2, email
+//! (SMTP), and generic webhooks, but delivery is not implemented: the default
+//! sender ([`LogOnlySender`]) only logs. Alerts are routed by severity:
 //!
 //! - **Critical** -- PagerDuty + Slack + GenericWebhook
 //! - **Warning** -- Slack + GenericWebhook
@@ -9,7 +10,8 @@
 //!
 //! Duplicate alerts (same `alert_type` + `source`) are suppressed within a
 //! configurable dedup window (default 5 minutes). Un-acknowledged critical
-//! alerts trigger escalation after the escalation timeout (default 15 minutes).
+//! alerts are escalated after the escalation timeout (default 15 minutes) by
+//! [`AlertManager::check_escalations`], which the operator binary does not call.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -59,6 +61,7 @@ pub enum AlertChannel {
         #[serde(default)]
         channel: Option<String>,
     },
+    #[serde(alias = "pagerduty")]
     PagerDuty {
         routing_key: String,
         service_name: String,

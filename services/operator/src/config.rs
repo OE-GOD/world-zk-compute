@@ -13,7 +13,7 @@ pub struct ModelConfig {
     #[serde(default = "default_model_format")]
     pub model_format: String,
     /// Optional keccak256 hash of the model file for integrity verification.
-    /// If provided, the operator validates it on startup.
+    /// Checked by `Config::validate_models`, which is not called at startup.
     #[serde(default)]
     pub model_hash: Option<String>,
 }
@@ -44,7 +44,7 @@ pub struct ConfigFile {
     pub proof_retry_delay_secs: Option<u64>,
     /// Webhook URL for dispute notifications (optional).
     /// When set, the operator sends JSON payloads to this URL on
-    /// challenge, proof submission, and dispute resolution events.
+    /// challenge events.
     pub webhook_url: Option<String>,
     /// Generic retry: base delay in milliseconds between retries.
     pub retry_base_delay_ms: Option<u64>,
@@ -141,7 +141,7 @@ pub struct Config {
     pub proof_retry_delay_secs: u64,
     /// Webhook URL for dispute notifications (optional).
     /// When set, the operator POSTs JSON payloads to this URL on
-    /// challenge, proof submission, and dispute resolution events.
+    /// challenge events.
     /// Compatible with Slack incoming webhooks.
     pub webhook_url: Option<String>,
     /// Generic retry: base delay in milliseconds between retries (default: 1000).
@@ -794,12 +794,12 @@ impl Config {
             }
         }
 
-        // Metrics port: 0 is valid (disabled / OS-assigned), but 1-1023 is
+        // Metrics port: 0 is valid (OS-assigned), but 1-1023 is
         // the privileged port range and almost certainly unintended.
         if self.metrics_port > 0 && self.metrics_port < 1024 {
             errors.push(format!(
                 "metrics_port {} is in the privileged range (1-1023). \
-                 Use a port >= 1024, or 0 to disable.",
+                 Use a port >= 1024, or 0 for an OS-assigned port.",
                 self.metrics_port
             ));
         }

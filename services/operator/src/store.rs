@@ -198,8 +198,8 @@ pub struct OperatorState {
     pub active_disputes: HashMap<String, u64>,
 
     /// Bounded set of event IDs that have already been processed, used for
-    /// deduplication after a restart.  Event IDs are formatted as
-    /// `"<tx_hash>:<log_index>"` or similar unique identifiers.
+    /// deduplication after a restart.  The operator stores result ids
+    /// (0x-prefixed hex).
     ///
     /// Capped at [`MAX_PROCESSED_IDS`] entries with LRU-style eviction of the
     /// oldest IDs when the limit is exceeded.
@@ -249,14 +249,14 @@ impl StateStore {
             }
             Ok(None) => {
                 tracing::warn!(
-                    "State file {:?} not found, starting from latest block",
+                    "State file {:?} not found, starting from block 0",
                     self.path
                 );
                 OperatorState::default()
             }
             Err(e) => {
                 tracing::warn!(
-                    "State file {:?} corrupt or unreadable ({}), starting from latest block",
+                    "State file {:?} corrupt or unreadable ({}), starting from block 0",
                     self.path,
                     e
                 );

@@ -119,7 +119,7 @@ enum Commands {
         /// Output file path
         #[arg(long)]
         output: String,
-        /// Proof archive directory (defaults to PROOFS_DIR from config)
+        /// Proof archive directory (defaults to PROOF_ARCHIVE_DIR)
         #[arg(long)]
         archive_dir: Option<String>,
     },
@@ -133,7 +133,7 @@ enum Commands {
         /// Defaults to PROOF_ARCHIVE_DIR env var.
         #[arg(long)]
         archive_dir: Option<String>,
-        /// Source proof directory (defaults to PROOFS_DIR from config).
+        /// Source proof directory (defaults to the PROOFS_DIR env var, then PROOF_ARCHIVE_DIR).
         #[arg(long)]
         proofs_dir: Option<String>,
         /// Preview which proofs would be archived without actually moving them.
@@ -759,6 +759,33 @@ async fn shutdown_signal() -> &'static str {
     }
 }
 
+/// Build the alert configuration from the value of `ALERT_CONFIG_JSON`.
+///
+/// An unset, empty or whitespace-only value gives the default (log-only)
+/// configuration. The value holds webhook URLs and routing keys, and a
+/// `serde_json` error message can quote the input, so a parse failure is
+/// logged as error category, position and byte length only.
+fn alert_config_from_env_value(value: Option<&str>) -> AlertConfig {
+    let json = match value {
+        Some(v) if !v.trim().is_empty() => v,
+        _ => {
+            tracing::debug!("ALERT_CONFIG_JSON not set, using default AlertConfig (log-only)");
+            return AlertConfig::default();
+        }
+    };
+    tracing::debug!("Parsing ALERT_CONFIG_JSON ({} bytes)", json.len());
+    serde_json::from_str::<AlertConfig>(json).unwrap_or_else(|e| {
+        tracing::warn!(
+            error_kind = ?e.classify(),
+            line = e.line(),
+            column = e.column(),
+            json_len = json.len(),
+            "Failed to parse ALERT_CONFIG_JSON, falling back to defaults"
+        );
+        AlertConfig::default()
+    })
+}
+
 #[tracing::instrument(skip(config))]
 async fn cmd_watch(config: &Config, metrics_port: u16, dry_run: bool) -> anyhow::Result<()> {
     if dry_run {
@@ -796,23 +823,8 @@ async fn cmd_watch(config: &Config, metrics_port: u16, dry_run: bool) -> anyhow:
     }
 
     // Initialize AlertManager for multi-channel alerting (log-only by default)
-    let alert_config = match std::env::var("ALERT_CONFIG_JSON") {
-        Ok(json) => {
-            tracing::debug!("Parsing ALERT_CONFIG_JSON ({} bytes)", json.len());
-            serde_json::from_str::<AlertConfig>(&json).unwrap_or_else(|e| {
-                tracing::warn!(
-                    error = %e,
-                    json_preview = %if json.len() > 120 { &json[..120] } else { &json },
-                    "Failed to parse ALERT_CONFIG_JSON, falling back to defaults"
-                );
-                AlertConfig::default()
-            })
-        }
-        Err(_) => {
-            tracing::debug!("ALERT_CONFIG_JSON not set, using default AlertConfig (log-only)");
-            AlertConfig::default()
-        }
-    };
+    let alert_config =
+        alert_config_from_env_value(std::env::var("ALERT_CONFIG_JSON").ok().as_deref());
     tracing::info!(
         channels = alert_config.channels.len(),
         dedup_window_secs = alert_config.dedup_window_secs,
@@ -888,7 +900,7 @@ async fn cmd_watch(config: &Config, metrics_port: u16, dry_run: bool) -> anyhow:
     audit::log_config_loaded(
         &config.rpc_url,
         &config.tee_verifier_address,
-        false,
+        dry_run,
         config.nitro_verification,
     );
 
@@ -1068,11 +1080,13 @@ async fn cmd_watch(config: &Config, metrics_port: u16, dry_run: bool) -> anyhow:
                         }
                         Err(_) => {
                             tracing::warn!(
-                                "Max concurrent proof submissions reached, skipping (will retry on next poll): {}",
+                                "Max concurrent proof submissions reached, skipping challenge (it is not polled again unless the operator replays from an earlier block): {}",
                                 rid_hex
                             );
                             metrics_state.record_error();
-                            // Don't mark as processed — will be retried on next poll
+                            // Not marked as processed, but the poll loop has
+                            // already moved past this block, so the challenge
+                            // is only seen again after a replay.
                             continue;
                         }
                     }
@@ -2252,5 +2266,152 @@ mod tests {
             "archive entry must be complete, not a temp file: {:?}",
             archived
         );
+    }
+
+    /// Collects formatted log output.
+    #[derive(Clone, Default)]
+    struct LogBuffer(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl LogBuffer {
+        /// Subscriber that writes events at `level` and above into this buffer.
+        fn subscriber(&self, level: tracing::Level) -> impl tracing::Subscriber + Send + Sync {
+            let writer = self.clone();
+            tracing_subscriber::fmt()
+                .with_max_level(level)
+                .with_ansi(false)
+                .with_writer(move || writer.clone())
+                .finish()
+        }
+
+        fn contents(&self) -> String {
+            String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+        }
+    }
+
+    impl std::io::Write for LogBuffer {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_alert_config_accepts_both_pagerduty_spellings() {
+        use tee_operator::alerting::AlertChannel;
+
+        for spelling in ["pagerduty", "pager_duty"] {
+            let json = format!(
+                r##"{{"channels":[{{"type":"slack_webhook","url":"https://hooks.slack.com/services/T00/B00/xxx","channel":"#alerts"}},{{"type":"{}","routing_key":"R0","service_name":"tee-operator"}}]}}"##,
+                spelling
+            );
+            let config = alert_config_from_env_value(Some(&json));
+            assert_eq!(config.channels.len(), 2, "type \"{}\"", spelling);
+            assert!(
+                matches!(config.channels[1], AlertChannel::PagerDuty { .. }),
+                "type \"{}\" gave {:?}",
+                spelling,
+                config.channels[1]
+            );
+        }
+    }
+
+    #[test]
+    fn test_alert_config_empty_value_is_treated_as_unset() {
+        let logs = LogBuffer::default();
+        let _guard = tracing::subscriber::set_default(logs.subscriber(tracing::Level::WARN));
+
+        for value in [None, Some(""), Some("  \n\t")] {
+            let config = alert_config_from_env_value(value);
+            assert!(config.channels.is_empty());
+        }
+        assert_eq!(logs.contents(), "", "no warning for an empty value");
+    }
+
+    /// The value holds credentials. A value that does not parse is reported
+    /// without quoting it, and with no slicing that could split a character.
+    #[test]
+    fn test_alert_config_parse_failure_log_has_no_part_of_the_value() {
+        let logs = LogBuffer::default();
+        let _guard = tracing::subscriber::set_default(logs.subscriber(tracing::Level::WARN));
+
+        // Byte 120 is the second byte of an 'é'; "headers" must be a map, so
+        // serde's own message would quote the string given for it.
+        let prefix = r#"{"channels":[{"type":"generic_webhook","url":"https://hooks.example.com/T00/SECRETPATH","headers":"Bearer SECRETHEADER "#;
+        let json = format!("{}{}\"}}]}}", prefix, "é".repeat(40));
+        assert_eq!(prefix.len() % 2, 1);
+        assert!(!json.is_char_boundary(120));
+
+        let config = alert_config_from_env_value(Some(&json));
+        assert!(config.channels.is_empty());
+
+        let logged = logs.contents();
+        assert!(
+            logged.contains("Failed to parse ALERT_CONFIG_JSON"),
+            "expected the parse warning, got: {}",
+            logged
+        );
+        assert!(
+            logged.contains(&format!("json_len={}", json.len())),
+            "byte length must be logged: {}",
+            logged
+        );
+        for secret in [
+            "SECRETPATH",
+            "SECRETHEADER",
+            "hooks.example.com",
+            "é",
+            "channels",
+            "generic_webhook",
+            "https://",
+            "Bearer",
+        ] {
+            assert!(
+                !logged.contains(secret),
+                "log contains {:?} from the value: {}",
+                secret,
+                logged
+            );
+        }
+    }
+
+    /// The `config_loaded` audit event must carry the mode the watcher runs in.
+    #[tokio::test]
+    async fn test_cmd_watch_audit_event_reports_dry_run() {
+        use std::future::Future;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = submit_test_config("http://127.0.0.1:1", "http://127.0.0.1:1", dir.path());
+
+        for dry_run in [true, false] {
+            let logs = LogBuffer::default();
+            let _guard = tracing::subscriber::set_default(logs.subscriber(tracing::Level::INFO));
+
+            // A single poll runs the start-up code up to the first RPC call. The
+            // tasks it spawns (signal handler, metrics server) are never polled.
+            let mut watch = std::pin::pin!(cmd_watch(&config, 0, dry_run));
+            std::future::poll_fn(|cx| {
+                let _ = watch.as_mut().poll(cx);
+                std::task::Poll::Ready(())
+            })
+            .await;
+
+            let logged = logs.contents();
+            // The span prefix also shows `dry_run`; look at the event's own fields.
+            let fields = logged
+                .lines()
+                .find_map(|line| line.split_once("event=\"config_loaded\""))
+                .map(|(_, fields)| fields)
+                .unwrap_or_else(|| panic!("no config_loaded audit event in: {}", logged));
+            assert!(
+                fields.contains(&format!("dry_run={}", dry_run)),
+                "cmd_watch(dry_run={}) logged:{}",
+                dry_run,
+                fields
+            );
+        }
     }
 }
