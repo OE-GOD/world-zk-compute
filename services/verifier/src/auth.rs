@@ -11,6 +11,10 @@ use serde::Serialize;
 
 use crate::tenant::TenantStore;
 
+/// Longest `X-API-Key` value, in bytes, that is accepted without being a
+/// configured key. Keys issued by this service are 35 bytes long.
+pub const MAX_API_KEY_LEN: usize = 256;
+
 /// Shared auth state injected into the middleware.
 ///
 /// Supports two modes:
@@ -106,8 +110,9 @@ pub fn extract_client_id(headers: &HeaderMap) -> String {
 
 /// Axum middleware function for API key authentication.
 ///
-/// - If `AuthState` has no keys and no tenants configured, all requests pass through.
-/// - Requests to `/health` always pass through (no auth required).
+/// - If `AuthState` has no keys and no tenants configured, all requests pass through,
+///   except those whose `X-API-Key` header is longer than [`MAX_API_KEY_LEN`]:
+///   they are rejected like an unknown key.
 /// - All other requests must include a valid `X-API-Key` header.
 /// - When a tenant key is validated, the tenant's request count is incremented.
 pub async fn auth_middleware(
@@ -115,13 +120,14 @@ pub async fn auth_middleware(
     request: Request,
     next: Next,
 ) -> Response {
-    // /health is always public
-    if request.uri().path() == "/health" {
-        return next.run(request).await;
-    }
-
     // If no API keys configured (neither legacy nor tenant), auth is disabled
     if state.is_open() {
+        // The key is not checked here, but the rate limiter names a bucket
+        // after it, so one that is too long to be a key goes no further.
+        let key_len = request.headers().get("x-api-key").map_or(0, |v| v.len());
+        if key_len > MAX_API_KEY_LEN {
+            return invalid_key_response();
+        }
         return next.run(request).await;
     }
 
@@ -142,13 +148,7 @@ pub async fn auth_middleware(
                 }
                 next.run(request).await
             }
-            None => (
-                StatusCode::UNAUTHORIZED,
-                Json(AuthError {
-                    error: "Invalid API key".to_string(),
-                }),
-            )
-                .into_response(),
+            None => invalid_key_response(),
         },
         None => (
             StatusCode::UNAUTHORIZED,
@@ -158,6 +158,17 @@ pub async fn auth_middleware(
         )
             .into_response(),
     }
+}
+
+/// The response to a key that is not known to this service.
+fn invalid_key_response() -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(AuthError {
+            error: "Invalid API key".to_string(),
+        }),
+    )
+        .into_response()
 }
 
 #[cfg(test)]

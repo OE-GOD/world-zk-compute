@@ -398,6 +398,16 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
               example:
                 error: "circuit 'unknown-circuit' not registered"
+        "410":
+          description: |
+            The circuit's registration has expired (`CIRCUIT_TTL_SECS`). The
+            entry is removed, so later requests for the same ID get 404.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "circuit 'my-circuit' registration expired"
         "429":
           $ref: "#/components/responses/RateLimited"
 
@@ -446,6 +456,16 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
               example:
                 error: "circuit 'unknown-circuit' not registered"
+        "410":
+          description: |
+            The circuit's registration has expired (`CIRCUIT_TTL_SECS`). The
+            entry is removed, so later requests for the same ID get 404.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "circuit 'my-circuit' registration expired"
         "429":
           $ref: "#/components/responses/RateLimited"
 

@@ -33,23 +33,34 @@ impl TlsConfig {
     /// Returns `Ok(None)` if `VERIFIER_TLS_CERT` is not set (TLS disabled).
     /// Returns `Err` if cert path is set but key path is missing.
     pub fn from_env() -> Result<Option<Self>, String> {
-        let cert_path = match std::env::var("VERIFIER_TLS_CERT") {
-            Ok(p) if !p.is_empty() => PathBuf::from(p),
+        Self::from_vars(
+            std::env::var("VERIFIER_TLS_CERT").ok(),
+            std::env::var("VERIFIER_TLS_KEY").ok(),
+            std::env::var("VERIFIER_TLS_CLIENT_CA").ok(),
+        )
+    }
+
+    /// Build the TLS configuration from the values of `VERIFIER_TLS_CERT`,
+    /// `VERIFIER_TLS_KEY` and `VERIFIER_TLS_CLIENT_CA` (`None` = not set).
+    fn from_vars(
+        cert: Option<String>,
+        key: Option<String>,
+        client_ca: Option<String>,
+    ) -> Result<Option<Self>, String> {
+        let cert_path = match cert {
+            Some(p) if !p.is_empty() => PathBuf::from(p),
             _ => return Ok(None),
         };
 
-        let key_path = std::env::var("VERIFIER_TLS_KEY")
-            .map(PathBuf::from)
-            .map_err(|_| "VERIFIER_TLS_CERT is set but VERIFIER_TLS_KEY is missing".to_string())?;
+        let key_path = key.map(PathBuf::from).ok_or_else(|| {
+            "VERIFIER_TLS_CERT is set but VERIFIER_TLS_KEY is missing".to_string()
+        })?;
 
         if key_path.as_os_str().is_empty() {
             return Err("VERIFIER_TLS_KEY must not be empty when VERIFIER_TLS_CERT is set".into());
         }
 
-        let client_ca_path = std::env::var("VERIFIER_TLS_CLIENT_CA")
-            .ok()
-            .filter(|p| !p.is_empty())
-            .map(PathBuf::from);
+        let client_ca_path = client_ca.filter(|p| !p.is_empty()).map(PathBuf::from);
 
         Ok(Some(Self {
             cert_path,
@@ -151,26 +162,15 @@ mod tests {
 
     #[test]
     fn test_tls_disabled_by_default() {
-        // Clear env vars for this test
-        std::env::remove_var("VERIFIER_TLS_CERT");
-        std::env::remove_var("VERIFIER_TLS_KEY");
-        std::env::remove_var("VERIFIER_TLS_CLIENT_CA");
-
-        let config = TlsConfig::from_env().unwrap();
+        let config = TlsConfig::from_vars(None, None, None).unwrap();
         assert!(config.is_none());
     }
 
     #[test]
     fn test_tls_requires_key_when_cert_set() {
-        std::env::set_var("VERIFIER_TLS_CERT", "/certs/server.pem");
-        std::env::remove_var("VERIFIER_TLS_KEY");
-        std::env::remove_var("VERIFIER_TLS_CLIENT_CA");
-
-        let result = TlsConfig::from_env();
+        let result = TlsConfig::from_vars(Some("/certs/server.pem".into()), None, None);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("VERIFIER_TLS_KEY is missing"));
-
-        std::env::remove_var("VERIFIER_TLS_CERT");
     }
 
     #[test]
@@ -195,25 +195,19 @@ mod tests {
 
     #[test]
     fn test_empty_cert_path_means_disabled() {
-        std::env::set_var("VERIFIER_TLS_CERT", "");
-        std::env::remove_var("VERIFIER_TLS_KEY");
-        std::env::remove_var("VERIFIER_TLS_CLIENT_CA");
-
-        let config = TlsConfig::from_env().unwrap();
+        let config = TlsConfig::from_vars(Some(String::new()), None, None).unwrap();
         assert!(config.is_none());
-
-        std::env::remove_var("VERIFIER_TLS_CERT");
     }
 
     #[test]
     fn test_empty_client_ca_path_means_no_mtls() {
-        // Test the logic directly rather than via env vars to avoid races
-        // with other parallel tests that manipulate the same env vars.
-        let config = TlsConfig {
-            cert_path: PathBuf::from("/certs/server.pem"),
-            key_path: PathBuf::from("/certs/server-key.pem"),
-            client_ca_path: None, // empty env var is filtered to None by from_env()
-        };
+        let config = TlsConfig::from_vars(
+            Some("/certs/server.pem".into()),
+            Some("/certs/server-key.pem".into()),
+            Some(String::new()),
+        )
+        .unwrap()
+        .unwrap();
         assert!(!config.is_mtls());
     }
 
