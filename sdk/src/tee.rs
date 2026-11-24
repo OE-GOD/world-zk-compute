@@ -1,8 +1,10 @@
 //! TEEVerifier client for the TEEMLVerifier contract.
 
+use alloy::eips::BlockNumberOrTag;
 use alloy::primitives::{Address, Bytes, B256, U256};
-use alloy::providers::ProviderBuilder;
+use alloy::providers::{Provider, ProviderBuilder};
 use alloy::sol_types::SolEvent;
+use anyhow::Context;
 
 use crate::abi::{RemainderVerifier, TEEMLVerifier};
 use crate::client::{Client, PendingTransactionExt};
@@ -16,14 +18,37 @@ const DISPUTE_GAS_MARGIN: u64 = 100_000;
 /// itself (`outer_estimate`) and of the proof verification it runs in an inner
 /// call (`verification_gas`).
 ///
-/// `outer_estimate` covers everything except the verification (it may come from
-/// a run in which the inner call ran out of gas). The inner call receives at
-/// most 63/64 of the remaining gas, so `verification_gas * 64 / 63` is added.
+/// `outer_estimate` may or may not include the verification: depending on the
+/// node it is the gas of a run in which the inner call succeeded, or of one in
+/// which it ran out of gas. The limit has to be enough in both cases, so the
+/// verification is always added, as `verification_gas * 64 / 63` because the
+/// inner call receives at most 63/64 of the remaining gas.
+///
+/// When the estimate already includes the verification, the limit is about
+/// twice the gas the transaction uses. Unused gas is not charged, but the
+/// sender must be able to pay for the whole limit and the block gas limit must
+/// admit it (see [`ensure_fits_in_block`]).
 fn dispute_gas_limit(outer_estimate: u64, verification_gas: u64) -> u64 {
     outer_estimate
         .saturating_add(verification_gas)
         .saturating_add(verification_gas / 63 + 1)
         .saturating_add(DISPUTE_GAS_MARGIN)
+}
+
+/// Fail if a `resolveDispute` transaction with `gas_limit` cannot be included
+/// in a block of `block_gas_limit`.
+fn ensure_fits_in_block(
+    gas_limit: u64,
+    verification_gas: u64,
+    block_gas_limit: u64,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        gas_limit <= block_gas_limit,
+        "resolveDispute needs a gas limit of {gas_limit} (the proof verification alone \
+         takes {verification_gas} gas), but the block gas limit is {block_gas_limit}; \
+         nothing was sent"
+    );
+    Ok(())
 }
 
 /// TEE ML Verifier — wraps the `TEEMLVerifier` contract.
@@ -213,7 +238,10 @@ impl TEEVerifier {
     ///    checks with `eth_call` that the proof verifies with that much gas
     ///    (an error is returned, and nothing is sent, if it does not);
     /// 2. sends `resolveDispute` with a gas limit that leaves the inner call
-    ///    that much gas (EIP-150 forwards at most 63/64 of what is left).
+    ///    that much gas (EIP-150 forwards at most 63/64 of what is left). The
+    ///    limit can be about twice the gas the transaction uses; if it is
+    ///    above the latest block's gas limit, an error is returned and nothing
+    ///    is sent.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(result_id = %result_id)))]
     pub async fn resolve_dispute_with_gas(
         &self,
@@ -232,25 +260,50 @@ impl TEEVerifier {
 
         // The verification exactly as resolveDispute will run it.
         let remainder_address = contract.remainderVerifier().call().await?;
-        let remainder = RemainderVerifier::new(remainder_address, provider);
+        let remainder = RemainderVerifier::new(remainder_address, provider.clone());
+        let refused = |function: &str| {
+            format!(
+                "{function} on RemainderVerifier {remainder_address} failed and nothing was \
+                 sent: either the proof does not verify, or the node's gas cap or the block \
+                 gas limit is below what the verification needs"
+            )
+        };
         let (verification_gas, verifies) = if contract.useStylusVerifier().call().await? {
+            let function = "verifyDAGProofStylus";
             let call = remainder.verifyDAGProofStylus(
                 proof.clone(),
                 circuit_hash,
                 pub_inputs.clone(),
                 gens.clone(),
             );
-            let gas = call.estimate_gas().await?;
-            (gas, call.gas(gas).call().await?)
+            let gas = call
+                .estimate_gas()
+                .await
+                .with_context(|| refused(function))?;
+            let verifies = call
+                .gas(gas)
+                .call()
+                .await
+                .with_context(|| refused(function))?;
+            (gas, verifies)
         } else {
+            let function = "verifyDAGProof";
             let call = remainder.verifyDAGProof(
                 proof.clone(),
                 circuit_hash,
                 pub_inputs.clone(),
                 gens.clone(),
             );
-            let gas = call.estimate_gas().await?;
-            (gas, call.gas(gas).call().await?)
+            let gas = call
+                .estimate_gas()
+                .await
+                .with_context(|| refused(function))?;
+            let verifies = call
+                .gas(gas)
+                .call()
+                .await
+                .with_context(|| refused(function))?;
+            (gas, verifies)
         };
         anyhow::ensure!(
             verifies,
@@ -260,6 +313,11 @@ impl TEEVerifier {
 
         let call = contract.resolveDispute(result_id, proof, circuit_hash, pub_inputs, gens);
         let gas_limit = dispute_gas_limit(call.estimate_gas().await?, verification_gas);
+        let latest_block = provider
+            .get_block_by_number(BlockNumberOrTag::Latest)
+            .await?
+            .context("the node returned no latest block")?;
+        ensure_fits_in_block(gas_limit, verification_gas, latest_block.header.gas_limit)?;
         let receipt = call
             .gas(gas_limit)
             .send()
@@ -448,9 +506,10 @@ mod tests {
     #[test]
     fn dispute_gas_limit_leaves_verification_gas_for_inner_call() {
         // Measured on Anvil for the phase1a fixture.
-        let outer_estimate = 195_956_031u64;
-        let verification_gas = 254_000_000u64;
+        let outer_estimate = 195_975_931u64;
+        let verification_gas = 198_249_628u64;
         let limit = dispute_gas_limit(outer_estimate, verification_gas);
+        assert_eq!(limit, 397_472_379);
 
         let available_at_call = limit - outer_estimate;
         let forwarded = available_at_call - available_at_call / 64;
@@ -464,5 +523,20 @@ mod tests {
     fn dispute_gas_limit_saturates() {
         assert_eq!(dispute_gas_limit(u64::MAX, u64::MAX), u64::MAX);
         assert_eq!(dispute_gas_limit(0, 0), DISPUTE_GAS_MARGIN + 1);
+    }
+
+    #[test]
+    fn ensure_fits_in_block_compares_with_block_gas_limit() {
+        let (gas_limit, verification_gas) = (397_472_379u64, 198_249_628u64);
+        assert!(ensure_fits_in_block(gas_limit, verification_gas, 500_000_000).is_ok());
+        assert!(ensure_fits_in_block(gas_limit, verification_gas, gas_limit).is_ok());
+
+        let msg = ensure_fits_in_block(gas_limit, verification_gas, 300_000_000)
+            .expect_err("the limit is above the block gas limit")
+            .to_string();
+        assert!(msg.contains("gas limit of 397472379"), "{msg}");
+        assert!(msg.contains("198249628"), "{msg}");
+        assert!(msg.contains("block gas limit is 300000000"), "{msg}");
+        assert!(msg.contains("nothing was sent"), "{msg}");
     }
 }

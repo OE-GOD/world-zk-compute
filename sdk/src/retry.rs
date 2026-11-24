@@ -3,6 +3,8 @@
 use std::future::Future;
 use std::time::Duration;
 
+use crate::client::TransactionReverted;
+
 /// Internal helper macro: emit a debug-level tracing event when the `tracing`
 /// feature is enabled.  When disabled the call compiles to nothing.
 macro_rules! trace_debug {
@@ -105,10 +107,18 @@ fn contains_status_code(msg: &str, code: &str) -> bool {
 /// Returns true if the error message suggests a transient/retryable failure.
 ///
 /// Every cause in the error chain is inspected, not only the outermost context.
-/// A contract revert is never retryable: the same call reverts again.
+/// A contract revert is never retryable: the same call reverts again. That
+/// covers a call the node refused ("execution reverted") and a transaction
+/// that was mined and reverted ([`TransactionReverted`]).
 pub fn is_retryable(err: &anyhow::Error) -> bool {
+    if err
+        .chain()
+        .any(|cause| cause.downcast_ref::<TransactionReverted>().is_some())
+    {
+        return false;
+    }
     let msg = format!("{err:#}").to_lowercase();
-    if msg.contains("execution reverted") {
+    if msg.contains("reverted") {
         return false;
     }
     // Connection / transport errors
@@ -410,6 +420,27 @@ mod tests {
         assert!(!is_retryable(&anyhow::anyhow!(
             "execution reverted: claim timeout not reached"
         )));
+    }
+
+    #[test]
+    fn test_is_retryable_never_retries_mined_reverts() {
+        // The block number of the reverted transaction is not an HTTP status.
+        for block_number in [429, 500, 502, 503, 504] {
+            let reverted = TransactionReverted {
+                transaction_hash: alloy::primitives::B256::repeat_byte(0xab),
+                block_number: Some(block_number),
+                gas_used: 187_112_306,
+            };
+            let msg = reverted.to_string();
+            assert!(msg.contains(&format!("block {block_number} ")), "{msg}");
+
+            assert!(!is_retryable(&anyhow::Error::from(reverted.clone())));
+            assert!(!is_retryable(
+                &anyhow::Error::from(reverted).context("finalizing the result failed")
+            ));
+            // The same error after it was turned into a string on the way.
+            assert!(!is_retryable(&anyhow::anyhow!("finalize failed: {msg}")));
+        }
     }
 
     #[test]

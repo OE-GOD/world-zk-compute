@@ -45,7 +45,7 @@ pub mod verifier;
 #[cfg(feature = "metrics")]
 pub mod metrics;
 
-pub use client::Client;
+pub use client::{Client, TransactionReverted};
 pub use event_watcher::{TEEEvent, TEEEventWatcher};
 pub use execution_engine::{ExecutionEngineClient, RequestStatus};
 pub use fixture::{DAGFixture, ProofData};

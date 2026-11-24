@@ -166,7 +166,8 @@ use world_zk_sdk::{BatchSession, BatchProgress};
 | `TEEEventWatcher::new(rpc_url, contract_address)` | Create a watcher |
 | `with_max_block_range(n)` | Widest block span per `eth_getLogs` call (default 10,000); longer spans are fetched in chunks |
 | `poll_events(from_block)` | One-shot poll, returns `(Vec<TEEEvent>, next_block)` |
-| `watch(callback, poll_interval)` | Start continuous background polling |
+| `watch(callback, poll_interval)` | Start continuous background polling. A failed poll is retried from the same block with half the block span; poll errors are not reported |
+| `watch_with_errors(callback, on_error, poll_interval)` | Same, and `on_error` receives the error of every failed poll |
 | `stop()` | Signal the background loop to stop |
 | `is_stopped()` | Check if stop was signaled |
 | `contract_address()` | Returns the watched contract address |
@@ -211,7 +212,7 @@ use world_zk_sdk::{retry_with_backoff, RetryPolicy, is_retryable};
 | `RetryPolicy` | Configure `max_retries`, `base_delay`, `max_delay`, `jitter`, `timeout` (per attempt), `total_timeout` |
 | `RetryPolicy::default()` | 3 retries, 1s base, 30s max, 0.2 jitter, 30s per attempt, 300s in total |
 | `retry_with_backoff(policy, async_fn)` | Execute with retries on transient errors |
-| `is_retryable(err)` | Returns true for connection errors, 429/5xx, timeouts; never for a contract revert |
+| `is_retryable(err)` | Returns true for connection errors, 429/5xx, timeouts; never for a contract revert (a refused call, or a mined transaction that reverted: `TransactionReverted`) |
 
 `retry_with_backoff` runs the closure again from the start. Wrap reads, not transaction sends: an attempt that timed out may already have broadcast its transaction.
 
@@ -240,6 +241,8 @@ use world_zk_sdk::{retry_with_backoff, RetryPolicy, is_retryable};
 ### TEE Verification
 
 Submit a TEE-attested ML inference result and handle the challenge lifecycle. `result` and `attestation` come from the enclave: the attestation is its EIP-712 signature over `TEEMLResult(modelHash, inputHash, keccak256(result))` for this chain and this contract, and the contract rejects anything not signed by a key registered with `register_enclave`. [`examples/sdk-rust-quickstart`](../examples/sdk-rust-quickstart/) is a complete version that runs on Anvil, signature included.
+
+Here the contract address must be the `TEEMLVerifier` proxy, which `contracts/script/DeployTEEMLVerifier.s.sol` deploys at the same address on a fresh Anvil chain (it is the deployer's second contract in both cases), not the `RemainderVerifier` of the Quick Start.
 
 ```rust
 use world_zk_sdk::{Client, TEEVerifier, compute_model_hash, compute_input_hash};
@@ -277,7 +280,7 @@ async fn submit(result: &[u8], attestation: &[u8]) -> anyhow::Result<()> {
 
 ### Event Watching
 
-Watch for on-chain TEE events in real time:
+Watch for on-chain TEE events in real time. As in the TEE sample above, the address must be the `TEEMLVerifier` proxy that `contracts/script/DeployTEEMLVerifier.s.sol` deploys on a fresh Anvil chain (at the same address, as the deployer's second contract), not the `RemainderVerifier` of the Quick Start:
 
 ```rust
 use alloy::primitives::Address;
@@ -394,12 +397,14 @@ The full suite also runs the integration tests in `sdk/tests/`. They start their
 cargo test -p world-zk-sdk
 ```
 
-The `#[ignore]`d tests need an already deployed contract and are run by scripts that deploy it on a local Anvil chain:
+The `#[ignore]`d tests in `tests/e2e_tee_verify.rs` and `tests/e2e_batch_verify.rs` need an already deployed contract and are run by scripts that deploy it on a local Anvil chain:
 
 ```bash
 bash scripts/tee-sdk-e2e.sh     # TEEVerifier lifecycle (tests/e2e_tee_verify.rs)
 bash scripts/rust-sdk-e2e.sh    # batch verification of the fixture proof (tests/e2e_batch_verify.rs)
 ```
+
+The `#[ignore]`d tests in `tests/sepolia_integration.rs` and `tests/integration_sepolia.rs` need a Sepolia RPC endpoint and a `TEEMLVerifier` deployed on Sepolia. This repository records no such deployment (`deployments/` covers Arbitrum Sepolia and World Chain Sepolia only), and no script runs them.
 
 ## Related SDKs
 

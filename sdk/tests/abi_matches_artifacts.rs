@@ -4,6 +4,10 @@
 //! A declaration that drifts from the contract still compiles, but its selector or
 //! topic no longer matches anything on-chain: calls revert and events never decode.
 //!
+//! What is compared is the name and the input types of every declared function,
+//! event and error. State mutability, return types and the `indexed` flags of event
+//! arguments are not compared.
+//!
 //! Prerequisite (same as `integration_tee.rs`):
 //!   cd contracts && forge build --skip test --skip script
 

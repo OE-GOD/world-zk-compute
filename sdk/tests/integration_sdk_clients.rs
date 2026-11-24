@@ -11,6 +11,8 @@
 //!   cargo test -p world-zk-sdk --test integration_sdk_clients -- --nocapture
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
 use alloy::network::{EthereumWallet, TransactionBuilder};
 use alloy::node_bindings::{Anvil, AnvilInstance};
@@ -21,11 +23,15 @@ use alloy::signers::Signer;
 use alloy::sol;
 use alloy::sol_types::{SolCall, SolValue};
 use serial_test::serial;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
+use tokio::sync::Barrier;
 
 use world_zk_sdk::abi::TEEMLVerifier;
 use world_zk_sdk::{
     compute_input_hash, compute_model_hash, compute_result_hash_from_bytes, Client, DAGFixture,
     DAGVerifier, ExecutionEngineClient, RequestStatus, TEEEvent, TEEEventWatcher, TEEVerifier,
+    TransactionReverted,
 };
 
 sol! {
@@ -43,6 +49,8 @@ const ADMIN_KEY: &str = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784
 const USER_KEY: &str = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
 const CHALLENGER_KEY: &str = "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a";
 const ENCLAVE_KEY: &str = "0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6";
+const SECOND_CHALLENGER_KEY: &str =
+    "0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a";
 
 fn address_of(key: &str) -> Address {
     key.parse::<PrivateKeySigner>().unwrap().address()
@@ -146,8 +154,29 @@ impl Chain {
         let _: serde_json::Value = provider.raw_request("evm_mine".into(), ()).await.unwrap();
     }
 
+    /// Change the block gas limit and mine a block that has it.
+    async fn set_block_gas_limit(&self, gas_limit: u64) {
+        let provider = self.admin_provider();
+        let _: serde_json::Value = provider
+            .raw_request("evm_setBlockGasLimit".into(), [U256::from(gas_limit)])
+            .await
+            .unwrap();
+        let _: serde_json::Value = provider.raw_request("evm_mine".into(), ()).await.unwrap();
+    }
+
     async fn chain_id(&self) -> u64 {
         self.admin_provider().get_chain_id().await.unwrap()
+    }
+
+    /// Number of the block a transaction was mined in.
+    async fn block_of(&self, tx_hash: B256) -> u64 {
+        self.admin_provider()
+            .get_transaction_receipt(tx_hash)
+            .await
+            .unwrap()
+            .expect("no receipt")
+            .block_number
+            .expect("receipt without a block number")
     }
 }
 
@@ -255,27 +284,222 @@ async fn tee_lifecycle_through_sdk_clients() {
     assert!(admin.finalize(result_id).await.is_err());
     let window = stored.challengeDeadline - stored.submittedAt;
     chain.increase_time(window.to::<u64>() + 1).await;
-    admin.finalize(result_id).await.unwrap();
+    let finalize_tx_hash = admin.finalize(result_id).await.unwrap();
     assert!(admin.is_result_valid(result_id).await.unwrap());
 
-    // The watcher reports both events, in chunks smaller than the block range.
-    let watcher = TEEEventWatcher::new(&chain.rpc_url, tee_address).with_max_block_range(2);
-    let (events, next_block) = watcher.poll_events(0).await.unwrap();
+    // The watcher reports each event once and in order, whatever the chunk size
+    // and whichever block the chunks start at.
+    let submitted_block = chain.block_of(tx_hash).await;
+    let finalized_block = chain.block_of(finalize_tx_hash).await;
+    let expected = vec![
+        TEEEvent::ResultSubmitted {
+            result_id,
+            model_hash,
+            input_hash,
+            submitter: address_of(USER_KEY),
+            block_number: submitted_block,
+        },
+        TEEEvent::ResultExpired {
+            result_id,
+            block_number: finalized_block,
+        },
+        TEEEvent::ResultFinalized {
+            result_id,
+            block_number: finalized_block,
+        },
+    ];
     let latest = chain.admin_provider().get_block_number().await.unwrap();
-    assert!(latest > 2, "the range must span more than one chunk");
-    assert_eq!(next_block, latest + 1);
-    assert!(events.iter().any(|event| matches!(
-        event,
-        TEEEvent::ResultSubmitted { result_id: id, model_hash: model, input_hash: input, submitter, .. }
-            if *id == result_id
-                && *model == model_hash
-                && *input == input_hash
-                && *submitter == address_of(USER_KEY)
-    )));
-    assert!(events.iter().any(|event| matches!(
-        event,
-        TEEEvent::ResultFinalized { result_id: id, .. } if *id == result_id
-    )));
+    assert!(submitted_block > 1 && finalized_block > submitted_block);
+    for (max_block_range, from_block) in [(2, 0), (1, 0), (1, 1)] {
+        let watcher =
+            TEEEventWatcher::new(&chain.rpc_url, tee_address).with_max_block_range(max_block_range);
+        // The time limit turns a chunk loop that does not advance into a failure.
+        let (events, next_block) =
+            tokio::time::timeout(Duration::from_secs(30), watcher.poll_events(from_block))
+                .await
+                .expect("poll_events did not return")
+                .unwrap();
+        assert_eq!(
+            events, expected,
+            "max_block_range {max_block_range}, from block {from_block}"
+        );
+        assert_eq!(next_block, latest + 1);
+    }
+}
+
+/// Start a JSON-RPC proxy in front of `upstream` that holds every
+/// `eth_sendRawTransaction` until `senders` of them have arrived, and return its URL.
+///
+/// Anvil estimates gas on top of the transactions in its pool. Of two conflicting
+/// calls, one that estimates after the other was sent is refused and never sent.
+/// Behind this proxy every caller has estimated before any transaction is in the pool.
+async fn spawn_send_gate(upstream: String, senders: usize) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let all_arrived = Arc::new(Barrier::new(senders));
+    let http = reqwest::Client::new();
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            let (upstream, all_arrived, http) =
+                (upstream.clone(), all_arrived.clone(), http.clone());
+            tokio::spawn(async move {
+                let contains = |haystack: &[u8], needle: &[u8]| {
+                    haystack
+                        .windows(needle.len())
+                        .position(|window| window == needle)
+                };
+                let mut received = Vec::new();
+                // One HTTP/1.1 request per iteration: the headers, then
+                // `Content-Length` bytes of JSON-RPC.
+                loop {
+                    let body_start = loop {
+                        if let Some(end) = contains(&received, b"\r\n\r\n") {
+                            break end + 4;
+                        }
+                        if socket.read_buf(&mut received).await.unwrap_or(0) == 0 {
+                            return;
+                        }
+                    };
+                    let body_len: usize = String::from_utf8_lossy(&received[..body_start])
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse().unwrap())
+                        })
+                        .expect("request without Content-Length");
+                    while received.len() < body_start + body_len {
+                        if socket.read_buf(&mut received).await.unwrap_or(0) == 0 {
+                            return;
+                        }
+                    }
+                    let body: Vec<u8> = received
+                        .drain(..body_start + body_len)
+                        .skip(body_start)
+                        .collect();
+
+                    if contains(&body, b"eth_sendRawTransaction").is_some() {
+                        all_arrived.wait().await;
+                    }
+                    let response = http
+                        .post(&upstream)
+                        .header("content-type", "application/json")
+                        .body(body)
+                        .send()
+                        .await
+                        .unwrap()
+                        .bytes()
+                        .await
+                        .unwrap();
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n",
+                        response.len()
+                    );
+                    if socket.write_all(head.as_bytes()).await.is_err()
+                        || socket.write_all(&response).await.is_err()
+                    {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    url
+}
+
+/// A transaction that is mined but reverts makes the SDK method return an error.
+///
+/// Two challengers challenge the same result, and both transactions are mined in
+/// the same block: the one that executes second reverts with `AlreadyChallenged`.
+#[serial]
+#[tokio::test]
+async fn mined_but_reverted_transaction_is_an_error() {
+    let chain = Chain::spawn(Anvil::new());
+    let tee_address = chain.deploy_tee_verifier(Address::repeat_byte(0xDD)).await;
+
+    let admin = TEEVerifier::new(chain.client(ADMIN_KEY, tee_address));
+    let user = TEEVerifier::new(chain.client(USER_KEY, tee_address));
+    admin
+        .register_enclave(address_of(ENCLAVE_KEY), B256::repeat_byte(0x42))
+        .await
+        .unwrap();
+    let model_hash = compute_model_hash(b"model file bytes");
+    let input_hash = compute_input_hash(&[1.0]);
+    let result = b"[0.85]";
+    let attestation = sign_attestation(
+        ENCLAVE_KEY,
+        model_hash,
+        input_hash,
+        result,
+        chain.chain_id().await,
+        tee_address,
+    )
+    .await;
+    let stake = user.prover_stake().await.unwrap();
+    let (_, result_id) = user
+        .submit_result_with_id(model_hash, input_hash, result, &attestation, stake)
+        .await
+        .unwrap();
+    let bond = admin.challenge_bond_amount().await.unwrap();
+
+    // From here on blocks are only mined on request.
+    let provider = chain.admin_provider();
+    let _: serde_json::Value = provider
+        .raw_request("evm_setAutomine".into(), [false])
+        .await
+        .unwrap();
+
+    let gate_url = spawn_send_gate(chain.rpc_url.clone(), 2).await;
+    let challenger = |key: &str| {
+        TEEVerifier::new(Client::new(&gate_url, key, &tee_address.to_string()).unwrap())
+    };
+    let (first, second) = (
+        challenger(CHALLENGER_KEY),
+        challenger(SECOND_CHALLENGER_KEY),
+    );
+    let mine_once_both_are_pending = async {
+        loop {
+            let pool: serde_json::Value = provider
+                .raw_request("txpool_status".into(), ())
+                .await
+                .unwrap();
+            if pool["pending"] == "0x2" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let _: serde_json::Value = provider.raw_request("evm_mine".into(), ()).await.unwrap();
+    };
+    let (first_outcome, second_outcome, ()) = tokio::join!(
+        first.challenge(result_id, bond),
+        second.challenge(result_id, bond),
+        mine_once_both_are_pending,
+    );
+
+    let (winner_key, winner_tx_hash, error) = match (first_outcome, second_outcome) {
+        (Ok(tx_hash), Err(error)) => (CHALLENGER_KEY, tx_hash, error),
+        (Err(error), Ok(tx_hash)) => (SECOND_CHALLENGER_KEY, tx_hash, error),
+        (first, second) => {
+            panic!("one challenge must succeed and the other revert, got {first:?} and {second:?}")
+        }
+    };
+    let msg = error.to_string();
+    assert!(
+        msg.contains("was mined in block") && msg.contains("but reverted"),
+        "{msg}"
+    );
+    let reverted = error
+        .downcast_ref::<TransactionReverted>()
+        .expect("the error must be a TransactionReverted");
+    assert_eq!(
+        reverted.block_number,
+        Some(chain.block_of(winner_tx_hash).await),
+        "both transactions must be in the same block"
+    );
+    assert_eq!(
+        admin.get_result(result_id).await.unwrap().challenger,
+        address_of(winner_key)
+    );
 }
 
 /// Register a circuit through the SDK, verify the fixture proof against it, and win
@@ -369,12 +593,50 @@ async fn dag_register_verify_and_win_dispute_through_sdk_clients() {
             &proof.gens_data,
         )
         .await;
-    assert!(refused.is_err(), "a broken proof must not be sent");
+    let refused = format!(
+        "{:#}",
+        refused.expect_err("a broken proof must not be sent")
+    );
+    assert!(
+        refused.contains(&format!(
+            "verifyDAGProof on RemainderVerifier {verifier_address}"
+        )),
+        "{refused}"
+    );
+    assert!(refused.contains("nothing was sent"), "{refused}");
     assert!(
         admin.get_result(result_id).await.unwrap().challenged
             && !admin.is_result_valid(result_id).await.unwrap(),
         "the dispute must still be open"
     );
+
+    // A valid proof is refused too while the block gas limit is below the gas
+    // limit resolveDispute has to be sent with.
+    chain.set_block_gas_limit(300_000_000).await;
+    let refused = user
+        .resolve_dispute(
+            result_id,
+            &proof.proof_bytes,
+            proof.circuit_hash,
+            &proof.public_inputs,
+            &proof.gens_data,
+        )
+        .await;
+    let refused = format!(
+        "{:#}",
+        refused.expect_err("a transaction no block can hold must not be sent")
+    );
+    assert!(
+        refused.contains("block gas limit is 300000000"),
+        "{refused}"
+    );
+    assert!(refused.contains("nothing was sent"), "{refused}");
+    assert!(
+        admin.get_result(result_id).await.unwrap().challenged
+            && !admin.is_result_valid(result_id).await.unwrap(),
+        "the dispute must still be open"
+    );
+    chain.set_block_gas_limit(500_000_000).await;
 
     user.resolve_dispute(
         result_id,

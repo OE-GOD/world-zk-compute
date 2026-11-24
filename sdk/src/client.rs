@@ -1,7 +1,9 @@
 //! Ethereum client wrapper combining an RPC provider, wallet, and contract address.
 
+use std::fmt;
+
 use alloy::network::{Ethereum, EthereumWallet};
-use alloy::primitives::Address;
+use alloy::primitives::{Address, B256};
 use alloy::providers::PendingTransactionBuilder;
 use alloy::rpc::types::TransactionReceipt;
 use alloy::signers::local::PrivateKeySigner;
@@ -41,21 +43,47 @@ impl Client {
     }
 }
 
-/// Turn the receipt of a transaction that was mined but reverted into an error.
+/// A transaction was mined but reverted.
 ///
 /// A transaction can pass gas estimation and still revert when it is executed
 /// (the state changed in between, or it ran out of gas). Its receipt then has
 /// status 0, and nothing it was meant to do happened.
+/// [`is_retryable`](crate::retry::is_retryable) is false for this error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransactionReverted {
+    /// Hash of the reverted transaction.
+    pub transaction_hash: B256,
+    /// Block the transaction was mined in (`None` if the receipt has none).
+    pub block_number: Option<u64>,
+    /// Gas the transaction used before it reverted.
+    pub gas_used: u64,
+}
+
+impl fmt::Display for TransactionReverted {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "transaction {} was mined in block {} but reverted (gas used: {})",
+            self.transaction_hash,
+            self.block_number
+                .map_or_else(|| "?".to_string(), |n| n.to_string()),
+            self.gas_used
+        )
+    }
+}
+
+impl std::error::Error for TransactionReverted {}
+
+/// Turn the receipt of a transaction that was mined but reverted into a
+/// [`TransactionReverted`] error.
 pub(crate) fn ensure_success(receipt: TransactionReceipt) -> anyhow::Result<TransactionReceipt> {
     if !receipt.status() {
-        anyhow::bail!(
-            "transaction {} was mined in block {} but reverted (gas used: {})",
-            receipt.transaction_hash,
-            receipt
-                .block_number
-                .map_or_else(|| "?".to_string(), |n| n.to_string()),
-            receipt.gas_used
-        );
+        return Err(TransactionReverted {
+            transaction_hash: receipt.transaction_hash,
+            block_number: receipt.block_number,
+            gas_used: receipt.gas_used,
+        }
+        .into());
     }
     Ok(receipt)
 }
@@ -113,5 +141,16 @@ mod tests {
             "{msg}"
         );
         assert!(msg.contains("block 42"), "{msg}");
+        assert_eq!(
+            err.downcast_ref::<TransactionReverted>(),
+            Some(&TransactionReverted {
+                transaction_hash:
+                    "0x41b145656bb7bd48f6e041176f1837d6faf3ebb454ae7394aa9c0246b36d55ee"
+                        .parse()
+                        .unwrap(),
+                block_number: Some(42),
+                gas_used: 25_000,
+            })
+        );
     }
 }
