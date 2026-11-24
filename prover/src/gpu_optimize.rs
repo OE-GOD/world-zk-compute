@@ -9,7 +9,7 @@
 //! - **Fallback Support**: Automatic fallback to CPU when GPU unavailable
 
 use anyhow::Result;
-use risc0_zkvm::{ExecutorEnv, Receipt};
+use risc0_zkvm::{ExecutorEnv, ProverOpts};
 use std::time::Instant;
 use tracing::{info, warn};
 
@@ -154,8 +154,16 @@ impl LocalGpuProver {
 
     /// Execute and prove using GPU (or CPU fallback)
     ///
+    /// When `use_snark` is true, generates a Groth16 proof suitable for
+    /// on-chain verification (requires x86_64 and Docker).
+    ///
     /// This method runs in a blocking context - use `prove_async` for async code.
-    pub fn prove_sync(&self, elf: &[u8], input: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
+    pub fn prove_sync(
+        &self,
+        elf: &[u8],
+        input: &[u8],
+        use_snark: bool,
+    ) -> Result<(Vec<u8>, Vec<u8>)> {
         let start = Instant::now();
 
         // Set CUDA_VISIBLE_DEVICES if a specific device is assigned
@@ -177,14 +185,27 @@ impl LocalGpuProver {
         let prover = risc0_zkvm::default_prover();
 
         // Generate proof
-        let prove_info = prover.prove(env, elf)?;
+        let receipt = if use_snark {
+            // Groth16 local proving requires x86_64 architecture + Docker
+            if cfg!(not(target_arch = "x86_64")) {
+                anyhow::bail!(
+                    "Groth16 SNARK proving requires x86_64 architecture. \
+                     On Apple Silicon, use Bonsai cloud proving (--proving-mode bonsai) \
+                     or run on an x86_64 Linux machine."
+                );
+            }
+            info!("Generating Groth16 SNARK proof (requires Docker)...");
+            let opts = ProverOpts::groth16();
+            prover.prove_with_opts(env, elf, &opts)?.receipt
+        } else {
+            prover.prove(env, elf)?.receipt
+        };
 
         let elapsed = start.elapsed();
         info!("{} proof generated in {:.2?}", self.backend, elapsed);
 
         // Extract seal and journal
-        let receipt = prove_info.receipt;
-        let seal = extract_seal_local(&receipt)?;
+        let seal = crate::prover::extract_seal(&receipt)?;
         let journal = receipt.journal.bytes.clone();
 
         Ok((seal, journal))
@@ -194,23 +215,22 @@ impl LocalGpuProver {
     ///
     /// Runs the blocking prover in a dedicated thread pool to avoid
     /// blocking the async runtime.
-    pub async fn prove_async(&self, elf: &[u8], input: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
+    pub async fn prove_async(
+        &self,
+        elf: &[u8],
+        input: &[u8],
+        use_snark: bool,
+    ) -> Result<(Vec<u8>, Vec<u8>)> {
         let elf = elf.to_vec();
         let input = input.to_vec();
         let backend = self.backend;
 
         tokio::task::spawn_blocking(move || {
             let prover = LocalGpuProver::with_backend(backend);
-            prover.prove_sync(&elf, &input)
+            prover.prove_sync(&elf, &input, use_snark)
         })
         .await?
     }
-}
-
-/// Extract seal from receipt (local helper to avoid module dependency)
-fn extract_seal_local(receipt: &Receipt) -> Result<Vec<u8>> {
-    let seal = bincode::serialize(&receipt.inner)?;
-    Ok(seal)
 }
 
 #[cfg(test)]
@@ -336,6 +356,30 @@ mod tests {
         let prover = LocalGpuProver::with_backend(GpuBackend::Cpu);
         assert_eq!(prover.backend, GpuBackend::Cpu);
         assert!(prover.gpu_device_id.is_none());
+    }
+
+    // ========== LocalGpuProver::prove_sync ==========
+
+    /// With `use_snark` the GPU path asks for a Groth16 proof, like the CPU
+    /// path. Off x86_64 that request is refused before the prover runs, which
+    /// shows here that the flag reaches the prover.
+    #[test]
+    #[cfg(not(target_arch = "x86_64"))]
+    fn test_prove_sync_use_snark_requests_groth16() {
+        let prover = LocalGpuProver::with_backend(GpuBackend::Cpu);
+
+        let err = prover
+            .prove_sync(b"not an elf", &[], true)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Groth16 SNARK proving requires"), "{err}");
+
+        // Without the flag the prover is reached and rejects the ELF
+        let err = prover
+            .prove_sync(b"not an elf", &[], false)
+            .unwrap_err()
+            .to_string();
+        assert!(!err.contains("Groth16"), "{err}");
     }
 
     /// RAII guard that sets an env var and restores its previous value on drop.

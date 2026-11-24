@@ -88,30 +88,12 @@ pub struct OptimizedProcessor {
 }
 
 impl OptimizedProcessor {
-    /// Create a new optimized processor
-    #[allow(dead_code)]
-    pub fn new(
-        max_concurrent: usize,
-        min_tip_wei: U256,
-        cache_size_mb: usize,
-        proving_mode: crate::bonsai::ProvingMode,
-        use_snark: bool,
-    ) -> anyhow::Result<Self> {
-        Self::with_gpu_config(
-            max_concurrent,
-            min_tip_wei,
-            cache_size_mb,
-            proving_mode,
-            use_snark,
-            0,
-            0,
-        )
-    }
-
     /// Create a new optimized processor with explicit GPU/CPU concurrency config.
     ///
     /// - `max_gpu_concurrent`: GPU concurrency slots (0 = auto-detect from GPU count)
     /// - `max_cpu_concurrent`: CPU concurrency slots (0 = auto-detect from CPU count - 1)
+    /// - `queue_size`: maximum number of queued jobs (at least 1)
+    #[allow(clippy::too_many_arguments)]
     pub fn with_gpu_config(
         max_concurrent: usize,
         min_tip_wei: U256,
@@ -120,9 +102,41 @@ impl OptimizedProcessor {
         use_snark: bool,
         max_gpu_concurrent: usize,
         max_cpu_concurrent: usize,
+        queue_size: usize,
     ) -> anyhow::Result<Self> {
+        Self::with_fast_prove_config(
+            max_concurrent,
+            min_tip_wei,
+            cache_size_mb,
+            proving_mode,
+            use_snark,
+            max_gpu_concurrent,
+            max_cpu_concurrent,
+            queue_size,
+            FastProveConfig::default(),
+        )
+    }
+
+    /// [`with_gpu_config`](Self::with_gpu_config) with the fast prover's
+    /// configuration given by the caller.
+    #[allow(clippy::too_many_arguments)]
+    fn with_fast_prove_config(
+        max_concurrent: usize,
+        min_tip_wei: U256,
+        cache_size_mb: usize,
+        proving_mode: crate::bonsai::ProvingMode,
+        use_snark: bool,
+        max_gpu_concurrent: usize,
+        max_cpu_concurrent: usize,
+        queue_size: usize,
+        fast_prove_config: FastProveConfig,
+    ) -> anyhow::Result<Self> {
+        if queue_size == 0 {
+            anyhow::bail!("Queue size must be at least 1");
+        }
+
         // Initialize job queue
-        let job_queue = Arc::new(RwLock::new(JobQueue::new(1000, min_tip_wei)));
+        let job_queue = Arc::new(RwLock::new(JobQueue::new(queue_size, min_tip_wei)));
 
         // Initialize multi-GPU device manager
         let gpu_manager = if max_gpu_concurrent > 0 {
@@ -136,10 +150,7 @@ impl OptimizedProcessor {
         };
 
         // Initialize GPU-aware concurrency manager
-        let concurrency = Arc::new(ConcurrencyManager::new(
-            gpu_manager.clone(),
-            max_cpu_concurrent,
-        ));
+        let concurrency = Arc::new(ConcurrencyManager::new(gpu_manager, max_cpu_concurrent));
 
         // Initialize program cache
         let cache_dir = std::path::PathBuf::from("./cache/programs");
@@ -151,13 +162,12 @@ impl OptimizedProcessor {
         // Initialize multi-VM router
         let multi_vm = Arc::new(MultiVmProver::new(proving_mode.clone()));
 
-        // Initialize fast prover with multi-VM router and GPU manager
-        let fast_prover = Arc::new(FastProver::with_gpu_manager(
-            FastProveConfig::default(),
+        // Initialize fast prover with multi-VM router
+        let fast_prover = Arc::new(FastProver::with_multi_vm(
+            fast_prove_config,
             proving_mode,
             use_snark,
             multi_vm.clone(),
-            gpu_manager,
         ));
 
         // Initialize strategy registry for input decomposition
@@ -216,6 +226,11 @@ impl OptimizedProcessor {
     /// Get the concurrency manager (for metrics/health reporting).
     pub fn concurrency(&self) -> &Arc<ConcurrencyManager> {
         &self.concurrency
+    }
+
+    /// Start the periodic cleanup of expired entries in this processor's proof cache.
+    pub fn start_proof_cache_cleanup(&self, interval: Duration) -> tokio::task::JoinHandle<()> {
+        self.proof_cache.start_cleanup_task(interval)
     }
 
     /// Check for pending requests and process them in parallel
@@ -692,9 +707,10 @@ async fn process_single_job(
         // Fast path: claim and submit with cached proof
         let retry_config = RetryConfig::default();
 
-        // Claim
-        info!("[Job {}] Claiming (cached path)...", job.request_id);
-        let claim_result = send_claim_with_retry(
+        // Claim (skip if already claimed for private inputs)
+        claim_unless_claimed(
+            &early_claim_result,
+            " (cached path)",
             &engine,
             request_id,
             nonce_manager,
@@ -702,10 +718,6 @@ async fn process_single_job(
             &retry_config,
         )
         .await?;
-        info!(
-            "[Job {}] Claimed in tx: {:?}",
-            job.request_id, claim_result.tx_hash
-        );
 
         // Submit cached proof
         timeline.enter_stage(ProveStage::Submission);
@@ -841,8 +853,10 @@ async fn process_single_job(
                     // Only submit if we have a valid proof from decomposition
                     if let Some((seal, journal)) = decomp_proof {
                         let retry_config = RetryConfig::default();
-                        info!("[Job {}] Claiming (decomposed path)...", job.request_id);
-                        let claim_result = send_claim_with_retry(
+                        // Claim (skip if already claimed for private inputs)
+                        claim_unless_claimed(
+                            &early_claim_result,
+                            " (decomposed path)",
                             &engine,
                             request_id,
                             nonce_manager,
@@ -850,10 +864,6 @@ async fn process_single_job(
                             &retry_config,
                         )
                         .await?;
-                        info!(
-                            "[Job {}] Claimed in tx: {:?}",
-                            job.request_id, claim_result.tx_hash
-                        );
 
                         timeline.enter_stage(ProveStage::Submission);
                         info!("[Job {}] Submitting decomposed proof...", job.request_id);
@@ -928,28 +938,16 @@ async fn process_single_job(
 
     // Step 6: Claim the request (skip if already claimed for private inputs)
     let retry_config = RetryConfig::default();
-    if early_claim_result.is_none() {
-        info!("[Job {}] Claiming...", job.request_id);
-
-        let claim_result = send_claim_with_retry(
-            &engine,
-            request_id,
-            nonce_manager,
-            job.request_id,
-            &retry_config,
-        )
-        .await?;
-
-        info!(
-            "[Job {}] Claimed in tx: {:?}",
-            job.request_id, claim_result.tx_hash
-        );
-    } else {
-        debug!(
-            "[Job {}] Already claimed (private input early claim)",
-            job.request_id
-        );
-    }
+    claim_unless_claimed(
+        &early_claim_result,
+        "",
+        &engine,
+        request_id,
+        nonce_manager,
+        job.request_id,
+        &retry_config,
+    )
+    .await?;
 
     // Step 7: Generate proof using fast prover
     timeline.enter_stage(ProveStage::Proving);
@@ -1108,7 +1106,7 @@ async fn fetch_program_from_registry(
 
 /// Download program ELF from URL (supports HTTP, HTTPS, IPFS)
 async fn download_program_elf(url: &str) -> anyhow::Result<Vec<u8>> {
-    if url.starts_with("ipfs://") || url.contains("/ipfs/") {
+    if IpfsClient::is_ipfs_url(url) {
         // Use IPFS client with multi-gateway fallback
         let ipfs_client = IpfsClient::new(IpfsConfig::default())?;
         ipfs_client.fetch(url).await
@@ -1148,7 +1146,7 @@ fn save_elf_to_cache(
 ) -> anyhow::Result<()> {
     std::fs::create_dir_all(programs_dir)?;
     let elf_path = programs_dir.join(format!("{}.elf", hex::encode(image_id)));
-    std::fs::write(&elf_path, elf)?;
+    crate::cache::write_atomic(&elf_path, elf)?;
     debug!("Cached ELF to {:?}", elf_path);
     Ok(())
 }
@@ -1293,6 +1291,33 @@ pub struct TransactionResult {
     pub attempts: u32,
 }
 
+/// Claim the request unless `early_claim` shows that this job has already
+/// claimed it (private inputs are claimed before the input is fetched).
+/// `path` is appended to the log line to tell the claim sites apart.
+async fn claim_unless_claimed(
+    early_claim: &Option<TransactionResult>,
+    path: &str,
+    engine: &IExecutionEngine::IExecutionEngineInstance<Arc<SigningProvider>>,
+    request_id: U256,
+    nonce_manager: &Arc<SigningNonceManager>,
+    job_id: u64,
+    config: &RetryConfig,
+) -> anyhow::Result<()> {
+    if early_claim.is_some() {
+        debug!(
+            "[Job {}] Already claimed (private input early claim)",
+            job_id
+        );
+        return Ok(());
+    }
+
+    info!("[Job {}] Claiming{}...", job_id, path);
+    let claim_result =
+        send_claim_with_retry(engine, request_id, nonce_manager, job_id, config).await?;
+    info!("[Job {}] Claimed in tx: {:?}", job_id, claim_result.tx_hash);
+    Ok(())
+}
+
 /// Send a claim transaction with retry logic
 async fn send_claim_with_retry(
     engine: &IExecutionEngine::IExecutionEngineInstance<Arc<SigningProvider>>,
@@ -1320,6 +1345,12 @@ async fn send_claim_with_retry(
                 match pending_tx.get_receipt().await {
                     Ok(receipt) => {
                         nonce_manager.transaction_completed();
+                        if !receipt.status() {
+                            return Err(anyhow::anyhow!(
+                                "Claim tx {:?} reverted on-chain",
+                                receipt.transaction_hash
+                            ));
+                        }
                         if attempts > 1 {
                             info!("[Job {}] Claim succeeded on attempt {}", job_id, attempts);
                         }
@@ -1407,6 +1438,12 @@ async fn send_submit_with_retry(
                 match pending_tx.get_receipt().await {
                     Ok(receipt) => {
                         nonce_manager.transaction_completed();
+                        if !receipt.status() {
+                            return Err(anyhow::anyhow!(
+                                "Submit tx {:?} reverted on-chain",
+                                receipt.transaction_hash
+                            ));
+                        }
                         if attempts > 1 {
                             info!("[Job {}] Submit succeeded on attempt {}", job_id, attempts);
                         }
@@ -1562,4 +1599,372 @@ async fn check_profitability(
         claim_gas,
         submit_gas,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bonsai::ProvingMode;
+    use crate::test_support::serve_http;
+    use alloy::providers::ProviderBuilder;
+    use serde_json::json;
+    use std::sync::Mutex;
+
+    /// Stand-in for a JSON-RPC node: accepts every transaction and reports it
+    /// as mined with a fixed receipt status. Records the methods called.
+    struct MockNode {
+        provider: Arc<SigningProvider>,
+        nonce_manager: Arc<SigningNonceManager>,
+        calls: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl MockNode {
+        async fn start(receipt_status: &'static str) -> Self {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let call_log = calls.clone();
+
+            let addr = serve_http(move |request| {
+                let call: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+                let method = call["method"].as_str().unwrap_or_default().to_string();
+                call_log.lock().unwrap().push(method.clone());
+
+                let hash = format!("0x{}", "11".repeat(32));
+                let result = match method.as_str() {
+                    "eth_chainId" => json!("0x7a69"),
+                    "eth_getTransactionCount" => json!("0x0"),
+                    "eth_estimateGas" => json!("0x186a0"),
+                    "eth_blockNumber" => json!("0x1"),
+                    "eth_feeHistory" => json!({
+                        "oldestBlock": "0x1",
+                        "baseFeePerGas": ["0x3b9aca00", "0x3b9aca00"],
+                        "gasUsedRatio": [0.5],
+                        "reward": [["0x3b9aca00"]],
+                    }),
+                    "eth_sendRawTransaction" => json!(hash),
+                    "eth_getTransactionReceipt" => json!({
+                        "transactionHash": hash,
+                        "transactionIndex": "0x0",
+                        "blockHash": hash,
+                        "blockNumber": "0x1",
+                        "from": format!("0x{}", "22".repeat(20)),
+                        "to": format!("0x{}", "ee".repeat(20)),
+                        "cumulativeGasUsed": "0x186a0",
+                        "gasUsed": "0x186a0",
+                        "effectiveGasPrice": "0x3b9aca00",
+                        "contractAddress": null,
+                        "logs": [],
+                        "logsBloom": format!("0x{}", "00".repeat(256)),
+                        "status": receipt_status,
+                        "type": "0x2",
+                    }),
+                    _ => {
+                        let error = json!({
+                            "jsonrpc": "2.0",
+                            "id": call["id"],
+                            "error": { "code": -32601, "message": "method not found" },
+                        });
+                        return (200, error.to_string().into_bytes());
+                    }
+                };
+
+                let response = json!({ "jsonrpc": "2.0", "id": call["id"], "result": result });
+                (200, response.to_string().into_bytes())
+            })
+            .await;
+
+            // Same provider stack as run_prover builds
+            let signer = PrivateKeySigner::random();
+            let address = signer.address();
+            let provider = Arc::new(
+                ProviderBuilder::new()
+                    .disable_recommended_fillers()
+                    .filler(GasFiller)
+                    .filler(BlobGasFiller::default())
+                    .filler(ChainIdFiller::default())
+                    .wallet(EthereumWallet::from(signer))
+                    .connect_http(format!("http://{addr}").parse().unwrap()),
+            );
+            let nonce_manager =
+                Arc::new(NonceManager::new(provider.clone(), address).await.unwrap());
+
+            Self {
+                provider,
+                nonce_manager,
+                calls,
+            }
+        }
+
+        fn engine(&self) -> IExecutionEngine::IExecutionEngineInstance<Arc<SigningProvider>> {
+            IExecutionEngine::new(Address::repeat_byte(0xee), self.provider.clone())
+        }
+
+        /// Number of transactions sent to the node
+        fn transactions_sent(&self) -> usize {
+            self.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|method| *method == "eth_sendRawTransaction")
+                .count()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_claim_with_successful_receipt() {
+        let node = MockNode::start("0x1").await;
+
+        let result = send_claim_with_retry(
+            &node.engine(),
+            U256::from(7),
+            &node.nonce_manager,
+            7,
+            &RetryConfig::default(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.tx_hash, B256::repeat_byte(0x11));
+        assert_eq!(node.transactions_sent(), 1);
+        assert_eq!(node.nonce_manager.pending(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_reverted_claim_is_an_error() {
+        let node = MockNode::start("0x0").await;
+
+        let result = send_claim_with_retry(
+            &node.engine(),
+            U256::from(7),
+            &node.nonce_manager,
+            7,
+            &RetryConfig::default(),
+        )
+        .await;
+
+        let err = result.err().expect("reverted claim reported as success");
+        assert!(err.to_string().contains("reverted on-chain"), "{err}");
+        // The transaction was mined: its nonce is used and it is not sent again
+        assert_eq!(node.transactions_sent(), 1);
+        assert_eq!(node.nonce_manager.pending(), 0);
+        assert_eq!(node.nonce_manager.current(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_reverted_submit_is_an_error() {
+        let node = MockNode::start("0x0").await;
+
+        let result = send_submit_with_retry(
+            &node.engine(),
+            U256::from(7),
+            vec![1, 2, 3],
+            vec![4, 5, 6],
+            &node.nonce_manager,
+            7,
+            &RetryConfig::default(),
+        )
+        .await;
+
+        let err = result.err().expect("reverted submit reported as success");
+        assert!(err.to_string().contains("reverted on-chain"), "{err}");
+        assert_eq!(node.transactions_sent(), 1);
+        assert_eq!(node.nonce_manager.pending(), 0);
+        assert_eq!(node.nonce_manager.current(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_claim_is_skipped_after_early_claim() {
+        let node = MockNode::start("0x1").await;
+        let engine = node.engine();
+        let retry_config = RetryConfig::default();
+
+        // A private-input job that claimed before fetching its input
+        let early_claim = Some(TransactionResult {
+            tx_hash: B256::repeat_byte(0x11),
+            attempts: 1,
+        });
+        for path in [" (cached path)", " (decomposed path)", ""] {
+            claim_unless_claimed(
+                &early_claim,
+                path,
+                &engine,
+                U256::from(7),
+                &node.nonce_manager,
+                7,
+                &retry_config,
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(node.transactions_sent(), 0);
+        assert_eq!(node.nonce_manager.current(), 0);
+
+        // A job without an early claim claims now
+        claim_unless_claimed(
+            &None,
+            "",
+            &engine,
+            U256::from(7),
+            &node.nonce_manager,
+            7,
+            &retry_config,
+        )
+        .await
+        .unwrap();
+        assert_eq!(node.transactions_sent(), 1);
+    }
+
+    /// A job holds its GPU device through the concurrency manager for as long
+    /// as it runs. With the processor's own wiring and one GPU slot,
+    /// prove_fast must not wait for a device on top of that.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_prove_fast_does_not_wait_for_device_held_by_job() {
+        use crate::concurrency::JobResource;
+
+        // Preflight is off so that the invalid ELF below is not refused
+        // before prove_fast reaches the proving step.
+        let processor = OptimizedProcessor::with_fast_prove_config(
+            2,
+            U256::ZERO,
+            1,
+            ProvingMode::Local,
+            false,
+            1,
+            0,
+            10,
+            FastProveConfig {
+                preflight_enabled: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // What process_single_job does for each job before it calls prove_fast
+        let resource = processor.concurrency.classify_job(10_000_000, 0);
+        assert_eq!(resource, JobResource::Gpu);
+        let _guard = processor.concurrency.acquire(resource).await.unwrap();
+
+        // The ELF is not a valid program, so proving fails; the point is that
+        // prove_fast gets that far while the job holds the only device.
+        let result = tokio::time::timeout(
+            Duration::from_secs(30),
+            processor.fast_prover.prove_fast(b"not an elf", &[]),
+        )
+        .await;
+        assert!(result.is_ok(), "prove_fast is waiting for a GPU device");
+        assert!(result.unwrap().is_err());
+    }
+
+    fn test_processor(queue_size: usize) -> anyhow::Result<OptimizedProcessor> {
+        OptimizedProcessor::with_gpu_config(
+            2,
+            U256::ZERO,
+            1,
+            ProvingMode::Local,
+            false,
+            0,
+            0,
+            queue_size,
+        )
+    }
+
+    fn test_job(request_id: u64, tip_wei: u64) -> QueuedJob {
+        QueuedJob {
+            request_id,
+            image_id: B256::ZERO,
+            input_hash: B256::ZERO,
+            input_url: String::new(),
+            input_type: 0,
+            tip: U256::from(tip_wei),
+            requester: Address::ZERO,
+            expires_at: u64::MAX,
+            queued_at: Instant::now(),
+            estimated_cycles: None,
+            program_cached: false,
+            prefetched_input: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_queue_size_limits_job_queue() {
+        let processor = test_processor(2).unwrap();
+
+        let mut queue = processor.job_queue.write().await;
+        assert!(queue.push(test_job(1, 3_000_000_000_000_000)));
+        assert!(queue.push(test_job(2, 2_000_000_000_000_000)));
+        // The queue is full and this job is worse than both
+        assert!(!queue.push(test_job(3, 1_000_000_000_000_000)));
+
+        assert_eq!(queue.iter_jobs().count(), 2);
+    }
+
+    #[test]
+    fn test_queue_size_zero_is_rejected() {
+        let err = test_processor(0).err().expect("queue size 0 accepted");
+        assert!(err.to_string().contains("Queue size"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_task_runs_on_processor_proof_cache() {
+        let mut processor = test_processor(10).unwrap();
+        // Memory-only cache, so the test writes no proof files
+        processor.proof_cache = Arc::new(ProofCache::new(10, None, Duration::from_secs(3600)));
+
+        let mut expired = CachedProof::new(vec![1], vec![2], 1, Duration::ZERO);
+        expired.generated_at = 0;
+        let key = ProofCacheKey::new(B256::repeat_byte(1), B256::repeat_byte(2), false);
+        processor.proof_cache.put(&key, expired).await;
+        assert_eq!(processor.proof_cache.memory_len().await, 1);
+
+        let cleanup = processor.start_proof_cache_cleanup(Duration::from_millis(10));
+        for _ in 0..200 {
+            if processor.proof_cache.memory_len().await == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        cleanup.abort();
+
+        assert_eq!(processor.proof_cache.memory_len().await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_program_download_from_http_gateway_url() {
+        let cid = "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG";
+        let content_path = format!("/ipfs/{cid}");
+        let addr = serve_http(move |request| {
+            if request.path == content_path {
+                (200, b"program bytes".to_vec())
+            } else {
+                (404, Vec::new())
+            }
+        })
+        .await;
+
+        // An http(s) URL of a gateway is fetched as it is, not handed to the
+        // IPFS client as if it were a CID
+        let elf = download_program_elf(&format!("http://{addr}/ipfs/{cid}"))
+            .await
+            .unwrap();
+        assert_eq!(elf, b"program bytes");
+    }
+
+    #[test]
+    fn test_save_elf_replaces_file_instead_of_overwriting_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let image_id = B256::repeat_byte(0x42);
+        let elf_path = dir.path().join(format!("{}.elf", hex::encode(image_id)));
+
+        // An older file for the same image ID, also reachable under a second name
+        std::fs::write(&elf_path, b"old contents").unwrap();
+        let old_file = dir.path().join("old-file");
+        std::fs::hard_link(&elf_path, &old_file).unwrap();
+
+        save_elf_to_cache(dir.path(), &image_id, b"new contents").unwrap();
+
+        // The ELF path points to a new, complete file; the old file was not
+        // written to, so a reader of it never sees a partial ELF.
+        assert_eq!(std::fs::read(&elf_path).unwrap(), b"new contents");
+        assert_eq!(std::fs::read(&old_file).unwrap(), b"old contents");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
 }

@@ -81,7 +81,7 @@ impl ZkVmBackend for RemainderBackend {
         let start = Instant::now();
 
         // Validate circuit description header
-        if elf.len() < 20 || &elf[..20] != b"REMAINDER_XGBOOST_V1" {
+        if elf.len() < 24 || &elf[..20] != b"REMAINDER_XGBOOST_V1" {
             return Err(anyhow!(
                 "Invalid Remainder circuit description (expected REMAINDER_XGBOOST_V1 header)"
             ));
@@ -264,6 +264,18 @@ mod tests {
     async fn test_execute_invalid_circuit() {
         let backend = RemainderBackend::new().unwrap();
         let result = backend.execute(b"INVALID", &sample_input()).await;
+        assert!(result.is_err());
+    }
+
+    /// A circuit description that ends inside the feature count is rejected
+    /// (with experimental enabled).
+    #[tokio::test]
+    #[cfg(feature = "remainder-experimental")]
+    async fn test_execute_truncated_circuit() {
+        let backend = RemainderBackend::new().unwrap();
+        let mut desc = sample_circuit_desc();
+        desc.truncate(22);
+        let result = backend.execute(&desc, &sample_input()).await;
         assert!(result.is_err());
     }
 

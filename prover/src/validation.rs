@@ -1,18 +1,13 @@
-//! Input Validation and Sanitization
+//! Input Validation
 //!
-//! Validates and sanitizes inputs before processing:
-//! - Image ID format validation
-//! - Input data size limits
-//! - URL sanitization with SSRF protection
-//! - Address format validation
+//! Format checks behind the `validate` subcommand:
+//! - Ethereum address format
+//! - Image ID format
+//! - URL scheme, length and host (literal private/reserved IP addresses and
+//!   a list of internal hostnames are rejected)
 //!
-//! ## Security
-//!
-//! All external inputs are validated before use to prevent:
-//! - Buffer overflow attacks
-//! - Injection attacks
-//! - Resource exhaustion
-//! - Server-Side Request Forgery (SSRF) via private/internal IP ranges
+//! The prover's own fetch paths (inputs, program ELFs) do not call this
+//! module, and input data size is not checked here.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use thiserror::Error;

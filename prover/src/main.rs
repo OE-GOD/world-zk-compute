@@ -52,6 +52,8 @@ mod segment_prover;
 mod shutdown;
 #[cfg(feature = "sp1")]
 mod sp1_prover;
+#[cfg(test)]
+mod test_support;
 mod validation;
 mod xgboost_decomp;
 mod zkvm_backend;
@@ -172,7 +174,7 @@ enum Commands {
         #[arg(long, env = "HEALTH_PORT", default_value = "8081")]
         health_port: u16,
 
-        /// Maximum job queue size
+        /// Maximum job queue size (at least 1)
         #[arg(long, env = "QUEUE_SIZE", default_value = "1000")]
         queue_size: usize,
 
@@ -459,20 +461,7 @@ async fn run_prover(
     let min_tip_wei = U256::from((min_tip * 1e18) as u128);
 
     // Parse allowed image IDs
-    let allowed_images: Vec<B256> = if image_ids.is_empty() {
-        vec![] // Accept all
-    } else {
-        image_ids
-            .split(',')
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .map(|s| {
-                let bytes = hex::decode(s.trim_start_matches("0x"))
-                    .map_err(|e| anyhow::anyhow!("Invalid image ID hex '{}': {}", s, e))?;
-                Ok::<B256, anyhow::Error>(B256::from_slice(&bytes))
-            })
-            .collect::<Result<Vec<_>, _>>()?
-    };
+    let allowed_images = parse_image_ids(&image_ids)?;
 
     if allowed_images.is_empty() {
         info!("Accepting all program image IDs");
@@ -541,6 +530,7 @@ async fn run_prover(
         use_snark,
         max_gpu_concurrent,
         max_cpu_concurrent,
+        queue_size,
     )?;
     // Set signer for private input authentication
     processor.set_signer(Arc::new(signer.clone()));
@@ -645,9 +635,8 @@ async fn run_prover(
     info!("");
 
     // Start background cache cleanup (every 5 minutes)
-    let proof_cache_for_cleanup = Arc::new(proof_cache::ProofCache::with_defaults());
     let _cache_cleanup_handle =
-        proof_cache_for_cleanup.start_cleanup_task(std::time::Duration::from_secs(300));
+        processor.start_proof_cache_cleanup(std::time::Duration::from_secs(300));
     info!("✓ Proof cache cleanup: every 5 minutes");
 
     // ════════════════════════════════════════════════════════════════════
@@ -669,30 +658,23 @@ async fn run_prover(
             break;
         }
 
-        match processor
+        let cycle_result = processor
             .check_and_process(&provider, &config, &nonce_manager)
-            .await
-        {
+            .await;
+        match &cycle_result {
             Ok(processed) => {
-                if processed > 0 {
+                if *processed > 0 {
                     info!("✓ Processed {} requests", processed);
-
-                    // Update health state
-                    if let Some(ref state) = health_state {
-                        state
-                            .update_active_proofs(metrics::metrics().snapshot().active_proofs)
-                            .await;
-                    }
                 }
             }
             Err(e) => {
                 error!("✗ Error processing requests: {:?}", e);
-
-                // Update health state with error
-                if let Some(ref state) = health_state {
-                    state.set_error(format!("{:?}", e)).await;
-                }
             }
+        }
+
+        // Update health state
+        if let Some(ref state) = health_state {
+            update_health_after_cycle(state, &cycle_result).await;
         }
 
         // Periodic metrics logging
@@ -741,6 +723,38 @@ async fn run_prover(
 
     info!("Prover node shut down cleanly.");
     Ok(())
+}
+
+/// Parse a comma-separated list of 32-byte hex image IDs (empty = accept all)
+fn parse_image_ids(image_ids: &str) -> anyhow::Result<Vec<B256>> {
+    image_ids
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            let bytes = hex::decode(s.trim_start_matches("0x"))
+                .map_err(|e| anyhow::anyhow!("Invalid image ID hex '{}': {}", s, e))?;
+            B256::try_from(bytes.as_slice()).map_err(|_| {
+                anyhow::anyhow!("Image ID '{}' must be 32 bytes, got {}", s, bytes.len())
+            })
+        })
+        .collect()
+}
+
+/// Record the outcome of a poll cycle in the health state: a successful
+/// cycle puts the state back to running, a failed one stores the error.
+async fn update_health_after_cycle(state: &health::SharedState, result: &anyhow::Result<u64>) {
+    match result {
+        Ok(processed) => {
+            state.set_running(true).await;
+            if *processed > 0 {
+                state
+                    .update_active_proofs(metrics::metrics().snapshot().active_proofs)
+                    .await;
+            }
+        }
+        Err(e) => state.set_error(format!("{:?}", e)).await,
+    }
 }
 
 async fn check_status(
@@ -1171,6 +1185,57 @@ mod tests {
     fn test_format_timestamp_contains_utc() {
         let result = format_timestamp(1_000_000);
         assert!(result.contains("UTC"));
+    }
+
+    // ========== parse_image_ids ==========
+
+    #[test]
+    fn test_parse_image_ids_empty_accepts_all() {
+        assert!(parse_image_ids("").unwrap().is_empty());
+        assert!(parse_image_ids(" , ").unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_parse_image_ids_valid() {
+        let id = "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
+        let parsed = parse_image_ids(&format!("0x{id}, {id}")).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(hex::encode(parsed[0]), id);
+        assert_eq!(parsed[0], parsed[1]);
+    }
+
+    #[test]
+    fn test_parse_image_ids_wrong_length_is_an_error() {
+        let err = parse_image_ids("0x1234").unwrap_err().to_string();
+        assert!(err.contains("must be 32 bytes, got 2"), "{err}");
+
+        // 33 bytes
+        let too_long = "00".repeat(33);
+        assert!(parse_image_ids(&too_long).is_err());
+    }
+
+    #[test]
+    fn test_parse_image_ids_invalid_hex_is_an_error() {
+        assert!(parse_image_ids("0xzz").is_err());
+    }
+
+    // ========== update_health_after_cycle ==========
+
+    #[tokio::test]
+    async fn test_successful_cycle_clears_health_error() {
+        let state = health::SharedState::new("0x123".to_string(), "0x456".to_string());
+        state.set_running(true).await;
+
+        update_health_after_cycle(&state, &Err(anyhow::anyhow!("rpc down"))).await;
+        assert!(matches!(
+            state.get_status().await.state,
+            health::ProverState::Error(_)
+        ));
+
+        update_health_after_cycle(&state, &Ok(0)).await;
+        let status = state.get_status().await;
+        assert!(status.running);
+        assert_eq!(status.state, health::ProverState::Running);
     }
 
     // ========== mask_url ==========

@@ -122,10 +122,17 @@ impl InputPrefetcher {
         tokio::spawn(async move {
             // Check if already cached or in progress
             {
-                let cache_read = cache.read().await;
-                if cache_read.contains_key(&url) {
-                    debug!("[Prefetch {}] Already cached", request_id);
-                    return;
+                let mut cache_write = cache.write().await;
+                if let Some(entry) = cache_write.get(&url) {
+                    if entry.fetched_at.elapsed() <= config.cache_ttl {
+                        debug!("[Prefetch {}] Already cached", request_id);
+                        return;
+                    }
+
+                    // Expired entries are dropped and fetched again
+                    if let Some(removed) = cache_write.remove(&url) {
+                        *cache_size.write().await -= removed.size;
+                    }
                 }
             }
 
@@ -288,7 +295,7 @@ async fn fetch_input_for_prefetch(
     config: &PrefetchConfig,
 ) -> anyhow::Result<Vec<u8>> {
     // Determine fetch method based on URL scheme
-    let data = if url.starts_with("ipfs://") || url.contains("/ipfs/") {
+    let data = if IpfsClient::is_ipfs_url(url) {
         ipfs_client.fetch(url).await?
     } else if url.starts_with("http://") || url.starts_with("https://") {
         let client = reqwest::Client::builder()
@@ -353,5 +360,114 @@ mod tests {
         let data = b"hello world";
         let hash = compute_hash(data);
         assert!(!hash.is_zero());
+    }
+
+    const TEST_CID: &str = "QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG";
+
+    /// A local server that answers like an IPFS gateway for TEST_CID
+    async fn serve_test_gateway() -> std::net::SocketAddr {
+        let content_path = format!("/ipfs/{TEST_CID}");
+        crate::test_support::serve_http(move |request| {
+            if request.path == content_path {
+                (200, b"gateway content".to_vec())
+            } else {
+                (404, Vec::new())
+            }
+        })
+        .await
+    }
+
+    fn ipfs_client_with_gateway(gateway: String) -> IpfsClient {
+        IpfsClient::new(IpfsConfig {
+            gateways: vec![gateway],
+            max_retries: 1,
+            ..IpfsConfig::default()
+        })
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_http_gateway_url_is_fetched_as_http() {
+        let addr = serve_test_gateway().await;
+        // The IPFS client's own gateway has no content, so it cannot serve the URL
+        let ipfs = ipfs_client_with_gateway(format!("http://{addr}/other-gateway/"));
+
+        let url = format!("http://{addr}/ipfs/{TEST_CID}");
+        let data = fetch_input_for_prefetch(&ipfs, &url, &PrefetchConfig::default())
+            .await
+            .unwrap();
+        assert_eq!(data, b"gateway content");
+    }
+
+    #[tokio::test]
+    async fn test_bare_cid_is_fetched_through_ipfs_client() {
+        let addr = serve_test_gateway().await;
+        let ipfs = ipfs_client_with_gateway(format!("http://{addr}/ipfs/"));
+
+        let data = fetch_input_for_prefetch(&ipfs, TEST_CID, &PrefetchConfig::default())
+            .await
+            .unwrap();
+        assert_eq!(data, b"gateway content");
+    }
+
+    /// Poll the prefetch cache until the entry appears
+    async fn wait_for_cached(
+        prefetcher: &InputPrefetcher,
+        url: &str,
+        hash: &B256,
+    ) -> Option<Vec<u8>> {
+        for _ in 0..400 {
+            if let Some(data) = prefetcher.get_cached(url, hash).await {
+                return Some(data);
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        None
+    }
+
+    #[tokio::test]
+    async fn test_expired_entry_is_prefetched_again() {
+        let ipfs = Arc::new(IpfsClient::new(IpfsConfig::default()).unwrap());
+        let config = PrefetchConfig {
+            cache_ttl: Duration::from_millis(300),
+            ..PrefetchConfig::default()
+        };
+        let prefetcher = InputPrefetcher::new(ipfs, config);
+
+        // "hello" as a data URL, so no network is involved
+        let job = QueuedJob {
+            request_id: 1,
+            image_id: B256::ZERO,
+            input_hash: compute_hash(b"hello"),
+            input_url: "data:application/octet-stream;base64,aGVsbG8=".to_string(),
+            input_type: 0,
+            tip: alloy::primitives::U256::ZERO,
+            requester: alloy::primitives::Address::ZERO,
+            expires_at: u64::MAX,
+            queued_at: Instant::now(),
+            estimated_cycles: None,
+            program_cached: false,
+            prefetched_input: None,
+        };
+
+        prefetcher.prefetch(&job);
+        let cached = wait_for_cached(&prefetcher, &job.input_url, &job.input_hash).await;
+        assert_eq!(cached.as_deref(), Some(&b"hello"[..]));
+
+        // Let the entry expire
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert!(prefetcher
+            .get_cached(&job.input_url, &job.input_hash)
+            .await
+            .is_none());
+
+        // A new prefetch replaces the expired entry
+        prefetcher.prefetch(&job);
+        let cached = wait_for_cached(&prefetcher, &job.input_url, &job.input_hash).await;
+        assert_eq!(cached.as_deref(), Some(&b"hello"[..]));
+
+        let stats = prefetcher.stats().await;
+        assert_eq!(stats.cached_entries, 1);
+        assert_eq!(stats.cached_bytes, 5);
     }
 }

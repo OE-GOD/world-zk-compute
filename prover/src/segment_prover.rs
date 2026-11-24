@@ -14,8 +14,8 @@
 //! 4. **Multi-stage proof compression** — Pipeline from Composite (STARK
 //!    segments) → Succinct (compressed STARK) → Groth16 (on-chain).
 //!
-//! 5. **Execution plan caching** — Avoids double-executing when preflight
-//!    is followed by proving.
+//! 5. **Execution plan caching** — A `SegmentProver` keeps the plan of an
+//!    (ELF, input) pair it has analyzed, when `cache_executions` is set.
 //!
 //! ## Segment Size Tuning
 //!
@@ -398,9 +398,9 @@ impl SegmentProver {
         );
 
         tokio::task::spawn_blocking(move || {
-            // Configure Rayon thread pool for segment parallelism.
-            // risc0's prover uses Rayon internally; setting this env var
-            // controls how many segments are proved concurrently.
+            // Request a Rayon thread count. Rayon reads this variable when
+            // its global pool is first created, so it has no effect on a
+            // pool that already exists.
             std::env::set_var("RAYON_NUM_THREADS", threads.to_string());
 
             let env = ExecutorEnv::builder()

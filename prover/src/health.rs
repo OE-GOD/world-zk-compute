@@ -18,8 +18,15 @@
 use crate::metrics::{metrics, MetricsSnapshot};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
-use tracing::{error, info};
+use tracing::{debug, error, info};
+
+/// Maximum size of the request line and headers of one request, in bytes
+const MAX_REQUEST_HEAD_BYTES: u64 = 8 * 1024;
+
+/// Maximum time a connection may take from accept to response
+const CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Prover status information
 #[derive(Clone, Debug, serde::Serialize)]
@@ -160,13 +167,29 @@ impl HealthServer {
         let listener = tokio::net::TcpListener::bind(addr).await?;
         info!("Health server listening on {}", addr);
 
+        Self::serve(listener, state, CONNECTION_TIMEOUT).await
+    }
+
+    /// Accept connections and answer each within `connection_timeout`
+    async fn serve(
+        listener: tokio::net::TcpListener,
+        state: SharedState,
+        connection_timeout: Duration,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         loop {
             let (stream, _) = listener.accept().await?;
             let state = state.clone();
 
             tokio::spawn(async move {
-                if let Err(e) = Self::handle_connection(stream, state).await {
-                    error!("Connection error: {}", e);
+                match tokio::time::timeout(
+                    connection_timeout,
+                    Self::handle_connection(stream, state),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => error!("Connection error: {}", e),
+                    Err(_) => debug!("Connection closed after {:?}", connection_timeout),
                 }
             });
         }
@@ -176,9 +199,10 @@ impl HealthServer {
         mut stream: tokio::net::TcpStream,
         state: SharedState,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
-        let mut reader = BufReader::new(&mut stream);
+        // Request line and headers together are limited to MAX_REQUEST_HEAD_BYTES
+        let mut reader = BufReader::new(&mut stream).take(MAX_REQUEST_HEAD_BYTES);
         let mut request_line = String::new();
         reader.read_line(&mut request_line).await?;
 
@@ -194,13 +218,25 @@ impl HealthServer {
         };
 
         // Read remaining headers (required to properly handle the request)
+        let mut head_complete = false;
         loop {
             let mut line = String::new();
             reader.read_line(&mut line).await?;
-            if line == "\r\n" || line == "\n" || line.is_empty() {
+            if line == "\r\n" || line == "\n" {
+                head_complete = true;
+                break;
+            }
+            if line.is_empty() {
                 break;
             }
         }
+
+        // The limit was used up before the end of the headers
+        let response = if !head_complete && reader.limit() == 0 {
+            Self::header_too_large_response()
+        } else {
+            response
+        };
 
         stream.write_all(response.as_bytes()).await?;
         stream.flush().await?;
@@ -210,15 +246,15 @@ impl HealthServer {
 
     async fn health_response(state: &SharedState) -> String {
         let status = state.get_status().await;
-        let (status_code, body) = if status.running && status.state == ProverState::Running {
-            (200, r#"{"status":"healthy"}"#)
+        let (status_line, body) = if status.running && status.state == ProverState::Running {
+            ("200 OK", r#"{"status":"healthy"}"#)
         } else {
-            (503, r#"{"status":"unhealthy"}"#)
+            ("503 Service Unavailable", r#"{"status":"unhealthy"}"#)
         };
 
         format!(
-            "HTTP/1.1 {} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-            status_code,
+            "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            status_line,
             body.len(),
             body
         )
@@ -374,6 +410,15 @@ impl HealthServer {
             body
         )
     }
+
+    fn header_too_large_response() -> String {
+        let body = r#"{"error":"Request Header Fields Too Large"}"#;
+        format!(
+            "HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        )
+    }
 }
 
 #[cfg(test)]
@@ -388,6 +433,106 @@ mod tests {
         let status = state.get_status().await;
         assert!(status.running);
         assert_eq!(status.state, ProverState::Running);
+    }
+
+    #[tokio::test]
+    async fn test_health_status_line() {
+        let state = SharedState::new("0x123".to_string(), "0x456".to_string());
+
+        state.set_running(true).await;
+        let response = HealthServer::health_response(&state).await;
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
+
+        state.set_error("rpc down".to_string()).await;
+        let response = HealthServer::health_response(&state).await;
+        assert!(
+            response.starts_with("HTTP/1.1 503 Service Unavailable\r\n"),
+            "{response}"
+        );
+    }
+
+    /// Start a health server on a free loopback port
+    async fn start_test_server(connection_timeout: Duration) -> SocketAddr {
+        let state = SharedState::new("0x123".to_string(), "0x456".to_string());
+        state.set_running(true).await;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = HealthServer::serve(listener, state, connection_timeout).await;
+        });
+        addr
+    }
+
+    /// Send `request` and keep the connection open. Returns what the server
+    /// sent before closing the connection, or None if it was still open
+    /// after `wait`.
+    async fn exchange(addr: SocketAddr, request: &[u8], wait: Duration) -> Option<String> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        stream.write_all(request).await.unwrap();
+
+        let mut response = Vec::new();
+        tokio::time::timeout(wait, stream.read_to_end(&mut response))
+            .await
+            .ok()
+            .map(|_| String::from_utf8_lossy(&response).into_owned())
+    }
+
+    #[tokio::test]
+    async fn test_server_answers_health_request() {
+        let addr = start_test_server(Duration::from_secs(30)).await;
+
+        let response = exchange(
+            addr,
+            b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            Duration::from_secs(3),
+        )
+        .await
+        .expect("no response");
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
+        assert!(response.ends_with(r#"{"status":"healthy"}"#), "{response}");
+    }
+
+    #[tokio::test]
+    async fn test_oversized_request_line_is_rejected() {
+        let addr = start_test_server(Duration::from_secs(30)).await;
+
+        // No newline within the limit; the client keeps the connection open
+        let request = vec![b'A'; MAX_REQUEST_HEAD_BYTES as usize];
+        let response = exchange(addr, &request, Duration::from_secs(3))
+            .await
+            .expect("server kept reading past the request size limit");
+        assert!(response.starts_with("HTTP/1.1 431 "), "{response}");
+    }
+
+    #[tokio::test]
+    async fn test_oversized_headers_are_rejected() {
+        let addr = start_test_server(Duration::from_secs(30)).await;
+
+        // Headers that never end
+        let mut request = b"GET /health HTTP/1.1\r\n".to_vec();
+        while request.len() < MAX_REQUEST_HEAD_BYTES as usize {
+            request.extend_from_slice(b"X-Fill: aaaaaaaaaaaaaaaaaaaaaa\r\n");
+        }
+        request.truncate(MAX_REQUEST_HEAD_BYTES as usize);
+
+        let response = exchange(addr, &request, Duration::from_secs(3))
+            .await
+            .expect("server kept reading past the request size limit");
+        assert!(response.starts_with("HTTP/1.1 431 "), "{response}");
+    }
+
+    #[tokio::test]
+    async fn test_idle_connection_is_closed_after_timeout() {
+        let addr = start_test_server(Duration::from_millis(200)).await;
+
+        // An unfinished request line, then silence
+        let response = exchange(addr, b"GET /health", Duration::from_secs(3))
+            .await
+            .expect("server kept the idle connection open");
+        assert_eq!(response, "");
     }
 
     #[test]

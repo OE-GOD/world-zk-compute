@@ -225,7 +225,7 @@ mod tests {
     fn test_boundless_config_is_configured() {
         let config = BoundlessConfig {
             rpc_url: "https://rpc.example.com".to_string(),
-            private_key: "0xdeadbeef".to_string(),
+            private_key: "0xdeadbeef".to_string().into(),
             storage_provider: StorageProvider::Pinata {
                 jwt: "test".to_string(),
             },
@@ -236,7 +236,7 @@ mod tests {
 
         let empty_config = BoundlessConfig {
             rpc_url: String::new(),
-            private_key: String::new(),
+            private_key: String::new().into(),
             storage_provider: StorageProvider::Pinata { jwt: String::new() },
             timeout_secs: 3600,
             poll_interval_secs: 5,

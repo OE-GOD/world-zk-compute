@@ -4,9 +4,11 @@
 //! proof by running a wrapper guest that calls `env::verify()` on each
 //! sub-proof inside the zkVM.
 //!
-//! This closes the trust gap where journals were previously merged outside
-//! the zkVM — a malicious prover could have omitted or fabricated journals.
-//! With recursive verification, the merge is proven correct.
+//! The wrapper proof shows that a receipt of the inner image exists for each
+//! of the K sub-journals and commits a hash over those journals
+//! (`journals_hash`). The merged journal is computed on the host and committed
+//! by the guest as given; the wrapper does not check it against the
+//! sub-journals.
 //!
 //! ## Flow
 //!
@@ -78,7 +80,7 @@ impl Default for RecursiveWrapperConfig {
 #[derive(Debug)]
 #[allow(dead_code)]
 pub struct RecursiveWrapResult {
-    /// The wrapper Receipt (proves all sub-proofs valid + merge).
+    /// The wrapper Receipt (covers the sub-proofs; the merged journal is not checked).
     pub wrapper_receipt: Receipt,
     /// Seal extracted from the wrapper receipt (for on-chain submission).
     pub wrapper_seal: Vec<u8>,
@@ -86,7 +88,7 @@ pub struct RecursiveWrapResult {
     pub wrapper_journal: Vec<u8>,
     /// The merged journal from all sub-computations.
     pub merged_journal: Vec<u8>,
-    /// First sub-proof's seal (for V1 on-chain submission with original imageId).
+    /// First sub-proof's seal. It covers the first sub-input and its journal only.
     pub first_sub_seal: Vec<u8>,
     /// First sub-proof's journal.
     pub first_sub_journal: Vec<u8>,
@@ -167,7 +169,7 @@ impl RecursiveWrapper {
             .map(|r| r.journal.bytes.clone())
             .collect();
 
-        // Save first sub-proof's seal and journal for V1 on-chain fallback
+        // Keep the first sub-proof's seal and journal
         let first_sub_seal = extract_seal(&sub_receipts[0])?;
         let first_sub_journal = sub_journals[0].clone();
 
