@@ -169,21 +169,28 @@ fn unwritable_stdout_exits_one() {
     let dir = scratch("closed-stdout");
     let truncated = write_truncated_bundle(&dir);
 
-    // A pipe whose read end is closed: every write to it fails.
-    let (reader, writer) = std::io::pipe().unwrap();
-    drop(reader);
-    let out = bin()
-        .args(["verify", &truncated, "--json"])
-        .stdout(writer)
-        .output()
-        .unwrap();
-    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
-    assert!(
-        stderr(&out).contains("Error writing to stdout"),
-        "{}",
-        stderr(&out)
-    );
-    assert!(!stderr(&out).contains("panicked"), "{}", stderr(&out));
+    for args in [
+        vec!["verify", truncated.as_str(), "--json"],
+        vec!["--help"],
+        vec!["verify", "--help"],
+        vec!["--version"],
+    ] {
+        // A pipe whose read end is closed: every write to it fails.
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader);
+        let out = bin().args(&args).stdout(writer).output().unwrap();
+        assert_eq!(out.status.code(), Some(1), "{args:?}: {}", stderr(&out));
+        assert!(
+            stderr(&out).contains("Error writing to stdout"),
+            "{args:?}: {}",
+            stderr(&out)
+        );
+        assert!(
+            !stderr(&out).contains("panicked"),
+            "{args:?}: {}",
+            stderr(&out)
+        );
+    }
 
     let _ = std::fs::remove_dir_all(&dir);
 }

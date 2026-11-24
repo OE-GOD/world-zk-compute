@@ -26,8 +26,8 @@ fn main() {
     match args[1].as_str() {
         "verify" => cmd_verify(&args[2..]),
         "bundle" => cmd_bundle(&args[2..]),
-        "--help" | "-h" | "help" => print!("{USAGE}"),
-        "--version" | "-V" => println!("zkml-verifier {}", env!("CARGO_PKG_VERSION")),
+        "--help" | "-h" | "help" => print_text(USAGE),
+        "--version" | "-V" => print_line(concat!("zkml-verifier ", env!("CARGO_PKG_VERSION"))),
         // Legacy: treat first arg as a file path for backward compat
         path if path.ends_with(".json") || path.ends_with(".json.gz") => cmd_verify(&args[1..]),
         _ => {
@@ -49,7 +49,8 @@ Commands:
   bundle   Assemble proof components into a ProofBundle JSON file
 
 Options for verify:
-  --json       Print the result as JSON on stdout (also on failure)
+  --json       Print the result as JSON on stdout, also when the bundle
+               cannot be loaded or the proof is rejected
   --hybrid     Replay the transcript and print the field outputs only.
                This skips every elliptic-curve check, so it does NOT verify
                the proof and exits 0 for proofs that `verify` rejects.
@@ -85,13 +86,22 @@ fn fail(json_output: bool, hybrid: bool, context: &str, err: &dyn std::fmt::Disp
     process::exit(1);
 }
 
-/// Write one line to stdout. If the write fails (closed pipe, full disk),
-/// report it on stderr and exit with status 1.
-fn print_line(line: &str) {
-    if let Err(e) = writeln!(std::io::stdout(), "{line}") {
+/// Write text to stdout. If the write fails (closed pipe, full disk), report
+/// it on stderr and exit with status 1.
+fn print_text(text: &str) {
+    let mut stdout = std::io::stdout();
+    if let Err(e) = stdout
+        .write_all(text.as_bytes())
+        .and_then(|()| stdout.flush())
+    {
         eprintln!("Error writing to stdout: {e}");
         process::exit(1);
     }
+}
+
+/// [`print_text`] for one line.
+fn print_line(line: &str) {
+    print_text(&format!("{line}\n"));
 }
 
 /// Run a call into the library with panic messages silenced.
@@ -117,7 +127,7 @@ fn cmd_verify(args: &[String]) {
             "--hybrid" => hybrid = true,
             "--json" => json_output = true,
             "--help" | "-h" => {
-                print!("{USAGE}");
+                print_text(USAGE);
                 return;
             }
             opt if opt.starts_with('-') => {
@@ -238,7 +248,7 @@ fn cmd_bundle(args: &[String]) {
                 compress = true;
             }
             "--help" | "-h" => {
-                print!("{USAGE}");
+                print_text(USAGE);
                 return;
             }
             _ => {
