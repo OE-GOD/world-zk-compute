@@ -106,6 +106,11 @@ func (c *Client) UploadModel(modelJSON string, name string, format string) (*Mod
 
 // Prove generates a proof for the given model and input features.
 func (c *Client) Prove(modelID string, features []float64) (*ProveResponse, error) {
+	// A nil slice is encoded as JSON null, which the service cannot parse. An
+	// empty array gets its "must not be empty" answer instead.
+	if features == nil {
+		features = []float64{}
+	}
 	body := map[string]interface{}{
 		"model_id": modelID,
 		"features": features,

@@ -239,6 +239,31 @@ func TestProve(t *testing.T) {
 	}
 }
 
+// A nil feature slice is sent as an empty array, not as JSON null: the
+// generator cannot parse null and answers an empty array with a clear error.
+func TestProveNilFeatures(t *testing.T) {
+	var sent map[string]json.RawMessage
+	srv := newTestServer(map[string]http.HandlerFunc{
+		"POST /prove": func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			json.Unmarshal(body, &sent)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			io.WriteString(w, `{"error":"Features vector must not be empty"}`)
+		},
+	})
+	defer srv.Close()
+
+	c := New(srv.URL, "")
+	_, err := c.Prove("model-123", nil)
+	if err == nil || !strings.Contains(err.Error(), "Features vector must not be empty") {
+		t.Fatalf("expected the service's error, got %v", err)
+	}
+	if string(sent["features"]) != "[]" {
+		t.Errorf("features sent as %s, want []", sent["features"])
+	}
+}
+
 func TestProveRegistryProofID(t *testing.T) {
 	srv := newTestServer(map[string]http.HandlerFunc{
 		"POST /prove": func(w http.ResponseWriter, r *http.Request) {
