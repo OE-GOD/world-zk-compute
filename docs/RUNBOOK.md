@@ -88,11 +88,11 @@ docker compose up -d operator
 kubectl -n world-zk set env deployment/worldzk-operator DRY_RUN=true
 ```
 
-When `DRY_RUN=true` (env var or `dry_run = true` in TOML config), the operator simulates the full flow (enclave calls, proof generation) but does not send on-chain transactions. This is useful for:
+When `DRY_RUN=true` (env var or `dry_run = true` in TOML config), the `watch` loop keeps polling and logs `[DRY-RUN] Would submit proof to resolve dispute for <result id>` for each challenge it sees, but it generates no proof and sends no on-chain transactions (auto-finalize is skipped as well). A challenge seen in this mode is recorded in `processed_event_ids`, so if the state file survives the restart the operator skips it after `DRY_RUN` is turned off. With the shipped compose file and manifests the restart recreates the container, so the state file is lost (Section 10) and the operator replays from block 0 instead. This is useful for:
 
 - Validating a new operator configuration against a live chain without spending gas
 - Temporarily halting submissions while keeping the watch loop active for monitoring
-- Testing proof generation without dispute resolution
+- Seeing which challenges the operator would answer, without proof generation or dispute resolution
 
 To resume normal operation, set `DRY_RUN=false` (or remove it) and restart.
 
@@ -101,7 +101,7 @@ To resume normal operation, set `DRY_RUN=false` (or remove it) and restart.
 If you need an immediate full halt of all operator activity (no polling, no proof generation, no submissions):
 
 ```bash
-# Docker Compose -- graceful stop (waits for in-flight tasks up to 60s)
+# Docker Compose -- sends SIGTERM to the operator
 docker compose stop operator
 
 # Kubernetes -- scale to zero
@@ -113,6 +113,8 @@ On SIGTERM/SIGINT, the operator:
 2. Waits up to 60 seconds for in-flight proof submissions to complete
 3. Saves final state to `operator-state.json`
 4. Exits cleanly
+
+The container runtime can cut the 60-second wait short: `docker-compose.yml` sets no `stop_grace_period`, so Docker Compose's own stop timeout applies (`docker compose stop -t <seconds>` overrides it), and the Kubernetes manifest sets `terminationGracePeriodSeconds: 30`.
 
 On restart, it resumes from `last_polled_block` in the state file.
 
@@ -138,7 +140,7 @@ docker compose logs operator | grep -i "circuit breaker"
 - [ ] Confirm `submitResult` reverts with `EnforcedPause`:
   ```bash
   cast call $TEE_VERIFIER "submitResult(bytes32,bytes32,bytes,bytes)" \
-    0x0 0x0 0x 0x --rpc-url $RPC --from $ANY_ADDRESS
+    $(cast hash-zero) $(cast hash-zero) 0x 0x --rpc-url $RPC --from $ANY_ADDRESS
   # Expected: revert EnforcedPause
   ```
 - [ ] Confirm `challenge` also reverts with `EnforcedPause`
@@ -271,7 +273,7 @@ If the key is compromised, **revoke first**, then deploy a new enclave:
   # Query indexer for recent challenges
   curl -s "http://$INDEXER:8081/results?status=challenged&limit=20" | jq '.data[].challenger'
   # Or query on-chain logs
-  cast logs $TEE_VERIFIER "ResultChallenged(bytes32,address)" \
+  cast logs --address $TEE_VERIFIER "ResultChallenged(bytes32 indexed,address)" \
     --from-block $RECENT_BLOCK --rpc-url $RPC
   ```
 - [ ] Check enclave health and model integrity:
@@ -287,7 +289,7 @@ If the key is compromised, **revoke first**, then deploy a new enclave:
   ```
 - [ ] Check if proofs are succeeding (submitter wins valid disputes):
   ```bash
-  cast logs $TEE_VERIFIER "DisputeResolved(bytes32,bool)" \
+  cast logs --address $TEE_VERIFIER "DisputeResolved(bytes32 indexed,bool)" \
     --from-block $RECENT_BLOCK --rpc-url $RPC
   ```
 - [ ] Check operator logs:
@@ -322,6 +324,7 @@ If the key is compromised, **revoke first**, then deploy a new enclave:
   kubectl -n world-zk rollout restart deployment worldzk-enclave
   # or: docker compose restart enclave
   ```
+  `deploy/k8s` defines no enclave Deployment. Only the Helm chart (`deploy/helm/worldzk`) does, as `<fullname>-enclave` (`worldzk-enclave` for a release named `worldzk`), in the namespace the release was installed into.
 - [ ] If enclave image is compromised, follow Enclave Key Rotation (Section 2)
 
 **Scenario C: Proof generation failures**
@@ -333,6 +336,7 @@ If the key is compromised, **revoke first**, then deploy a new enclave:
   kubectl -n world-zk rollout restart deployment worldzk-prover
   # or: docker compose restart warm-prover
   ```
+  `deploy/k8s` defines no prover Deployment. The Helm chart creates `<fullname>-prover` only when `prover.enabled` is set (default `false`).
 
 ### Escalation
 
@@ -400,7 +404,7 @@ docker compose restart operator
 ```
 
 On startup, the operator will:
-1. Load `operator-state.json` (or start from latest block if missing/corrupt)
+1. Load `operator-state.json` (if it is missing or corrupt, start from block 0; the warning it logs says "starting from latest block", but `OperatorState::default()` sets `last_polled_block` to 0)
 2. Resume polling from `last_polled_block`
 3. Skip already-processed events via `processed_event_ids`
 4. Re-check `active_disputes` deadlines
@@ -412,6 +416,8 @@ On startup, the operator will:
 kubectl -n world-zk logs -l app=worldzk-operator --tail=20 | grep "Loaded operator state"
 ```
 
+After `kubectl rollout restart` this line does not appear: the new pod has no state file (see Section 10, Operator State File), logs `State file ... not found, starting from latest block` and replays from block 0. The line appears after `docker compose restart operator`, which keeps the container.
+
 **Step 3: Check for missed disputes**
 
 ```bash
@@ -421,7 +427,7 @@ LAST=$(cat $STATE_FILE | jq '.last_polled_block')
 echo "Gap: $LAST -> $CURRENT"
 
 # Search for challenges in the gap
-cast logs $TEE_VERIFIER "ResultChallenged(bytes32,address)" \
+cast logs --address $TEE_VERIFIER "ResultChallenged(bytes32 indexed,address)" \
   --from-block $LAST --to-block $CURRENT --rpc-url $RPC
 ```
 
@@ -450,20 +456,20 @@ When the operator crashes, there may be proofs being generated that have not yet
 
 1. **Pre-computed proofs are preserved.** Proofs are stored as JSON files in `PROOFS_DIR` (default: `./proofs`). The operator checks this directory when a challenge is detected and uses existing proofs without regeneration.
 
-2. **In-progress proof tasks are lost.** Any `tokio::spawn`-ed proof generation tasks that were running at crash time are abandoned. On the next poll cycle, the operator will re-detect the challenge event (if not in `processed_event_ids`) and trigger proof generation again.
+2. **In-progress dispute tasks are lost.** Any `tokio::spawn`-ed dispute-resolution tasks that were running at crash time are abandoned. The challenge was added to `processed_event_ids` when its task was started, so with a saved state file the operator skips it after the restart; it is handled again only if the operator replays without that entry (no state file). The `watch` loop does not generate proofs: it reads them from `PROOFS_DIR` and waits up to 60 seconds for one to appear.
 
-3. **Semaphore-blocked proofs.** The operator limits concurrent proof submissions to 10 via a semaphore. If a challenge was skipped because the semaphore was full, it was NOT marked as processed and will be retried on the next poll.
+3. **Semaphore-blocked proofs.** The operator limits concurrent proof submissions to 10 via a semaphore. If a challenge was skipped because the semaphore was full, it was NOT marked as processed, but the loop has already advanced `last_polled_block` past its block, so it is not polled again; it is seen again only if the operator replays from an earlier block.
 
 4. **Graceful shutdown.** On SIGINT/SIGTERM, the operator waits up to 60 seconds for in-flight tasks to complete before saving state. If this timeout expires, remaining tasks are abandoned but the state file is still saved with the last polled block.
 
 ### Corrupt State File Recovery
 
-If the state file is corrupt, the operator logs a warning and falls back to `OperatorState::default()` (starts from latest block, missing events in the gap).
+If the state file is corrupt, the operator logs a warning and falls back to `OperatorState::default()` (`last_polled_block` 0 and an empty `processed_event_ids`: it polls again from block 0 and handles every event it finds).
 
 To manually recover:
 
 ```bash
-# Option A: Delete and restart (operator starts from latest block)
+# Option A: Delete and restart (operator replays from block 0)
 rm $STATE_FILE
 # Restart operator
 
@@ -474,7 +480,7 @@ echo '{"last_polled_block": 12300, "active_disputes": {}, "processed_event_ids":
 
 ### Verification
 
-- [ ] Operator health returns OK: `curl -s http://$OPERATOR:9090/health`
+- [ ] Operator health returns OK: `curl -s http://$OPERATOR:9090/health` (port 8080 under the Kubernetes manifests, which set `METRICS_PORT=8080`)
 - [ ] `operator_uptime_seconds` metric is increasing
 - [ ] No active disputes past deadline without proof submission
 - [ ] State file is being updated (check mtime): `ls -la $STATE_FILE`
@@ -532,8 +538,11 @@ kubectl -n world-zk patch configmap world-zk-config \
 kubectl -n world-zk create secret generic world-zk-secrets \
   --from-literal=OPERATOR_PRIVATE_KEY="$PRIVATE_KEY" \
   --from-literal=TEE_VERIFIER_ADDRESS="$CONTRACT_ADDRESS" \
+  --from-literal=OPERATOR_RPC_URL="$NEW_RPC" \
   --dry-run=client -o yaml | kubectl apply -f -
 ```
+
+The operator Deployment loads `world-zk-secrets` after `world-zk-config` (`envFrom` in `deploy/k8s/base/operator-deployment.yaml`). The indexer takes `RPC_URL` only from the ConfigMap key `OPERATOR_RPC_URL` (`deploy/k8s/base/indexer-deployment.yaml`), so it does not see a URL stored in the Secret.
 
 **Rolling restart (required to pick up ConfigMap/Secret changes)**
 
@@ -544,7 +553,7 @@ kubectl -n world-zk rollout restart deployment worldzk-indexer
 
 ### Verification
 
-- [ ] Operator health OK: `curl -s http://$OPERATOR:9090/health`
+- [ ] Operator health OK: `curl -s http://$OPERATOR:9090/health` (port 8080 under the Kubernetes manifests)
 - [ ] Operator logs show successful polling (no RPC errors):
   ```bash
   kubectl -n world-zk logs -l app=worldzk-operator --tail=50 | grep -i "error\|poll"
@@ -563,81 +572,182 @@ kubectl -n world-zk rollout restart deployment worldzk-indexer
 
 | Contract | Pattern | Upgrade Method |
 |----------|---------|---------------|
-| UpgradeableExecutionEngine | UUPS Proxy | `upgradeTo()` / `upgradeToAndCall()` via admin |
-| TEEMLVerifier | Non-upgradeable (Ownable2Step) | Fresh deploy + state migration |
-| RemainderVerifier | Non-upgradeable | Fresh deploy + re-register circuits |
+| TEEMLVerifier | UUPS implementation behind `UUPSProxy` (`contracts/src/Upgradeable.sol`) | `upgradeTo()` / `upgradeToAndCall()` on the proxy |
+| RemainderVerifier | UUPS implementation behind `UUPSProxy` | `upgradeTo()` / `upgradeToAndCall()` on the proxy |
+| ExecutionEngine, ProgramRegistry, ProverRegistry, ProverReputation | Deployed directly (`Ownable2Step`), no proxy | None: fresh deploy (see the end of this section) |
 
-### UUPS Proxy Upgrade (UpgradeableExecutionEngine)
+`UpgradeableExecutionEngine` (also in `contracts/src/Upgradeable.sol`) is not deployed by any script in the repository; the deploy scripts deploy the plain `ExecutionEngine`.
+
+### Who Can Upgrade
+
+`upgradeTo(address)` and `upgradeToAndCall(address,bytes)` carry the `onlyTimelocked` modifier (`contracts/src/Upgradeable.sol`). Each proxy has its own `admin()` and `timelock()`:
+
+- **No timelock set** (`timelock()` returns the zero address, which is how `contracts/script/DeployTEEMLVerifier.s.sol` leaves the proxy): only `admin()` can call them. Any other caller reverts with `NotAdmin`.
+- **Timelock set**: only the timelock contract can call them, and the admin's direct call reverts with `NotTimelocked`. With the repository's `TimelockController` (`contracts/src/TimelockController.sol`), its `owner` schedules the call with `schedule(bytes32,address,bytes,uint256)` and, once the delay has passed, anyone can run it with `execute(bytes32)`.
+- `setTimelock(address)` is `onlyAdmin` and is not delayed: the admin can set, replace or clear the timelock in one transaction.
+
+The only check made on the new implementation is that the address has code (`InvalidImplementation` otherwise). `pause()`, `unpause()` and `changeAdmin(address)` stay with the admin whether or not a timelock is set.
+
+### Upgrading TEEMLVerifier or RemainderVerifier
+
+Every command below was run on a local Anvil chain against a proxy deployed with `contracts/script/DeployTEEMLVerifier.s.sol` (the two RemainderVerifier queries in Step 6 against one deployed with `contracts/script/DeployRemainder.s.sol` on `anvil --disable-code-size-limit`). Run them from `contracts/`. `$PROXY` is the proxy address, which is the address used as `$TEE_VERIFIER` (or as the RemainderVerifier address) everywhere else in this runbook; an upgrade does not change it.
 
 **Pre-upgrade checklist:**
 
-- [ ] New implementation deployed and verified on block explorer
-- [ ] Storage layout compatible (no slot reordering, new vars use `__gap` slots)
-- [ ] Tests pass: `cd contracts && forge test --match-contract UpgradeableTest -vvv`
+- [ ] Storage layout compatible: existing variables keep their order and types, and new ones are added after the last one (neither contract declares a `__gap`). Print the layout of the old and the new version and compare:
+  ```bash
+  forge inspect src/tee/TEEMLVerifier.sol:TEEMLVerifier storage-layout
+  ```
+- [ ] Proxy and timelock tests pass:
+  ```bash
+  forge test --match-contract "TEEMLVerifierProxyTest|RemainderVerifierProxyTest|TEEMLVerifierTimelockTest|RemainderVerifierTimelockTest"
+  ```
 - [ ] Code audited (for production)
-- [ ] Admin key available
+- [ ] Admin key available (or the timelock owner's key, if a timelock is set)
 
-**Step 1: Deploy new implementation**
+**Step 1: Record the current state**
 
 ```bash
-forge create src/Upgradeable.sol:UpgradeableExecutionEngineV2 \
+cast call $PROXY "admin()(address)" --rpc-url $RPC
+cast call $PROXY "timelock()(address)" --rpc-url $RPC
+cast call $PROXY "implementation()(address)" --rpc-url $RPC
+# Record: $OLD_IMPL (needed for rollback)
+```
+
+**Step 2: Deploy the new implementation**
+
+Deploy only the implementation contract, not a new proxy.
+
+```bash
+forge create src/tee/TEEMLVerifier.sol:TEEMLVerifier \
   --rpc-url $RPC \
   --private-key $DEPLOYER_KEY \
   --broadcast
 # Record: $NEW_IMPL
 ```
 
-**Step 2: Verify admin access**
+For RemainderVerifier the contract is `src/remainder/RemainderVerifier.sol:RemainderVerifier`. Its runtime bytecode is 135,088 bytes, above the 24,576-byte contract size limit, so this step only succeeds on a chain without that limit (locally, `anvil --disable-code-size-limit`); on a default Anvil it fails with `max initcode size exceeded`.
+
+**Step 3: Check that the new implementation is a UUPS implementation**
 
 ```bash
-cast call $PROXY "admin()(address)" --rpc-url $RPC
-# Must match the caller of upgradeTo
+cast call $NEW_IMPL "proxiableUUID()(bytes32)" --rpc-url $RPC
+# Expected: 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc
+# A contract that does not inherit UUPSUpgradeable reverts here
 ```
 
-**Step 3: Execute upgrade**
+> **Warning:** `upgradeTo` accepts any address that has code, and after an upgrade to a contract without the upgrade functions (for example one that does not inherit `UUPSUpgradeable`) the proxy has no `upgradeTo`, `upgradeToAndCall` or `implementation()` any more (those calls revert), so it can never be upgraded or rolled back again.
+
+**Step 4: Rehearse on a fork**
+
+As written, for a proxy with no timelock set. The fork is a local copy, so the admin is impersonated and no key is needed.
 
 ```bash
-# Without re-initialization
+anvil --fork-url $RPC --port $FORK_PORT
+# In another shell:
+FORK=http://127.0.0.1:$FORK_PORT
+ADMIN=$(cast call $PROXY "admin()(address)" --rpc-url $FORK)
+cast rpc anvil_impersonateAccount $ADMIN --rpc-url $FORK
+cast send $PROXY "upgradeTo(address)" $NEW_IMPL --from $ADMIN --unlocked --rpc-url $FORK
+cast call $PROXY "implementation()(address)" --rpc-url $FORK
+# Expected: $NEW_IMPL
+# The upgraded proxy must still accept an upgrade:
+cast send $PROXY "upgradeTo(address)" $OLD_IMPL --from $ADMIN --unlocked --rpc-url $FORK
+```
+
+**Step 5: Execute the upgrade**
+
+Without a timelock, from the admin:
+
+```bash
+ADMIN=$(cast call $PROXY "admin()(address)" --rpc-url $RPC)
+
+# Simulate first (reverts with NotAdmin or NotTimelocked if the caller is not allowed)
+cast call $PROXY "upgradeTo(address)" $NEW_IMPL --from $ADMIN --rpc-url $RPC
+
+# Without a call into the new implementation
 cast send $PROXY "upgradeTo(address)" $NEW_IMPL \
   --rpc-url $RPC \
   --private-key $ADMIN_KEY
 
-# With re-initialization
-INIT_DATA=$(cast calldata "reinitialize(uint8)" 2)
+# With a call into the new implementation in the same transaction
+INIT_DATA=$(cast calldata "paused()")   # stand-in: put the new version's migration call here
 cast send $PROXY "upgradeToAndCall(address,bytes)" $NEW_IMPL $INIT_DATA \
   --rpc-url $RPC \
   --private-key $ADMIN_KEY
 ```
 
-**Step 4: Post-upgrade verification**
+The current implementations have no migration function: `upgradeToAndCall` with `initialize(...)` as the call reverts with `AlreadyInitialized`, and the upgrade is not applied.
 
+With a timelock set, through the `TimelockController`:
+
+```bash
+TIMELOCK=$(cast call $PROXY "timelock()(address)" --rpc-url $RPC)
+cast call $TIMELOCK "minDelay()(uint256)" --rpc-url $RPC
+OP_ID=$(cast keccak "upgrade-tee-verifier-1")   # any bytes32 not used before
+
+# Schedule (timelock owner only). The last argument is the delay in seconds;
+# it must be at least minDelay(), otherwise the call reverts with DelayBelowMinimum.
+cast send $TIMELOCK "schedule(bytes32,address,bytes,uint256)" \
+  $OP_ID $PROXY $(cast calldata "upgradeTo(address)" $NEW_IMPL) 172800 \
+  --rpc-url $RPC --private-key $TIMELOCK_OWNER_KEY
+
+# After the delay (earlier, execute reverts with OperationNotReady); anyone can execute
+cast call $TIMELOCK "isOperationReady(bytes32)(bool)" $OP_ID --rpc-url $RPC
+cast send $TIMELOCK "execute(bytes32)" $OP_ID --rpc-url $RPC --private-key $ANY_KEY
+
+# To abandon a scheduled upgrade instead (timelock owner only)
+cast send $TIMELOCK "cancel(bytes32)" $OP_ID --rpc-url $RPC --private-key $TIMELOCK_OWNER_KEY
+```
+
+**Step 6: Post-upgrade verification**
+
+- [ ] On a public network: new implementation's source verified on the block explorer
 - [ ] Implementation address updated:
   ```bash
   cast call $PROXY "implementation()(address)" --rpc-url $RPC
   # Expected: $NEW_IMPL
   ```
-- [ ] State preserved:
+- [ ] State preserved (compare with the values before the upgrade):
   ```bash
-  cast call $PROXY "nextRequestId()(uint256)" --rpc-url $RPC
-  cast call $PROXY "protocolFeeBps()(uint256)" --rpc-url $RPC
   cast call $PROXY "admin()(address)" --rpc-url $RPC
+  cast call $PROXY "paused()(bool)" --rpc-url $RPC
+  # TEEMLVerifier
+  cast call $PROXY "remainderVerifier()(address)" --rpc-url $RPC
+  cast call $PROXY "proverStake()(uint256)" --rpc-url $RPC
+  cast call $PROXY "enclaves(address)((bool,bool,bytes32,uint256))" $ENCLAVE_ADDRESS --rpc-url $RPC
+  # RemainderVerifier
+  cast call $PROXY "totalCircuitHashes()(uint256)" --rpc-url $RPC
+  cast call $PROXY "isDAGCircuitActive(bytes32)(bool)" $CIRCUIT_HASH --rpc-url $RPC
+  ```
+- [ ] Upgrade recorded on-chain:
+  ```bash
+  cast logs --from-block 0 --address $PROXY "Upgraded(address indexed)" --rpc-url $RPC
   ```
 - [ ] New functionality works (if applicable)
 - [ ] Monitor for 1 hour
 
-**Rollback:** Deploy the old implementation and call `upgradeTo(oldImpl)`. Note: storage changes from the new implementation persist.
+**Rollback:** The old implementation contract is still deployed, so nothing is redeployed. Call `upgradeTo` with the address recorded in Step 1:
 
-### Non-Upgradeable Contract Upgrade (TEEMLVerifier, RemainderVerifier)
+```bash
+cast send $PROXY "upgradeTo(address)" $OLD_IMPL \
+  --rpc-url $RPC \
+  --private-key $ADMIN_KEY
+cast call $PROXY "implementation()(address)" --rpc-url $RPC
+# Expected: $OLD_IMPL
+```
 
-For non-upgradeable contracts, a fresh deployment is required:
+Notes: storage written by the new implementation persists. With a timelock set, the rollback is scheduled and executed through the timelock like the upgrade and waits for the same delay (the admin's `setTimelock(address)` is not delayed, see "Who Can Upgrade"). After an upgrade to a contract without the upgrade functions no rollback is possible (see the warning in Step 3).
+
+### Contracts Without an Upgrade Path
+
+`ExecutionEngine`, `ProgramRegistry`, `ProverRegistry` and `ProverReputation` are deployed directly, without a proxy, and are `Ownable2Step`. Their code cannot be changed in place, and neither can that of the other contracts in `contracts/src` that do not inherit `UUPSUpgradeable` (`TimelockController`, the Groth16 verifiers, the adapters). Replacing one of them means a fresh deployment:
 
 - [ ] Deploy new contract instance
-- [ ] Transfer ownership: `transferOwnership(newOwnerAddress)` on the old contract, then `acceptOwnership()` on new
-- [ ] For TEEMLVerifier: re-register all active enclave keys on the new contract
-- [ ] For RemainderVerifier: re-register all active circuits and set Groth16 verifiers
-- [ ] Update `TEE_VERIFIER_ADDRESS` in operator/indexer config
-- [ ] Update SDK clients to point to the new contract address
-- [ ] The old contract continues to function for existing in-flight results
+- [ ] Hand over ownership where needed: `transferOwnership(newOwnerAddress)` by the current owner, then `acceptOwnership()` by the new owner, both on the same contract
+- [ ] Point dependants at the new address, as `contracts/script/DeployFullStack.s.sol` does: for a new `ProverReputation`, `ExecutionEngine.setReputation(address)` and `authorizeReporter(engine)` on the new contract (without it the engine's reputation calls fail silently inside `try/catch`); for a new `ExecutionEngine`, `ProverReputation.authorizeReporter(newEngine)` and `ProverRegistry.setSlasher(newEngine, true)`; `registry` and `verifier` are `immutable` in `ExecutionEngine`, so a new `ProgramRegistry` or verifier needs a new `ExecutionEngine`
+- [ ] Update SDK clients and service configuration to point to the new contract address
+- [ ] State held in the old contract is not carried over; the old contract continues to function for requests already in it
 
 ---
 
@@ -719,12 +829,14 @@ Each alert defined in `monitoring/alerting-rules.yml` with investigation and res
 |---|---|
 | **Symptoms** | Enclave health unreachable. Inference requests fail. |
 | **Investigation** | Check container/pod status. Check for OOM (memory limit: 512m in Docker Compose). Check model file accessibility. |
-| **Resolution** | Restart: `kubectl -n world-zk rollout restart deployment worldzk-enclave` or `docker compose restart enclave`. If lock poisoned (`internal lock error: ... poisoned`), full restart required. |
+| **Resolution** | Restart: `kubectl -n world-zk rollout restart deployment worldzk-enclave` (Helm chart only; `deploy/k8s` defines no enclave Deployment) or `docker compose restart enclave`. If lock poisoned (`internal lock error: ... poisoned`), full restart required. |
 | **Verification** | `curl -s http://$ENCLAVE:8080/health` returns 200. `curl -s http://$ENCLAVE:8080/info` shows correct model. |
 
 ### EnclaveHighLatency (warning)
 
 **Alert:** `enclave_avg_inference_ms > 5000` for 10 minutes
+
+The enclave serves its counters as a JSON object on `GET /metrics` (`content-type: application/json`), not in Prometheus text format, and the repository ships no exporter that converts them. Nothing in the repository produces the `enclave_*` series that this rule and the next two (`EnclaveHighErrorRate`, `EnclaveRateLimited`) evaluate. Read the values directly: `curl -s http://$ENCLAVE:8080/metrics | jq '{avg_inference_ms, total_errors, total_inferences, total_rate_limited}'`.
 
 | | |
 |---|---|
@@ -789,8 +901,8 @@ kubectl -n world-zk patch hpa worldzk-operator-hpa \
 
 - Each replica polls for events independently using its own state file (on the pod's own filesystem)
 - Event deduplication via `processed_event_ids` prevents double-processing within a single instance
-- For dispute resolution, ensure only one replica submits `resolveDispute` to avoid nonce conflicts. Use a leader election pattern or designate one replica as the resolver.
-- Each replica needs access to proof data (`PROOFS_DIR`)
+- The operator has no leader election and no de-duplication across replicas, and every replica signs with the same `OPERATOR_PRIVATE_KEY` from `world-zk-secrets`. With the shipped `replicas: 2` (and HPA minimum 2), every replica handles every event itself and from the same account: each replica that finds a proof for a challenged result in its own `PROOFS_DIR` sends `resolveDispute` for it (a replica without the proof waits 60 seconds and records a failed dispute), and each replica that reads a result as finalizable sends `finalize` for it. The repository ships no way to designate one replica as the resolver.
+- Each replica needs access to proof data (`PROOFS_DIR`); in the manifest that directory is a per-pod `emptyDir`, so replicas do not share proofs
 
 **When to scale:**
 
@@ -821,7 +933,7 @@ The indexer uses **SQLite** (single-writer) and runs as **1 replica** with `Recr
 - Deploy additional enclave instances behind a load balancer
 - Each enclave has its own signing key; register each key on-chain via `registerEnclave`
 - Set `MAX_REQUESTS_PER_MINUTE` per instance based on capacity (default: 120)
-- Monitor per-instance latency via Prometheus `instance` label
+- Per-instance latency is in each instance's `GET /metrics` JSON (`avg_inference_ms`); the enclave exports no Prometheus series
 
 ### Warm Prover Scaling
 
@@ -865,11 +977,7 @@ docker compose -f docker-compose.loadtest.yml up
 # Results written to ./load-test-results/
 ```
 
-Configure via environment variables:
-
-```bash
-CONCURRENCY=10 REQUESTS=100 docker compose -f docker-compose.loadtest.yml up
-```
+The request counts and concurrency are fixed in the `load-tester` command in `docker-compose.loadtest.yml` (enclave 50 requests / 5 concurrent, prover batch 15 / 3 with batch size 4, prover single 30 / 5); the file reads no `CONCURRENCY` or `REQUESTS` variable, so change them there.
 
 ### Interpreting Results
 
@@ -905,8 +1013,10 @@ Before deploying to Sepolia or production:
 
 **Location:** Configured by `DB_PATH` env var (default: `./indexer.db`). In K8s: `/data/indexer.db` on PVC `worldzk-indexer-data`.
 
+The default `docker-compose.yml` has no `indexer` service. It is defined in `docker-compose.production.yml` and `docker-compose.loadtest.yml` (database at `/data/indexer.db` on the `indexer-data` volume), so the `docker compose ... indexer` commands in this section need `-f <one of those files>`.
+
 **Tables:**
-- `results` -- indexed TEE results (id, model_hash, input_hash, submitter, status, block_number, challenger)
+- `results` -- indexed TEE results (id, model_hash, input_hash, output, submitter, status, block_number, timestamp, challenger)
 - `indexer_state` -- cursor tracking (`last_indexed_block`)
 
 **Backup:**
@@ -1193,7 +1303,7 @@ docker compose -f docker-compose.yml -f docker-compose.green.yml rm enclave-gree
 - The enclave is stateless; no data migration needed
 
 **Operator upgrade:**
-- Copy the state file from the old operator to the new one, OR let the new operator start fresh from the latest block
+- Copy the state file from the old operator to the new one, OR let the new operator start without one (it then replays events from block 0)
 - Ensure only ONE operator is actively submitting transactions at a time to avoid nonce conflicts
 - To hand off: stop old operator, copy `operator-state.json`, start new operator
 
