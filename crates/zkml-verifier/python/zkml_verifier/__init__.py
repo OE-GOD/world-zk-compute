@@ -212,10 +212,12 @@ def verify_bundle(bundle: Dict[str, Any]) -> Dict[str, Any]:
         bundle: Dict with proof_hex, gens_hex, dag_circuit_description, etc.
 
     Returns:
-        Dict with "verified" (bool) and optionally "error" (str).
+        ``{"verified": True, "error": None}`` when the proof verifies.
 
     Raises:
-        VerifyError: If verification encounters a fatal error.
+        VerifyError: If the bundle is malformed or the proof is rejected
+            (the native verifier reports a failed check as an error, so a
+            rejected proof raises instead of returning ``verified: False``).
     """
     return verify_json(json.dumps(bundle))
 
@@ -227,10 +229,13 @@ def verify_file(path: str) -> Dict[str, Any]:
         path: Path to a JSON file containing the proof bundle.
 
     Returns:
-        Dict with "verified" (bool) and optionally "error" (str).
+        ``{"verified": True, "error": None}`` when the proof verifies.
 
     Raises:
-        VerifyError: If the file cannot be read or verification fails.
+        VerifyError: If the file cannot be read, the bundle is malformed or
+            the proof is rejected (the native verifier reports a failed check
+            as an error, so a rejected proof raises instead of returning
+            ``verified: False``).
         FileNotFoundError: If the file does not exist.
     """
     if not Path(path).exists():

@@ -91,7 +91,7 @@ pytest tests/
 
 - `ZKML_LIB_DIR` -- Directory containing the compiled shared library
 - `ZKML_SKIP_BUILD` -- Skip Rust compilation during pip install (use pre-built library)
-- `CARGO_TARGET_DIR` -- Cargo target directory to build into (pip install) and to search for the library (at import, before the bundled copy)
+- `CARGO_TARGET_DIR` -- Cargo target directory to build into (pip install) and to search for the library (when the library is first loaded, before the bundled copy)
 
 ## License
 

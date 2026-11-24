@@ -515,6 +515,11 @@ pub fn verify(bundle: &ProofBundle) -> Result<VerificationResult> {
 }
 
 /// Verify a proof bundle in hybrid mode.
+///
+/// The proof and the generators are decoded with the same checked decoders
+/// as in [`verify`] and [`verify_raw`], so every entry point rejects the same
+/// encodings. In particular, an array of more than 100,000 elements in the
+/// proof or in the generators is a decode error here too.
 pub fn verify_hybrid(bundle: &ProofBundle) -> Result<HybridVerificationResult> {
     let proof_data = bundle.proof_data()?;
     if proof_data.len() < 36 {

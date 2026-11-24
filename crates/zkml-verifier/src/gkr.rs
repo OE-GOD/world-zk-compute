@@ -245,6 +245,13 @@ pub fn resolve_point(
 ) -> Vec<U256> {
     let start = desc.pt_offsets[global_atom_idx];
     let end = desc.pt_offsets[global_atom_idx + 1];
+    // Both offsets come from the circuit description. A non-empty template
+    // must lie inside `pt_data` before its length sizes the allocation below.
+    // An empty template reads nothing, so its offsets are not checked.
+    assert!(
+        start == end || (start < end && end <= desc.pt_data.len()),
+        "point template out of range"
+    );
     let len = end - start;
     let mut point = vec![U256::ZERO; len];
 
@@ -493,4 +500,58 @@ pub fn count_claims_for(target_layer: usize, desc: &DAGCircuitDescription) -> us
         .iter()
         .filter(|&&t| t == target_layer)
         .count()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn desc_with_templates(pt_offsets: Vec<usize>, pt_data: Vec<u64>) -> DAGCircuitDescription {
+        DAGCircuitDescription {
+            num_compute_layers: 0,
+            num_input_layers: 0,
+            layer_types: Vec::new(),
+            num_sumcheck_rounds: Vec::new(),
+            atom_offsets: Vec::new(),
+            atom_target_layers: Vec::new(),
+            atom_commit_idxs: Vec::new(),
+            pt_offsets,
+            pt_data,
+            input_is_committed: Vec::new(),
+            oracle_product_offsets: Vec::new(),
+            oracle_result_idxs: Vec::new(),
+            oracle_expr_coeffs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_resolve_point_reads_template() {
+        let desc = desc_with_templates(vec![0, 1, 3], vec![5, 0, FIXED_REF_BASE + 7]);
+        let bindings = [U256::from_u64(11)];
+        assert_eq!(
+            resolve_point(1, &bindings, &desc),
+            vec![U256::from_u64(11), U256::from_u64(7)]
+        );
+    }
+
+    /// An empty template resolves to an empty point wherever its offsets lie.
+    #[test]
+    fn test_resolve_point_empty_template_ignores_offsets() {
+        let desc = desc_with_templates(vec![9, 9], vec![0]);
+        assert!(resolve_point(0, &[], &desc).is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "point template out of range")]
+    fn test_resolve_point_rejects_end_past_data() {
+        let desc = desc_with_templates(vec![0, 2], vec![0]);
+        resolve_point(0, &[U256::ZERO], &desc);
+    }
+
+    #[test]
+    #[should_panic(expected = "point template out of range")]
+    fn test_resolve_point_rejects_start_above_end() {
+        let desc = desc_with_templates(vec![1, 0], vec![0]);
+        resolve_point(0, &[U256::ZERO], &desc);
+    }
 }

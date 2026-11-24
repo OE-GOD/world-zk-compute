@@ -159,7 +159,7 @@ fn verify_committed_input_batch_eval(
     // in the number of claims (a number the circuit description controls).
     assert!(
         claim_points.len() == dag_proof.podps.len(),
-        "eval proof count mismatch"
+        "claim count does not match the eval proof count"
     );
     let num_rows = dag_proof.commitment_rows.len();
     let n = claim_points[0].len();
@@ -762,7 +762,7 @@ mod tests {
 
     /// More claims than eval proofs is rejected up front (before sorting).
     #[test]
-    #[should_panic(expected = "eval proof count mismatch")]
+    #[should_panic(expected = "claim count does not match the eval proof count")]
     fn test_claims_without_eval_proofs_rejected() {
         let claim_points = vec![vec![U256::ZERO; 1]; 3];
         let mut sponge = PoseidonSponge::init();

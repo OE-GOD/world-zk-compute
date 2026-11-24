@@ -128,6 +128,66 @@ fn bad_invocations_exit_nonzero() {
     }
 }
 
+/// Unknown options and extra arguments are rejected, not ignored: the bundle
+/// here exists and would otherwise fail with a decode error instead.
+#[test]
+fn unknown_option_and_extra_argument_are_rejected() {
+    let dir = scratch("bad-args");
+    let truncated = write_truncated_bundle(&dir);
+    let path = truncated.as_str();
+    let extra = format!("Error: unexpected argument: {path}");
+
+    for (args, message) in [
+        (
+            vec!["verify", path, "--bogus"],
+            "Unknown verify option: --bogus",
+        ),
+        (
+            vec!["verify", "--bogus", path],
+            "Unknown verify option: --bogus",
+        ),
+        (
+            vec!["verify", path, "--json", "-x"],
+            "Unknown verify option: -x",
+        ),
+        (vec!["verify", path, path], extra.as_str()),
+        (vec!["verify", path, "--json", path], extra.as_str()),
+    ] {
+        let out = bin().args(&args).output().unwrap();
+        assert_eq!(out.status.code(), Some(1), "{args:?}");
+        assert!(stdout(&out).is_empty(), "{args:?}: {}", stdout(&out));
+        assert_eq!(stderr(&out).trim(), message, "{args:?}");
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A result that cannot be written to stdout is reported on stderr with exit
+/// status 1; it must not end the process with a panic (status 101).
+#[test]
+fn unwritable_stdout_exits_one() {
+    let dir = scratch("closed-stdout");
+    let truncated = write_truncated_bundle(&dir);
+
+    // A pipe whose read end is closed: every write to it fails.
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    let out = bin()
+        .args(["verify", &truncated, "--json"])
+        .stdout(writer)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("Error writing to stdout"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!stderr(&out).contains("panicked"), "{}", stderr(&out));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn json_failure_output_is_valid_json() {
     let dir = scratch("json-failure");

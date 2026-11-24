@@ -8,8 +8,10 @@
 //! - Non-null pointers are valid and point to `len` bytes of readable memory
 //! - String pointers are null-terminated and valid UTF-8 (for JSON functions)
 //!
-//! Null pointers are rejected with return value -1 (a null byte pointer is
-//! accepted only together with length 0).
+//! A null `json_ptr` or `path_ptr`, and a null byte pointer with a non-zero
+//! length, are rejected with return value -1. `error_out` may be null. The
+//! public-input pointer and length of `zkml_verify_raw` are never read: the
+//! public-input bytes are not used by the verification.
 
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
@@ -21,7 +23,8 @@ use std::slice;
 /// # Safety
 /// `json_ptr` must point to a valid UTF-8 C string (null-terminated).
 ///
-/// Returns 1 if verification passes, 0 if it fails, -1 on error.
+/// Returns 1 if the proof verifies, -1 otherwise (rejected proof or error;
+/// see `error_out`).
 /// If `error_out` is non-null and an error occurs, a heap-allocated
 /// error string is written to `*error_out`. The caller must free it
 /// with `zkml_free_string`.
@@ -75,7 +78,12 @@ pub unsafe extern "C" fn zkml_verify_json(
 /// The public inputs are not used: the verifier reads the inputs embedded in
 /// the proof. The parameters are kept for ABI compatibility.
 ///
-/// Returns 1 if verification passes, 0 if it fails, -1 on error.
+/// The buffers are decoded with the same checked decoders as in the other
+/// entry points, so the same limits apply: an array of more than 100,000
+/// elements in the proof or in the generators is an error.
+///
+/// Returns 1 if the proof verifies, -1 otherwise (rejected proof or error;
+/// see `error_out`).
 #[no_mangle]
 pub unsafe extern "C" fn zkml_verify_raw(
     proof_ptr: *const u8,
@@ -134,7 +142,8 @@ pub unsafe extern "C" fn zkml_verify_raw(
 /// # Safety
 /// `path_ptr` must be a valid null-terminated UTF-8 C string.
 ///
-/// Returns 1 if verification passes, 0 if it fails, -1 on error.
+/// Returns 1 if the proof verifies, -1 otherwise (rejected proof or error;
+/// see `error_out`).
 #[no_mangle]
 pub unsafe extern "C" fn zkml_verify_file(
     path_ptr: *const c_char,
@@ -340,12 +349,21 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_raw_garbage_is_an_error() {
-        let mut proof = [0u8; 100];
-        proof[..4].copy_from_slice(b"REM1");
-        let gens = [0u8; 7];
-        // Circuit description claiming 2^47 array elements in 96 bytes.
-        let mut desc = [0u8; 96];
+    fn test_verify_raw_hostile_description_length() {
+        let fixture_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../contracts/test/fixtures/phase1a_dag_fixture.json"
+        );
+        let fixture: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(fixture_path).unwrap()).unwrap();
+        let proof = hex::decode(&fixture["proof_hex"].as_str().unwrap()[2..]).unwrap();
+        let gens = hex::decode(&fixture["gens_hex"].as_str().unwrap()[2..]).unwrap();
+        // The proof and the generators are the real ones, so decoding gets as
+        // far as the description. Its first array-length word (layerTypes,
+        // after the two layer counts) is set to 2^47.
+        let mut desc =
+            crate::test_utils::encode_circuit_desc_from_json(&fixture["dag_circuit_description"]);
+        desc[64..96].fill(0);
         desc[64 + 26] = 0x80;
         let mut error: *mut c_char = std::ptr::null_mut();
         let result = unsafe {
@@ -363,6 +381,12 @@ mod tests {
         };
         assert_eq!(result, -1);
         assert!(!error.is_null());
+        let err_str = unsafe { CStr::from_ptr(error) }.to_str().unwrap();
+        assert!(
+            err_str.contains("array length 140737488355328"),
+            "unexpected error: {}",
+            err_str
+        );
         unsafe { zkml_free_string(error) };
     }
 

@@ -6,9 +6,13 @@
 //!   zkml-verifier bundle --proof <hex_file> --gens <hex_file> --desc <json_file> -o <output.json>
 //!
 //! Exit status: 0 on success, 1 on any failure (bad arguments, unreadable or
-//! malformed bundle, proof rejected). With `--json`, failures are also
-//! reported on stdout as `{"verified": false, "error": "..."}`.
+//! malformed bundle, proof rejected, output that cannot be written). With
+//! `--json`, a bundle that cannot be loaded and a proof that is rejected are
+//! also reported on stdout, as `{"verified": false, "error": "..."}`
+//! (`{"error": "..."}` with `--hybrid`). Argument errors are reported on
+//! stderr only.
 
+use std::io::Write;
 use std::process;
 use zkml_verifier::{verify, verify_hybrid, ProofBundle};
 
@@ -76,9 +80,32 @@ fn fail(json_output: bool, hybrid: bool, context: &str, err: &dyn std::fmt::Disp
         } else {
             serde_json::json!({ "verified": false, "error": err.to_string() })
         };
-        println!("{}", serde_json::to_string_pretty(&out).unwrap());
+        print_line(&serde_json::to_string_pretty(&out).unwrap());
     }
     process::exit(1);
+}
+
+/// Write one line to stdout. If the write fails (closed pipe, full disk),
+/// report it on stderr and exit with status 1.
+fn print_line(line: &str) {
+    if let Err(e) = writeln!(std::io::stdout(), "{line}") {
+        eprintln!("Error writing to stdout: {e}");
+        process::exit(1);
+    }
+}
+
+/// Run a call into the library with panic messages silenced.
+///
+/// The library reports a failed check by catching an internal panic and
+/// returning Err. With the default hook a rejected proof would print a panic
+/// message and a backtrace hint in addition to the error line. The previous
+/// hook is put back afterwards, so a panic anywhere else is still reported.
+fn with_silent_panic_hook<T>(call: impl FnOnce() -> T) -> T {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let result = call();
+    std::panic::set_hook(previous);
+    result
 }
 
 fn cmd_verify(args: &[String]) {
@@ -114,13 +141,8 @@ fn cmd_verify(args: &[String]) {
         Err(e) => fail(json_output, hybrid, "Error loading bundle", &e),
     };
 
-    // The library reports a failed check by catching an internal panic and
-    // returning Err. Silence the default hook so a rejected proof prints one
-    // error line instead of a panic message and a backtrace hint.
-    std::panic::set_hook(Box::new(|_| {}));
-
     if hybrid {
-        match verify_hybrid(&bundle) {
+        match with_silent_panic_hook(|| verify_hybrid(&bundle)) {
             Ok(result) => {
                 if json_output {
                     let out = serde_json::json!({
@@ -131,43 +153,46 @@ fn cmd_verify(args: &[String]) {
                         "num_z_dot_rs": result.input_fr.z_dot_rs.len(),
                         "num_mle_evals": result.input_fr.mle_evals.len(),
                     });
-                    println!("{}", serde_json::to_string_pretty(&out).unwrap());
+                    print_line(&serde_json::to_string_pretty(&out).unwrap());
                 } else {
-                    println!("circuit_hash: 0x{}", hex::encode(result.circuit_hash));
-                    println!(
+                    print_line(&format!(
+                        "circuit_hash: 0x{}",
+                        hex::encode(result.circuit_hash)
+                    ));
+                    print_line(&format!(
                         "transcript_digest: 0x{}",
                         hex::encode(result.transcript_digest)
-                    );
-                    println!(
+                    ));
+                    print_line(&format!(
                         "compute_layers: {} rlc_betas, {} z_dot_j_stars",
                         result.compute_fr.rlc_betas.len(),
                         result.compute_fr.z_dot_j_stars.len()
-                    );
-                    println!(
+                    ));
+                    print_line(&format!(
                         "input_layers: {} l_tensor entries, {} z_dot_rs, {} mle_evals",
                         result.input_fr.l_tensor_flat.len(),
                         result.input_fr.z_dot_rs.len(),
                         result.input_fr.mle_evals.len()
-                    );
+                    ));
                 }
             }
             Err(e) => fail(json_output, hybrid, "Hybrid verification error", &e),
         }
     } else {
-        match verify(&bundle) {
+        match with_silent_panic_hook(|| verify(&bundle)) {
             Ok(result) => {
                 if json_output {
                     let out = serde_json::json!({
                         "verified": result.verified,
                         "circuit_hash": format!("0x{}", hex::encode(result.circuit_hash)),
                     });
-                    println!("{}", serde_json::to_string_pretty(&out).unwrap());
+                    print_line(&serde_json::to_string_pretty(&out).unwrap());
                 } else {
-                    println!(
+                    print_line(&format!(
                         "verified: {}, circuit_hash: 0x{}",
                         result.verified,
                         hex::encode(result.circuit_hash)
-                    );
+                    ));
                 }
                 if !result.verified {
                     process::exit(1);
@@ -299,7 +324,6 @@ fn cmd_bundle(args: &[String]) {
                     eprintln!("Error compressing bundle: {e}");
                     process::exit(1);
                 });
-                use std::io::Write;
                 std::io::stdout()
                     .write_all(&compressed)
                     .unwrap_or_else(|e| {
@@ -307,8 +331,7 @@ fn cmd_bundle(args: &[String]) {
                         process::exit(1);
                     });
             } else {
-                let json = serde_json::to_string_pretty(&bundle).unwrap();
-                println!("{json}");
+                print_line(&serde_json::to_string_pretty(&bundle).unwrap());
             }
         }
     }
@@ -332,4 +355,34 @@ fn read_hex_file(path: &str) -> String {
 
     // Raw binary -> hex encode
     format!("0x{}", hex::encode(&data))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// The panic hook is process-wide, so this is the only test in this file.
+    #[test]
+    fn silent_panic_hook_is_scoped_to_the_call() {
+        let reported = Arc::new(AtomicUsize::new(0));
+        let counter = reported.clone();
+        let original = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |_| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }));
+
+        let caught = with_silent_panic_hook(|| std::panic::catch_unwind(|| panic!("inside")));
+        assert!(caught.is_err());
+        let after_call = std::panic::catch_unwind(|| panic!("outside"));
+        std::panic::set_hook(original);
+
+        assert!(after_call.is_err());
+        assert_eq!(
+            reported.load(Ordering::SeqCst),
+            1,
+            "only the panic after the call reaches the hook that was installed before it"
+        );
+    }
 }

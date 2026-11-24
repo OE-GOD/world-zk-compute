@@ -214,6 +214,148 @@ fn hostile_proof_and_generator_lengths_are_an_error() {
     }
 }
 
+/// Every entry point decodes the proof and the generators with the same cap
+/// of 100,000 elements per array: one generator more is a decode error in
+/// `verify_hybrid` exactly as in `verify` and `verify_raw`.
+#[test]
+fn generator_count_above_the_cap_is_a_decode_error() {
+    let f = fixture();
+    let proof = hex_field(&f, "proof_hex");
+    let gens = hex_field(&f, "gens_hex");
+    let desc_json = f["dag_circuit_description"].clone();
+    let desc = encode_circuit_desc_from_json(&desc_json);
+
+    // Generator blob: count word, that many points, then the scalar and the
+    // blinding generator. Pad the points with copies of the first one.
+    let count = u64::from_be_bytes(gens[24..32].try_into().unwrap()) as usize;
+    let (points, tail) = gens[32..].split_at(64 * count);
+    let padded = |n: usize| {
+        let mut g = word(n as u64).to_vec();
+        g.extend_from_slice(points);
+        for _ in count..n {
+            g.extend_from_slice(&points[..64]);
+        }
+        g.extend_from_slice(tail);
+        g
+    };
+
+    assert!(ProofDecoder::try_decode_pedersen_gens(&padded(100_000)).is_ok());
+
+    let over = padded(100_001);
+    let b = bundle(&proof, &over, desc_json);
+    let expected = "decode error: array length 100001 exceeds maximum 100000";
+    let err = verify_hybrid(&b).expect_err("verify_hybrid");
+    assert!(matches!(err, VerifyError::DecodeError(_)), "{err}");
+    assert_eq!(err.to_string(), expected);
+    assert_eq!(verify(&b).expect_err("verify").to_string(), expected);
+    assert_eq!(
+        verify_raw(&proof, &over, &desc)
+            .expect_err("verify_raw")
+            .to_string(),
+        expected
+    );
+}
+
+/// The fixture's circuit description with `ptOffsets[index]` set to `value`.
+fn with_pt_offset(f: &serde_json::Value, index: usize, value: u64) -> serde_json::Value {
+    let mut desc = f["dag_circuit_description"].clone();
+    desc["ptOffsets"][index] = serde_json::json!(value);
+    desc
+}
+
+fn pt_offset(f: &serde_json::Value, index: usize) -> u64 {
+    f["dag_circuit_description"]["ptOffsets"][index]
+        .as_u64()
+        .unwrap()
+}
+
+const POINT_TEMPLATE_ERROR: &str = "verification failed: point template out of range";
+
+/// Both entry points must reject `desc` at the point template bounds check.
+fn assert_point_template_rejected(f: &serde_json::Value, desc: serde_json::Value, name: &str) {
+    let b = bundle(&hex_field(f, "proof_hex"), &hex_field(f, "gens_hex"), desc);
+    let start = Instant::now();
+    let err = verify(&b).expect_err(name);
+    assert_eq!(err.to_string(), POINT_TEMPLATE_ERROR, "verify, {name}");
+    let err = verify_hybrid(&b).expect_err(name);
+    assert_eq!(
+        err.to_string(),
+        POINT_TEMPLATE_ERROR,
+        "verify_hybrid, {name}"
+    );
+    assert!(
+        start.elapsed() < Duration::from_secs(60),
+        "{name} took {:?} to reject",
+        start.elapsed()
+    );
+}
+
+// The point template of atom `a` is ptData[ptOffsets[a]..ptOffsets[a + 1]].
+// Atom 4 feeds layer 1, so it is the first template the verifier resolves:
+// a bad offset there is reached after one layer, before most of the EC work.
+const FIRST_RESOLVED_ATOM: usize = 4;
+
+#[test]
+fn point_template_end_far_past_the_data_is_an_error() {
+    let f = fixture();
+    assert_eq!(
+        f["dag_circuit_description"]["atomTargetLayers"][FIRST_RESOLVED_ATOM],
+        1
+    );
+    let end = FIRST_RESOLVED_ATOM + 1;
+    let desc = with_pt_offset(&f, end, pt_offset(&f, end) + (1 << 42));
+    assert_point_template_rejected(&f, desc, "end raised by 2^42");
+
+    // The same on the last entry, which ends the template of an input-layer
+    // atom. `verify` reaches it only after every compute layer (see the
+    // ignored test below); the hybrid replay gets there in a few seconds.
+    let last = f["dag_circuit_description"]["ptOffsets"]
+        .as_array()
+        .unwrap()
+        .len()
+        - 1;
+    let desc = with_pt_offset(&f, last, pt_offset(&f, last) + (1 << 42));
+    let b = bundle(
+        &hex_field(&f, "proof_hex"),
+        &hex_field(&f, "gens_hex"),
+        desc,
+    );
+    let err = verify_hybrid(&b).expect_err("last entry raised by 2^42");
+    assert_eq!(err.to_string(), POINT_TEMPLATE_ERROR);
+}
+
+#[test]
+#[ignore] // verifies all compute layers first: ~2 s in release, ~15 s in debug
+fn point_template_last_offset_far_past_the_data_is_an_error() {
+    let f = fixture();
+    let last = f["dag_circuit_description"]["ptOffsets"]
+        .as_array()
+        .unwrap()
+        .len()
+        - 1;
+    let desc = with_pt_offset(&f, last, pt_offset(&f, last) + (1 << 42));
+    assert_point_template_rejected(&f, desc, "last entry raised by 2^42");
+}
+
+#[test]
+fn point_template_start_above_end_is_an_error() {
+    let f = fixture();
+    let end = pt_offset(&f, FIRST_RESOLVED_ATOM + 1);
+    let desc = with_pt_offset(&f, FIRST_RESOLVED_ATOM, end + 1);
+    assert_point_template_rejected(&f, desc, "start above end");
+}
+
+#[test]
+fn point_template_end_past_the_data_is_an_error() {
+    let f = fixture();
+    let data_len = f["dag_circuit_description"]["ptData"]
+        .as_array()
+        .unwrap()
+        .len() as u64;
+    let desc = with_pt_offset(&f, FIRST_RESOLVED_ATOM + 1, data_len + 8);
+    assert_point_template_rejected(&f, desc, "end 8 past the data");
+}
+
 #[test]
 fn truncated_and_random_inputs_are_an_error() {
     let f = fixture();

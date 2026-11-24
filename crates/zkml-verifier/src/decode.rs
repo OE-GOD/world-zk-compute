@@ -13,6 +13,13 @@ use crate::sumcheck::CommittedSumcheckProof;
 /// Prevents OOM from malicious inputs with absurdly large counts.
 /// A proof for an 88-layer XGBoost circuit is ~475KB; 100_000 elements
 /// would require ~3.2MB of 32-byte fields, which is a generous bound.
+///
+/// The limit covers every count word of the proof and the generator count,
+/// and is enforced by the checked (`try_*`) decoders. All entry points that
+/// return an error instead of panicking decode with them (`verify`,
+/// `verify_raw`, `verify_hybrid`, the C FFI functions and the wasm binding),
+/// so all of them apply the same limit. The circuit description is decoded
+/// in `lib.rs` and is not subject to it.
 const MAX_ARRAY_LEN: usize = 100_000;
 
 // ============================================================
