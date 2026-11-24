@@ -47,7 +47,7 @@ secrets manager.
 | `signature-verified/` | Yes | Uses ECDSA precompile; works with local proving. |
 | `sybil-detector/` | Yes | Uses SHA-256 precompile; works with local proving. |
 | `xgboost-inference/` | Yes | XGBoost model inference inside the zkVM. |
-| `xgboost-remainder/` | Partial | The on-chain verifier (RemainderVerifier, 135,088 bytes) and the Groth16 wrapper verifier (DAGGroth16Verifier, 461,497 bytes) exceed Sepolia's 24,576-byte contract size limit and cannot be deployed there. Only the TEE path (TEEMLVerifier) can be deployed. |
+| `xgboost-remainder/` | Partial | The on-chain verifier (RemainderVerifier, 135,533 bytes) and the Groth16 wrapper verifier (DAGGroth16Verifier, 461,497 bytes) exceed Sepolia's 24,576-byte contract size limit and cannot be deployed there. Only the TEE path (TEEMLVerifier) can be deployed. |
 | `xgboost-ezkl/` | No | Requires EZKL toolchain; not integrated with on-chain contracts. |
 | `anomaly-detector-sp1/` | No | SP1-based; separate proving infrastructure. |
 | `recursive-wrapper/` | No | Internal proving utility, not an end-user example. |
@@ -114,12 +114,12 @@ cast gas-price --rpc-url "$ALCHEMY_SEPOLIA_RPC_URL"
 Sepolia enforces EIP-170, which limits deployed contract bytecode to 24,576
 bytes. Some contracts in this project exceed that limit:
 
-- **RemainderVerifier** (GKR + Hyrax on-chain verification) is 135,088 bytes and
+- **RemainderVerifier** (GKR + Hyrax on-chain verification) is 135,533 bytes and
   cannot be deployed. Arbitrum Sepolia is not an alternative: it enforces the same
   24,576-byte limit, as do Arbitrum One, World Chain, World Chain Sepolia and
   Ethereum mainnet.
 - **DAGBatchVerifier** is an internal library compiled into RemainderVerifier, so
-  it is part of those 135,088 bytes, not a separate deployment.
+  it is part of those 135,533 bytes, not a separate deployment.
 
 The TEEMLVerifier and ExecutionEngine contracts are well within the limit and
 deploy without issues on Sepolia.

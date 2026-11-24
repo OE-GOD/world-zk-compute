@@ -128,7 +128,7 @@ Custom errors from `contracts/src/remainder/RemainderVerifier.sol`.
 | `InvalidProofLength()` | Proof is less than 4 bytes | Provide a complete proof blob |
 | `ProofVerificationFailed()` | GKR/Hyrax verification returned false | Regenerate the proof; inputs may not match |
 | `InvalidGenerators()` | `keccak256(gensData)` does not match registered `gensHash` | Use the correct generators data that matches what was registered |
-| `ZeroAddress()` | Zero address passed to `setGroth16Verifier` | Provide a valid verifier address |
+| `ZeroAddress()` | Zero address, or an address without contract code, passed to one of the Groth16 verifier setters (`setGroth16Verifier`, `setCircuitGroth16Verifier`, `setDAGCircuitGroth16Verifier`, `setDAGECGroth16Verifier`), or the zero address passed to `setDAGStylusVerifier` | Provide the address of a deployed verifier contract |
 | `CircuitAlreadyRegistered()` / `DAGCircuitAlreadyRegistered()` | `registerCircuit` / `registerDAGCircuit` | Circuit hash exists | Use a unique circuit hash or deactivate the old one |
 | `LayerSizesLengthMismatch()` / `LayerTypesLengthMismatch()` / `IsCommittedLengthMismatch()` | `registerCircuit` | Array lengths do not match `numLayers` | Ensure all arrays have exactly `numLayers` entries |
 | `Groth16VerifierNotSet()` | `verifyWithGroth16` | No Groth16 verifier registered for this circuit | Call `setCircuitGroth16Verifier(circuitHash, verifier, inputCount)` |

@@ -249,15 +249,15 @@ scrape_configs:
 
 ### Webhook Alerts (Slack-Compatible)
 
-The operator sends JSON payloads to `WEBHOOK_URL` for these events:
+The operator sends a JSON payload to `WEBHOOK_URL` for one event:
 
 - **`dispute`** -- result challenged, includes challenger address and deadline
-- **`proof_submitted`** -- ZK proof submitted, includes tx hash
-- **`dispute_resolved`** -- dispute settled, includes winner
+
+Payloads for `proof_submitted` (with the tx hash) and `dispute_resolved` (with the winner) are defined in `services/operator/src/notifications.rs`, but nothing in the operator sends them.
 
 ### Deadline Monitor
 
-The operator's built-in `DeadlineMonitor` logs warnings at 5 min and errors at 1 min before dispute deadlines expire. These appear in structured logs (`RUST_LOG=info`):
+`services/operator/src/deadline_monitor.rs` defines a `DeadlineMonitor` that would log warnings at 5 min and errors at 1 min before dispute deadlines expire, but the operator never starts it, so these lines do not appear in its logs today:
 
 ```
 WARN  deadline_monitor: WARNING: Dispute deadline approaching in <300 seconds

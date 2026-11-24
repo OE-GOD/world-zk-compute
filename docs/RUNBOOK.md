@@ -404,7 +404,7 @@ docker compose restart operator
 ```
 
 On startup, the operator will:
-1. Load `operator-state.json` (if it is missing or corrupt, start from block 0; the warning it logs says "starting from latest block", but `OperatorState::default()` sets `last_polled_block` to 0)
+1. Load `operator-state.json` (if it is missing or corrupt, log a warning and start from block 0)
 2. Resume polling from `last_polled_block`
 3. Skip already-processed events via `processed_event_ids`
 4. Re-check `active_disputes` deadlines
@@ -416,7 +416,7 @@ On startup, the operator will:
 kubectl -n world-zk logs -l app=worldzk-operator --tail=20 | grep "Loaded operator state"
 ```
 
-After `kubectl rollout restart` this line does not appear: the new pod has no state file (see Section 10, Operator State File), logs `State file ... not found, starting from latest block` and replays from block 0. The line appears after `docker compose restart operator`, which keeps the container.
+After `kubectl rollout restart` this line does not appear: the new pod has no state file (see Section 10, Operator State File), logs `State file ... not found, starting from block 0` and replays from block 0. The line appears after `docker compose restart operator`, which keeps the container.
 
 **Step 3: Check for missed disputes**
 
@@ -626,7 +626,7 @@ forge create src/tee/TEEMLVerifier.sol:TEEMLVerifier \
 # Record: $NEW_IMPL
 ```
 
-For RemainderVerifier the contract is `src/remainder/RemainderVerifier.sol:RemainderVerifier`. Its runtime bytecode is 135,088 bytes, above the 24,576-byte contract size limit, so this step only succeeds on a chain without that limit (locally, `anvil --disable-code-size-limit`); on a default Anvil it fails with `max initcode size exceeded`.
+For RemainderVerifier the contract is `src/remainder/RemainderVerifier.sol:RemainderVerifier`. Its runtime bytecode is 135,533 bytes, above the 24,576-byte contract size limit, so this step only succeeds on a chain without that limit (locally, `anvil --disable-code-size-limit`); on a default Anvil it fails with `max initcode size exceeded`.
 
 **Step 3: Check that the new implementation is a UUPS implementation**
 
