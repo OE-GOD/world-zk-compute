@@ -9,6 +9,7 @@
 let wasmReady = false;
 let wasmModule = null;   // { verify_proof_json, version }
 let currentBundle = null; // raw JSON string of the loaded proof bundle
+let verificationPending = false; // a click is waiting for its deferred step
 
 // ============================================================
 // DOM references
@@ -153,8 +154,9 @@ function displayBundle(bundle) {
     els.rawProofHex.textContent = stripped.slice(0, 256) + '...';
     els.rawCircuitDesc.textContent = JSON.stringify(desc, null, 2).slice(0, 2000);
 
-    // Enable verify button
-    els.verifyBtn.disabled = false;
+    // Enable verify button, unless a verification is still pending: its
+    // deferred step re-enables the button when it has run.
+    els.verifyBtn.disabled = verificationPending;
     els.verifyResult.classList.add('hidden');
 }
 
@@ -245,6 +247,7 @@ function runVerification() {
     const bundle = currentBundle;
 
     // Show spinner
+    verificationPending = true;
     els.verifyBtn.disabled = true;
     els.verifyBtn.textContent = 'Verifying...';
 
@@ -274,6 +277,7 @@ function runVerification() {
                 showResult(result.verified, result.circuit_hash, elapsed, result.error);
             }
 
+            verificationPending = false;
             els.verifyBtn.disabled = !currentBundle;
             els.verifyBtn.textContent = 'Verify Proof';
         }, 50); // Small delay to allow UI repaint
