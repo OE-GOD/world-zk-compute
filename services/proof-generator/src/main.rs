@@ -10,15 +10,21 @@
 //! # Endpoints
 //!
 //! - `POST /prove`                    -- generate a proof for given model + features
+//! - `POST /v1/prove/batch`           -- generate proofs for several feature vectors
+//! - `POST /v1/prove/async`           -- start a proof in the background, returns a job ID
+//! - `GET  /v1/jobs`                  -- list recent async jobs
+//! - `GET  /v1/jobs/:id`              -- get one async job's status
 //! - `POST /models`                   -- upload a new model version (JSON body)
 //! - `GET  /models`                   -- list all registered models
-//! - `GET  /models/:id`               -- get a single model's metadata + version info
+//! - `GET  /models/:id`               -- get a single model's metadata
 //! - `DELETE /models/:id`             -- deactivate a model version (soft delete)
 //! - `POST /models/:id/activate`      -- activate a specific model version
 //! - `POST /models/:id/deactivate`    -- deactivate a specific model version
 //! - `GET  /models/:name/versions`    -- list all versions for a model name
 //! - `POST /models/:name/rollback`    -- rollback to the previous version
 //! - `GET  /health`                   -- health check
+//!
+//! The batch, async and jobs routes are also served without the `/v1` prefix.
 
 mod batch;
 mod jobs;
@@ -204,7 +210,8 @@ struct HealthResponse {
     status: String,
     version: String,
     mock_mode: bool,
-    /// Whether a real prover manager is available (false in mock mode).
+    /// True when not in mock mode. It does not tell whether the prover binary
+    /// exists or whether any prover answers.
     prover_available: bool,
     uptime_secs: u64,
     model_count: usize,
@@ -284,11 +291,14 @@ async fn upload_model_handler(
         .await
         .map_err(|e| {
             let msg = e.to_string();
-            if msg.contains("identical model hash") {
-                (StatusCode::CONFLICT, Json(ErrorResponse { error: msg }))
+            let status = if msg.contains("identical model hash") {
+                StatusCode::CONFLICT
+            } else if is_storage_error(&e) {
+                StatusCode::INTERNAL_SERVER_ERROR
             } else {
-                (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: msg }))
-            }
+                StatusCode::BAD_REQUEST
+            };
+            (status, Json(ErrorResponse { error: msg }))
         })?;
 
     Ok((
@@ -351,19 +361,35 @@ async fn get_model_handler(
     }))
 }
 
+/// True when the error comes from the file system (a read or write that
+/// failed), as opposed to a request the service refuses.
+fn is_storage_error(e: &anyhow::Error) -> bool {
+    e.chain()
+        .any(|cause| cause.downcast_ref::<std::io::Error>().is_some())
+}
+
+/// Map an activation or deactivation error to a response: 404 when the
+/// model is unknown, 500 for anything else (e.g. the metadata write failed).
+fn activation_error(e: anyhow::Error) -> (StatusCode, Json<ErrorResponse>) {
+    let msg = e.to_string();
+    let status = if msg.contains("not found") {
+        StatusCode::NOT_FOUND
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR
+    };
+    (status, Json(ErrorResponse { error: msg }))
+}
+
 /// `DELETE /models/:id` -- deactivate a model (soft delete).
 async fn deactivate_model_handler(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
-    state.registry.deactivate(&id).await.map_err(|e| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: e.to_string(),
-            }),
-        )
-    })?;
+    state
+        .registry
+        .deactivate(&id)
+        .await
+        .map_err(activation_error)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -375,14 +401,11 @@ async fn activate_model_handler(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<VersionSummary>, (StatusCode, Json<ErrorResponse>)> {
-    let info = state.registry.activate(&id).await.map_err(|e| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: e.to_string(),
-            }),
-        )
-    })?;
+    let info = state
+        .registry
+        .activate(&id)
+        .await
+        .map_err(activation_error)?;
 
     Ok(Json(version_info_to_summary(&info)))
 }
@@ -392,14 +415,11 @@ async fn deactivate_version_handler(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<VersionSummary>, (StatusCode, Json<ErrorResponse>)> {
-    let info = state.registry.deactivate(&id).await.map_err(|e| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: e.to_string(),
-            }),
-        )
-    })?;
+    let info = state
+        .registry
+        .deactivate(&id)
+        .await
+        .map_err(activation_error)?;
 
     Ok(Json(version_info_to_summary(&info)))
 }
@@ -433,6 +453,8 @@ async fn rollback_handler(
         let msg = e.to_string();
         let status = if msg.contains("not found") {
             StatusCode::NOT_FOUND
+        } else if is_storage_error(&e) {
+            StatusCode::INTERNAL_SERVER_ERROR
         } else {
             StatusCode::BAD_REQUEST
         };
@@ -459,8 +481,10 @@ fn version_info_to_summary(info: &VersionInfo) -> VersionSummary {
 
 /// `POST /prove` -- generate a proof.
 ///
-/// In mock mode, returns a deterministic mock proof. In production mode,
-/// this is where the real prover would be invoked.
+/// In mock mode, returns a deterministic mock proof. Otherwise a prover is
+/// registered for the model on its first proof request (in managed mode this
+/// starts a child process) and the request is forwarded to it. A registered
+/// prover that has died is not started again.
 async fn prove_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ProveRequest>,
@@ -529,28 +553,22 @@ async fn prove_handler(
         )
     })?;
 
-    // Ensure the model has a registered prover instance. If not, attempt
-    // lazy registration (the model was loaded from disk at startup before
-    // the prover manager existed, or was uploaded while the prover was
-    // still starting).
-    if !prover_mgr.has_prover(&req.model_id).await {
-        // Auto-register: read the raw JSON from the model store and spin up
-        // a prover instance for this model.
-        if let Err(e) = prover_mgr
-            .register_model(&req.model_id, &model.raw_json, &model.model_hash)
-            .await
-        {
-            return Err((
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(ErrorResponse {
-                    error: format!(
-                        "Failed to start prover for model {}: {}. \
-                         Is the xgboost-remainder binary available?",
-                        req.model_id, e
-                    ),
-                }),
-            ));
-        }
+    // Provers are registered lazily: the first proof request for a model
+    // starts its prover, later requests reuse it.
+    if let Err(e) = prover_mgr
+        .ensure_prover(&req.model_id, &model.raw_json, &model.model_hash)
+        .await
+    {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                error: format!(
+                    "Failed to start prover for model {}: {}. \
+                     Is the xgboost-remainder binary available?",
+                    req.model_id, e
+                ),
+            }),
+        ));
     }
 
     let result = prover_mgr
@@ -597,8 +615,9 @@ async fn prove_handler(
 
 /// `POST /v1/prove/batch` -- generate proofs for a batch of inputs.
 ///
-/// Accepts an array of feature vectors and proves them all with configurable
-/// concurrency. Each individual failure does not block the rest of the batch.
+/// Accepts an array of feature vectors and proves them all, at most
+/// `batch::DEFAULT_BATCH_CONCURRENCY` at a time. Each individual failure does
+/// not block the rest of the batch.
 async fn batch_prove_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<batch::BatchProveRequest>,
@@ -725,18 +744,16 @@ async fn prove_single(
     };
 
     // Ensure prover is registered for this model.
-    if !prover_mgr.has_prover(&model.id).await {
-        if let Err(e) = prover_mgr
-            .register_model(&model.id, &model.raw_json, &model.model_hash)
-            .await
-        {
-            return batch::BatchProveResult {
-                index,
-                proof_id: None,
-                output: None,
-                error: Some(format!("Failed to start prover: {}", e)),
-            };
-        }
+    if let Err(e) = prover_mgr
+        .ensure_prover(&model.id, &model.raw_json, &model.model_hash)
+        .await
+    {
+        return batch::BatchProveResult {
+            index,
+            proof_id: None,
+            output: None,
+            error: Some(format!("Failed to start prover: {}", e)),
+        };
     }
 
     match prover_mgr.prove(&model.id, features).await {
@@ -871,7 +888,8 @@ struct AsyncProveRequest {
 struct AsyncProveResponse {
     /// Job ID to poll for status.
     job_id: String,
-    /// Initial status (always "pending").
+    /// Always the string "pending". The job itself starts as `Queued` (see
+    /// `jobs::JobStatus`), which is what the jobs endpoints report.
     status: String,
 }
 
@@ -949,7 +967,7 @@ async fn async_prove_handler(
             .update_status(&job_id_bg, jobs::JobStatus::Proving)
             .await;
 
-        // Run the proof (reuse the same logic as the sync handler).
+        // Run the proof.
         let result = run_prove(&state_bg, &model_id, &features).await;
 
         match result {
@@ -999,7 +1017,8 @@ async fn list_jobs_handler(
     Json(ListJobsResponse { jobs })
 }
 
-/// Core prove logic shared by the sync handler and async background task.
+/// Prove logic of the async background task. The sync handler and the batch
+/// handler each have their own copy.
 ///
 /// Returns `Ok((proof_id, output))` on success, or `Err(error_message)` on failure.
 async fn run_prove(
@@ -1032,12 +1051,10 @@ async fn run_prove(
         .ok_or_else(|| "Prover manager not initialized. Service misconfigured.".to_string())?;
 
     // Lazy registration.
-    if !prover_mgr.has_prover(model_id).await {
-        prover_mgr
-            .register_model(model_id, &model.raw_json, &model.model_hash)
-            .await
-            .map_err(|e| format!("Failed to start prover for model {}: {}", model_id, e))?;
-    }
+    prover_mgr
+        .ensure_prover(model_id, &model.raw_json, &model.model_hash)
+        .await
+        .map_err(|e| format!("Failed to start prover for model {}: {}", model_id, e))?;
 
     let result = prover_mgr
         .prove(model_id, features)
@@ -1510,6 +1527,135 @@ mod tests {
         let body_bytes = resp2.into_body().collect().await.unwrap().to_bytes();
         let model: ModelSummary = serde_json::from_slice(&body_bytes).unwrap();
         assert!(!model.active);
+    }
+
+    /// A failed metadata write is a server error; only an unknown model is 404.
+    #[tokio::test]
+    async fn test_activation_errors_are_500_unless_model_unknown() {
+        use models::test_support::{block_metadata_writes, restore_metadata};
+
+        let (app, tmp) = test_app().await;
+        let v1 = upload_named_model(&app, "m", "1").await;
+        let v2 = upload_named_model(&app, "m", "2").await;
+
+        let status = |method: &'static str, uri: String| {
+            let app = app.clone();
+            async move {
+                let req = axum::http::Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap();
+                app.oneshot(req).await.unwrap().status()
+            }
+        };
+
+        // v2 is the active version and its metadata cannot be written.
+        let saved = block_metadata_writes(tmp.path(), &v2);
+        for (method, uri) in [
+            ("DELETE", format!("/models/{v2}")),
+            ("POST", format!("/models/{v2}/deactivate")),
+            ("POST", format!("/models/{v1}/activate")),
+        ] {
+            assert_eq!(
+                status(method, uri.clone()).await,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "{method} {uri}"
+            );
+        }
+        restore_metadata(tmp.path(), &v2, &saved);
+
+        // The failed requests did not deactivate it.
+        let req = axum::http::Request::builder()
+            .uri(format!("/models/{v2}"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let model: ModelSummary = serde_json::from_slice(&body_bytes).unwrap();
+        assert!(model.active);
+
+        for (method, uri) in [
+            ("DELETE", "/models/unknown".to_string()),
+            ("POST", "/models/unknown/deactivate".to_string()),
+            ("POST", "/models/unknown/activate".to_string()),
+        ] {
+            assert_eq!(
+                status(method, uri.clone()).await,
+                StatusCode::NOT_FOUND,
+                "{method} {uri}"
+            );
+        }
+    }
+
+    /// A storage failure during an upload or a rollback is the server's
+    /// error, not the client's, and leaves the active version as it was.
+    #[tokio::test]
+    async fn test_upload_and_rollback_answer_500_on_storage_failure() {
+        use models::test_support::{block_metadata_writes, restore_metadata};
+
+        let (app, tmp) = test_app().await;
+        let v1 = upload_named_model(&app, "m", "1").await;
+        let v2 = upload_named_model(&app, "m", "2").await;
+
+        // v2 is the active version and its metadata cannot be written.
+        let saved = block_metadata_writes(tmp.path(), &v2);
+
+        let upload = serde_json::json!({
+            "name": "m",
+            "model_json": {"learner": {"gradient_booster": {"model": {"trees": [], "id": "3"}}}},
+            "format": "auto"
+        });
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/models")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&upload).unwrap()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR, "upload");
+
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/models/m/rollback")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR, "rollback");
+
+        restore_metadata(tmp.path(), &v2, &saved);
+
+        // Neither request stored a third version or changed the active one.
+        let req = axum::http::Request::builder()
+            .uri("/models/m/versions")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let versions: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        let active: Vec<(String, bool)> = versions["versions"]
+            .as_array()
+            .expect("a versions array")
+            .iter()
+            .map(|v| {
+                (
+                    v["id"].as_str().unwrap().to_string(),
+                    v["is_active"].as_bool().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(active, [(v1, false), (v2, true)]);
+
+        // A request the service refuses is still a client error.
+        let bad = serde_json::json!({"name": "m", "model_json": {"unknown": 1}, "format": "auto"});
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/models")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&bad).unwrap()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "unknown format");
     }
 
     // ----- Prove (mock mode) -----
@@ -1986,6 +2132,196 @@ mod tests {
             .as_ref()
             .unwrap()
             .starts_with("registry-proof-"));
+    }
+
+    /// Serve `reply` with HTTP 200 for every POST to `path`; returns the base URL.
+    async fn start_server_replying(path: &str, reply: serde_json::Value) -> String {
+        let app = axum::Router::new()
+            .route(
+                path,
+                post(move || {
+                    let reply = reply.clone();
+                    async move { Json(reply) }
+                }),
+            )
+            .route("/health", get(|| async { Json(serde_json::json!({})) }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        url
+    }
+
+    /// `POST /prove` for `model_id` with a fixed feature vector.
+    async fn prove(app: &Router, model_id: &str) -> axum::response::Response {
+        let body = serde_json::json!({ "model_id": model_id, "features": [1.0, 2.0, 3.0] });
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/prove")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        app.clone().oneshot(req).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_prove_with_registry_reply_without_id() {
+        let registry_url = start_server_replying("/proofs", serde_json::json!({})).await;
+        let (app, _tmp) = test_app_with_registry(registry_url).await;
+        let model_id = upload_test_model(&app).await;
+
+        let resp = prove(&app, &model_id).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let prove_resp: ProveResponse = serde_json::from_slice(&body_bytes).unwrap();
+        // The registry assigned no ID, so none is reported.
+        assert_eq!(prove_resp.registry_proof_id, None);
+    }
+
+    /// A prover that answers 200 without the proof fields has not produced a proof.
+    #[tokio::test]
+    async fn test_prove_fails_when_prover_reply_has_no_proof() {
+        let prover_url = start_server_replying("/prove/bundle", serde_json::json!({})).await;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = ModelStore::new(tmp.path().to_path_buf()).await.unwrap();
+        let registry = ModelRegistry::new(store.clone()).await;
+        let state = Arc::new(AppState {
+            model_store: store,
+            registry,
+            mock_mode: false,
+            prover_manager: Some(ProverManager::new("unused".to_string(), Some(prover_url))),
+            registry_client: None,
+            job_store: Arc::new(JobStore::new()),
+            start_time: Instant::now(),
+        });
+        let app = build_router(state, false);
+        let model_id = upload_test_model(&app).await;
+
+        let resp = prove(&app, &model_id).await;
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let error: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        let message = error["error"].as_str().unwrap();
+        assert!(message.contains("Proof generation failed"), "{message}");
+    }
+
+    /// Concurrent first requests through `POST /prove` and through
+    /// `POST /prove/async` share one prover process, as a batch does.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_concurrent_first_prove_requests_start_one_prover() {
+        use prover::test_support::{StandIn, RUNS_FOR_30S, SPAWNING};
+
+        let _spawning = SPAWNING.lock().await;
+        for route in ["/prove", "/prove/async"] {
+            let mut stand_in = StandIn::new(RUNS_FOR_30S);
+            let tmp = tempfile::TempDir::new().unwrap();
+            let store = ModelStore::new(tmp.path().to_path_buf()).await.unwrap();
+            let registry = ModelRegistry::new(store.clone()).await;
+            let job_store = Arc::new(JobStore::new());
+            let state = Arc::new(AppState {
+                model_store: store,
+                registry,
+                mock_mode: false,
+                prover_manager: Some(stand_in.manager(0).await),
+                registry_client: None,
+                job_store: job_store.clone(),
+                start_time: Instant::now(),
+            });
+            let app = build_router(state, false);
+            stand_in.model_id = upload_test_model(&app).await;
+
+            let request = || {
+                let body = serde_json::json!({
+                    "model_id": stand_in.model_id,
+                    "features": [1.0]
+                });
+                let req = axum::http::Request::builder()
+                    .method("POST")
+                    .uri(route)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap();
+                app.clone().oneshot(req)
+            };
+            let all = async {
+                let responses = tokio::join!(request(), request(), request(), request());
+                // The async route answers at once; wait for its jobs to end.
+                loop {
+                    let jobs = job_store.list(100).await;
+                    let finished = |job: &jobs::ProveJob| {
+                        matches!(
+                            job.status,
+                            jobs::JobStatus::Completed | jobs::JobStatus::Failed
+                        )
+                    };
+                    if jobs.iter().all(finished) {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                responses
+            };
+            let (a, b, c, d) = tokio::time::timeout(std::time::Duration::from_secs(10), all)
+                .await
+                .unwrap_or_else(|_| panic!("{route}: requests did not finish"));
+
+            assert_eq!(stand_in.lines("starts"), 1, "{route}: provers started");
+            for resp in [a, b, c, d] {
+                assert!(resp.unwrap().status().is_success(), "{route}");
+            }
+            if route == "/prove/async" {
+                let jobs = job_store.list(100).await;
+                assert_eq!(jobs.len(), 4);
+                for job in jobs {
+                    assert!(matches!(job.status, jobs::JobStatus::Completed), "{job:?}");
+                }
+            }
+        }
+    }
+
+    /// One batch on a model that has no prover yet: its inputs are proved
+    /// concurrently, and all of them must share one prover process.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_batch_on_new_model_starts_one_prover() {
+        use prover::test_support::{StandIn, RUNS_FOR_30S, SPAWNING};
+
+        let _spawning = SPAWNING.lock().await;
+        let mut stand_in = StandIn::new(RUNS_FOR_30S);
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = ModelStore::new(tmp.path().to_path_buf()).await.unwrap();
+        let registry = ModelRegistry::new(store.clone()).await;
+        let state = Arc::new(AppState {
+            model_store: store,
+            registry,
+            mock_mode: false,
+            prover_manager: Some(stand_in.manager(0).await),
+            registry_client: None,
+            job_store: Arc::new(JobStore::new()),
+            start_time: Instant::now(),
+        });
+        let app = build_router(state, false);
+        stand_in.model_id = upload_test_model(&app).await;
+
+        let body = serde_json::json!({
+            "model_id": stand_in.model_id,
+            "inputs": [[1.0], [2.0], [3.0], [4.0]]
+        });
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/prove/batch")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = tokio::time::timeout(std::time::Duration::from_secs(10), app.oneshot(req)).await;
+
+        assert_eq!(stand_in.lines("starts"), 1, "provers started");
+        let resp = resp.expect("batch did not finish").unwrap();
+        let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let batch: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(batch["completed"], 4, "{batch}");
     }
 
     #[tokio::test]

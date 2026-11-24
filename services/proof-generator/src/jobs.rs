@@ -1,7 +1,7 @@
 //! Async proof generation job queue.
 //!
-//! Proofs take 4-5 seconds. This module provides a job queue so clients
-//! can submit a prove request and poll for status instead of blocking.
+//! A proof takes several seconds or longer. This module provides a job queue
+//! so clients can submit a prove request and poll for status instead of blocking.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -72,11 +72,7 @@ impl JobStore {
 
     /// Create a job by model_id only (generates UUID, used by async handler).
     pub async fn create(&self, model_id: &str) -> String {
-        let id = format!("{:016x}", {
-            use std::collections::hash_map::RandomState;
-            use std::hash::{BuildHasher, Hasher};
-            RandomState::new().build_hasher().finish()
-        });
+        let id = uuid::Uuid::new_v4().to_string();
         self.create_full(&id, model_id, Vec::new());
         id
     }
@@ -156,6 +152,13 @@ mod tests {
         assert_eq!(j.status, JobStatus::Completed);
         assert!(j.result.is_some());
         assert!(j.completed_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_job_id_is_a_uuid() {
+        let store = JobStore::new();
+        let id = store.create("model").await;
+        assert_eq!(uuid::Uuid::parse_str(&id).unwrap().get_version_num(), 4);
     }
 
     #[tokio::test]

@@ -10,7 +10,7 @@
 //! of version IDs (oldest-first). Activation state is tracked per version ID
 //! and persisted via the underlying `ModelStore`.
 
-use crate::models::{compute_model_hash, LoadedModel, ModelMetadata, ModelStore};
+use crate::models::{compute_model_hash, resolve_format, LoadedModel, ModelMetadata, ModelStore};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -130,19 +130,38 @@ impl ModelRegistry {
     ) -> anyhow::Result<VersionInfo> {
         let model_hash = compute_model_hash(&raw_json);
 
+        // The index stays write-locked from the duplicate check to the insert,
+        // so two concurrent uploads of the same model cannot both pass the check.
+        let mut names = self.names.write().await;
+
         // Check for duplicate hash within the same model name.
-        {
-            let names = self.names.read().await;
-            if let Some(entry) = names.get(&name) {
-                for ve in &entry.versions {
-                    if let Some(m) = self.store.get_model(&ve.id).await {
-                        if m.model_hash == model_hash {
-                            anyhow::bail!(
-                                "Version with identical model hash already exists for '{}': id={}",
-                                name,
-                                ve.id
-                            );
-                        }
+        if let Some(entry) = names.get(&name) {
+            for ve in &entry.versions {
+                if let Some(m) = self.store.get_model(&ve.id).await {
+                    if m.model_hash == model_hash {
+                        anyhow::bail!(
+                            "Version with identical model hash already exists for '{}': id={}",
+                            name,
+                            ve.id
+                        );
+                    }
+                }
+            }
+        }
+
+        // Refuse a model the store would refuse before anything is changed.
+        resolve_format(format_hint.as_deref(), &raw_json)?;
+
+        // Deactivate the active version first: if that fails nothing has
+        // changed, and there are never two active versions of one name.
+        // Each version keeps its activated_at timestamp for history.
+        let mut deactivated = Vec::new();
+        if let Some(entry) = names.get(&name) {
+            for ve in &entry.versions {
+                if let Some(m) = self.store.get_model(&ve.id).await {
+                    if m.active {
+                        self.store.deactivate_model(&ve.id).await?;
+                        deactivated.push(ve.id.clone());
                     }
                 }
             }
@@ -150,41 +169,35 @@ impl ModelRegistry {
 
         // Add to the underlying store (bypass its global duplicate check by
         // using our own logic above).
-        let meta = self
+        let meta = match self
             .store
             .add_model_no_dup_check(name.clone(), raw_json, format_hint)
-            .await?;
+            .await
+        {
+            Ok(meta) => meta,
+            Err(e) => {
+                // The new version was not stored: put the old one back.
+                for id in &deactivated {
+                    if let Err(restore) = self.store.activate_model(id).await {
+                        tracing::warn!(model_id = %id, error = %restore, "could not re-activate the previous version after a failed upload");
+                    }
+                }
+                return Err(e);
+            }
+        };
 
         let now = chrono::Utc::now().to_rfc3339();
 
-        // Update the name index and deactivate previous active version.
-        let version;
-        {
-            let mut names = self.names.write().await;
-            let entry = names.entry(name.clone()).or_insert_with(|| NameEntry {
-                versions: Vec::new(),
-            });
-
-            // Deactivate any currently active version.
-            for ve in &mut entry.versions {
-                if ve.activated_at.is_some() {
-                    if let Some(m) = self.store.get_model(&ve.id).await {
-                        if m.active {
-                            let _ = self.store.deactivate_model(&ve.id).await;
-                        }
-                    }
-                    // Keep the activated_at timestamp for history, but the
-                    // store's `active` flag is now false.
-                }
-            }
-
-            version = entry.versions.len() as u32 + 1;
-            entry.versions.push(VersionEntry {
-                id: meta.id.clone(),
-                version,
-                activated_at: Some(now.clone()),
-            });
-        }
+        let entry = names.entry(name.clone()).or_insert_with(|| NameEntry {
+            versions: Vec::new(),
+        });
+        let version = entry.versions.len() as u32 + 1;
+        entry.versions.push(VersionEntry {
+            id: meta.id.clone(),
+            version,
+            activated_at: Some(now.clone()),
+        });
+        drop(names);
 
         Ok(VersionInfo {
             id: meta.id,
@@ -245,15 +258,18 @@ impl ModelRegistry {
                 anyhow::anyhow!("Model name not found in registry: {}", model.name)
             })?;
 
-            for ve in &mut entry.versions {
-                if ve.id == id {
-                    ve.activated_at = Some(now.clone());
-                    self.store.activate_model(id).await?;
-                } else if let Some(m) = self.store.get_model(&ve.id).await {
+            // Deactivate the others before activating this one: if a write
+            // fails on the way, there are never two active versions.
+            for ve in entry.versions.iter().filter(|ve| ve.id != id) {
+                if let Some(m) = self.store.get_model(&ve.id).await {
                     if m.active {
-                        let _ = self.store.deactivate_model(&ve.id).await;
+                        self.store.deactivate_model(&ve.id).await?;
                     }
                 }
+            }
+            self.store.activate_model(id).await?;
+            if let Some(ve) = entry.versions.iter_mut().find(|ve| ve.id == id) {
+                ve.activated_at = Some(now.clone());
             }
         }
 
@@ -399,6 +415,7 @@ impl ModelRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::test_support::{block_metadata_writes, restore_metadata};
     use tempfile::TempDir;
 
     async fn make_registry() -> (ModelRegistry, TempDir) {
@@ -469,6 +486,24 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("identical model hash"));
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_identical_uploads_accept_one() {
+        let (reg, _tmp) = make_registry().await;
+        let json = xgboost_json("same");
+        let (a, b) = tokio::join!(
+            reg.upload("my-model".into(), json.clone(), None),
+            reg.upload("my-model".into(), json, None)
+        );
+
+        assert!(
+            a.is_ok() != b.is_ok(),
+            "exactly one upload must be accepted: {a:?} / {b:?}"
+        );
+        let rejected = a.err().or(b.err()).unwrap();
+        assert!(rejected.to_string().contains("identical model hash"));
+        assert_eq!(reg.list_versions("my-model").await.unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -555,6 +590,59 @@ mod tests {
 
         let model = reg.store().get_model(&v1.id).await.unwrap();
         assert!(!model.active);
+    }
+
+    /// `(version, is_active)` for every version of `name`.
+    async fn active_flags(reg: &ModelRegistry, name: &str) -> Vec<(u32, bool)> {
+        let versions = reg.list_versions(name).await.unwrap();
+        versions.iter().map(|v| (v.version, v.is_active)).collect()
+    }
+
+    #[tokio::test]
+    async fn test_upload_reports_failed_deactivation_of_previous_version() {
+        let (reg, tmp) = make_registry().await;
+        let v1 = reg
+            .upload("m".into(), xgboost_json("1"), None)
+            .await
+            .unwrap();
+
+        let saved = block_metadata_writes(tmp.path(), &v1.id);
+        let result = reg.upload("m".into(), xgboost_json("2"), None).await;
+        restore_metadata(tmp.path(), &v1.id, &saved);
+
+        assert!(result.is_err(), "v1 could not be deactivated: {result:?}");
+        // The upload changed nothing: v1 is still the one active version,
+        // and what the registry reports is what a restart finds on disk.
+        let in_memory = active_flags(&reg, "m").await;
+        assert_eq!(in_memory, [(1, true)]);
+        let store = ModelStore::new(tmp.path().to_path_buf()).await.unwrap();
+        let reopened = ModelRegistry::new(store).await;
+        assert_eq!(active_flags(&reopened, "m").await, in_memory);
+    }
+
+    #[tokio::test]
+    async fn test_activate_reports_failed_deactivation_of_other_version() {
+        let (reg, tmp) = make_registry().await;
+        let v1 = reg
+            .upload("m".into(), xgboost_json("1"), None)
+            .await
+            .unwrap();
+        let v2 = reg
+            .upload("m".into(), xgboost_json("2"), None)
+            .await
+            .unwrap();
+
+        let saved = block_metadata_writes(tmp.path(), &v2.id);
+        let result = reg.activate(&v1.id).await;
+        restore_metadata(tmp.path(), &v2.id, &saved);
+
+        assert!(result.is_err(), "v2 could not be deactivated: {result:?}");
+        // v1 was not activated, so there is still one active version.
+        let in_memory = active_flags(&reg, "m").await;
+        assert_eq!(in_memory, [(1, false), (2, true)]);
+        let store = ModelStore::new(tmp.path().to_path_buf()).await.unwrap();
+        let reopened = ModelRegistry::new(store).await;
+        assert_eq!(active_flags(&reopened, "m").await, in_memory);
     }
 
     #[tokio::test]
