@@ -545,6 +545,7 @@ library GKRHybridVerifier {
     ///      circuitHash(2) + pubInputs(2^N) + outputChallenges(N) + claimAggCoeff(1) +
     ///      per-layer(bindings + rhos + gammas + podpChallenge + popChallenge?) +
     ///      inputRLCCoeffs(2) + inputPODPChallenge(1) + interLayerCoeffs(numLayers-1) +
+    ///      mleEvalPoint(M) + inputClaimPoint(InputNumVars) +
     ///      outputs(rlcBeta(numLayers) + zDotJStar(numLayers) + lTensor + zDotR + mleEval)
     /// @param circuitHashFr0 Circuit hash Fr value 0
     /// @param circuitHashFr1 Circuit hash Fr value 1

@@ -482,6 +482,8 @@ contract RemainderVerifier is UUPSUpgradeable, Pausable, ReentrancyGuard {
                 ptr := add(ptr, 32)
             }
         }
+        // A call to an address without code succeeds and returns nothing, like an accepted proof
+        if (verifier.code.length == 0) revert Groth16VerificationFailed();
         (bool success, bytes memory returnData) = verifier.staticcall(data);
         if (!success) {
             if (returnData.length > 0) {
@@ -1094,7 +1096,7 @@ contract RemainderVerifier is UUPSUpgradeable, Pausable, ReentrancyGuard {
 
     /// @notice Set the Groth16 verifier contract address (for hybrid verification)
     function setGroth16Verifier(address _groth16Verifier) external onlyTimelocked {
-        if (_groth16Verifier == address(0)) revert ZeroAddress();
+        if (_groth16Verifier == address(0) || _groth16Verifier.code.length == 0) revert ZeroAddress();
         address oldVerifier = groth16Verifier;
         groth16Verifier = _groth16Verifier;
         emit Groth16VerifierUpdated(oldVerifier, _groth16Verifier);
@@ -1106,7 +1108,7 @@ contract RemainderVerifier is UUPSUpgradeable, Pausable, ReentrancyGuard {
         onlyTimelocked
     {
         if (circuits[circuitHash].circuitHash == bytes32(0)) revert CircuitNotRegistered();
-        if (verifier == address(0)) revert ZeroAddress();
+        if (verifier == address(0) || verifier.code.length == 0) revert ZeroAddress();
         circuitGroth16Verifiers[circuitHash] = verifier;
         circuitGroth16Selectors[circuitHash] = _computeGroth16Selector(groth16InputCount);
         emit CircuitGroth16VerifierUpdated(circuitHash, verifier, groth16InputCount);
@@ -1422,7 +1424,7 @@ contract RemainderVerifier is UUPSUpgradeable, Pausable, ReentrancyGuard {
         onlyTimelocked
     {
         if (dagCircuits[circuitHash].circuitHash == bytes32(0)) revert DAGCircuitNotRegistered();
-        if (verifier == address(0)) revert ZeroAddress();
+        if (verifier == address(0) || verifier.code.length == 0) revert ZeroAddress();
         dagCircuitGroth16Verifiers[circuitHash] = verifier;
         dagCircuitGroth16Selectors[circuitHash] = _computeGroth16Selector(groth16InputCount);
         emit DAGCircuitGroth16VerifierUpdated(circuitHash, verifier, groth16InputCount);
@@ -1517,7 +1519,7 @@ contract RemainderVerifier is UUPSUpgradeable, Pausable, ReentrancyGuard {
         onlyTimelocked
     {
         if (dagCircuits[circuitHash].circuitHash == bytes32(0)) revert DAGCircuitNotRegistered();
-        if (verifier == address(0)) revert ZeroAddress();
+        if (verifier == address(0) || verifier.code.length == 0) revert ZeroAddress();
         dagECGroth16Verifiers[circuitHash] = verifier;
         dagECGroth16Selectors[circuitHash] = _computeGroth16Selector(groth16InputCount);
         dagECGroth16InputCounts[circuitHash] = groth16InputCount;
@@ -2113,6 +2115,13 @@ contract RemainderVerifier is UUPSUpgradeable, Pausable, ReentrancyGuard {
         if (proof.length < 4) revert InvalidProofLength();
         // forge-lint: disable-next-line(unsafe-typecast)
         if (bytes4(proof[:4]) != bytes4("REM1")) revert InvalidProofSelector();
+        // gensData is re-supplied on every call: check it against the registered hash, as start does
+        {
+            bytes32 gensHash = dagCircuits[session.circuitHash].gensHash;
+            if (gensHash != bytes32(0) && gensData.length > 0) {
+                if (keccak256(gensData) != gensHash) revert InvalidGenerators();
+            }
+        }
 
         uint256 endLayer = _executeContinueBatch(sessionId, session, proof, publicInputs, gensData);
 
@@ -2282,6 +2291,13 @@ contract RemainderVerifier is UUPSUpgradeable, Pausable, ReentrancyGuard {
         if (proof.length < 4) revert InvalidProofLength();
         // forge-lint: disable-next-line(unsafe-typecast)
         if (bytes4(proof[:4]) != bytes4("REM1")) revert InvalidProofSelector();
+        // gensData is re-supplied on every call: check it against the registered hash, as start does
+        {
+            bytes32 gensHash = dagCircuits[session.circuitHash].gensHash;
+            if (gensHash != bytes32(0) && gensData.length > 0) {
+                if (keccak256(gensData) != gensHash) revert InvalidGenerators();
+            }
+        }
 
         uint256 groupsDone;
         uint256 totalGroups;

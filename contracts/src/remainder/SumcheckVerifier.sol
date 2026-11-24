@@ -67,6 +67,12 @@ library SumcheckVerifier {
         for (uint256 i = 0; i < numRounds; i++) {
             RoundPoly memory round = proof.rounds[i];
 
+            // A round needs at least the evaluations at 0 and 1
+            if (round.evals.length < 2) {
+                result.valid = false;
+                return result;
+            }
+
             // Check: g_i(0) + g_i(1) == currentClaim
             uint256 sum = addmod(round.evals[0], round.evals[1], FR_MODULUS);
             if (sum != currentClaim) {

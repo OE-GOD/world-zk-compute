@@ -179,6 +179,19 @@ contract SumcheckVerifierTest is Test {
         assertEq(result.challenges.length, 1);
         assertEq(result.challenges[0], challenge);
     }
+
+    /// @notice A round with fewer than two evaluations is reported as an invalid proof
+    function test_verify_rejects_round_with_fewer_than_two_evals() public view {
+        for (uint256 numEvals = 0; numEvals < 2; numEvals++) {
+            SumcheckVerifier.RoundPoly[] memory rounds = new SumcheckVerifier.RoundPoly[](1);
+            rounds[0] = SumcheckVerifier.RoundPoly({evals: new uint256[](numEvals)});
+            SumcheckVerifier.SumcheckProof memory proof = SumcheckVerifier.SumcheckProof({rounds: rounds, finalEval: 0});
+
+            SumcheckVerifier.SumcheckResult memory result = SumcheckVerifier.verify(proof, 0, PoseidonSponge.init());
+
+            assertFalse(result.valid, "Round with fewer than two evaluations should not verify");
+        }
+    }
 }
 
 contract HyraxVerifierTest is Test {
@@ -3687,6 +3700,37 @@ contract GKRHybridVerifierTest is Test, DeployRemainderVerifierHelper {
         );
     }
 
+    /// @notice The Groth16 verifier setters reject an address without code
+    function test_hybrid_setters_reject_verifier_without_code() public {
+        bytes32 circuitHash =
+            vm.parseJsonBytes32(vm.readFile("test/fixtures/groth16_e2e_fixture.json"), ".circuit_hash_raw");
+
+        vm.expectRevert(RemainderVerifier.ZeroAddress.selector);
+        remainderVerifier.setGroth16Verifier(address(0xBEEF));
+
+        vm.expectRevert(RemainderVerifier.ZeroAddress.selector);
+        remainderVerifier.setCircuitGroth16Verifier(circuitHash, address(0xBEEF), 78);
+    }
+
+    /// @notice A registered Groth16 verifier that has no code is a failed verification, not an accepted proof
+    function test_combined_rejects_groth16_verifier_without_code() public {
+        (
+            bytes memory innerProof,
+            bytes memory gensHex,
+            bytes32 circuitHash,
+            bytes memory publicValuesAbi,
+            uint256[8] memory groth16Proof,
+            uint256[] memory groth16Outputs
+        ) = _loadCombinedFixture();
+
+        vm.etch(address(groth16Verifier), "");
+
+        vm.expectRevert(RemainderVerifier.Groth16VerificationFailed.selector);
+        remainderVerifier.verifyWithGroth16(
+            innerProof, circuitHash, publicValuesAbi, gensHex, groth16Proof, groth16Outputs
+        );
+    }
+
     // ========================================================================
     // PUBLIC INPUT CLAIM VERIFICATION TESTS
     // ========================================================================
@@ -4629,6 +4673,96 @@ contract GKRDAGGroth16E2ETest is Test, DeployRemainderVerifierHelper {
         vm.expectRevert();
         verifier.verifyDAGWithGroth16(innerProof, circuitHash, publicInputsAbi, gensHex, groth16Proof, groth16Outputs);
     }
+
+    // Layer 4 of the fixture has no sumcheck rounds; its claimed-sum point starts at this byte of the inner proof
+    uint256 constant ZERO_ROUND_LAYER = 4;
+    uint256 constant ZERO_ROUND_LAYER_SUM_OFFSET = 9860;
+
+    function dropSelector(bytes calldata proof) external pure returns (bytes memory) {
+        return proof[4:];
+    }
+
+    /// @dev Copy of the inner proof with the claimed sum of the zero-round layer replaced by (x, y)
+    function _replaceZeroRoundLayerSum(bytes memory innerProof, bytes memory publicInputsAbi, uint256 x, uint256 y)
+        internal
+        view
+        returns (bytes memory mutated)
+    {
+        mutated = bytes.concat(innerProof);
+        uint256 offset = ZERO_ROUND_LAYER_SUM_OFFSET;
+        assembly {
+            mstore(add(add(mutated, 32), offset), x)
+            mstore(add(add(mutated, 64), offset), y)
+        }
+
+        (GKRVerifier.GKRProof memory decoded,,,) =
+            verifier.decodeProofForDAGExternal(this.dropSelector(mutated), publicInputsAbi);
+        CommittedSumcheckVerifier.CommittedSumcheckProof memory sumcheck =
+        decoded.layerProofs[ZERO_ROUND_LAYER].sumcheckProof;
+        assertEq(sumcheck.messages.length, 0, "layer should have no sumcheck rounds");
+        assertEq(sumcheck.sum.x, x, "sum.x should be replaced");
+        assertEq(sumcheck.sum.y, y, "sum.y should be replaced");
+    }
+
+    /// @notice A layer without sumcheck rounds still gets its dot-product check:
+    ///         replacing its claimed sum by another curve point is rejected
+    function test_dag_e2e_rejects_replaced_sum_of_zero_round_layer() public {
+        (
+            bytes memory innerProof,
+            bytes memory gensHex,
+            bytes32 circuitHash,
+            bytes memory publicInputsAbi,
+            uint256[8] memory groth16Proof,
+            uint256[] memory groth16Outputs
+        ) = _loadE2EFixtureAndRegister();
+
+        innerProof = _replaceZeroRoundLayerSum(innerProof, publicInputsAbi, 1, 2);
+
+        vm.expectRevert(GKRDAGHybridVerifier.PODPEq2Failed.selector);
+        verifier.verifyDAGWithGroth16(innerProof, circuitHash, publicInputsAbi, gensHex, groth16Proof, groth16Outputs);
+    }
+
+    /// @notice Same, with a claimed sum that is not a curve point
+    function test_dag_e2e_rejects_off_curve_sum_of_zero_round_layer() public {
+        (
+            bytes memory innerProof,
+            bytes memory gensHex,
+            bytes32 circuitHash,
+            bytes memory publicInputsAbi,
+            uint256[8] memory groth16Proof,
+            uint256[] memory groth16Outputs
+        ) = _loadE2EFixtureAndRegister();
+
+        innerProof = _replaceZeroRoundLayerSum(innerProof, publicInputsAbi, 5, 5);
+
+        vm.expectRevert(HyraxVerifier.EcMulFailed.selector);
+        verifier.verifyDAGWithGroth16(innerProof, circuitHash, publicInputsAbi, gensHex, groth16Proof, groth16Outputs);
+    }
+
+    /// @notice The DAG Groth16 verifier setter rejects an address without code
+    function test_dag_setter_rejects_groth16_verifier_without_code() public {
+        (,, bytes32 circuitHash,,,) = _loadE2EFixtureAndRegister();
+
+        vm.expectRevert(RemainderVerifier.ZeroAddress.selector);
+        verifier.setDAGCircuitGroth16Verifier(circuitHash, address(0xBEEF), 3416);
+    }
+
+    /// @notice A registered Groth16 verifier that has no code is a failed verification, not an accepted proof
+    function test_dag_e2e_rejects_groth16_verifier_without_code() public {
+        (
+            bytes memory innerProof,
+            bytes memory gensHex,
+            bytes32 circuitHash,
+            bytes memory publicInputsAbi,
+            uint256[8] memory groth16Proof,
+            uint256[] memory groth16Outputs
+        ) = _loadE2EFixtureAndRegister();
+
+        vm.etch(address(dagGroth16Verifier), "");
+
+        vm.expectRevert(RemainderVerifier.Groth16VerificationFailed.selector);
+        verifier.verifyDAGWithGroth16(innerProof, circuitHash, publicInputsAbi, gensHex, groth16Proof, groth16Outputs);
+    }
 }
 
 // ========================================================================
@@ -4966,6 +5100,45 @@ contract DAGBatchVerifierTest is Test, DeployRemainderVerifierHelper {
             abi.encodePacked(uint256(1), uint256(1), uint256(2), uint256(1), uint256(2), uint256(1), uint256(2));
         vm.expectRevert(RemainderVerifier.InvalidGenerators.selector);
         verifier.startDAGBatchVerify(proofHex, circuitHash, publicInputsHex, wrongGens);
+    }
+
+    /// @dev The registered generators with the last message generator replaced by the curve generator (1, 2)
+    function _otherGens() internal view returns (bytes memory otherGens) {
+        otherGens = gensHex;
+        uint256 offset = 32 + 511 * 64;
+        assembly {
+            mstore(add(add(otherGens, 32), offset), 1)
+            mstore(add(add(otherGens, 64), offset), 2)
+        }
+        assertTrue(keccak256(otherGens) != keccak256(gensHex), "generators should differ");
+    }
+
+    /// @notice Continue with generators other than the registered ones reverts
+    function test_dag_batch_continue_wrong_gens_reverts() public {
+        bytes memory otherGens = _otherGens();
+        bytes32 sessionId = verifier.startDAGBatchVerify(proofHex, circuitHash, publicInputsHex, gensHex);
+
+        vm.expectRevert(RemainderVerifier.InvalidGenerators.selector);
+        verifier.continueDAGBatchVerify(sessionId, proofHex, publicInputsHex, otherGens);
+
+        (, uint256 nextBatch,,,,) = verifier.getDAGBatchSession(sessionId);
+        assertEq(nextBatch, 0, "session should not advance");
+    }
+
+    /// @notice Finalize with generators other than the registered ones reverts
+    function test_dag_batch_finalize_wrong_gens_reverts() public {
+        bytes memory otherGens = _otherGens();
+        bytes32 sessionId = verifier.startDAGBatchVerify(proofHex, circuitHash, publicInputsHex, gensHex);
+        (,, uint256 totalBatches,,,) = verifier.getDAGBatchSession(sessionId);
+        for (uint256 i = 0; i < totalBatches; i++) {
+            verifier.continueDAGBatchVerify(sessionId, proofHex, publicInputsHex, gensHex);
+        }
+
+        vm.expectRevert(RemainderVerifier.InvalidGenerators.selector);
+        verifier.finalizeDAGBatchVerify(sessionId, proofHex, publicInputsHex, otherGens);
+
+        (,,, bool finalized,,) = verifier.getDAGBatchSession(sessionId);
+        assertFalse(finalized, "session should not be finalized");
     }
 
     /// @notice Start with invalid proof selector reverts

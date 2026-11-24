@@ -41,10 +41,6 @@ library HyraxVerifier {
     uint256 internal constant FQ_MODULUS =
         21888242871839275222246405745257275088696311157297823662689037894645226208583;
 
-    /// @notice BN254 G1 generator point
-    uint256 internal constant G1_X = 1;
-    uint256 internal constant G1_Y = 2;
-
     // ========================================================================
     // TYPES
     // ========================================================================
