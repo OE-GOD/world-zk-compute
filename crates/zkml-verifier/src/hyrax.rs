@@ -545,8 +545,8 @@ fn compute_rlc_tensor(
 // MLE Evaluation
 // ============================================================
 
-/// Evaluate MLE of data at point: MLE(x) = sum_w data[w] * eq(w, x)
-/// Uses MSB-first convention: point[0] is the MSB of the data index.
+/// Evaluate MLE of data at point: `MLE(x) = sum_w data[w] * eq(w, x)`
+/// Uses MSB-first convention: `point[0]` is the MSB of the data index.
 pub fn evaluate_mle_from_data(data: &[U256], point: &[U256]) -> U256 {
     let n = point.len();
     assert!(data.len() <= (1 << n), "data too large");

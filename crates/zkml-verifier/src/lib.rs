@@ -113,6 +113,12 @@ fn read_u256_array(dec: &mut ProofDecoder) -> Vec<U256> {
 }
 
 /// Verify a DAG GKR proof end-to-end.
+///
+/// For trusted input only. This function panics when a check fails or the
+/// input is malformed, and it reads the input with the unchecked decoders: a
+/// hostile length field can make it allocate without bound or abort the
+/// process. For input that is not trusted use [`verify`] or [`verify_raw`],
+/// which return an error instead.
 pub fn verify_dag_proof_inner(
     proof_data: &[u8],
     _public_inputs: &[u8],
@@ -158,6 +164,10 @@ pub fn verify_dag_proof_inner(
 }
 
 /// Hybrid DAG GKR verification.
+///
+/// For trusted input only, for the same reasons as
+/// [`verify_dag_proof_inner`]. For input that is not trusted use
+/// [`verify_hybrid`].
 pub fn verify_dag_proof_hybrid_inner(
     proof_data: &[u8],
     _public_inputs: &[u8],
