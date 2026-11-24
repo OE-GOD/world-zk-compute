@@ -12,8 +12,10 @@ use sha2::{Digest, Sha256};
 /// A cryptographically signed verification receipt.
 ///
 /// Contains the verification result along with metadata about the verifier and
-/// a secp256k1 ECDSA signature over the SHA-256 hash of the canonical JSON
-/// representation of all fields (excluding the signature itself).
+/// a secp256k1 ECDSA signature (SHA-256 prehash) over the 32-byte SHA-256 digest
+/// of the compact JSON object of all fields except `signature`, with keys in
+/// alphabetical order and `error` present as `null` when absent. The JSON is
+/// therefore hashed twice before signing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerificationReceipt {
     /// Unique receipt identifier (UUID v4).
@@ -73,11 +75,13 @@ impl VerificationReceipt {
         }
     }
 
-    /// Compute the canonical message to sign: SHA-256 of the deterministic JSON
-    /// representation of all fields except `signature`.
+    /// Compute the message to sign: the SHA-256 digest of the compact JSON
+    /// object of all fields except `signature`. The ECDSA signer and verifier
+    /// hash this digest with SHA-256 once more.
     fn signing_message(&self) -> Vec<u8> {
-        // Build a deterministic JSON object with fields in a fixed order,
-        // excluding the signature field.
+        // `json!` builds a sorted map, so the keys are serialized in
+        // alphabetical order, not in the order written here. `error` is
+        // always present (`null` when `None`).
         let canonical = serde_json::json!({
             "receipt_id": self.receipt_id,
             "proof_id": self.proof_id,

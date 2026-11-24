@@ -2,7 +2,9 @@
 //!
 //! The [`ProofStorage`] trait abstracts over where proof bundle bytes are persisted.
 //! Implementations enforce append-only / WORM semantics: once a proof is stored
-//! under an ID it can never be overwritten or deleted through the storage API.
+//! under an ID it can never be overwritten or deleted through the storage API,
+//! provided there is a single writer (the service serialises writes with the
+//! lock around `ProofDb`).
 //!
 //! The default [`LocalStorage`] backend writes files to a date-partitioned directory
 //! tree, refusing to overwrite any existing file (local WORM). An optional S3 backend
@@ -63,7 +65,8 @@ impl From<io::Error> for StorageError {
 /// - **No deletion**: there is no `delete()` method by design.
 #[async_trait]
 pub trait ProofStorage: Send + Sync {
-    /// Store a proof bundle. Returns the storage key.
+    /// Store a proof bundle. Returns a backend-specific locator (the ID for
+    /// local storage, the object key for S3); the service does not use it.
     ///
     /// # Errors
     /// Returns [`StorageError::AlreadyExists`] if a proof with this ID is
@@ -106,8 +109,9 @@ fn validate_id(id: &str) -> Result<(), StorageError> {
 /// Local filesystem storage with append-only (WORM) semantics.
 ///
 /// Files are stored under `base_dir/YYYY-MM-DD/<id>.json`. Once written, a
-/// file can never be overwritten through this API. The directory tree is
-/// created on demand.
+/// file can never be overwritten through this API, provided there is a single
+/// writer (the existence check and the rename are not one atomic step). The
+/// directory tree is created on demand.
 pub struct LocalStorage {
     base_dir: PathBuf,
 }
@@ -236,9 +240,10 @@ impl ProofStorage for LocalStorage {
             ))
         })?;
 
-        // Double-check: if the dest appeared between our exists check and the
-        // rename, the rename on most POSIX systems will overwrite. Use
-        // hard-link-then-remove for extra safety.
+        // Check again now that the data is written. This check and the rename
+        // are not atomic: a file that appears at `dest` between them is
+        // overwritten. The service keeps writers apart with the lock around
+        // `ProofDb`, the only caller.
         if dest.exists() {
             // Someone else wrote it concurrently. Clean up our temp file.
             let _ = std::fs::remove_file(&tmp_path);

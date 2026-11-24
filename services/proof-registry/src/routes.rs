@@ -544,35 +544,8 @@ mod tests {
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use axum::middleware as mw;
-    use axum::routing::{delete, get, post};
     use axum::Router;
     use tower::ServiceExt;
-
-    /// Build a test router wired to all route handlers.
-    fn build_test_app(state: Arc<AppState>) -> Router {
-        let protected = Router::new()
-            .route("/proofs", post(submit_proof))
-            .route("/proofs", get(search_proofs))
-            .route("/proofs/:id", get(get_proof))
-            .route("/proofs/:id/verify", post(verify_proof))
-            .route("/proofs/:id/receipt", get(get_receipt))
-            .route("/proofs/:id", delete(delete_proof))
-            .route("/proofs/compare", post(compare_proofs))
-            .route("/stats", get(stats))
-            .route("/transparency/root", get(transparency_root))
-            .route("/transparency/proof/:index", get(transparency_proof))
-            .route("/transparency/verify", post(transparency_verify))
-            .route("/transparency/entries", get(transparency_entries))
-            .route_layer(mw::from_fn_with_state(state.clone(), auth_middleware))
-            .with_state(state.clone());
-
-        let health_router = Router::new()
-            .route("/health", get(health))
-            .with_state(state);
-
-        Router::new().merge(health_router).merge(protected)
-    }
 
     /// Create a test state backed by temporary SQLite databases.
     fn make_test_state() -> Arc<AppState> {
@@ -641,7 +614,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_health() {
         let state = make_test_state();
-        let app = build_test_app(state);
+        let app = crate::build_app_with_state(state);
 
         let req = Request::get("/health").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -655,7 +628,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_stats_empty() {
         let state = make_test_state();
-        let app = build_test_app(state);
+        let app = crate::build_app_with_state(state);
 
         let req = Request::get("/stats").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -672,7 +645,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_submit_and_get_proof() {
         let state = make_test_state();
-        let app = build_test_app(state);
+        let app = crate::build_app_with_state(state);
 
         let bundle_json = make_test_bundle_json();
 
@@ -702,7 +675,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_get_nonexistent_proof() {
         let state = make_test_state();
-        let app = build_test_app(state);
+        let app = crate::build_app_with_state(state);
 
         let req = Request::get("/proofs/nonexistent-id-12345")
             .body(Body::empty())
@@ -717,7 +690,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_delete_proof() {
         let state = make_test_state();
-        let app = build_test_app(state);
+        let app = crate::build_app_with_state(state);
 
         let bundle_json = make_test_bundle_json();
 
@@ -748,7 +721,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_search_proofs() {
         let state = make_test_state();
-        let app = build_test_app(state);
+        let app = crate::build_app_with_state(state);
 
         // Submit two proofs with the same circuit_hash.
         let bundle1 = make_test_bundle_json();
@@ -827,7 +800,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_compare_same_model_same_output() {
         let state = make_test_state();
-        let app = build_test_app(state);
+        let app = crate::build_app_with_state(state);
 
         let id_a = submit_bundle_with_hashes(&app, "0xmodel1", "0xcircuit1", "0xaabbccdd").await;
         let id_b = submit_bundle_with_hashes(&app, "0xmodel1", "0xcircuit1", "0xaabbccdd").await;
@@ -861,7 +834,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_compare_same_model_different_output() {
         let state = make_test_state();
-        let app = build_test_app(state);
+        let app = crate::build_app_with_state(state);
 
         let id_a = submit_bundle_with_hashes(&app, "0xmodel1", "0xcircuit1", "0xaabbccdd").await;
         let id_b = submit_bundle_with_hashes(&app, "0xmodel1", "0xcircuit1", "0x11223344").await;
@@ -889,7 +862,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_compare_different_models() {
         let state = make_test_state();
-        let app = build_test_app(state);
+        let app = crate::build_app_with_state(state);
 
         let id_a = submit_bundle_with_hashes(&app, "0xmodel1", "0xcircuit1", "0xaabbccdd").await;
         let id_b = submit_bundle_with_hashes(&app, "0xmodel2", "0xcircuit2", "0xaabbccdd").await;
@@ -919,7 +892,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_compare_nonexistent_proof() {
         let state = make_test_state();
-        let app = build_test_app(state);
+        let app = crate::build_app_with_state(state);
 
         let id_a = submit_bundle_with_hashes(&app, "0xmodel1", "0xcircuit1", "0xaabb").await;
 
@@ -941,7 +914,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_compare_empty_public_inputs() {
         let state = make_test_state();
-        let app = build_test_app(state);
+        let app = crate::build_app_with_state(state);
 
         let id_a = submit_bundle_with_hashes(&app, "0xmodel1", "0xcircuit1", "").await;
         let id_b = submit_bundle_with_hashes(&app, "0xmodel1", "0xcircuit1", "").await;
@@ -965,5 +938,54 @@ mod tests {
         assert_eq!(json["same_circuit"], true);
         // Both empty, no embedded outputs, so vacuously match.
         assert_eq!(json["outputs_match"], true);
+    }
+
+    // -- Webhook endpoint tests --
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_webhook_register_list_delete() {
+        let state = make_test_state();
+        let app = crate::build_app_with_state(state);
+
+        // Register.
+        let register_req = serde_json::json!({
+            "url": "http://127.0.0.1:9/hook",
+            "events": ["proof.verified"],
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/webhooks")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&register_req).unwrap()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let json = body_json(resp).await;
+        assert_eq!(json["status"], "registered");
+        let webhook_id = json["id"].as_str().unwrap().to_string();
+
+        // List.
+        let req = Request::get("/webhooks").body(Body::empty()).unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp).await;
+        assert_eq!(json["count"], 1);
+        assert_eq!(json["webhooks"][0]["id"], webhook_id);
+        assert_eq!(json["webhooks"][0]["url"], "http://127.0.0.1:9/hook");
+
+        // Delete, then delete again.
+        for expected in [StatusCode::OK, StatusCode::NOT_FOUND] {
+            let req = Request::builder()
+                .method("DELETE")
+                .uri(format!("/webhooks/{webhook_id}"))
+                .body(Body::empty())
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), expected);
+        }
+
+        let req = Request::get("/webhooks").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(body_json(resp).await["count"], 0);
     }
 }

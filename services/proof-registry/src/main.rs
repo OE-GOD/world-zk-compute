@@ -8,8 +8,23 @@
 //! | `PROOF_DB_PATH` | Path to SQLite database file | `./proofs.db` |
 //! | `PROOF_STORAGE_DIR` | Directory for proof bundle JSON files | `./proof-store/` |
 //! | `REGISTRY_API_KEYS` | Comma-separated API keys (empty = no auth) | (none) |
-//! | `REGISTRY_SIGNING_KEY` | Hex-encoded secp256k1 private key for receipt signing | (auto-gen) |
+//! | `REGISTRY_SIGNING_KEY` | Hex-encoded secp256k1 private key for receipt signing | (key file) |
+//! | `REGISTRY_KEY_FILE` | Signing key file, used when `REGISTRY_SIGNING_KEY` is unset; a new key is generated and saved here if the file is missing or empty | `./registry_signing_key.hex` |
 //! | `TRANSPARENCY_DB_PATH` | Path to transparency log SQLite database | `./transparency.db` |
+//! | `VERIFIER_VERSION` | Verifier version recorded in receipts | crate version |
+//! | `VERIFIER_HOST` | Verifier host recorded in receipts | `HOSTNAME`, then `COMPUTERNAME`, then `unknown` |
+//! | `LOG_FORMAT` | `json`, or any other value for human-readable logs | `json` |
+//! | `RUST_LOG` | Log filter | `info` |
+//!
+//! Read only when built with the `s3` feature:
+//!
+//! | Variable | Description | Default |
+//! |---|---|---|
+//! | `S3_BUCKET` | Bucket for proof bundles; replaces `PROOF_STORAGE_DIR` when set | (none) |
+//! | `S3_REGION` | AWS region | `us-east-1` |
+//! | `S3_RETENTION_MODE` | `GOVERNANCE` or `COMPLIANCE` | `GOVERNANCE` |
+//! | `S3_RETENTION_YEARS` | Retention period in years | `7` |
+//! | `S3_PREFIX` | Key prefix inside the bucket | `proofs/` |
 
 pub mod compare;
 mod db;
@@ -257,193 +272,6 @@ mod tests {
             "prover_version": "0.1.0-test",
             "circuit_hash": "0xdeadbeef",
         })
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_health_endpoint() {
-        let state = make_test_state();
-        let app = build_app_with_state(state);
-
-        let req = Request::builder()
-            .uri("/health")
-            .body(Body::empty())
-            .unwrap();
-
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-
-        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
-            .await
-            .unwrap();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(json["status"], "ok");
-        assert_eq!(json["db_healthy"], true);
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_submit_and_get_proof() {
-        let state = make_test_state();
-        let app = build_app_with_state(state);
-
-        let bundle_json = make_test_bundle_json();
-
-        // Submit a proof.
-        let req = Request::builder()
-            .method("POST")
-            .uri("/proofs")
-            .header("content-type", "application/json")
-            .body(Body::from(serde_json::to_string(&bundle_json).unwrap()))
-            .unwrap();
-
-        let resp = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::CREATED);
-
-        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
-            .await
-            .unwrap();
-        let submit_resp: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(submit_resp["status"], "stored");
-        let proof_id = submit_resp["id"].as_str().unwrap().to_string();
-
-        // Retrieve the proof.
-        let req = Request::builder()
-            .uri(format!("/proofs/{proof_id}"))
-            .body(Body::empty())
-            .unwrap();
-
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-
-        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
-            .await
-            .unwrap();
-        let get_resp: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(get_resp["id"], proof_id);
-        assert_eq!(get_resp["model_hash"], "0xabcdef1234567890");
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_search_proofs() {
-        let state = make_test_state();
-        let app = build_app_with_state(state);
-
-        let bundle_json = make_test_bundle_json();
-
-        // Submit two proofs.
-        for _ in 0..2 {
-            let req = Request::builder()
-                .method("POST")
-                .uri("/proofs")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_string(&bundle_json).unwrap()))
-                .unwrap();
-            let resp = app.clone().oneshot(req).await.unwrap();
-            assert_eq!(resp.status(), StatusCode::CREATED);
-        }
-
-        // Search all.
-        let req = Request::builder()
-            .uri("/proofs?limit=50")
-            .body(Body::empty())
-            .unwrap();
-
-        let resp = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-
-        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
-            .await
-            .unwrap();
-        let search_resp: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(search_resp["count"], 2);
-
-        // Search by model hash.
-        let req = Request::builder()
-            .uri("/proofs?model=0xabcdef1234567890")
-            .body(Body::empty())
-            .unwrap();
-
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-
-        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
-            .await
-            .unwrap();
-        let search_resp: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(search_resp["count"], 2);
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_delete_proof() {
-        let state = make_test_state();
-        let app = build_app_with_state(state);
-
-        let bundle_json = make_test_bundle_json();
-
-        // Submit.
-        let req = Request::builder()
-            .method("POST")
-            .uri("/proofs")
-            .header("content-type", "application/json")
-            .body(Body::from(serde_json::to_string(&bundle_json).unwrap()))
-            .unwrap();
-        let resp = app.clone().oneshot(req).await.unwrap();
-        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
-            .await
-            .unwrap();
-        let submit_resp: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        let proof_id = submit_resp["id"].as_str().unwrap().to_string();
-
-        // Delete.
-        let req = Request::builder()
-            .method("DELETE")
-            .uri(format!("/proofs/{proof_id}"))
-            .body(Body::empty())
-            .unwrap();
-        let resp = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-
-        // Should not be found.
-        let req = Request::builder()
-            .uri(format!("/proofs/{proof_id}"))
-            .body(Body::empty())
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_stats_endpoint() {
-        let state = make_test_state();
-        let app = build_app_with_state(state);
-
-        let req = Request::builder()
-            .uri("/stats")
-            .body(Body::empty())
-            .unwrap();
-
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-
-        let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
-            .await
-            .unwrap();
-        let stats: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(stats["total_proofs"], 0);
-        assert_eq!(stats["active_proofs"], 0);
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_get_nonexistent_proof() {
-        let state = make_test_state();
-        let app = build_app_with_state(state);
-
-        let req = Request::builder()
-            .uri("/proofs/nonexistent-id")
-            .body(Body::empty())
-            .unwrap();
-
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

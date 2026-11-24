@@ -73,6 +73,10 @@ pub fn verifying_key_hex(vk: &VerifyingKey) -> String {
 mod tests {
     use super::*;
 
+    /// Held by every test that sets or removes `REGISTRY_SIGNING_KEY`: the
+    /// variable is process-wide and the test harness runs tests in parallel.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn test_load_key_from_file() {
         // Write a known key to a file and verify it can be loaded directly.
@@ -97,6 +101,7 @@ mod tests {
     fn test_generate_new_key_to_file() {
         // Test the file-generation path of load_or_generate_key.
         // We temporarily clear the env var and restore it after.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let saved = std::env::var("REGISTRY_SIGNING_KEY").ok();
         std::env::remove_var("REGISTRY_SIGNING_KEY");
 
@@ -131,6 +136,8 @@ mod tests {
 
     #[test]
     fn test_load_from_env() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
         // Generate a known key.
         let key = SigningKey::random(&mut rand_core::OsRng);
         let key_hex = hex::encode(key.to_bytes());
