@@ -8,7 +8,8 @@ the [Sepolia Quickstart](sepolia-quickstart/README.md).
 
 - Foundry (`forge`, `cast`) installed via `foundryup`
 - An Alchemy (or other provider) Sepolia RPC URL
-- Sepolia testnet ETH on the deployer wallet (at least 0.1 ETH)
+- Sepolia testnet ETH on the deployer wallet (more than 0.1 ETH: `sepolia-e2e.sh` sends the
+  0.1 ETH prover stake from it, on top of gas)
 - Contracts deployed to Sepolia (see the quickstart guide)
 
 ## Environment Variables
@@ -21,6 +22,9 @@ export ALCHEMY_SEPOLIA_RPC_URL="https://eth-sepolia.g.alchemy.com/v2/YOUR_API_KE
 
 # Required -- deployer/admin wallet private key (must hold Sepolia ETH)
 export DEPLOYER_PRIVATE_KEY="0x..."
+
+# Required by deploy-sepolia-tee.sh -- private key of the TEE enclave signer it registers
+export ENCLAVE_PRIVATE_KEY="0x..."
 
 # Required by deploy-sepolia-tee.sh -- address TEEMLVerifier calls to resolve
 # disputes (TEEMLVerifier.initialize rejects address(0))
@@ -43,7 +47,7 @@ secrets manager.
 | `signature-verified/` | Yes | Uses ECDSA precompile; works with local proving. |
 | `sybil-detector/` | Yes | Uses SHA-256 precompile; works with local proving. |
 | `xgboost-inference/` | Yes | XGBoost model inference inside the zkVM. |
-| `xgboost-remainder/` | Partial | GKR/Hyrax direct verification exceeds Sepolia's 30M gas block limit. TEE path works. Groth16-wrapped proofs work within gas limits. |
+| `xgboost-remainder/` | Partial | The on-chain verifier (RemainderVerifier, 135,088 bytes) and the Groth16 wrapper verifier (DAGGroth16Verifier, 461,497 bytes) exceed Sepolia's 24,576-byte contract size limit and cannot be deployed there. Only the TEE path (TEEMLVerifier) can be deployed. |
 | `xgboost-ezkl/` | No | Requires EZKL toolchain; not integrated with on-chain contracts. |
 | `anomaly-detector-sp1/` | No | SP1-based; separate proving infrastructure. |
 | `recursive-wrapper/` | No | Internal proving utility, not an end-user example. |
@@ -61,10 +65,18 @@ secrets manager.
 
 This writes deployment addresses to `deployments/11155111.json`.
 
-### 2. Run the E2E test for a specific example
+### 2. Run the E2E test
+
+The per-example test, `./scripts/e2e-test.sh --example rule-engine --network sepolia`, does not
+run on Sepolia: it reads `SEPOLIA_RPC_URL`, `PRIVATE_KEY`, `PROVER_PRIVATE_KEY` and
+`REQUESTER_PRIVATE_KEY` instead of the variables above, and then calls
+`forge script script/DeployTestnet.s.sol:DeployTestnetScript`, a contract name that does not
+exist (`Error: Could not find target contract`).
+
+The TEE lifecycle against the contracts from step 1 is exercised by:
 
 ```bash
-./scripts/e2e-test.sh --example rule-engine --network sepolia
+./scripts/sepolia-e2e.sh
 ```
 
 ### 3. Submit a request manually
@@ -78,16 +90,17 @@ This writes deployment addresses to `deployments/11155111.json`.
 
 ## Gas Costs
 
-Typical gas costs on Sepolia (also representative of mainnet):
+Gas used by each operation, measured on a local Anvil chain under the Osaka gas rules
+(`anvil --hardfork osaka`), not on Sepolia itself. The Groth16 row was not re-measured:
 
 | Operation | Approximate Gas | Approximate Cost at 10 gwei |
 |-----------|----------------:|----------------------------:|
-| Deploy TEEMLVerifier | ~3,000,000 | 0.03 ETH |
-| Deploy ExecutionEngine | ~2,500,000 | 0.025 ETH |
-| Register enclave | ~60,000 | 0.0006 ETH |
-| Submit result | ~150,000 | 0.0015 ETH |
-| Challenge | ~80,000 | 0.0008 ETH |
-| Finalize | ~50,000 | 0.0005 ETH |
+| Deploy TEEMLVerifier (implementation 3,368,449 + proxy 319,388) | ~3,690,000 | 0.037 ETH |
+| Deploy ExecutionEngine | ~2,610,000 | 0.026 ETH |
+| Register enclave | ~75,000 | 0.00075 ETH |
+| Submit result | ~250,000 | 0.0025 ETH |
+| Challenge | ~92,000 | 0.00092 ETH |
+| Finalize | ~54,000 | 0.00054 ETH |
 | Groth16 verify | ~300,000 | 0.003 ETH |
 
 Gas prices fluctuate. Check current prices:
@@ -101,19 +114,26 @@ cast gas-price --rpc-url "$ALCHEMY_SEPOLIA_RPC_URL"
 Sepolia enforces EIP-170, which limits deployed contract bytecode to 24,576
 bytes. Some contracts in this project exceed that limit:
 
-- **RemainderVerifier** (GKR + Hyrax on-chain verification) exceeds the limit.
-  For full on-chain GKR verification, deploy to Arbitrum Sepolia instead, which
-  allows up to 200 KB of contract bytecode.
-- **DAGBatchVerifier** with all libraries linked also exceeds the limit on
-  Sepolia.
+- **RemainderVerifier** (GKR + Hyrax on-chain verification) is 135,088 bytes and
+  cannot be deployed. Arbitrum Sepolia is not an alternative: it enforces the same
+  24,576-byte limit, as do Arbitrum One, World Chain, World Chain Sepolia and
+  Ethereum mainnet.
+- **DAGBatchVerifier** is an internal library compiled into RemainderVerifier, so
+  it is part of those 135,088 bytes, not a separate deployment.
 
 The TEEMLVerifier and ExecutionEngine contracts are well within the limit and
 deploy without issues on Sepolia.
 
-For chains with larger code size limits:
+`deployments/chains.json` marks `sepolia`, `arbitrum-sepolia` and `world-chain-sepolia` as
+`teeOnly`. To deploy the TEE path to Arbitrum Sepolia, use `deploy.sh`
+(`deploy-multichain.sh` runs `DeployAll.s.sol`, which contains RemainderVerifier, and fails
+with `create initcode size limit`). `deploy.sh` also deploys ProgramRegistry and ExecutionEngine
+there, with a `MockRiscZeroVerifier` behind the ExecutionEngine, because
+`deployments/chains.json` has no `verifierRouter` for this chain:
 
 ```bash
-./scripts/deploy-multichain.sh --chain arbitrum-sepolia
+REMAINDER_VERIFIER=0x... DEPLOYER_PRIVATE_KEY=0x... \
+  ./scripts/deploy.sh --chain arbitrum-sepolia
 ```
 
 ## Troubleshooting
