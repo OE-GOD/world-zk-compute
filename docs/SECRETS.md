@@ -13,11 +13,11 @@ Every deployment manages these secret categories:
 | Operator wallet private key | `OPERATOR_PRIVATE_KEY` | operator service | High -- controls on-chain funds |
 | Enclave signing private key | `ENCLAVE_PRIVATE_KEY` | TEE enclave | High -- attestation forgery if leaked |
 | Registry signing key (ECDSA) | `REGISTRY_SIGNING_KEY` | proof-registry | Medium -- proof receipt integrity |
-| Admin contract owner key | `ADMIN_PRIVATE_KEY` | deploy scripts, admin-cli | Critical -- full contract control |
-| Gateway API keys | `GATEWAY_API_KEYS` | gateway service | Low -- rate limiting only |
+| Admin contract owner key | `ADMIN_PRIVATE_KEY` (admin-cli reads `PRIVATE_KEY`) | `rotate-enclave-key.sh`, admin-cli | Critical -- full contract control |
+| Gateway API keys | `GATEWAY_API_KEYS` | gateway service | Low -- request authentication at the gateway (when set) |
 | Verifier API keys | `VERIFIER_API_KEYS` | verifier service | Low -- legacy auth |
 | Indexer admin API key | `ADMIN_API_KEY` | indexer service | Low -- admin endpoints |
-| RPC provider API key | `RPC_URL` (embedded) | operator, indexer, enclave | Medium -- billing exposure |
+| RPC provider API key | `OPERATOR_RPC_URL` (operator), `RPC_URL` (indexer) (embedded) | operator, indexer | Medium -- billing exposure |
 | Grafana admin password | `GRAFANA_PASSWORD` | monitoring stack | Low |
 | Slack/PagerDuty webhook URL | `ALERT_CONFIG_JSON` | operator alerting | Low |
 
@@ -32,7 +32,7 @@ Every deployment manages these secret categories:
 
 ## 2. Encryption at Rest with SOPS + age
 
-We use [SOPS](https://github.com/getsops/sops) with [age](https://age-encryption.org/) encryption for env files. SOPS encrypts values while leaving keys readable, making diffs and reviews practical.
+This section describes how to set up [SOPS](https://github.com/getsops/sops) with [age](https://age-encryption.org/) encryption for env files; the repository itself has no `.sops.yaml` and no encrypted env file yet (`deploy/secrets.env.encrypted.example` only shows the format). SOPS encrypts values while leaving keys readable, making diffs and reviews practical.
 
 ### Initial Setup
 
@@ -105,10 +105,10 @@ sops deploy/secrets.env.encrypted
 
 ### CI/CD Decryption
 
-In GitHub Actions, use `SOPS_AGE_KEY` secret:
+In GitHub Actions, use `SOPS_AGE_KEY` secret. No workflow in this repository does this yet (there is no `.github/workflows/deploy.yml`; the existing deploy workflows read plain GitHub secrets), so the step below is a template:
 
 ```yaml
-# .github/workflows/deploy.yml
+# template for a deploy workflow
 jobs:
   deploy:
     steps:
@@ -221,15 +221,18 @@ The `REGISTRY_SIGNING_KEY` is a secp256k1 key used by the proof-registry service
 sops deploy/secrets.env.encrypted
 # Replace REGISTRY_SIGNING_KEY with the new value
 
-# Restart the proof-registry service
+# Restart the proof-registry service (these are the two commands rotate-keys.sh
+# prints; the repository ships no systemd unit or Kubernetes Deployment for the
+# registry, so use whatever runs it in your deployment)
 systemctl restart proof-registry
 # or: kubectl rollout restart deployment/proof-registry
 
-# Verify: check the /info endpoint returns the new public key
-curl -s http://localhost:3001/info | jq .signing_public_key
+# Verify: the registry has no /info route. It logs the new public key at startup, in a
+# JSON line (the default log format) with message "Receipt signing key loaded" and a
+# "public_key" field of 66 hex chars.
 ```
 
-**Impact**: Old proof receipts signed with the previous key remain valid (verification uses the public key embedded in the receipt). New receipts will use the new key.
+**Impact**: Old proof receipts signed with the previous key can only be checked against the previous public key (a receipt does not embed a public key), so record the old public key before rotating. New receipts will use the new key.
 
 ### 4.2 API Keys (Gateway, Verifier, Indexer)
 
@@ -247,6 +250,9 @@ ADMIN_API_KEY="new-admin-key-123"
 
 # 2. Deploy with both keys active
 sops deploy/secrets.env.encrypted   # update values
+# Restart the three services. The Deployment names below are placeholders:
+# deploy/k8s defines only worldzk-operator and worldzk-indexer, the Helm chart
+# names its Deployments after the release, and nothing defines a gateway Deployment.
 kubectl rollout restart deployment/gateway
 kubectl rollout restart deployment/verifier
 kubectl rollout restart deployment/indexer
@@ -264,7 +270,7 @@ VERIFIER_API_KEYS="new-key-uvw"
 
 ### 4.3 Operator Private Key (Ethereum)
 
-The operator key holds ETH for gas and submits on-chain transactions. Rotation requires transferring on-chain roles.
+The operator key holds ETH for gas and stake and submits on-chain transactions. It has no on-chain role: TEEMLVerifier has no submitter allow-list, so rotation means funding a new wallet and switching the service to it.
 
 **When to rotate**: If the key may have been compromised, if a team member with access leaves, or annually.
 
@@ -278,30 +284,34 @@ cast send <NEW_OPERATOR_ADDRESS> --value 0.5ether \
   --private-key $OLD_OPERATOR_PRIVATE_KEY \
   --rpc-url $RPC_URL
 
-# 3. If the operator address has any on-chain roles (e.g., whitelisted submitter),
-#    update those roles using the admin key:
-cast send $TEE_VERIFIER_ADDRESS "setAuthorizedSubmitter(address,bool)" \
-  $NEW_OPERATOR_ADDRESS true \
-  --private-key $ADMIN_PRIVATE_KEY --rpc-url $RPC_URL
+# 3. Nothing to grant on-chain: no contract has a setAuthorizedSubmitter function,
+#    and submitResult accepts any sender that pays the stake and presents a valid
+#    enclave attestation.
 
 # 4. Update secrets
 sops deploy/secrets.env.encrypted
 # Replace OPERATOR_PRIVATE_KEY with the new key
 
-# 5. Restart operator
-systemctl restart tee-operator
+# 5. Restart operator (the unit installed from deploy/operator.service is
+#    named worldzk-operator)
+systemctl restart worldzk-operator
 
 # 6. Verify: check operator health and that it can submit transactions
 curl -s http://localhost:9090/health | jq .
 cast balance $NEW_OPERATOR_ADDRESS --rpc-url $RPC_URL
 
-# 7. Revoke old operator (if it had on-chain roles)
-cast send $TEE_VERIFIER_ADDRESS "setAuthorizedSubmitter(address,bool)" \
-  $OLD_OPERATOR_ADDRESS false \
-  --private-key $ADMIN_PRIVATE_KEY --rpc-url $RPC_URL
+# 7. Nothing to revoke on-chain for the old address. Stakes of results it
+#    submitted are paid back to the old address when those results finalize,
+#    so drain it only after they have.
 
-# 8. Drain remaining funds from old wallet
-cast send $NEW_OPERATOR_ADDRESS --value $(cast balance $OLD_OPERATOR_ADDRESS --rpc-url $RPC_URL) \
+# 8. Drain remaining funds from old wallet (the full balance cannot be sent:
+#    the transfer itself costs gas. This subtracts 21000 gas at the current gas
+#    price, tested on Anvil; a chain that charges more than 21000 gas for a
+#    transfer needs a larger gas limit and margin)
+GAS_PRICE=$(cast gas-price --rpc-url $RPC_URL)
+cast send $NEW_OPERATOR_ADDRESS \
+  --value $(echo "$(cast balance $OLD_OPERATOR_ADDRESS --rpc-url $RPC_URL) - 21000 * $GAS_PRICE" | bc) \
+  --legacy --gas-limit 21000 --gas-price $GAS_PRICE \
   --private-key $OLD_OPERATOR_PRIVATE_KEY --rpc-url $RPC_URL
 ```
 
@@ -374,14 +384,16 @@ cast send $TEE_VERIFIER_ADDRESS "unpause()" \
 ### Operator Key Compromise
 
 ```bash
-# 1. Drain funds from compromised wallet to a safe address
-cast send $SAFE_ADDRESS --value $(cast balance $COMPROMISED --rpc-url $RPC) \
-  --private-key $COMPROMISED_KEY --rpc-url $RPC
+# 1. Drain funds from compromised wallet to a safe address (balance minus the
+#    21000 gas the transfer costs; sending the full balance fails. See 4.3 step 8)
+GAS_PRICE=$(cast gas-price --rpc-url $RPC_URL)
+cast send $SAFE_ADDRESS \
+  --value $(echo "$(cast balance $COMPROMISED_ADDRESS --rpc-url $RPC_URL) - 21000 * $GAS_PRICE" | bc) \
+  --legacy --gas-limit 21000 --gas-price $GAS_PRICE \
+  --private-key $COMPROMISED_KEY --rpc-url $RPC_URL
 
-# 2. Revoke on-chain roles (if any)
-cast send $TEE_VERIFIER_ADDRESS "setAuthorizedSubmitter(address,bool)" \
-  $COMPROMISED_ADDRESS false \
-  --private-key $ADMIN_PRIVATE_KEY --rpc-url $RPC_URL
+# 2. There is no on-chain role to revoke: no contract has a
+#    setAuthorizedSubmitter function, and TEEMLVerifier keeps no list of submitters.
 
 # 3. Generate and fund new operator wallet (see Section 4.3)
 ```
@@ -408,7 +420,7 @@ cast send $TEE_VERIFIER_ADDRESS "changeAdmin(address)" \
 - [ ] Pause contracts if active exploitation is occurring
 - [ ] Challenge any pending suspicious results within the challenge window
 - [ ] Rotate the compromised key (see Section 4)
-- [ ] Notify the team via the incident template (see `docs/DISASTER_RECOVERY.md` Section 7)
+- [ ] Notify the team (there is no incident template in the repository; `docs/DISASTER_RECOVERY.md` has no Section 7)
 - [ ] Post-incident: audit CloudTrail/logs, conduct root cause analysis
 
 ---
@@ -425,14 +437,14 @@ cast send $TEE_VERIFIER_ADDRESS "changeAdmin(address)" \
 ### Staging / CI
 
 ```
-deploy/secrets.env.encrypted     <-- committed, SOPS-encrypted
-.github/secrets/SOPS_AGE_KEY    <-- GitHub Actions secret (decrypts at deploy time)
+deploy/secrets.env.encrypted     <-- to be committed once created, SOPS-encrypted (not in the repository yet)
+SOPS_AGE_KEY                     <-- GitHub Actions secret (decrypts at deploy time; no workflow uses it yet)
 ```
 
 ### Production
 
 ```
-deploy/secrets.env.encrypted         <-- committed, SOPS+KMS encrypted
+deploy/secrets.env.encrypted         <-- to be committed once created, SOPS+KMS encrypted
 AWS Secrets Manager / Vault          <-- Tier 1-2 keys (ADMIN, OPERATOR, ENCLAVE)
 deploy/production.env.example        <-- committed, documents all vars
 ```

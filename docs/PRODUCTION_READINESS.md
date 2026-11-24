@@ -5,7 +5,7 @@
 - [ ] Security audit completed on `TEEMLVerifier.sol` and `RemainderVerifier.sol`
 - [ ] Contract source verified on block explorer (Etherscan / Arbiscan)
 - [ ] Admin key stored in hardware wallet or multisig (Safe)
-- [ ] 2-step ownership transfer completed (`transferOwnership` + `acceptOwnership`)
+- [ ] Admin transferred to the production admin address (`changeAdmin(address)`, one step; TEEMLVerifier and RemainderVerifier have no `transferOwnership`/`acceptOwnership`)
 - [ ] Emergency contacts documented and shared with on-call team
 - [ ] Incident response runbook reviewed by all operators
 - [ ] Dry-run test passed on target chain (`DRY_RUN=true`)
@@ -211,7 +211,7 @@ nitro-cli run-enclave \
 
 ```bash
 curl -sf http://localhost:8080/health
-# {"status":"ok"}
+# {"status":"ok","model_loaded":true,"model_hash":"..."}
 ```
 
 ---
@@ -303,7 +303,7 @@ curl -sf http://$OPERATOR_URL:9090/metrics/json | jq .last_block_polled
 
 ```bash
 # Use the E2E demo script
-docker compose up  # starts anvil, deployer, enclave, warm-prover, operator
+docker compose up  # starts anvil, deployer, enclave, private-input-server, warm-prover, operator
 
 # Or manually:
 cast send $TEE_VERIFIER "submitResult(bytes32,bytes32,bytes,bytes)" \
@@ -421,13 +421,14 @@ Active disputes lock `proverStake + challengeBond`. If the operator is down and 
 # Build all services
 docker compose build
 
-# Start full stack: anvil + deployer + enclave + warm-prover + operator
+# Start full stack: anvil + deployer + enclave + private-input-server + warm-prover + operator
 docker compose up
 
 # Verify all services healthy
 docker compose ps
 # anvil:        healthy (port 8545)
 # enclave:      healthy (port 8080)
+# private-input-server: healthy (port 3001)
 # warm-prover:  healthy (port 3000)
 # operator:     healthy (port 9090)
 
@@ -441,7 +442,7 @@ docker compose down -v
 
 ### Code-Level Security (Implemented in Phases 71-77)
 
-- [x] All core contracts use `Ownable2Step` (prevents accidental ownership transfer)
+- [ ] All core contracts use `Ownable2Step` (prevents accidental ownership transfer) -- only ExecutionEngine, ProgramRegistry, ProverRegistry and ProverReputation do; TEEMLVerifier and RemainderVerifier have a one-step `changeAdmin(address)`
 - [x] Custom errors replace string-based `require()` in TEEMLVerifier (gas-efficient, no info leak)
 - [x] `nonReentrant` modifier on all ETH-transferring functions (TEEMLVerifier, ProverRegistry, ExecutionEngine)
 - [x] `Pausable` inherited by all core contracts (TEEMLVerifier, ExecutionEngine, RemainderVerifier, ProgramRegistry, ProverRegistry, ProverReputation)
@@ -495,7 +496,7 @@ docker compose down -v
 - [ ] Start monitoring: `docker compose -f docker-compose.sepolia.yml -f docker-compose.monitoring.yml --env-file .env.sepolia up -d`
 - [ ] Grafana accessible at `http://localhost:3001`
 - [ ] Import `monitoring/grafana-sepolia.json` dashboard
-- [ ] Verify Prometheus scraping operator/enclave metrics
+- [ ] Verify Prometheus scraping operator metrics (the enclave's `/metrics` returns JSON, not the Prometheus text format)
 
 ### Sepolia-Specific Notes
 

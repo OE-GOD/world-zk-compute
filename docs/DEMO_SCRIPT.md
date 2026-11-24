@@ -8,9 +8,12 @@
 
 ## Setup (before the call)
 
-Start the off-chain proof pipeline. This brings up four services behind a
-single API gateway: proof generator, proof registry, verifier, and Prometheus
-metrics collection.
+Start the off-chain proof pipeline. This brings up three services behind a
+single API gateway (proof generator, proof registry, verifier) and a Prometheus
+container, whose config (`deploy/prometheus.yml`) has no scrape target for these
+services. The compose file starts the proof generator with `--mock`: it does not
+evaluate the model or run a prover, so Step 3 returns a placeholder instead of a
+proof and Steps 4-5 cannot complete with it (see the notes at those steps).
 
 ```bash
 docker compose -f docker-compose.offchain.yml up -d
@@ -37,9 +40,10 @@ Expected output:
 }
 ```
 
-> **Tip:** If running the on-chain demo variant (Anvil local chain), use
-> `docker compose -f docker-compose.bank-demo.yml --profile onchain up -d`
-> instead. This adds a local Ethereum node for on-chain verification.
+> **Tip:** The on-chain variant at the end of this document mentions
+> `docker compose -f docker-compose.bank-demo.yml --profile onchain up -d`.
+> That file starts only the verifier API and a local Anvil node (no gateway,
+> registry or generator), so it does not replace the stack above for Steps 2-6.
 
 ---
 
@@ -89,9 +93,12 @@ Expected output:
 
 ### Step 3: Run Inference + Generate Proof (2 min)
 
-Submit a credit application's feature vector. The system runs the XGBoost model
-and generates a GKR+Hyrax zero-knowledge proof that the inference was computed
-correctly.
+Submit a credit application's feature vector. Outside mock mode the generator
+forwards the request to an `xgboost-remainder` prover for the inference and a
+GKR+Hyrax proof of it; the demo image does not ship that prover. This demo stack
+runs in mock mode, where neither happens: `output` is "approved" whenever the
+features sum to more than zero, and `proof_hex` is a 32-byte SHA-256
+placeholder, not a proof.
 
 ```bash
 # MODEL_ID is the "model_id" returned by Step 2
@@ -123,31 +130,46 @@ Expected output (`docker-compose.offchain.yml` starts the generator with `--mock
 }
 ```
 
-> "The proof takes about 4 seconds for an 88-layer XGBoost model. The output
-> score 0.87 means this applicant is likely approved. But the important part is
-> the proof -- it is a 48KB blob that anyone can verify without access to the
+> "The output says this applicant is approved. But the important part is
+> the proof -- it is a blob that anyone can verify without access to the
 > model weights or the customer data."
+
+The mock response carries no score, `prove_time_ms` is 0 and the "proof" is 32
+bytes, so the demo gives no proving time or proof size to quote.
 
 ### Step 4: Verify the Proof (1 min)
 
 Anyone with the proof can verify it independently. The verifier service
 implements the same GKR+Hyrax protocol as the on-chain Solidity contracts.
 
+**Cannot complete with the proof from Step 3 today.** The registry never
+receives it: the compose file does not set `REGISTRY_URL` on the generator, and
+with it set the registry rejects the mock bundle (HTTP 422, missing field
+`gens_hex`). With the `proof_id` from Step 3 the call below returns
+`404 proof '...' not found`. It does work for a real proof bundle stored by hand:
+
+```bash
+# Store the repository's fixture bundle in the registry; use the returned "id" as PROOF_ID
+curl -s -X POST http://localhost:8080/proofs \
+  -H "Content-Type: application/json" \
+  -d @contracts/test/fixtures/phase1a_dag_fixture.json | python3 -m json.tool
+```
+
 ```bash
 # Retrieve the proof bundle from the registry and verify it
-PROOF_ID="a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+# (PROOF_ID is the "id" returned by POST /proofs, not the proof_id from Step 3)
+PROOF_ID="829d982a-69af-4555-9036-2489ea5de290"
 
 curl -s -X POST "http://localhost:8080/proofs/${PROOF_ID}/verify" \
   | python3 -m json.tool
 ```
 
-Expected output:
+Expected output (for the fixture bundle):
 
 ```json
 {
   "verified": true,
-  "receipt_id": "r-5678-abcd-ef01-234567890abc",
-  "error": null
+  "receipt_id": "4b4d380d-c14e-400a-88f1-2114b24cc6a6"
 }
 ```
 
@@ -164,19 +186,21 @@ curl -s "http://localhost:8080/proofs/${PROOF_ID}/receipt" \
   | python3 -m json.tool
 ```
 
-Expected output:
+Like Step 4, this returns 404 (`no verification receipt for proof '...'`) for
+the `proof_id` from Step 3. Expected output for the fixture bundle verified in
+Step 4 (`model_hash` is empty because the fixture bundle carries none; `verifier_host` is `VERIFIER_HOST` if set, else the registry's `HOSTNAME`, else `unknown`):
 
 ```json
 {
-  "receipt_id": "r-5678-abcd-ef01-234567890abc",
-  "proof_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-  "circuit_hash": "0x8e7c...4f21",
-  "model_hash": "0x7a3f...c821",
+  "receipt_id": "4b4d380d-c14e-400a-88f1-2114b24cc6a6",
+  "proof_id": "829d982a-69af-4555-9036-2489ea5de290",
+  "circuit_hash": "0x8e7c...e909",
+  "model_hash": "",
   "verified": true,
-  "verified_at": "2026-03-27T10:01:15Z",
+  "verified_at": "2026-11-24T06:49:56.360932+00:00",
   "verifier_version": "0.1.0",
-  "verifier_host": "verifier-api-1",
-  "signature": "0x304402..."
+  "verifier_host": "unknown",
+  "signature": "6c5fff85...0b669ea8"
 }
 ```
 
@@ -198,12 +222,14 @@ curl -s "http://localhost:8080/proofs?limit=5" | python3 -m json.tool
 curl -s "http://localhost:8080/transparency/root" | python3 -m json.tool
 ```
 
-Expected output (transparency root):
+Expected output (transparency root, after the one fixture bundle from Step 4;
+on a stack where nothing was stored the proof list is empty, `tree_size` is 0
+and the root is all zeros):
 
 ```json
 {
-  "root": "a4e3f7...b812c9",
-  "tree_size": 42
+  "root": "25f4e401...e7ce0ad4",
+  "tree_size": 1
 }
 ```
 
@@ -214,6 +240,7 @@ Expected output (transparency root):
 
 ```bash
 # Verify a specific entry is in the transparency log
+# (404 "leaf 0 not found" while the log is empty)
 curl -s "http://localhost:8080/transparency/proof/0" | python3 -m json.tool
 ```
 
@@ -253,14 +280,17 @@ Client --> TEE Enclave --> Attestation --> On-Chain Submission
 
 ## Closing (30 seconds)
 
-> "Four model types supported today: XGBoost, LightGBM, Random Forest, and
-> Logistic Regression. Python SDK, REST API, Rust library, or CLI -- deploy in
-> your VPC, no blockchain required for off-chain verification."
+> "Two model types supported today: XGBoost and LightGBM. Python SDK, REST
+> API, Rust library, or CLI -- deploy in your VPC, no blockchain required for
+> off-chain verification."
 
 ```bash
-pip install zkml-verifier    # Python SDK
-npm install zkml-verifier    # JavaScript/WASM
-cargo install zkml-verifier  # Rust CLI
+# Nothing is published to a registry yet (PyPI and npm return 404, and the
+# crates.io name zkml-verifier belongs to an unrelated project), so install
+# from a checkout of this repository:
+pip install ./crates/zkml-verifier/python   # Python verifier
+cargo install --path crates/zkml-verifier   # Rust CLI
+# JavaScript/WASM: build with wasm-pack, see docs/PUBLISHING.md
 ```
 
 ---
@@ -269,16 +299,16 @@ cargo install zkml-verifier  # Rust CLI
 
 | Question | Answer |
 |---|---|
-| "What models do you support?" | XGBoost, LightGBM, Random Forest, Logistic Regression. Any tree ensemble or linear model. Neural network support is in development. |
-| "How long does proving take?" | 4-5 seconds for an 88-layer XGBoost model. Sub-second for logistic regression. |
+| "What models do you support?" | XGBoost and LightGBM. The random forest converter is broken and logistic regression is rejected by the prover CLI (see the Supported Models table in the README). Neural network support is in development. |
+| "How long does proving take?" | 4-5 seconds for an 88-layer XGBoost model. (The demo stack cannot show this: it runs in mock mode.) |
 | "What about larger models?" | Tree-based models cover most banking ML (credit scoring, fraud, AML). Neural network support is on the roadmap. |
-| "Is this on mainnet?" | Arbitrum Sepolia testnet today. Mainnet deployment is ready, pending third-party security audit. |
+| "Is this on mainnet?" | No, and not on Arbitrum Sepolia either: `deployments/arbitrum-sepolia.json` records no deployed contract. The Solidity ZK verifier contract (`RemainderVerifier`, 135,088 bytes) is over the 24,576-byte contract size limit of Ethereum, Arbitrum One and World Chain and of their Sepolia testnets, so of the Solidity contracts only the TEE contract can be deployed on them. |
 | "What is the gas cost?" | 3-6M gas on Arbitrum (~$0.02) for ZK dispute resolution via hybrid Stylus+Groth16. TEE happy path is ~$0.0001. |
-| "Can we use our existing models?" | Yes. Export from scikit-learn, XGBoost, or LightGBM as JSON. No retraining needed. |
+| "Can we use our existing models?" | Yes, for XGBoost and LightGBM models exported as JSON. No retraining needed. |
 | "How does this help with EU AI Act?" | Art. 11 (technical docs), Art. 12 (record-keeping), Art. 13 (transparency), Art. 15 (accuracy) -- see docs/AUDIT_TRAIL.md Section 3.2. |
 | "What about GDPR?" | Only hashes are stored on-chain, never PII. Input features are protected by Pedersen commitments in proofs. Raw features stored only in access-controlled off-chain archives. |
 | "Can this be self-hosted?" | Yes. Docker Compose for development, Helm/Kustomize for Kubernetes, or bare-metal. No external dependencies required. |
-| "What is the uptime guarantee?" | Dispute windows (1h challenge + 24h resolution) provide a safety margin. Full stack recovery time is under 15 minutes. See docs/DISASTER_RECOVERY.md. |
+| "What is the uptime guarantee?" | Dispute windows (1h challenge + 24h resolution) provide a safety margin. docs/DISASTER_RECOVERY.md sets recovery-time targets of 5 to 30 minutes per service. |
 
 ---
 
@@ -305,7 +335,20 @@ forge script contracts/script/DeployTEEMLVerifier.s.sol \
   --broadcast
 
 # Submit a result, challenge it, resolve with ZK proof
-# (See scripts/e2e-test.sh for the full automated flow)
+# (See scripts/tee-dispute-e2e.sh for the full automated flow;
+#  scripts/e2e-test.sh is the risc0 ExecutionEngine flow)
+```
+
+**These commands cannot complete today.** The forge command does not compile
+from the repository root, the script reads `DEPLOYER_KEY` and requires
+`REMAINDER_VERIFIER`, and the compose Anvil keeps the 24,576-byte contract size
+limit, so the 135,088-byte RemainderVerifier cannot be deployed on it. What does
+run is the script, which starts its own Anvil (port 8552, 500M gas limit, code
+size limit disabled), deploys both verifiers, submits a result, challenges it
+and resolves the dispute with the fixture proof:
+
+```bash
+bash scripts/tee-dispute-e2e.sh
 ```
 
 This demonstrates the full TEE attestation -> challenge -> ZK dispute -> settlement
