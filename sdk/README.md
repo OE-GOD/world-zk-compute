@@ -313,7 +313,7 @@ async fn main() -> anyhow::Result<()> {
 
 ### Batch Verification
 
-Verify a large DAG proof across multiple transactions (stays under the 30M gas block limit):
+Verify a large DAG proof across multiple transactions. For the phase1a fixture that is 15 verification transactions plus a cleanup. It does not stay under 30M gas per transaction: measured as real transactions on Anvil, the largest `continue` step uses 31.7M gas and the `finalize` steps up to 27.7M. The SDK's built-in estimates assume otherwise (`gas_estimation`: `CONTINUE_GAS_UPPER` is 28M against a `BLOCK_GAS_LIMIT` of 30M), so the node must accept larger transactions, as the Anvil command in the Quick Start does:
 
 ```rust
 use world_zk_sdk::{Client, DAGVerifier, DAGFixture, BatchProgress};

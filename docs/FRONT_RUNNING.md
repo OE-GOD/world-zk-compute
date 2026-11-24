@@ -44,7 +44,7 @@
 
 ### NO RISK: `submitResult()` (TEEMLVerifier, line 275)
 
-**Current mitigations:** Strong. The `resultId` is derived from `keccak256(msg.sender, modelHash, inputHash, block.number)`. A front-runner using a different `msg.sender` would produce a different `resultId`. The attestation signature is bound to the specific `(modelHash, inputHash, resultHash)` tuple, and the enclave key cannot be reused by a different submitter.
+**Current mitigations:** Strong. The `resultId` is derived from `keccak256(msg.sender, modelHash, inputHash, block.number)`. A front-runner using a different `msg.sender` would produce a different `resultId`. The attestation signature is bound to the specific `(modelHash, inputHash, resultHash)` tuple, but not to the submitter: the same attestation is also accepted from a different `msg.sender`, under a different `resultId` and with that sender's own stake.
 
 ### LOW RISK: `finalize()` (TEEMLVerifier, line 499)
 
