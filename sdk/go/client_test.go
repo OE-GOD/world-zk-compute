@@ -264,25 +264,81 @@ func TestProveRegistryProofID(t *testing.T) {
 
 func TestVerify(t *testing.T) {
 	srv := newTestServer(map[string]http.HandlerFunc{
-		"POST /proofs/proof-abc/verify": func(w http.ResponseWriter, r *http.Request) {
-			writeJSON(w, VerifyResponse{
-				Verified:  true,
-				ReceiptID: "rcpt-001",
-			})
+		"POST /proofs/7fd37292-2de3-4e3d-8431-ec4e52b3346e/verify": func(w http.ResponseWriter, r *http.Request) {
+			writeRaw(w, `{"verified":true,"receipt_id":"f86d8359-39ea-4fd2-8299-cda5458a4f75"}`)
 		},
 	})
 	defer srv.Close()
 
 	c := New(srv.URL, "")
-	resp, err := c.Verify("proof-abc")
+	resp, err := c.Verify("7fd37292-2de3-4e3d-8431-ec4e52b3346e")
 	if err != nil {
 		t.Fatalf("Verify() error: %v", err)
 	}
 	if !resp.Verified {
 		t.Error("expected verified=true")
 	}
-	if resp.ReceiptID != "rcpt-001" {
-		t.Errorf("expected receipt_id 'rcpt-001', got %q", resp.ReceiptID)
+	if resp.ReceiptID != "f86d8359-39ea-4fd2-8299-cda5458a4f75" {
+		t.Errorf("unexpected receipt_id %q", resp.ReceiptID)
+	}
+	if resp.Error != "" {
+		t.Errorf("expected no error, got %q", resp.Error)
+	}
+}
+
+// A proof the verifier rejects is a 200 with verified=false and the reason.
+func TestVerifyFailed(t *testing.T) {
+	srv := newTestServer(map[string]http.HandlerFunc{
+		"POST /proofs/fe6e34c6-8083-4438-929d-2add0a741b2a/verify": func(w http.ResponseWriter, r *http.Request) {
+			writeRaw(w, `{"verified":false,"receipt_id":"a84af8e4-46ba-4441-b86c-a683095c490d",`+
+				`"error":"verification failed: sumcheck failed"}`)
+		},
+	})
+	defer srv.Close()
+
+	c := New(srv.URL, "")
+	resp, err := c.Verify("fe6e34c6-8083-4438-929d-2add0a741b2a")
+	if err != nil {
+		t.Fatalf("Verify() error: %v", err)
+	}
+	if resp.Verified {
+		t.Error("expected verified=false")
+	}
+	if resp.ReceiptID != "a84af8e4-46ba-4441-b86c-a683095c490d" {
+		t.Errorf("unexpected receipt_id %q", resp.ReceiptID)
+	}
+	if resp.Error != "verification failed: sumcheck failed" {
+		t.Errorf("unexpected error %q", resp.Error)
+	}
+}
+
+// An ID is one path segment: "/" and "?" in it must not start a new segment
+// or a query string.
+func TestProofIDIsEscaped(t *testing.T) {
+	var paths, queries []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.Method+" "+r.URL.EscapedPath())
+		queries = append(queries, r.URL.RawQuery)
+		writeRaw(w, `{}`)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "")
+	if _, err := c.Verify("a/b?c"); err != nil {
+		t.Fatalf("Verify() error: %v", err)
+	}
+	if _, err := c.GetReceipt("a/b?c"); err != nil {
+		t.Fatalf("GetReceipt() error: %v", err)
+	}
+
+	want := []string{"POST /proofs/a%2Fb%3Fc/verify", "GET /proofs/a%2Fb%3Fc/receipt"}
+	if len(paths) != len(want) {
+		t.Fatalf("expected %d requests, got %v", len(want), paths)
+	}
+	for i := range want {
+		if paths[i] != want[i] || queries[i] != "" {
+			t.Errorf("request %d: got %q with query %q, want %q with no query", i, paths[i], queries[i], want[i])
+		}
 	}
 }
 
@@ -325,9 +381,56 @@ func TestGetReceipt(t *testing.T) {
 	if resp.Signature != "06c7e070136ee214" {
 		t.Errorf("unexpected signature %q", resp.Signature)
 	}
+	// The registry leaves "error" out of the receipt of a verified proof.
+	if resp.Error != "" {
+		t.Errorf("expected no error, got %q", resp.Error)
+	}
+}
+
+// The receipt of a rejected proof carries the reason and no circuit hash.
+func TestGetReceiptFailed(t *testing.T) {
+	srv := newTestServer(map[string]http.HandlerFunc{
+		"GET /proofs/fe6e34c6-8083-4438-929d-2add0a741b2a/receipt": func(w http.ResponseWriter, r *http.Request) {
+			writeRaw(w, `{"receipt_id":"a84af8e4-46ba-4441-b86c-a683095c490d",`+
+				`"proof_id":"fe6e34c6-8083-4438-929d-2add0a741b2a","circuit_hash":"",`+
+				`"model_hash":"0xabc def&x=1","verified":false,`+
+				`"verified_at":"2026-11-23T01:19:20.292088+00:00","verifier_version":"0.1.0",`+
+				`"verifier_host":"unknown","signature":"b13d7e0e5f7b61d98b0cbfb07526840910fd2fb9b202be0fc383c6d2c3e09226`+
+				`62b41172fb11f161327589beb78fabdc42239975510d63aeedd28704028e0158",`+
+				`"error":"verification failed: sumcheck failed"}`)
+		},
+	})
+	defer srv.Close()
+
+	c := New(srv.URL, "")
+	resp, err := c.GetReceipt("fe6e34c6-8083-4438-929d-2add0a741b2a")
+	if err != nil {
+		t.Fatalf("GetReceipt() error: %v", err)
+	}
+	if resp.Verified {
+		t.Error("expected verified=false")
+	}
+	if resp.Error != "verification failed: sumcheck failed" {
+		t.Errorf("unexpected error %q", resp.Error)
+	}
+	if resp.CircuitHash != "" {
+		t.Errorf("expected no circuit_hash, got %q", resp.CircuitHash)
+	}
+	if resp.ModelHash != "0xabc def&x=1" {
+		t.Errorf("unexpected model_hash %q", resp.ModelHash)
+	}
 }
 
 // --- ListProofs ---
+
+// The registry answers with an envelope, not a bare array.
+const listProofsResponse = `{"proofs":[` +
+	`{"id":"f2917f9a-981a-49ce-a905-19bcc2ea3050","model_hash":"0xabc","circuit_hash":"0x8e7c",` +
+	`"created_at":"2026-11-22T20:57:12.814955+00:00","verified":true,` +
+	`"verified_at":"2026-11-22T20:57:57.511569+00:00","proof_size_bytes":350655,"deleted":false},` +
+	`{"id":"0b1c","model_hash":"0xabc","circuit_hash":"0x8e7c",` +
+	`"created_at":"2026-11-22T20:58:00.000000+00:00","verified":null,` +
+	`"verified_at":null,"proof_size_bytes":32,"deleted":false}],"count":2}`
 
 func TestListProofs(t *testing.T) {
 	srv := newTestServer(map[string]http.HandlerFunc{
@@ -342,14 +445,7 @@ func TestListProofs(t *testing.T) {
 				return
 			}
 
-			// The registry answers with an envelope, not a bare array.
-			writeRaw(w, `{"proofs":[`+
-				`{"id":"f2917f9a-981a-49ce-a905-19bcc2ea3050","model_hash":"0xabc","circuit_hash":"0x8e7c",`+
-				`"created_at":"2026-11-22T20:57:12.814955+00:00","verified":true,`+
-				`"verified_at":"2026-11-22T20:57:57.511569+00:00","proof_size_bytes":350655,"deleted":false},`+
-				`{"id":"0b1c","model_hash":"0xabc","circuit_hash":"0x8e7c",`+
-				`"created_at":"2026-11-22T20:58:00.000000+00:00","verified":null,`+
-				`"verified_at":null,"proof_size_bytes":32,"deleted":false}],"count":2}`)
+			writeRaw(w, listProofsResponse)
 		},
 	})
 	defer srv.Close()
@@ -372,8 +468,26 @@ func TestListProofs(t *testing.T) {
 	if first.ProofSizeBytes != 350655 || first.ModelHash != "0xabc" {
 		t.Errorf("unexpected first proof: %+v", first)
 	}
+	if first.CreatedAt != "2026-11-22T20:57:12.814955+00:00" {
+		t.Errorf("unexpected created_at %q", first.CreatedAt)
+	}
 	if second.Verified != nil || second.VerifiedAt != nil {
 		t.Errorf("second proof was never verified: %+v", second)
+	}
+	// The registry lists only proofs that were not deleted.
+	if first.Deleted || second.Deleted {
+		t.Errorf("no listed proof is deleted: %+v %+v", first, second)
+	}
+}
+
+// Every field of a listed proof has a place in ProofSummary. This also covers
+// fields such as "deleted" whose value on the wire is the Go zero value.
+func TestListProofsKnowsEveryField(t *testing.T) {
+	dec := json.NewDecoder(strings.NewReader(listProofsResponse))
+	dec.DisallowUnknownFields()
+	var resp proofListResponse
+	if err := dec.Decode(&resp); err != nil {
+		t.Fatalf("decoding the registry's list: %v", err)
 	}
 }
 

@@ -165,7 +165,7 @@ function showBundleError(message) {
     els.bundleStatusText.textContent = message;
     els.bundleStatusText.style.color = 'var(--error)';
     for (const el of [els.bundleCircuitHash, els.bundleProofSize, els.bundleGensSize,
-                      els.bundleLayers, els.bundleInputs]) {
+                      els.bundleLayers, els.bundleInputs, els.rawProofHex, els.rawCircuitDesc]) {
         el.textContent = '--';
     }
     els.bundleStatus.classList.remove('hidden');
@@ -214,6 +214,9 @@ function handleUpload(event) {
             showBundleError('Invalid bundle: ' + err.message);
         }
     };
+    reader.onerror = () => {
+        showBundleError('Failed to read file: ' + (reader.error ? reader.error.message : 'unknown error'));
+    };
     reader.readAsText(file);
 }
 
@@ -237,6 +240,10 @@ function runVerification() {
         return;
     }
 
+    // The bundle that was clicked. A load that finishes before the deferred
+    // step below runs can replace or drop it.
+    const bundle = currentBundle;
+
     // Show spinner
     els.verifyBtn.disabled = true;
     els.verifyBtn.textContent = 'Verifying...';
@@ -244,27 +251,30 @@ function runVerification() {
     // Use requestAnimationFrame to let the UI update before heavy computation
     requestAnimationFrame(() => {
         setTimeout(() => {
-            const t0 = performance.now();
-            let result;
-            try {
-                const res = wasmModule.verify_proof_json(currentBundle);
-                // Copy the fields out and release the WASM-side object.
-                result = { verified: res.verified, circuit_hash: res.circuit_hash, error: res.error };
-                res.free();
-            } catch (err) {
-                // The verifier reports a failed check by panicking, which WebAssembly
-                // turns into a trap ("unreachable"). The proof is rejected either way.
-                const message = err instanceof WebAssembly.RuntimeError
-                    ? 'Proof rejected: a verification check failed (the WASM verifier aborted: '
-                        + err.message + '). The CLI names the failed check.'
-                    : err.message;
-                result = { verified: false, circuit_hash: '', error: message };
+            // Only verify the bundle that is still the one on the page.
+            if (currentBundle === bundle) {
+                const t0 = performance.now();
+                let result;
+                try {
+                    const res = wasmModule.verify_proof_json(bundle);
+                    // Copy the fields out and release the WASM-side object.
+                    result = { verified: res.verified, circuit_hash: res.circuit_hash, error: res.error };
+                    res.free();
+                } catch (err) {
+                    // The verifier reports a failed check by panicking, which WebAssembly
+                    // turns into a trap ("unreachable"). The proof is rejected either way.
+                    const message = err instanceof WebAssembly.RuntimeError
+                        ? 'Proof rejected: a verification check failed (the WASM verifier aborted: '
+                            + err.message + '). The CLI names the failed check.'
+                        : err.message;
+                    result = { verified: false, circuit_hash: '', error: message };
+                }
+                const elapsed = performance.now() - t0;
+
+                showResult(result.verified, result.circuit_hash, elapsed, result.error);
             }
-            const elapsed = performance.now() - t0;
 
-            showResult(result.verified, result.circuit_hash, elapsed, result.error);
-
-            els.verifyBtn.disabled = false;
+            els.verifyBtn.disabled = !currentBundle;
             els.verifyBtn.textContent = 'Verify Proof';
         }, 50); // Small delay to allow UI repaint
     });
@@ -341,4 +351,6 @@ async function main() {
     await initWasm();
 }
 
-main();
+main().catch((err) => {
+    showBundleError('Failed to start: ' + err.message);
+});

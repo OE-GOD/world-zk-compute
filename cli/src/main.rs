@@ -17,8 +17,11 @@
 //! ```
 //!
 //! Proof IDs for `verify`, `receipt` and `proofs` are proof-registry IDs. The
-//! ID printed by `prove` is the generator's own and is only usable there when
-//! the response also carries a `registry_proof_id`.
+//! `proof_id` printed by `prove` is the generator's own and is never known to
+//! the registry: use the `registry_proof_id` printed next to it, when there is
+//! one.
+//!
+//! `verify` exits with a non-zero status when the proof does not verify.
 
 use clap::{Parser, Subcommand};
 use colored::Colorize;
@@ -127,7 +130,12 @@ async fn main() {
         }
         Commands::Models => cmd_models(&client, url).await,
         Commands::Prove { model, features } => cmd_prove(&client, url, &model, &features).await,
-        Commands::Verify { proof } => cmd_verify(&client, url, &proof).await,
+        Commands::Verify { proof } => match cmd_verify(&client, url, &proof).await {
+            Ok(true) => Ok(()),
+            // "NOT VERIFIED" is already printed; only the exit status is left.
+            Ok(false) => std::process::exit(1),
+            Err(e) => Err(e),
+        },
         Commands::Receipt { proof_id } => cmd_receipt(&client, url, &proof_id).await,
         Commands::Proofs { model, limit } => cmd_proofs(&client, url, model, limit).await,
         Commands::Health => cmd_health(&client, url).await,
@@ -159,9 +167,9 @@ fn extract_error(body: &Value) -> String {
 
 /// Send a request and handle non-success status codes uniformly.
 ///
-/// Error responses are not always JSON (an unknown path gets an empty 404
-/// from the gateway), so the status is reported even when the body cannot
-/// be parsed.
+/// Error responses are not always JSON (a backend answers an unknown
+/// sub-path with an empty 404, which the gateway forwards), so the status is
+/// reported even when the body cannot be parsed.
 async fn check_response(resp: reqwest::Response) -> Result<Value, String> {
     let status = resp.status();
     let text = resp
@@ -189,6 +197,23 @@ fn interpret_response(status: u16, text: &str) -> Result<Value, String> {
 fn load_json(path: &str) -> Result<Value, String> {
     let data = std::fs::read_to_string(path).map_err(|e| format!("read {path}: {e}"))?;
     serde_json::from_str(&data).map_err(|e| format!("parse {path}: {e}"))
+}
+
+/// Build `{base}/v1/proofs/{proof_id}/{action}` with the ID percent-encoded
+/// as one path segment.
+fn proof_url(base: &str, proof_id: &str, action: &str) -> Result<reqwest::Url, String> {
+    // `Url` drops these two segments instead of encoding them, which would
+    // send the request to a different path.
+    if proof_id == "." || proof_id == ".." {
+        return Err(format!("invalid proof ID '{proof_id}'"));
+    }
+    let mut url =
+        reqwest::Url::parse(base).map_err(|e| format!("invalid gateway URL '{base}': {e}"))?;
+    url.path_segments_mut()
+        .map_err(|()| format!("invalid gateway URL '{base}'"))?
+        .pop_if_empty()
+        .extend(["v1", "proofs", proof_id, action]);
+    Ok(url)
 }
 
 // ---------------------------------------------------------------------------
@@ -344,11 +369,12 @@ async fn cmd_prove(
     Ok(())
 }
 
-async fn cmd_verify(client: &reqwest::Client, url: &str, proof: &str) -> Result<(), String> {
+/// Returns whether the service reported the proof as verified.
+async fn cmd_verify(client: &reqwest::Client, url: &str, proof: &str) -> Result<bool, String> {
     // Determine if the argument is a file path or a proof ID.
     let is_file = std::path::Path::new(proof).exists();
 
-    if is_file {
+    let result = if is_file {
         // File-based verification: POST the bundle to /v1/verify.
         let bundle = load_json(proof)?;
         let resp = client
@@ -358,24 +384,23 @@ async fn cmd_verify(client: &reqwest::Client, url: &str, proof: &str) -> Result<
             .await
             .map_err(|e| format!("request failed: {e}"))?;
 
-        let result = check_response(resp).await?;
-        print_verify_result(&result);
+        check_response(resp).await?
     } else {
         // Proof-ID-based verification: POST to /v1/proofs/{id}/verify.
         let resp = client
-            .post(format!("{url}/v1/proofs/{proof}/verify"))
+            .post(proof_url(url, proof, "verify")?)
             .send()
             .await
             .map_err(|e| format!("request failed: {e}"))?;
 
-        let result = check_response(resp).await?;
-        print_verify_result(&result);
-    }
+        check_response(resp).await?
+    };
 
-    Ok(())
+    Ok(print_verify_result(&result))
 }
 
-fn print_verify_result(result: &Value) {
+/// Print a verification response and return its `verified` flag.
+fn print_verify_result(result: &Value) -> bool {
     let verified = result["verified"].as_bool().unwrap_or(false);
 
     if verified {
@@ -390,11 +415,13 @@ fn print_verify_result(result: &Value) {
     if let Some(err) = result["error"].as_str() {
         kv("error", err);
     }
+
+    verified
 }
 
 async fn cmd_receipt(client: &reqwest::Client, url: &str, proof_id: &str) -> Result<(), String> {
     let resp = client
-        .get(format!("{url}/v1/proofs/{proof_id}/receipt"))
+        .get(proof_url(url, proof_id, "receipt")?)
         .send()
         .await
         .map_err(|e| format!("request failed: {e}"))?;
@@ -420,6 +447,7 @@ fn receipt_fields(receipt: &Value) -> Vec<(&'static str, String)> {
         ("model_hash", text("model_hash")),
         ("verified_at", text("verified_at")),
         ("verifier_version", text("verifier_version")),
+        ("verifier_host", text("verifier_host")),
         ("signature", text("signature")),
     ];
     if let Some(err) = receipt["error"].as_str() {
@@ -649,9 +677,44 @@ mod tests {
         assert_eq!(get("verified"), "true");
         assert_eq!(get("verified_at"), "2026-11-22T21:08:41.494633+00:00");
         assert_eq!(get("verifier_version"), "0.1.0");
+        assert_eq!(get("verifier_host"), "unknown");
         assert_eq!(get("signature"), "db4a");
-        // Every field the registry sends is found: nothing falls back to "?".
+        // Every field the registry sends is printed, and nothing falls back to "?".
+        for key in receipt.as_object().unwrap().keys() {
+            get(key);
+        }
         assert!(fields.iter().all(|(_, v)| v != "?"), "{fields:?}");
+    }
+
+    #[test]
+    fn proof_url_encodes_id_as_one_segment() {
+        let url = |id: &str| proof_url("http://127.0.0.1:8080", id, "verify").map(String::from);
+        assert_eq!(
+            url("4d7b629e-41d5-420e-88a9-ede094a11f3b").unwrap(),
+            "http://127.0.0.1:8080/v1/proofs/4d7b629e-41d5-420e-88a9-ede094a11f3b/verify"
+        );
+        assert_eq!(
+            url("a/b?c#d").unwrap(),
+            "http://127.0.0.1:8080/v1/proofs/a%2Fb%3Fc%23d/verify"
+        );
+        assert_eq!(
+            url("%2e%2e").unwrap(),
+            "http://127.0.0.1:8080/v1/proofs/%252e%252e/verify"
+        );
+        // These would be dropped from the path, not encoded.
+        assert_eq!(url(".").unwrap_err(), "invalid proof ID '.'");
+        assert_eq!(url("..").unwrap_err(), "invalid proof ID '..'");
+
+        // A gateway behind a path prefix keeps the prefix.
+        assert_eq!(
+            proof_url("http://host/api", "x", "receipt")
+                .unwrap()
+                .as_str(),
+            "http://host/api/v1/proofs/x/receipt"
+        );
+        assert!(proof_url("localhost:8080", "x", "receipt")
+            .unwrap_err()
+            .starts_with("invalid gateway URL"));
     }
 
     #[test]
@@ -664,7 +727,7 @@ mod tests {
             interpret_response(401, r#"{"error":"invalid or missing API key"}"#).unwrap_err(),
             "HTTP 401 -- invalid or missing API key"
         );
-        // The gateway answers an unknown path with an empty 404.
+        // A backend's empty 404 for an unknown sub-path, forwarded by the gateway.
         assert_eq!(
             interpret_response(404, "").unwrap_err(),
             "HTTP 404 -- empty response body"
@@ -691,6 +754,50 @@ mod tests {
             request_line,
             "GET /v1/proofs?limit=7&model=0xab%26limit%3D999+x HTTP/1.1"
         );
+    }
+
+    #[tokio::test]
+    async fn verify_and_receipt_send_encoded_id() {
+        let client = reqwest::Client::new();
+
+        let (url, server) = serve_once(
+            "200 OK",
+            r#"{"verified":true,"receipt_id":"f86d8359-39ea-4fd2-8299-cda5458a4f75"}"#,
+        );
+        cmd_verify(&client, &url, "x?y=1").await.unwrap();
+        let request = server.join().unwrap();
+        assert_eq!(
+            request.lines().next().unwrap(),
+            "POST /v1/proofs/x%3Fy=1/verify HTTP/1.1"
+        );
+
+        let (url, server) = serve_once("404 Not Found", r#"{"error":"proof 'a/b' not found"}"#);
+        cmd_receipt(&client, &url, "a/b").await.unwrap_err();
+        let request = server.join().unwrap();
+        assert_eq!(
+            request.lines().next().unwrap(),
+            "GET /v1/proofs/a%2Fb/receipt HTTP/1.1"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_by_id_reports_whether_the_proof_verified() {
+        let client = reqwest::Client::new();
+
+        let (url, server) = serve_once(
+            "200 OK",
+            r#"{"verified":true,"receipt_id":"f86d8359-39ea-4fd2-8299-cda5458a4f75"}"#,
+        );
+        assert_eq!(cmd_verify(&client, &url, "some-id").await, Ok(true));
+        server.join().unwrap();
+
+        // The registry answers 200 for a proof the verifier rejected.
+        let (url, server) = serve_once(
+            "200 OK",
+            r#"{"verified":false,"receipt_id":"a84af8e4-46ba-4441-b86c-a683095c490d","error":"verification failed: sumcheck failed"}"#,
+        );
+        assert_eq!(cmd_verify(&client, &url, "some-id").await, Ok(false));
+        server.join().unwrap();
     }
 
     #[tokio::test]

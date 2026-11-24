@@ -8,9 +8,19 @@
 //	health, err := client.Health()
 //	model, err := client.UploadModel(modelJSON, "my-model", "xgboost")
 //	result, err := client.Prove(model.ModelID, []float64{1.0, 2.0, 3.0})
+//
+//	// RegistryProofID is empty when the generator could not store the proof
+//	// in the proof registry.
+//	if result.RegistryProofID != "" {
+//		verification, err := client.Verify(result.RegistryProofID)
+//		receipt, err := client.GetReceipt(result.RegistryProofID)
+//	}
+//
+//	// Proofs that are already in the registry.
 //	proofs, err := client.ListProofs("", 10)
-//	verification, err := client.Verify(proofs[0].ProofID)
-//	receipt, err := client.GetReceipt(proofs[0].ProofID)
+//	if len(proofs) > 0 {
+//		verification, err := client.Verify(proofs[0].ProofID)
+//	}
 //
 // Verify and GetReceipt take a proof registry ID: an entry of ListProofs, or
 // ProveResponse.RegistryProofID when the generator stored the proof.

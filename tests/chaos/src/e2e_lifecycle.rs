@@ -44,7 +44,7 @@ mod tests {
         signers::local::PrivateKeySigner,
         signers::SignerSync,
         sol,
-        sol_types::{eip712_domain, SolCall, SolStruct, SolValue},
+        sol_types::{eip712_domain, SolCall, SolError, SolStruct, SolValue},
     };
 
     // -----------------------------------------------------------------------
@@ -107,6 +107,8 @@ mod tests {
             event ResultFinalized(bytes32 indexed resultId);
             event ResultExpired(bytes32 indexed resultId);
             event EnclaveRegistered(address indexed enclaveKey, bytes32 enclaveImageHash);
+
+            error ChallengeWindowNotPassed();
 
             function registerEnclave(address enclaveKey, bytes32 enclaveImageHash) external;
             function submitResult(
@@ -243,6 +245,26 @@ mod tests {
                 }
             })
             .expect("ResultSubmitted event not found in receipt logs")
+    }
+
+    /// Assert that a `finalize` call was rejected with the contract's
+    /// `ChallengeWindowNotPassed` error and not for any other reason.
+    fn assert_challenge_window_not_passed<T>(
+        finalize: Result<T, alloy::contract::Error>,
+        when: &str,
+    ) {
+        let err = match finalize {
+            Ok(_) => panic!("finalize should fail {when}"),
+            Err(err) => err,
+        };
+        let data = err
+            .as_revert_data()
+            .unwrap_or_else(|| panic!("finalize {when} failed without revert data: {err}"));
+        assert_eq!(
+            data.as_ref(),
+            TEEMLVerifier::ChallengeWindowNotPassed::SELECTOR,
+            "finalize {when} should revert with ChallengeWindowNotPassed"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -563,7 +585,8 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test 3: Finalize must fail before challenge window passes
+    // Test 3: Finalize must fail before challenge window passes, and succeed
+    // for the same result afterwards
     // -----------------------------------------------------------------------
 
     #[tokio::test]
@@ -607,24 +630,41 @@ mod tests {
         let result_id = extract_result_id(&submit_receipt);
 
         // Try finalize immediately -- should revert
-        let early_finalize: Result<_, alloy::contract::Error> =
-            admin.finalize(result_id).send().await;
-
-        assert!(
-            early_finalize.is_err(),
-            "finalize should fail before challenge window passes"
+        assert_challenge_window_not_passed(
+            admin.finalize(result_id).send().await,
+            "before the challenge window passes",
         );
 
         // Advance halfway -- still should fail
         ctx.advance_time(CHALLENGE_WINDOW_SECS / 2).await;
 
-        let halfway_finalize: Result<_, alloy::contract::Error> =
-            admin.finalize(result_id).send().await;
+        assert_challenge_window_not_passed(
+            admin.finalize(result_id).send().await,
+            "halfway through the challenge window",
+        );
+
+        // Advance past the window -- the same result can now be finalized
+        ctx.advance_time(CHALLENGE_WINDOW_SECS / 2 + 1).await;
+
+        // Each rejected send above still took a nonce from `admin`'s local
+        // counter, so a transaction from it would wait for the missing ones.
+        // A new provider reads the nonce from the chain.
+        let finalize_receipt = ctx
+            .contract_with(ADMIN_KEY)
+            .finalize(result_id)
+            .send()
+            .await
+            .expect("finalize send failed")
+            .get_receipt()
+            .await
+            .expect("finalize receipt failed");
 
         assert!(
-            halfway_finalize.is_err(),
-            "finalize should fail halfway through challenge window"
+            finalize_receipt.status(),
+            "finalize should succeed once the challenge window has passed"
         );
+        let valid = admin.isResultValid(result_id).call().await.unwrap();
+        assert!(valid, "should be valid after finalization");
     }
 
     // -----------------------------------------------------------------------

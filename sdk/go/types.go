@@ -79,6 +79,8 @@ type ReceiptResponse struct {
 	VerifierVersion string `json:"verifier_version"`
 	VerifierHost    string `json:"verifier_host"`
 	Signature       string `json:"signature"`
+	// Error is the reason the verification failed. Empty when it succeeded.
+	Error string `json:"error,omitempty"`
 }
 
 // ProofSummary describes a single stored proof (an entry of `GET /proofs`).
