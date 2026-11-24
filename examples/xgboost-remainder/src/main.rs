@@ -118,8 +118,20 @@ async fn main() -> Result<()> {
     // Initialize tracing
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
-    let cli = Cli::parse();
+    run(Cli::parse()).await
+}
 
+/// Print how long proving took and how large the encoded proof is.
+fn print_proof_stats(prove_time: std::time::Duration, proof_size_bytes: usize) {
+    println!(
+        "Proof generated and verified in {:.2}s",
+        prove_time.as_secs_f64()
+    );
+    println!("Proof size: {} bytes", proof_size_bytes);
+}
+
+/// Run the CLI: load the model, then start the server or prove one input.
+async fn run(cli: Cli) -> Result<()> {
     // Load model (supports XGBoost, LightGBM, and Random Forest JSON formats)
     let detected_format = if cli.model_format == "auto" {
         let fmt = detect::detect_model_format_from_file(&cli.model)
@@ -190,24 +202,16 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Build circuit and generate Hyrax proof
+    // Build circuit and generate Hyrax proof (one proof in either output mode)
     println!("Building GKR circuit and generating Hyrax proof...");
     let start = std::time::Instant::now();
-    let (proof_bytes, circuit_hash, public_inputs) =
-        circuit::build_and_prove(&model, &input.features, predicted_class)?;
-    let prove_time = start.elapsed();
-
-    println!(
-        "Proof generated and verified in {:.2}s",
-        prove_time.as_secs_f64()
-    );
-    println!("Proof size: {} bytes", proof_bytes.len());
 
     if cli.bundle {
         // Build self-contained ProofBundle JSON with generators and circuit description
         use sha2::Digest;
         let bundle_data =
             circuit::build_and_prove_bundle(&model, &input.features, predicted_class)?;
+        print_proof_stats(start.elapsed(), bundle_data.proof_bytes.len());
         let model_bytes = std::fs::read(&cli.model)?;
 
         let bundle = serde_json::json!({
@@ -233,6 +237,11 @@ async fn main() -> Result<()> {
             bundle_data.gens_bytes.len()
         );
     } else {
+        let (proof_bytes, circuit_hash, public_inputs) =
+            circuit::build_and_prove(&model, &input.features, predicted_class)?;
+        let prove_time = start.elapsed();
+        print_proof_stats(prove_time, proof_bytes.len());
+
         // Legacy output format
         let output = ProofOutput {
             proof_hex: hex::encode(&proof_bytes),
@@ -249,4 +258,82 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsString;
+
+    /// Set in the child process of `test_bundle_mode_proves_once`: where to write the bundle.
+    const CHILD_OUTPUT_ENV: &str = "XGBOOST_REMAINDER_TEST_BUNDLE_OUTPUT";
+
+    /// `--bundle` generates one proof, and the printed proof size is that of the
+    /// proof written to the bundle.
+    ///
+    /// The number of proofs is only visible in what the CLI prints, so the test
+    /// runs itself again as a child process that executes the CLI, and reads the
+    /// child's stdout.
+    #[test]
+    fn test_bundle_mode_proves_once() {
+        if let Some(output) = std::env::var_os(CHILD_OUTPUT_ENV) {
+            let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            let cli = Cli::parse_from([
+                OsString::from("xgboost-remainder"),
+                "--model".into(),
+                manifest_dir.join("sample_model.json").into(),
+                "--input".into(),
+                manifest_dir.join("sample_input.json").into(),
+                "--output".into(),
+                output,
+                "--bundle".into(),
+            ]);
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(run(cli))
+                .unwrap();
+            return;
+        }
+
+        let output = std::env::temp_dir().join(format!(
+            "xgboost-remainder-bundle-test-{}.json",
+            std::process::id()
+        ));
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::test_bundle_mode_proves_once",
+                "--nocapture",
+            ])
+            .env(CHILD_OUTPUT_ENV, &output)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&child.stdout);
+        // Read and remove the file first, so a failing child leaves nothing behind.
+        let bundle_json = std::fs::read_to_string(&output);
+        std::fs::remove_file(&output).ok();
+        assert!(
+            child.status.success(),
+            "child failed:\n{}\n{}",
+            stdout,
+            String::from_utf8_lossy(&child.stderr)
+        );
+
+        let bundle: serde_json::Value = serde_json::from_str(&bundle_json.unwrap()).unwrap();
+        let proof_hex = bundle["proof_hex"].as_str().unwrap();
+        let proof_size = proof_hex.trim_start_matches("0x").len() / 2;
+
+        assert_eq!(
+            stdout.matches("Generating Hyrax proof...").count(),
+            1,
+            "expected one proof:\n{}",
+            stdout
+        );
+        assert!(
+            stdout.contains(&format!("Proof size: {} bytes\n", proof_size)),
+            "printed proof size is not that of the bundle ({} bytes):\n{}",
+            proof_size,
+            stdout
+        );
+    }
 }

@@ -1220,10 +1220,6 @@ mod tests {
                 if !node.is_leaf {
                     assert!(node.left_child < n, "left_child out of bounds");
                     assert!(node.right_child < n, "right_child out of bounds");
-                    assert!(
-                        tree.nodes[node.left_child].is_leaf || !tree.nodes[node.left_child].is_leaf,
-                        "left child must exist"
-                    );
                 }
             }
         }
@@ -1389,7 +1385,6 @@ mod tests {
 
     /// Build the native MLP circuit, set inputs, generate and verify a Hyrax proof.
     fn prove_and_verify_mlp(inputs: &MLPCircuitInputs) -> anyhow::Result<()> {
-        use anyhow::Result;
         use hyrax::gkr::verify_hyrax_proof;
         use hyrax::utils::vandermonde::VandermondeInverse;
         use rand::thread_rng;

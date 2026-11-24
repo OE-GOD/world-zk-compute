@@ -1367,9 +1367,7 @@ mod tests {
         let mut all_rlc_betas: Vec<Fr> = Vec::new();
         let mut all_z_dot_jstars: Vec<Fr> = Vec::new();
 
-        for (proof_idx, (layer_id, layer_proof)) in
-            proof.circuit_proof.layer_proofs.iter().enumerate()
-        {
+        for (layer_id, layer_proof) in proof.circuit_proof.layer_proofs.iter() {
             let layer_desc = desc
                 .intermediate_layers
                 .iter()
@@ -1526,7 +1524,7 @@ mod tests {
 
         for (j, il) in desc.input_layers.iter().enumerate() {
             let is_committed = private_input_ids.contains(&il.layer_id);
-            let claims = claim_tracker.remove(&il.layer_id).unwrap_or_default();
+            claim_tracker.remove(&il.layer_id);
 
             if is_committed {
                 let target_layer = num_compute + j;
@@ -1596,11 +1594,8 @@ mod tests {
                                 &pt_templates[atom_local_idx],
                                 &all_bindings[src_idx],
                             );
-                            let mle_val = evaluate_mle_fr(&pub_values, &pt);
-                            assert!(
-                                mle_val != Fr::zero() || true,
-                                "mleEval can be zero for valid inputs"
-                            );
+                            // The value itself can be zero for valid inputs.
+                            let _ = evaluate_mle_fr(&pub_values, &pt);
                             total_public_claims += 1;
                         }
                     }

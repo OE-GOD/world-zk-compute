@@ -20,11 +20,7 @@ use shared_types::{
     Fr,
 };
 
-// Import abi_encode from the main crate
-// Since this is a [[bin]], we need to include it via path attribute
-#[path = "../abi_encode.rs"]
-#[allow(clippy::all)]
-mod abi_encode;
+use xgboost_remainder::abi_encode;
 
 fn build_circuit(num_vars: usize) -> Circuit<Fr> {
     let mut builder = CircuitBuilder::<Fr>::new();

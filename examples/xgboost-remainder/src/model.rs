@@ -444,7 +444,8 @@ pub fn next_log2(n: usize) -> usize {
 // Phase 1b: Comparison constraint utilities
 // ========================================================================
 
-/// Default number of bits for decomposition (handles features in ~[-4, 4] range).
+/// Default number of bits for decomposition. In fixed point (2^16 scale) it
+/// requires -2.0 <= quantize(feature) - quantize(threshold) < 2.0.
 pub const DEFAULT_DECOMP_K: usize = 18;
 
 /// Compute comparison tables for Phase 1b circuit verification.

@@ -167,7 +167,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
         b.iter(|| {
             let result = xgboost_remainder::circuit::build_and_prove(&mdl, &features, predicted);
             assert!(result.is_ok(), "build_and_prove failed: {:?}", result.err());
-            criterion::black_box(result);
+            let _ = criterion::black_box(result);
         });
     });
     group.finish();
@@ -183,7 +183,7 @@ fn bench_prove_and_verify(c: &mut Criterion) {
         b.iter(|| {
             let result = cached_prover.prove(&features, predicted);
             assert!(result.is_ok(), "cached prove failed: {:?}", result.err());
-            criterion::black_box(result);
+            let _ = criterion::black_box(result);
         });
     });
     group.finish();
