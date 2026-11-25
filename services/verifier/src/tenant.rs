@@ -308,6 +308,14 @@ pub struct TenantUsage {
 /// Generate a tenant ID from the name (lowercase, hyphenated) followed by
 /// eight random hex digits that keep equal names apart.
 fn generate_tenant_id(name: &str) -> Result<String, String> {
+    generate_tenant_id_with(name, fill_random)
+}
+
+/// [`generate_tenant_id`] with the four suffix bytes taken from `fill`.
+fn generate_tenant_id_with(
+    name: &str,
+    fill: impl FnOnce(&mut [u8]) -> Result<(), String>,
+) -> Result<String, String> {
     let base: String = name
         .to_lowercase()
         .chars()
@@ -315,15 +323,22 @@ fn generate_tenant_id(name: &str) -> Result<String, String> {
         .collect();
     let trimmed = base.trim_matches('-').to_string();
     let mut suffix = [0u8; 4];
-    fill_random(&mut suffix)?;
+    fill(&mut suffix)?;
     Ok(format!("{}-{}", trimmed, hex::encode(suffix)))
 }
 
 /// Generate an API key: `zk_` followed by 32 hex digits, which encode 16 bytes
 /// from the operating system's random source.
 fn generate_api_key() -> Result<String, String> {
+    generate_api_key_with(fill_random)
+}
+
+/// [`generate_api_key`] with the 16 bytes taken from `fill`.
+fn generate_api_key_with(
+    fill: impl FnOnce(&mut [u8]) -> Result<(), String>,
+) -> Result<String, String> {
     let mut bytes = [0u8; 16];
-    fill_random(&mut bytes)?;
+    fill(&mut bytes)?;
     Ok(format!("zk_{}", hex::encode(bytes)))
 }
 
@@ -564,10 +579,47 @@ mod tests {
         assert_eq!(keys.len(), 10_000);
     }
 
+    /// A key and a tenant-id suffix are the hex digits of the bytes they are
+    /// made from, and of nothing else. (That the service makes them from the
+    /// operating system's random source is one line each in
+    /// `generate_api_key` and `generate_tenant_id`, and `fill_random`; this
+    /// test does not reach those.)
+    #[test]
+    fn test_key_and_id_encode_the_random_bytes() {
+        let counting = |buf: &mut [u8]| {
+            for (i, byte) in buf.iter_mut().enumerate() {
+                *byte = i as u8 + 0xa0;
+            }
+            Ok(())
+        };
+        assert_eq!(
+            generate_api_key_with(counting).unwrap(),
+            "zk_a0a1a2a3a4a5a6a7a8a9aaabacadaeaf"
+        );
+        assert_eq!(
+            generate_tenant_id_with("Acme Corp", counting).unwrap(),
+            "acme-corp-a0a1a2a3"
+        );
+
+        // A random source that fails gives no key and no ID.
+        let failing = |_: &mut [u8]| Err("no entropy".to_string());
+        assert_eq!(generate_api_key_with(failing).unwrap_err(), "no entropy");
+        assert_eq!(
+            generate_tenant_id_with("acme", failing).unwrap_err(),
+            "no entropy"
+        );
+    }
+
     /// Wait until the clock ticks, so that what follows starts early in a tick.
     fn wait_for_clock_tick() {
+        let started = std::time::Instant::now();
         let tick = std::time::SystemTime::now();
-        while std::time::SystemTime::now() == tick {}
+        while std::time::SystemTime::now() == tick {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(1),
+                "the system clock did not move for a second"
+            );
+        }
     }
 
     /// A key or a tenant-id suffix derived from the clock repeats when two are
