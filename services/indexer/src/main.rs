@@ -14,6 +14,7 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use tee_watcher::redact::{redact_urls, url_origin};
 use tee_watcher::{parse_log, TEEEvent};
 use tracing::{error, info, warn};
 
@@ -835,7 +836,7 @@ async fn main() -> anyhow::Result<()> {
     let start_time = std::time::Instant::now();
 
     info!("tee-indexer starting");
-    info!("  rpc_url:          {}", config.rpc_url);
+    info!("  rpc_url:          {}", url_origin(&config.rpc_url));
     info!("  contract_address: {:#x}", config.contract_address);
     info!("  db_type:          {}", config.db_type);
     info!("  db_path:          {}", config.db_path);
@@ -847,8 +848,7 @@ async fn main() -> anyhow::Result<()> {
                 .database_url
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("DATABASE_URL is required when DB_TYPE=postgres"))?;
-            let redacted = &url[..url.find('@').unwrap_or(url.len()).min(30)];
-            info!("  database_url:     {}...", redacted);
+            info!("  database_url:     {}", url_origin(url));
             #[cfg(feature = "postgres")]
             {
                 let pool_config = pg_storage::PgStorageConfig::from_env();
@@ -858,7 +858,6 @@ async fn main() -> anyhow::Result<()> {
             }
             #[cfg(not(feature = "postgres"))]
             {
-                let _ = redacted;
                 anyhow::bail!(
                     "Postgres backend requires the 'postgres' feature. \
                      Rebuild with: cargo build --features postgres"
@@ -961,6 +960,8 @@ async fn main() -> anyhow::Result<()> {
                             consecutive_failures = 0;
                         }
                         Err(e) => {
+                            // The error names the RPC URL, which can hold an API key.
+                            let e = redact_urls(&e.to_string());
                             let prev_failures = consecutive_failures;
                             consecutive_failures = consecutive_failures.saturating_add(1);
                             let next_multiplier =

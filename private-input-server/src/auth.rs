@@ -93,6 +93,42 @@ pub fn verify_auth_request(auth: &AuthRequest) -> Result<Address, AuthError> {
     Ok(claimed_address)
 }
 
+/// Scheme, host and port of a URL, for the log: the path or query of an RPC
+/// URL often holds the provider's API key. What is not a complete URL, or has a
+/// '@' behind the host, is not shown at all.
+pub fn url_origin(url: &str) -> String {
+    origin(url).unwrap_or_else(|| "<URL not shown>".to_string())
+}
+
+fn origin(url: &str) -> Option<String> {
+    let url = url.trim();
+    let (scheme, after_scheme) = url.split_once("://")?;
+    // The parser is lenient: it takes "http:host" for a URL, skips slashes in
+    // front of the host, and drops tabs and line breaks. What it then takes
+    // for the host can be a part of the credentials or the path.
+    let is_scheme = |c: char| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.');
+    if !scheme.chars().all(is_scheme)
+        || after_scheme.starts_with(['/', '\\'])
+        || url.contains(|c: char| c.is_whitespace() || c.is_control())
+    {
+        return None;
+    }
+    let parsed = reqwest::Url::parse(url).ok()?;
+    // A '@' behind the host can mean that a '/', '?' or '#' in the credentials
+    // was not encoded, and that what the parser takes for the host is a part
+    // of them. (Looked for in the text as written: the parser takes '..' out
+    // of a path.)
+    let host_end = after_scheme.find(['/', '\\', '?', '#']);
+    if host_end.is_some_and(|end| after_scheme[end..].contains('@')) {
+        return None;
+    }
+    let host = parsed.host_str()?;
+    Some(match parsed.port() {
+        Some(port) => format!("{}://{}:{}", parsed.scheme(), host, port),
+        None => format!("{}://{}", parsed.scheme(), host),
+    })
+}
+
 /// Verify on-chain that the prover has claimed this job
 ///
 /// Makes an RPC call to `ExecutionEngine.getRequest(requestId)` and checks:
@@ -132,12 +168,11 @@ pub async fn verify_on_chain_claim(
         .json(&payload)
         .send()
         .await
-        .map_err(|e| AuthError::RpcError(format!("RPC request failed: {}", e)))?;
+        .map_err(|e| AuthError::RpcError(format!("RPC request failed: {}", e.without_url())))?;
 
-    let result: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|e| AuthError::RpcError(format!("RPC response parse error: {}", e)))?;
+    let result: serde_json::Value = response.json().await.map_err(|e| {
+        AuthError::RpcError(format!("RPC response parse error: {}", e.without_url()))
+    })?;
 
     if let Some(error) = result.get("error") {
         return Err(AuthError::RpcError(format!("RPC error: {}", error)));
@@ -355,5 +390,49 @@ mod tests {
     fn test_decode_claim_rejects_short_response() {
         let err = decode_claim(&[0u8; 12 * 32]).unwrap_err();
         assert!(matches!(err, AuthError::RpcError(_)));
+    }
+
+    /// The error is answered to the HTTP client, so it must not name the RPC
+    /// URL: its path often holds the provider's API key.
+    #[tokio::test]
+    async fn test_rpc_failure_does_not_reveal_the_rpc_url() {
+        // An endpoint whose answer is not JSON, and one that refuses the
+        // connection. (reqwest names the URL only in the error of the second
+        // today; the first guards against a change there.)
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let not_json = format!("http://{}/v2/SECRETKEY", listener.local_addr().unwrap());
+        let app = axum::Router::new().fallback(|| async { "not JSON" });
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        for (rpc_url, failure) in [
+            (not_json.as_str(), "RPC response parse error"),
+            ("http://127.0.0.1:1/v2/SECRETKEY", "RPC request failed"),
+        ] {
+            let err = verify_on_chain_claim(rpc_url, &Address::ZERO, 1, &Address::ZERO)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(failure), "{err}");
+            assert!(!err.contains("SECRETKEY"), "{err}");
+        }
+    }
+
+    #[test]
+    fn test_url_origin_drops_path_query_and_credentials() {
+        for (url, origin) in [
+            (
+                "https://user:pw@rpc.example.com/v2/SECRETKEY?x=1",
+                "https://rpc.example.com",
+            ),
+            ("http://localhost:8545", "http://localhost:8545"),
+            ("SECRETKEY, not a URL", "<URL not shown>"),
+            ("http:///SECRETKEY", "<URL not shown>"),
+            ("https://user:1/SECRET@host/", "<URL not shown>"),
+            ("https://SECRET:1/x@host/..", "<URL not shown>"),
+            ("http:SECRET:1/x@h/?u=http://z", "<URL not shown>"),
+            ("https://\t/SECRET/x", "<URL not shown>"),
+        ] {
+            assert_eq!(url_origin(url), origin);
+        }
     }
 }
