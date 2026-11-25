@@ -279,7 +279,7 @@ pub fn verify_inclusion(
     }
 
     // Recompute the expected proof length.
-    let expected_depth = tree_depth(tree_size as usize);
+    let expected_depth = tree_depth(tree_size);
     if proof.len() != expected_depth {
         return false;
     }
@@ -312,7 +312,7 @@ fn compute_root(leaves: &[[u8; 32]]) -> [u8; 32] {
         return [0u8; 32];
     }
 
-    let depth = tree_depth(leaves.len());
+    let depth = tree_depth(leaves.len() as u64);
     let padded_size = 1usize << depth;
 
     // Start with leaves, padded to a power of two.
@@ -334,7 +334,7 @@ fn compute_root(leaves: &[[u8; 32]]) -> [u8; 32] {
 
 /// Generate a Merkle proof (list of sibling hashes from leaf to root).
 fn merkle_proof(leaves: &[[u8; 32]], index: usize) -> Vec<[u8; 32]> {
-    let depth = tree_depth(leaves.len());
+    let depth = tree_depth(leaves.len() as u64);
     let padded_size = 1usize << depth;
 
     let mut level: Vec<[u8; 32]> = Vec::with_capacity(padded_size);
@@ -371,12 +371,15 @@ fn hash_pair(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
 
 /// Compute the depth of a binary tree that can hold `n` leaves.
 /// Returns 0 for n <= 1, ceil(log2(n)) otherwise.
-fn tree_depth(n: usize) -> usize {
+///
+/// `n` is a `u64` like the tree sizes in requests, so that a size is never
+/// cut down to the platform's pointer width first.
+fn tree_depth(n: u64) -> usize {
     if n <= 1 {
         return 0;
     }
     // ceil(log2(n)) is the bit length of n - 1.
-    (usize::BITS - (n - 1).leading_zeros()) as usize
+    (u64::BITS - (n - 1).leading_zeros()) as usize
 }
 
 use rusqlite::OptionalExtension;
@@ -588,9 +591,9 @@ mod tests {
     #[test]
     fn test_tree_depth_is_ceil_log2() {
         // Reference: count the doublings needed to reach n.
-        fn by_doubling(n: usize) -> usize {
+        fn by_doubling(n: u64) -> usize {
             let mut depth = 0;
-            let mut size = 1usize;
+            let mut size = 1u64;
             while size < n {
                 size <<= 1;
                 depth += 1;
@@ -598,22 +601,30 @@ mod tests {
             depth
         }
 
-        for n in 0..=5000usize {
+        for n in 0..=5000u64 {
             assert_eq!(tree_depth(n), by_doubling(n), "n={n}");
         }
         // The reference cannot go past the top bit, so stop one power short.
-        for k in 1..usize::BITS - 1 {
-            for n in [(1usize << k) - 1, 1usize << k, (1usize << k) + 1] {
+        for k in 1..u64::BITS - 1 {
+            for n in [(1u64 << k) - 1, 1u64 << k, (1u64 << k) + 1] {
                 assert_eq!(tree_depth(n), by_doubling(n), "n={n}");
             }
         }
 
-        let top = 1usize << (usize::BITS - 1);
-        assert_eq!(tree_depth(top), usize::BITS as usize - 1);
+        assert_eq!(tree_depth(1u64 << 63), 63);
     }
 
-    // On a 32-bit target `tree_size as usize` truncates these sizes.
-    #[cfg(target_pointer_width = "64")]
+    /// A tree size just above a multiple of 2^32 is not taken for a small
+    /// tree (it was, where `usize` has 32 bits, when the size was cast to
+    /// `usize`): an empty proof is not valid for it.
+    #[test]
+    fn test_tree_size_is_not_truncated_to_32_bits() {
+        let h = [0u8; 32];
+        assert_eq!(tree_depth((1u64 << 32) + 1), 33);
+        assert!(!verify_inclusion(&h, &h, 0, &[], (1u64 << 32) + 1));
+        assert!(!verify_inclusion(&h, &h, 0, &[], (7u64 << 32) + 1));
+    }
+
     #[test]
     fn test_tree_size_above_2_pow_63_terminates() {
         // Run on its own thread so that a computation that never returns
@@ -621,8 +632,7 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let h = [0u8; 32];
-            let top = 1usize << (usize::BITS - 1);
-            let depths = [tree_depth(top + 1), tree_depth(usize::MAX)];
+            let depths = [tree_depth((1u64 << 63) + 1), tree_depth(u64::MAX)];
             let valid = [
                 verify_inclusion(&h, &h, 0, &[], (1u64 << 63) + 1),
                 verify_inclusion(&h, &h, 0, &[], u64::MAX),
@@ -633,7 +643,7 @@ mod tests {
         let (depths, valid) = rx
             .recv_timeout(std::time::Duration::from_secs(10))
             .expect("no result within 10 s");
-        assert_eq!(depths, [usize::BITS as usize; 2]);
+        assert_eq!(depths, [64; 2]);
         // An empty proof cannot be valid for a tree of this size.
         assert_eq!(valid, [false, false]);
     }
