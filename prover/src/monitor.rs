@@ -1838,7 +1838,8 @@ mod tests {
         )
         .unwrap();
 
-        // What process_single_job does for each job before it calls prove_fast
+        // What the task of each job does before it calls process_single_job,
+        // and with it prove_fast
         let resource = processor.concurrency.classify_job(10_000_000, 0);
         assert_eq!(resource, JobResource::Gpu);
         let _guard = processor.concurrency.acquire(resource).await.unwrap();

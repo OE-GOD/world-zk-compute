@@ -84,7 +84,10 @@ impl EventSubscriber {
         let mut consecutive_errors = 0u32;
 
         loop {
-            info!("Connecting to WebSocket: {}", self.config.ws_url);
+            info!(
+                "Connecting to WebSocket: {}",
+                crate::redact::url_origin(&self.config.ws_url)
+            );
 
             match self.subscribe_loop().await {
                 Ok(()) => {
@@ -95,7 +98,11 @@ impl EventSubscriber {
                 }
                 Err(e) => {
                     consecutive_errors += 1;
-                    error!("WebSocket error (attempt {}): {:?}", consecutive_errors, e);
+                    error!(
+                        "WebSocket error (attempt {}): {}",
+                        consecutive_errors,
+                        crate::redact::redact_urls(&format!("{:?}", e))
+                    );
 
                     // Exponential backoff
                     reconnect_delay = Self::next_reconnect_delay(

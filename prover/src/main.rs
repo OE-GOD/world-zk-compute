@@ -45,6 +45,7 @@ mod prove_metrics;
 mod prover;
 mod queue;
 mod recursive_wrapper;
+mod redact;
 #[cfg(feature = "remainder")]
 mod remainder_backend;
 mod risc0_backend;
@@ -257,8 +258,18 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    let cli = Cli::parse();
+    // The returned error is printed to stderr.
+    run_command(Cli::parse()).await.map_err(without_url_paths)
+}
 
+/// `e` with the URLs in what is printed for it (the error and its causes) cut
+/// to their origin: a failed RPC call names the RPC URL, whose path often
+/// holds an API key.
+fn without_url_paths(e: anyhow::Error) -> anyhow::Error {
+    anyhow::anyhow!("{}", redact::redact_urls(&format!("{e:?}")))
+}
+
+async fn run_command(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Commands::Run {
             rpc_url,
@@ -398,12 +409,12 @@ async fn run_prover(
     info!("╚══════════════════════════════════════════════════════════════╝");
     info!("");
     info!("Configuration:");
-    info!("  RPC URL:        {}", rpc_url);
+    info!("  RPC URL:        {}", redact::url_origin(&rpc_url));
     info!(
         "  WS URL:         {}",
         effective_ws_url
             .as_deref()
-            .unwrap_or("disabled (polling only)")
+            .map_or("disabled (polling only)".to_string(), redact::url_origin)
     );
     info!("  Engine:         {}", engine_address);
     info!(
@@ -668,7 +679,10 @@ async fn run_prover(
                 }
             }
             Err(e) => {
-                error!("✗ Error processing requests: {:?}", e);
+                error!(
+                    "✗ Error processing requests: {}",
+                    redact::redact_urls(&format!("{:?}", e))
+                );
             }
         }
 
@@ -742,7 +756,9 @@ fn parse_image_ids(image_ids: &str) -> anyhow::Result<Vec<B256>> {
 }
 
 /// Record the outcome of a poll cycle in the health state: a successful
-/// cycle puts the state back to running, a failed one stores the error.
+/// cycle puts the state back to running, a failed one stores the error. The
+/// state is served to anyone on `/status`, and the error names the RPC URL,
+/// whose path often holds an API key: URLs are cut to their origin.
 async fn update_health_after_cycle(state: &health::SharedState, result: &anyhow::Result<u64>) {
     match result {
         Ok(processed) => {
@@ -753,7 +769,11 @@ async fn update_health_after_cycle(state: &health::SharedState, result: &anyhow:
                     .await;
             }
         }
-        Err(e) => state.set_error(format!("{:?}", e)).await,
+        Err(e) => {
+            state
+                .set_error(redact::redact_urls(&format!("{:?}", e)))
+                .await
+        }
     }
 }
 
@@ -898,7 +918,11 @@ async fn list_pending(rpc_url: String, engine_address: String, limit: u64) -> an
             }
             Err(e) => {
                 let rid_u64: u64 = rid.try_into().unwrap_or(0);
-                println!("{:<6} (error: {})", rid_u64, e);
+                println!(
+                    "{:<6} (error: {})",
+                    rid_u64,
+                    redact::redact_urls(&e.to_string())
+                );
             }
         }
     }
@@ -943,14 +967,20 @@ fn handle_config(generate: bool, output: String, validate: Option<String>) -> an
                 Ok(()) => {
                     println!("✓ Configuration is valid: {}", path);
                     println!("\nSettings:");
-                    println!("  RPC URL:     {}", config.prover.rpc_url);
+                    println!(
+                        "  RPC URL:     {}",
+                        redact::url_origin(&config.prover.rpc_url)
+                    );
                     println!("  Chain ID:    {}", config.prover.chain_id);
                     println!("  Proving:     {}", config.proving.mode);
                     println!("  Concurrent:  {}", config.proving.max_concurrent);
                     println!("  API enabled: {}", config.api.enabled);
                 }
                 Err(e) => {
-                    println!("✗ Configuration validation failed: {}", e);
+                    println!(
+                        "✗ Configuration validation failed: {}",
+                        redact::redact_urls(&e.to_string())
+                    );
                     std::process::exit(1);
                 }
             },
@@ -1040,7 +1070,7 @@ fn show_info() {
         println!("  PRIVATE_KEY:    not set");
     }
     if let Ok(url) = std::env::var("RPC_URL") {
-        println!("  RPC_URL:        {}", mask_url(&url));
+        println!("  RPC_URL:        {}", redact::url_origin(&url));
     } else {
         println!("  RPC_URL:        not set");
     }
@@ -1097,16 +1127,6 @@ fn num_cpus() -> usize {
     std::thread::available_parallelism()
         .map(|p| p.get())
         .unwrap_or(1)
-}
-
-fn mask_url(url: &str) -> String {
-    // Mask API keys in URLs
-    if let Some(pos) = url.find("/v2/") {
-        let prefix = &url[..pos + 4];
-        format!("{}[MASKED]", prefix)
-    } else {
-        url.to_string()
-    }
 }
 
 #[cfg(test)]
@@ -1221,6 +1241,32 @@ mod tests {
 
     // ========== update_health_after_cycle ==========
 
+    #[test]
+    fn test_command_error_omits_url_paths() {
+        let cause =
+            anyhow::anyhow!("error sending request for url (http://127.0.0.1:1/v2/SECRETKEY)");
+        let printed = format!("{:?}", without_url_paths(cause.context("status failed")));
+        assert!(printed.starts_with("status failed"), "{printed}");
+        assert!(printed.contains("url (http://127.0.0.1:1)"), "{printed}");
+        assert!(!printed.contains("SECRETKEY"), "{printed}");
+    }
+
+    /// The stored error is served on `/status` without authentication.
+    #[tokio::test]
+    async fn test_health_error_omits_rpc_url_path() {
+        let state = health::SharedState::new("0x123".to_string(), "0x456".to_string());
+        let cause =
+            anyhow::anyhow!("error sending request for url (http://127.0.0.1:1/?apikey=SECRETKEY)");
+        update_health_after_cycle(&state, &Err(cause.context("poll failed"))).await;
+
+        let health::ProverState::Error(error) = state.get_status().await.state else {
+            panic!("no error stored");
+        };
+        assert!(error.contains("poll failed"), "{error}");
+        assert!(error.contains("url (http://127.0.0.1:1)"), "{error}");
+        assert!(!error.contains("SECRETKEY"), "{error}");
+    }
+
     #[tokio::test]
     async fn test_successful_cycle_clears_health_error() {
         let state = health::SharedState::new("0x123".to_string(), "0x456".to_string());
@@ -1236,46 +1282,6 @@ mod tests {
         let status = state.get_status().await;
         assert!(status.running);
         assert_eq!(status.state, health::ProverState::Running);
-    }
-
-    // ========== mask_url ==========
-
-    #[test]
-    fn test_mask_url_with_api_key() {
-        let url = "https://worldchain-mainnet.g.alchemy.com/v2/abc123secret";
-        let masked = mask_url(url);
-        assert_eq!(
-            masked,
-            "https://worldchain-mainnet.g.alchemy.com/v2/[MASKED]"
-        );
-        assert!(!masked.contains("abc123secret"));
-    }
-
-    #[test]
-    fn test_mask_url_without_v2() {
-        let url = "https://rpc.example.com/rpc";
-        let masked = mask_url(url);
-        assert_eq!(masked, url);
-    }
-
-    #[test]
-    fn test_mask_url_empty() {
-        assert_eq!(mask_url(""), "");
-    }
-
-    #[test]
-    fn test_mask_url_v2_at_end() {
-        let url = "https://example.com/v2/";
-        let masked = mask_url(url);
-        assert_eq!(masked, "https://example.com/v2/[MASKED]");
-    }
-
-    #[test]
-    fn test_mask_url_multiple_v2_masks_first() {
-        let url = "https://example.com/v2/key/v2/extra";
-        let masked = mask_url(url);
-        // Should mask from the first /v2/ onward
-        assert_eq!(masked, "https://example.com/v2/[MASKED]");
     }
 
     // ========== num_cpus ==========

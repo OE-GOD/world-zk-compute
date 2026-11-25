@@ -126,7 +126,7 @@ impl BoundlessProver {
         let config = BoundlessConfig::from_env()?;
         info!(
             "Boundless prover configured (RPC: {}, storage: {:?})",
-            config.rpc_url,
+            crate::redact::url_origin(&config.rpc_url),
             match &config.storage_provider {
                 StorageProvider::Pinata { .. } => "Pinata/IPFS",
                 StorageProvider::S3 { .. } => "S3",

@@ -466,3 +466,63 @@ mod tests {
         assert_eq!(engine.get_prover_balance().await, 1500);
     }
 }
+
+// ============================================================================
+// Output of the binary
+// ============================================================================
+
+/// What the binary prints for a failed command has no path of the RPC URL in
+/// it: the path can hold the provider's API key.
+#[test]
+fn test_printed_error_of_a_failed_command_omits_the_rpc_url_path() {
+    // Port 1 on localhost refuses the connection.
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_world-zk-prover"))
+        .env_clear()
+        .args(["status", "--rpc-url", "http://127.0.0.1:1/v2/SECRETKEY"])
+        .args([
+            "--engine-address",
+            "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+        ])
+        .args(["--request-id", "1"])
+        .current_dir(std::env::temp_dir())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(stderr.contains("url (http://127.0.0.1:1)"), "{stderr}");
+    assert!(!stderr.contains("SECRETKEY"), "{stderr}");
+}
+
+/// `config --validate` says what is wrong with a file that does not parse, and
+/// where, but not what stands there: it can be the RPC URL or the private key.
+#[test]
+fn test_config_parse_error_does_not_quote_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("bad.toml");
+    for line in [
+        r#"rpc_url = "https://rpc.example.com/v2/SECRET"#,
+        r#"rpc_url = "https://rpc.example.com/v2/"SECRET""#,
+        r#"rpc_url = https:/rpc.example.com/v2/SECRET"#,
+        r#"rpc_url = ["SECRET"]"#,
+        r#"private_key = "0xSECRET"#,
+        r#"private_key = 12345678"#,
+        r#"chain_id = "SECRET""#,
+    ] {
+        std::fs::write(&config, format!("[prover]\n{line}\n")).unwrap();
+
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_world-zk-prover"))
+            .env_clear()
+            .args(["config", "--validate"])
+            .arg(&config)
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(!output.status.success(), "{line}");
+        assert!(stdout.contains("at line 2, column"), "{line}: {stdout}");
+        assert!(!stdout.contains("SECRET"), "{line}: {stdout}");
+        assert!(!stdout.contains("12345678"), "{line}: {stdout}");
+    }
+}
