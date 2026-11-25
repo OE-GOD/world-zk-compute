@@ -516,3 +516,57 @@ async fn test_circuit_breaker_call_async_integration() {
     assert_eq!(cb.trip_count(), 1); // Only the original trip, recovery does not increment.
     assert_eq!(cb.consecutive_failures(), 0);
 }
+
+// ─── Output of the binary ─────────────────────────────────────────────
+
+/// What the binary prints for a failed command has no URL path in it: an RPC
+/// URL's path can hold the provider's API key. (`submit` asks the enclave
+/// first, so here it is the enclave URL that the error names.)
+#[test]
+fn test_printed_error_of_a_failed_command_omits_the_url_path() {
+    let dir = tempfile::tempdir().unwrap();
+    // Port 1 on localhost refuses the connection.
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_tee-operator"))
+        .env_clear()
+        .env("OPERATOR_PRIVATE_KEY", format!("0x{}", "1".repeat(64)))
+        .env(
+            "TEE_VERIFIER_ADDRESS",
+            "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+        )
+        .env("ENCLAVE_URL", "http://127.0.0.1:1/SECRETKEY")
+        .args(["submit", "--features", "[1.0]"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(stderr.contains("Error:"), "{stderr}");
+    assert!(stderr.contains("http://127.0.0.1:1"), "{stderr}");
+    assert!(!stderr.contains("SECRETKEY"), "{stderr}");
+}
+
+/// A message that names the allowed schemes is printed as it is.
+#[test]
+fn test_printed_validation_error_names_the_allowed_schemes() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_tee-operator"))
+        .env_clear()
+        .env("OPERATOR_PRIVATE_KEY", format!("0x{}", "1".repeat(64)))
+        .env(
+            "TEE_VERIFIER_ADDRESS",
+            "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+        )
+        .env("OPERATOR_RPC_URL", "rpc.example.com/v2/SECRETKEY")
+        .arg("models")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("must start with http://, https://, ws://, or wss://"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("SECRETKEY"), "{stderr}");
+}

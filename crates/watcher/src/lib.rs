@@ -3,6 +3,10 @@
 //! Provides [`EventWatcher`] for polling TEEMLVerifier contract events via
 //! `eth_getLogs`, along with the [`TEEEvent`] enum and log-parsing helpers.
 //! Used by both the operator service and the indexer service.
+//!
+//! [`redact`] cuts URLs to their origin before they are logged.
+
+pub mod redact;
 
 use std::sync::OnceLock;
 

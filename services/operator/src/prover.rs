@@ -262,6 +262,12 @@ impl ProofManager {
         // name only after the prover has exited successfully. A temporary
         // file left by an earlier attempt is removed first, so that only this
         // run's output can be moved into place.
+        //
+        // The temporary name is the same for every attempt, on this path and
+        // on the HTTP path: this relies on one generation per result id at a
+        // time, which holds for the one caller (the pre-computation started
+        // by `submit`, once per submitted result, retrying in sequence). Two
+        // at once could move a half-written file into place.
         let tmp_path = self.proofs_dir.join(format!("{}.json.tmp", result_id));
         match fs::remove_file(&tmp_path).await {
             Ok(()) => {}
@@ -1454,6 +1460,8 @@ mod tests {
             "half-written file counts as a proof"
         );
         assert!(pm.read_proof("0xrid").unwrap().is_none());
+        // The failed run's temporary file is gone as well.
+        assert_eq!(file_names(&proofs), Vec::<String>::new());
     }
 
     /// A temporary file left by an earlier attempt is never moved into

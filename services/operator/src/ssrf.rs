@@ -57,8 +57,10 @@ pub enum SsrfError {
     EmptyUrl,
     /// URL exceeds maximum length.
     TooLong { len: usize, max: usize },
-    /// URL scheme is not in the allow list.
-    DisallowedScheme(String),
+    /// URL scheme is not in the allow list. What stood in its place is not
+    /// kept: in a URL without a scheme it is everything before the first
+    /// "://", which can hold a secret.
+    DisallowedScheme,
     /// URL has no host component.
     MissingHost,
     /// Host resolves to or is a private/reserved IP address.
@@ -78,11 +80,11 @@ impl std::fmt::Display for SsrfError {
             SsrfError::TooLong { len, max } => {
                 write!(f, "URL too long: {} chars (max: {})", len, max)
             }
-            SsrfError::DisallowedScheme(scheme) => {
+            SsrfError::DisallowedScheme => {
                 write!(
                     f,
-                    "URL scheme '{}' is not allowed; permitted schemes: {:?}",
-                    scheme, ALLOWED_SCHEMES
+                    "URL scheme is not allowed; permitted schemes: {:?}",
+                    ALLOWED_SCHEMES
                 )
             }
             SsrfError::MissingHost => write!(f, "URL has no host component"),
@@ -308,7 +310,7 @@ pub fn validate_url_ssrf(url: &str) -> Result<(), SsrfError> {
     // 5. Scheme check
     let scheme_lower = scheme.to_lowercase();
     if !ALLOWED_SCHEMES.contains(&scheme_lower.as_str()) {
-        return Err(SsrfError::DisallowedScheme(scheme_lower));
+        return Err(SsrfError::DisallowedScheme);
     }
 
     // 6. Extract host (strip path, query, fragment, and userinfo)
@@ -401,19 +403,19 @@ mod tests {
     #[test]
     fn test_blocks_ftp_scheme() {
         let err = validate_url_ssrf("ftp://example.com/file").unwrap_err();
-        assert!(matches!(err, SsrfError::DisallowedScheme(_)));
+        assert!(matches!(err, SsrfError::DisallowedScheme));
     }
 
     #[test]
     fn test_blocks_file_scheme() {
         let err = validate_url_ssrf("file:///etc/passwd").unwrap_err();
-        assert!(matches!(err, SsrfError::DisallowedScheme(_)));
+        assert!(matches!(err, SsrfError::DisallowedScheme));
     }
 
     #[test]
     fn test_blocks_gopher_scheme() {
         let err = validate_url_ssrf("gopher://evil.com/1").unwrap_err();
-        assert!(matches!(err, SsrfError::DisallowedScheme(_)));
+        assert!(matches!(err, SsrfError::DisallowedScheme));
     }
 
     #[test]

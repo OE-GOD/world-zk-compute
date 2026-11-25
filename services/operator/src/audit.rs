@@ -99,6 +99,9 @@ pub fn log_prover_slashed(result_id: &str, prover_won: bool) {
 }
 
 /// Log an audit event for configuration loaded at startup.
+///
+/// Of the RPC URL only scheme, host and port are logged: its path often
+/// carries the provider's API key.
 pub fn log_config_loaded(
     rpc_url: &str,
     contract_address: &str,
@@ -108,7 +111,7 @@ pub fn log_config_loaded(
     tracing::info!(
         target: "audit",
         event = "config_loaded",
-        rpc_url = %rpc_url,
+        rpc_url = %tee_watcher::redact::url_origin(rpc_url),
         contract_address = %contract_address,
         dry_run = dry_run,
         nitro_verification = nitro_verification,

@@ -156,10 +156,28 @@ fn hex_to_bytes(hex_str: &str) -> anyhow::Result<Vec<u8>> {
     Ok(hex::decode(stripped)?)
 }
 
+/// The text of a failed RPC call for a log line, an audit event or an alert.
+/// It names the RPC URL, whose path often holds the provider's API key, so
+/// URLs in it are cut to their origin.
+fn rpc_error_text(e: &anyhow::Error) -> String {
+    tee_watcher::redact::redact_urls(&e.to_string())
+}
+
+/// `e` with the URLs in what is printed for it (the error and its causes) cut
+/// to their origin.
+fn without_url_paths(e: anyhow::Error) -> anyhow::Error {
+    let printed = tee_watcher::redact::redact_urls(&format!("{e:?}"));
+    anyhow::anyhow!("{}", printed)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_setup::init_tracing("worldzk-operator", None);
-    let cli = Cli::parse();
+    // The returned error is printed to stderr.
+    run_command(Cli::parse()).await.map_err(without_url_paths)
+}
+
+async fn run_command(cli: Cli) -> anyhow::Result<()> {
     let config = Config::from_env(cli.config.as_deref())?;
 
     match cli.command {
@@ -927,7 +945,7 @@ async fn cmd_watch(config: &Config, metrics_port: u16, dry_run: bool) -> anyhow:
                     tracing::warn!(
                         consecutive_failures = rpc_cb.consecutive_failures(),
                         "RPC poll failed: {}",
-                        e
+                        rpc_error_text(&e)
                     );
                     (vec![], from_block)
                 }
@@ -1235,7 +1253,7 @@ async fn cmd_run(
     // 1. Submit (same as cmd_submit, but the follow-up tasks stay in the
     //    background while the watch loop runs)
     if let Err(e) = submit(config, features_json, model).await {
-        tracing::error!("Submit failed: {}", e);
+        tracing::error!("Submit failed: {}", rpc_error_text(&e));
         return Err(e);
     }
 
@@ -1462,17 +1480,18 @@ async fn handle_challenge(
         }
         Err(e) => {
             chain_cb.record_failure();
-            tracing::error!("Failed to resolve dispute for {}: {}", rid_hex, e);
-            audit::log_dispute_failed(&rid_hex, "", &format!("{}", e));
+            let error = rpc_error_text(&e);
+            tracing::error!("Failed to resolve dispute for {}: {}", rid_hex, error);
+            audit::log_dispute_failed(&rid_hex, "", &error);
             metrics.record_dispute_failed();
             let mut meta = HashMap::new();
             meta.insert("result_id".to_string(), rid_hex);
-            meta.insert("error".to_string(), format!("{}", e));
+            meta.insert("error".to_string(), error.clone());
             if let Err(e) = alert_manager.send_alert(
                 AlertSeverity::Critical,
                 "dispute_failed",
                 "operator",
-                &format!("Dispute resolution failed: {}", e),
+                &format!("Dispute resolution failed: {}", error),
                 meta,
             ) {
                 tracing::warn!("Failed to send dispute_failed alert: {}", e);
@@ -1559,7 +1578,10 @@ async fn auto_finalize(
         }
         Err(e) => {
             rpc_cb.record_failure();
-            tracing::warn!("Failed to poll for finalizeable results: {}", e);
+            tracing::warn!(
+                "Failed to poll for finalizeable results: {}",
+                rpc_error_text(&e)
+            );
             return;
         }
     };
@@ -1583,7 +1605,11 @@ async fn auto_finalize(
                 }
                 Err(e) => {
                     rpc_cb.record_failure();
-                    tracing::warn!("Failed to read result {}: {}", result_id, e);
+                    tracing::warn!(
+                        "Failed to read result {}: {}",
+                        result_id,
+                        rpc_error_text(&e)
+                    );
                     break;
                 }
             }
@@ -1594,7 +1620,11 @@ async fn auto_finalize(
                 }
                 Err(e) => {
                     chain_cb.record_failure();
-                    tracing::warn!("Failed to auto-finalize {}: {}", result_id, e);
+                    tracing::warn!(
+                        "Failed to auto-finalize {}: {}",
+                        result_id,
+                        rpc_error_text(&e)
+                    );
                 }
             }
         }
@@ -2272,9 +2302,20 @@ mod tests {
     #[derive(Clone, Default)]
     struct LogBuffer(Arc<std::sync::Mutex<Vec<u8>>>);
 
+    /// Keep a second dispatcher registered next to a test's own. While only
+    /// one is registered, tracing asks the default subscriber of the thread
+    /// that reaches a callsite first whether the callsite is of interest.
+    /// That can be another test's thread, which has none, and then the
+    /// callsite stays silent for the test that captures.
+    fn keep_second_dispatcher() {
+        static SECOND: std::sync::OnceLock<tracing::Dispatch> = std::sync::OnceLock::new();
+        SECOND.get_or_init(|| tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default()));
+    }
+
     impl LogBuffer {
         /// Subscriber that writes events at `level` and above into this buffer.
         fn subscriber(&self, level: tracing::Level) -> impl tracing::Subscriber + Send + Sync {
+            keep_second_dispatcher();
             let writer = self.clone();
             tracing_subscriber::fmt()
                 .with_max_level(level)
@@ -2378,13 +2419,105 @@ mod tests {
         }
     }
 
-    /// The `config_loaded` audit event must carry the mode the watcher runs in.
+    /// Port 1 on localhost refuses the connection at once, so every RPC call
+    /// fails with an error that names this URL.
+    const SECRET_RPC_URL: &str = "http://127.0.0.1:1/v2/SECRETKEY";
+
+    /// The watch loop logs a failed poll without the RPC URL's path.
+    #[tokio::test]
+    async fn test_failed_poll_log_omits_rpc_url_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = submit_test_config(SECRET_RPC_URL, "http://127.0.0.1:1", dir.path());
+        let logs = LogBuffer::default();
+        let _guard = tracing::subscriber::set_default(logs.subscriber(tracing::Level::INFO));
+
+        let mut watch = std::pin::pin!(cmd_watch(&config, 0, true));
+        for _ in 0..200 {
+            let step = std::time::Duration::from_millis(50);
+            if let Ok(result) = tokio::time::timeout(step, watch.as_mut()).await {
+                panic!("cmd_watch returned: {:?}", result);
+            }
+            if logs.contents().contains("RPC poll failed") {
+                break;
+            }
+        }
+
+        let logged = logs.contents();
+        assert!(
+            logged.contains("RPC poll failed: error sending request for url (http://127.0.0.1:1)"),
+            "logged: {}",
+            logged
+        );
+        assert!(!logged.contains("SECRETKEY"), "logged: {}", logged);
+    }
+
+    /// So does the auto-finalize pass.
+    #[tokio::test]
+    async fn test_failed_finalize_poll_log_omits_rpc_url_path() {
+        let logs = LogBuffer::default();
+        let _guard = tracing::subscriber::set_default(logs.subscriber(tracing::Level::INFO));
+
+        run_auto_finalize(SECRET_RPC_URL, &chain_breaker()).await;
+
+        let logged = logs.contents();
+        assert!(
+            logged.contains("Failed to poll for finalizeable results"),
+            "logged: {}",
+            logged
+        );
+        assert!(!logged.contains("SECRETKEY"), "logged: {}", logged);
+    }
+
+    /// What is printed when a command fails keeps the error and its causes,
+    /// with URLs cut to their origin.
+    #[test]
+    fn test_command_error_omits_url_paths() {
+        let cause = anyhow::anyhow!("error sending request for url ({})", SECRET_RPC_URL);
+        let printed = format!("{:?}", without_url_paths(cause.context("submit failed")));
+        assert!(printed.starts_with("submit failed"), "{}", printed);
+        assert!(
+            printed.contains("error sending request for url (http://127.0.0.1:1)"),
+            "{}",
+            printed
+        );
+        assert!(!printed.contains("SECRETKEY"), "{}", printed);
+    }
+
+    /// The log line for a failed webhook delivery has no part of the URL.
+    #[tokio::test]
+    async fn test_failed_webhook_log_omits_webhook_url() {
+        let logs = LogBuffer::default();
+        let _guard = tracing::subscriber::set_default(logs.subscriber(tracing::Level::DEBUG));
+
+        let notifier =
+            notifications::WebhookNotifier::new("http://127.0.0.1:1/services/T00/B00/SECRETTOKEN");
+        notifier.notify_challenge("0xabc", "0xdef", 1, 2);
+        // The first attempt fails at once; the retry that follows is not
+        // waited for. (Behind an HTTP proxy the proxy's answer is logged.)
+        for _ in 0..200 {
+            if logs.contents().contains("Webhook") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        let logged = logs.contents();
+        assert!(logged.contains("Webhook"), "logged: {}", logged);
+        assert!(!logged.contains("SECRETTOKEN"), "logged: {}", logged);
+    }
+
+    /// The `config_loaded` audit event must carry the mode the watcher runs
+    /// in, and of the RPC URL only its origin: the path can hold an API key.
     #[tokio::test]
     async fn test_cmd_watch_audit_event_reports_dry_run() {
         use std::future::Future;
 
         let dir = tempfile::tempdir().unwrap();
-        let config = submit_test_config("http://127.0.0.1:1", "http://127.0.0.1:1", dir.path());
+        let config = submit_test_config(
+            "http://127.0.0.1:1/v2/SECRETKEY",
+            "http://127.0.0.1:1",
+            dir.path(),
+        );
 
         for dry_run in [true, false] {
             let logs = LogBuffer::default();
@@ -2412,6 +2545,12 @@ mod tests {
                 dry_run,
                 fields
             );
+            assert!(
+                fields.contains("rpc_url=http://127.0.0.1:1 "),
+                "config_loaded logged:{}",
+                fields
+            );
+            assert!(!logged.contains("SECRETKEY"), "start-up logged: {}", logged);
         }
     }
 }
