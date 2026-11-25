@@ -34,9 +34,7 @@ use shared_types::{
 };
 use std::collections::HashMap;
 
-#[path = "../abi_encode.rs"]
-#[allow(clippy::all)]
-mod abi_encode;
+use xgboost_remainder::abi_encode;
 
 // ============================================================================
 // Utility functions

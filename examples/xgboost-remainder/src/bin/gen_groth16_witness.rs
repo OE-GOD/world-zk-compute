@@ -35,9 +35,7 @@ use shared_types::{
     perform_function_under_verifier_config, Bn256Point, Fq, Fr,
 };
 
-#[path = "../abi_encode.rs"]
-#[allow(clippy::all)]
-mod abi_encode;
+use xgboost_remainder::abi_encode;
 
 fn build_circuit(num_vars: usize) -> Circuit<Fr> {
     let mut builder = CircuitBuilder::<Fr>::new();
