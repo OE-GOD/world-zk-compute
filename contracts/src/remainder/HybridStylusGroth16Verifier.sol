@@ -14,13 +14,15 @@ library HybridStylusGroth16Verifier {
     // ERRORS
     // ========================================================================
 
-    /// @notice Stylus verifier call reverted or ran out of gas
+    /// @notice Stylus verifier call failed without return data (revert data, if any, is passed on
+    ///         unchanged)
     error StylusVerificationFailed();
 
-    /// @notice Groth16 verifier call reverted or ran out of gas, or the verifier address has no code
+    /// @notice Groth16 verifier call failed without return data (revert data, if any, is passed on
+    ///         unchanged), or the verifier address has no code
     error Groth16VerificationFailed();
 
-    /// @notice A specific chunk's Groth16 verification failed
+    /// @notice The proof of chunk `chunkIndex` does not have 8 words
     error ChunkVerificationFailed(uint256 chunkIndex);
 
     /// @notice Invalid chunk count (zero or mismatch with proof array), or a registered input count other than 0 or 6
