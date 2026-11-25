@@ -290,15 +290,14 @@ async fn upload_model_handler(
         .upload(req.name, raw_json, format_hint)
         .await
         .map_err(|e| {
-            let msg = e.to_string();
-            let status = if msg.contains("identical model hash") {
-                StatusCode::CONFLICT
-            } else if is_storage_error(&e) {
+            let status = if is_storage_error(&e) {
                 StatusCode::INTERNAL_SERVER_ERROR
+            } else if e.to_string().contains("identical model hash") {
+                StatusCode::CONFLICT
             } else {
                 StatusCode::BAD_REQUEST
             };
-            (status, Json(ErrorResponse { error: msg }))
+            registry_error(status, e)
         })?;
 
     Ok((
@@ -362,22 +361,37 @@ async fn get_model_handler(
 }
 
 /// True when the error comes from the file system (a read or write that
-/// failed), as opposed to a request the service refuses.
+/// failed), as opposed to a request the service refuses. Asked before the
+/// text of an error is looked at: the text of a storage error holds a path,
+/// which can contain any words.
 fn is_storage_error(e: &anyhow::Error) -> bool {
     e.chain()
         .any(|cause| cause.downcast_ref::<std::io::Error>().is_some())
 }
 
+/// The response for a registry operation that failed with `status`.
+///
+/// A 500 is answered with a fixed text and its detail goes to the log: a
+/// storage error names paths on the server.
+fn registry_error(status: StatusCode, e: anyhow::Error) -> (StatusCode, Json<ErrorResponse>) {
+    let error = if status == StatusCode::INTERNAL_SERVER_ERROR {
+        tracing::error!(error = %format!("{e:#}"), "Model registry operation failed");
+        "internal error (see the service log)".to_string()
+    } else {
+        e.to_string()
+    };
+    (status, Json(ErrorResponse { error }))
+}
+
 /// Map an activation or deactivation error to a response: 404 when the
 /// model is unknown, 500 for anything else (e.g. the metadata write failed).
 fn activation_error(e: anyhow::Error) -> (StatusCode, Json<ErrorResponse>) {
-    let msg = e.to_string();
-    let status = if msg.contains("not found") {
+    let status = if !is_storage_error(&e) && e.to_string().contains("not found") {
         StatusCode::NOT_FOUND
     } else {
         StatusCode::INTERNAL_SERVER_ERROR
     };
-    (status, Json(ErrorResponse { error: msg }))
+    registry_error(status, e)
 }
 
 /// `DELETE /models/:id` -- deactivate a model (soft delete).
@@ -450,15 +464,14 @@ async fn rollback_handler(
     Path(name): Path<String>,
 ) -> Result<Json<VersionSummary>, (StatusCode, Json<ErrorResponse>)> {
     let info = state.registry.rollback(&name).await.map_err(|e| {
-        let msg = e.to_string();
-        let status = if msg.contains("not found") {
-            StatusCode::NOT_FOUND
-        } else if is_storage_error(&e) {
+        let status = if is_storage_error(&e) {
             StatusCode::INTERNAL_SERVER_ERROR
+        } else if e.to_string().contains("not found") {
+            StatusCode::NOT_FOUND
         } else {
             StatusCode::BAD_REQUEST
         };
-        (status, Json(ErrorResponse { error: msg }))
+        registry_error(status, e)
     })?;
 
     Ok(Json(version_info_to_summary(&info)))
@@ -1227,7 +1240,12 @@ mod tests {
     /// Create a test app with mock mode and a temp model directory.
     async fn test_app() -> (Router, tempfile::TempDir) {
         let tmp = tempfile::TempDir::new().unwrap();
-        let store = ModelStore::new(tmp.path().to_path_buf()).await.unwrap();
+        (test_app_in(tmp.path()).await, tmp)
+    }
+
+    /// A test app that keeps its models in `storage_dir`.
+    async fn test_app_in(storage_dir: &std::path::Path) -> Router {
+        let store = ModelStore::new(storage_dir.to_path_buf()).await.unwrap();
         let registry = ModelRegistry::new(store.clone()).await;
         let state = Arc::new(AppState {
             model_store: store,
@@ -1238,7 +1256,7 @@ mod tests {
             job_store: Arc::new(JobStore::new()),
             start_time: Instant::now(),
         });
-        (build_router(state, false), tmp)
+        build_router(state, false)
     }
 
     /// Create a test app with a mock registry server for auto-submit testing.
@@ -1588,44 +1606,59 @@ mod tests {
         }
     }
 
-    /// A storage failure during an upload or a rollback is the server's
-    /// error, not the client's, and leaves the active version as it was.
+    /// A storage failure is the server's error, not the client's, on every
+    /// route that changes the registry: the answer is a 500 that does not
+    /// carry the storage path, whatever words that path contains, and the
+    /// active version stays as it was.
     #[tokio::test]
-    async fn test_upload_and_rollback_answer_500_on_storage_failure() {
+    async fn test_storage_failures_answer_500_without_the_storage_path() {
         use models::test_support::{block_metadata_writes, restore_metadata};
 
-        let (app, tmp) = test_app().await;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let storage_dir = tmp.path().join("not found, identical model hash");
+        let app = test_app_in(&storage_dir).await;
         let v1 = upload_named_model(&app, "m", "1").await;
         let v2 = upload_named_model(&app, "m", "2").await;
 
         // v2 is the active version and its metadata cannot be written.
-        let saved = block_metadata_writes(tmp.path(), &v2);
+        let saved = block_metadata_writes(&storage_dir, &v2);
 
         let upload = serde_json::json!({
             "name": "m",
             "model_json": {"learner": {"gradient_booster": {"model": {"trees": [], "id": "3"}}}},
             "format": "auto"
         });
-        let req = axum::http::Request::builder()
-            .method("POST")
-            .uri("/models")
-            .header("content-type", "application/json")
-            .body(Body::from(serde_json::to_string(&upload).unwrap()))
-            .unwrap();
-        let resp = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR, "upload");
+        for (method, uri, body) in [
+            ("POST", "/models".to_string(), upload.to_string()),
+            ("POST", "/models/m/rollback".to_string(), String::new()),
+            ("POST", format!("/models/{v1}/activate"), String::new()),
+            ("POST", format!("/models/{v2}/deactivate"), String::new()),
+            ("DELETE", format!("/models/{v2}"), String::new()),
+        ] {
+            let req = axum::http::Request::builder()
+                .method(method)
+                .uri(&uri)
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "{method} {uri}"
+            );
+            let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+            let answer = String::from_utf8_lossy(&body_bytes);
+            assert!(
+                answer.contains("internal error"),
+                "{method} {uri}: {answer}"
+            );
+            assert!(!answer.contains("not found"), "{method} {uri}: {answer}");
+        }
 
-        let req = axum::http::Request::builder()
-            .method("POST")
-            .uri("/models/m/rollback")
-            .body(Body::empty())
-            .unwrap();
-        let resp = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR, "rollback");
+        restore_metadata(&storage_dir, &v2, &saved);
 
-        restore_metadata(tmp.path(), &v2, &saved);
-
-        // Neither request stored a third version or changed the active one.
+        // No request stored a third version or changed the active one.
         let req = axum::http::Request::builder()
             .uri("/models/m/versions")
             .body(Body::empty())

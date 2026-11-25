@@ -5,7 +5,8 @@
 //! a library, we communicate with it over HTTP:
 //!
 //! - **Managed mode** (default): On model registration the manager spawns an
-//!   `xgboost-remainder --serve` child process bound to a free port. Proof
+//!   `xgboost-remainder --serve` child process on the next port of a counter
+//!   that starts at 13100 (the port is not checked to be free). Proof
 //!   requests are forwarded to that process via its `/prove/bundle` endpoint.
 //!   The child is killed when its handle is dropped (`remove_prover`, or the
 //!   manager itself); deactivating a model does not stop its prover. Nothing
@@ -133,10 +134,12 @@ pub struct ProverManager {
     binary_path: String,
     /// External prover URL (when set, all models share this prover).
     external_url: Option<String>,
-    /// Next port to assign to a managed child process.
-    next_port: RwLock<u16>,
-    /// Held while a prover is being registered (see `ensure_prover`).
-    register_lock: Mutex<()>,
+    /// Next port to assign to a managed child process; `None` once the last
+    /// port has been assigned.
+    next_port: RwLock<Option<u16>>,
+    /// One lock per model, held while that model's prover is being
+    /// registered (see `ensure_prover`).
+    register_locks: std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>,
     /// Failed start attempts per model: how many, and the last error.
     failed_starts: std::sync::Mutex<HashMap<String, (u64, String)>>,
 }
@@ -159,19 +162,24 @@ impl ProverManager {
             external_url,
             // Start assigning ports from 13100 to avoid conflicts with the
             // proof-generator service itself (default 3100).
-            next_port: RwLock::new(13100),
-            register_lock: Mutex::new(()),
+            next_port: RwLock::new(Some(13100)),
+            register_locks: std::sync::Mutex::new(HashMap::new()),
             failed_starts: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
     /// Start a prover for the model unless one is already registered.
     ///
-    /// Registration runs under a lock, so concurrent first requests for a
-    /// model start one prover and the others wait for it. If that start
-    /// fails, the requests that were waiting get the same error instead of
-    /// each starting the prover again; a request that arrives later tries
-    /// again.
+    /// Registration runs under a lock per model, so concurrent first requests
+    /// for a model start one prover and the others wait for it, while a
+    /// model that is slow to start does not hold up another model. If the
+    /// start fails, the requests that were waiting get the same error
+    /// instead of each starting the prover again; a request that arrives
+    /// later tries again.
+    ///
+    /// That is managed mode. With an external prover the model is recorded
+    /// before its health check, so when the check fails only the first
+    /// request gets the error and later requests go straight to the prover.
     pub async fn ensure_prover(
         &self,
         model_id: &str,
@@ -182,7 +190,14 @@ impl ProverManager {
             return Ok(());
         }
         let (failures_before, _) = self.failed_starts(model_id);
-        let _registering = self.register_lock.lock().await;
+        let register_lock = self
+            .register_locks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entry(model_id.to_string())
+            .or_default()
+            .clone();
+        let _registering = register_lock.lock().await;
         if self.has_prover(model_id).await {
             return Ok(());
         }
@@ -212,6 +227,16 @@ impl ProverManager {
             .get(model_id)
             .cloned()
             .unwrap_or_default()
+    }
+
+    /// The port for the next managed prover. Every start takes one, failed
+    /// starts included, and none is handed out twice: a port can still be
+    /// held by the prover of another model.
+    async fn take_port(&self) -> anyhow::Result<u16> {
+        let mut next = self.next_port.write().await;
+        let port = next.ok_or_else(|| anyhow::anyhow!("No port left for a managed prover"))?;
+        *next = port.checked_add(1);
+        Ok(port)
     }
 
     /// Register a model and start its prover instance.
@@ -262,12 +287,7 @@ impl ProverManager {
         }
 
         // Managed mode: write model to a temp file and spawn child process.
-        let port = {
-            let mut next = self.next_port.write().await;
-            let p = *next;
-            *next += 1;
-            p
-        };
+        let port = self.take_port().await?;
 
         // Write model JSON to a temp file
         let model_dir = std::env::temp_dir().join(format!("proof-gen-{}", model_id));
@@ -484,16 +504,10 @@ pub(crate) mod test_support {
                     async move { axum::Json(bundle) }
                 }),
             );
-        loop {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let port = listener.local_addr().unwrap().port();
-            // The manager computes the port after the one it assigns.
-            if port == u16::MAX {
-                continue;
-            }
-            tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-            return port;
-        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        port
     }
 
     /// Held by every test that starts a child process: a child forked while
@@ -568,7 +582,7 @@ done
             let ready_file = Some(self.log("alive"));
             let port = stand_in_prover_http(complete_bundle(), unanswered_probes, ready_file).await;
             let mgr = ProverManager::new(self.script().display().to_string(), None);
-            *mgr.next_port.write().await = port;
+            *mgr.next_port.write().await = Some(port);
             mgr
         }
     }
@@ -780,6 +794,7 @@ mod tests {
         let _spawning = SPAWNING.lock().await;
         let stand_in = StandIn::new(STARTS_THEN_EXITS);
         let mgr = stand_in.manager(0).await;
+        let port = *mgr.next_port.read().await;
 
         let id = stand_in.model_id.as_str();
         let first_requests = async {
@@ -799,9 +814,71 @@ mod tests {
         }
         assert_eq!(stand_in.lines("starts"), 1, "provers started");
 
-        // A request that arrives after the failure tries again.
+        // A request that arrives after the failure tries again. (The counter
+        // is put back: the first port can have been the last there is.)
+        *mgr.next_port.write().await = port;
         assert!(mgr.ensure_prover(id, "{}", "0x00").await.is_err());
         assert_eq!(stand_in.lines("starts"), 2, "provers started");
+    }
+
+    /// A model whose prover does not come up does not hold up the first
+    /// request for another model.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_slow_start_of_one_model_does_not_block_another() {
+        let _spawning = SPAWNING.lock().await;
+        let stand_in = StandIn::new(RUNS_FOR_30S);
+        let mgr = Arc::new(stand_in.manager(0).await);
+        let ready_port = *mgr.next_port.read().await;
+
+        // The first model's prover gets a port where health probes are never
+        // answered, so its start goes on for minutes.
+        let silent_port = stand_in_prover_http(complete_bundle(), usize::MAX, None).await;
+        *mgr.next_port.write().await = Some(silent_port);
+        let slow_model = format!("test-{}", uuid::Uuid::new_v4());
+        let slow_start = tokio::spawn({
+            let mgr = mgr.clone();
+            let slow_model = slow_model.clone();
+            async move { mgr.ensure_prover(&slow_model, "{}", "0x00").await }
+        });
+        while *mgr.next_port.read().await == Some(silent_port) {
+            assert!(!slow_start.is_finished(), "the slow start has ended");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        // The second model's prover gets the port that answers.
+        *mgr.next_port.write().await = ready_port;
+        let id = stand_in.model_id.as_str();
+        let second =
+            tokio::time::timeout(Duration::from_secs(10), mgr.ensure_prover(id, "{}", "0x00"))
+                .await;
+
+        slow_start.abort();
+        let _ = slow_start.await;
+        let _ =
+            std::fs::remove_dir_all(std::env::temp_dir().join(format!("proof-gen-{slow_model}")));
+        second
+            .expect("the second model waited for the first model's start")
+            .unwrap();
+        assert!(mgr.has_prover(id).await);
+        assert!(!mgr.has_prover(&slow_model).await);
+    }
+
+    /// Every port up to the last is handed out once. After that a start is an
+    /// error, not a second use of a port that a live prover may hold.
+    #[tokio::test]
+    async fn test_ports_run_out_without_wrapping() {
+        let mgr = ProverManager::new("unused".into(), None);
+        assert_eq!(mgr.take_port().await.unwrap(), 13100);
+        assert_eq!(mgr.take_port().await.unwrap(), 13101);
+
+        *mgr.next_port.write().await = Some(65534);
+        assert_eq!(mgr.take_port().await.unwrap(), 65534);
+        assert_eq!(mgr.take_port().await.unwrap(), 65535);
+        for _ in 0..2 {
+            let err = mgr.take_port().await.unwrap_err().to_string();
+            assert!(err.contains("No port left"), "{err}");
+        }
     }
 
     #[cfg(unix)]
