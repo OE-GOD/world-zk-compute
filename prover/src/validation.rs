@@ -1,21 +1,18 @@
-//! Input Validation and Sanitization
+//! Input Validation
 //!
-//! Validates and sanitizes inputs before processing:
-//! - Image ID format validation
-//! - Input data size limits
-//! - URL sanitization with SSRF protection
-//! - Address format validation
+//! Format checks behind the `validate` subcommand:
+//! - Ethereum address format
+//! - Image ID format
+//! - URL scheme, length and host (private/reserved IP addresses, however
+//!   they are spelled, and a list of internal hostnames are rejected)
 //!
-//! ## Security
-//!
-//! All external inputs are validated before use to prevent:
-//! - Buffer overflow attacks
-//! - Injection attacks
-//! - Resource exhaustion
-//! - Server-Side Request Forgery (SSRF) via private/internal IP ranges
+//! It also has the size-capped body read that the fetch paths share
+//! ([`read_body_capped`]). The private-input fetch checks its URL here; the
+//! other fetch paths (public inputs, program ELFs) do not.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use thiserror::Error;
+use url::{Host, Url};
 
 /// Compile-time constant: allowed URL schemes for external requests.
 /// Only HTTPS and IPFS are permitted. HTTP is intentionally excluded
@@ -66,6 +63,9 @@ pub enum ValidationError {
     #[error("Input too large: {size} bytes (max: {max} bytes)")]
     InputTooLarge { size: usize, max: usize },
 
+    #[error("Response body is larger than {max} bytes (stopped reading after {read} bytes)")]
+    BodyTooLarge { max: usize, read: usize },
+
     #[error("Input too small: {size} bytes (min: {min} bytes)")]
     InputTooSmall { size: usize, min: usize },
 
@@ -110,7 +110,7 @@ impl Default for ValidationConfig {
 /// Check whether an IPv4 address falls within private/reserved ranges.
 ///
 /// Blocked ranges:
-/// - `0.0.0.0` (unspecified)
+/// - `0.0.0.0/8` ("this network"; `0.0.0.0` reaches the local host)
 /// - `127.0.0.0/8` (loopback)
 /// - `10.0.0.0/8` (private, RFC 1918)
 /// - `172.16.0.0/12` (private, RFC 1918)
@@ -122,11 +122,13 @@ impl Default for ValidationConfig {
 /// - `198.51.100.0/24` (TEST-NET-2)
 /// - `203.0.113.0/24` (TEST-NET-3)
 /// - `198.18.0.0/15` (benchmarking)
+/// - `224.0.0.0/4` (multicast)
 /// - `240.0.0.0/4` (reserved, includes broadcast 255.255.255.255)
 fn is_private_ipv4(ip: &Ipv4Addr) -> bool {
     let octets = ip.octets();
 
-    if ip.is_unspecified() {
+    // 0.0.0.0/8
+    if octets[0] == 0 {
         return true;
     }
     if ip.is_loopback() {
@@ -172,6 +174,10 @@ fn is_private_ipv4(ip: &Ipv4Addr) -> bool {
     if octets[0] == 198 && (18..=19).contains(&octets[1]) {
         return true;
     }
+    // 224.0.0.0/4 (multicast)
+    if (224..=239).contains(&octets[0]) {
+        return true;
+    }
     // 240.0.0.0/4 (reserved, includes broadcast)
     if octets[0] >= 240 {
         return true;
@@ -185,9 +191,18 @@ fn is_private_ipv4(ip: &Ipv4Addr) -> bool {
 /// Blocked ranges:
 /// - `::` (unspecified)
 /// - `::1` (loopback)
-/// - `fe80::/10` (link-local)
 /// - `fc00::/7` (unique local address, RFC 4193)
-/// - `::ffff:0:0/96` (IPv4-mapped -- checked via the mapped IPv4 address)
+/// - `fe80::/10` (link-local)
+/// - `ff00::/8` (multicast)
+/// - `fec0::/10` (site-local, deprecated)
+/// - `100::/64` (discard-only)
+/// - `2001:db8::/32` and `3fff::/20` (documentation)
+/// - `64:ff9b:1::/48` (local-use NAT64)
+/// - `2001::/32` (Teredo)
+/// - an IPv4 address embedded in `::ffff:0:0/96` (IPv4-mapped),
+///   `::ffff:0:0:0/96` (IPv4-translated), `::/96` (IPv4-compatible),
+///   `64:ff9b::/96` (NAT64) or `2002::/16` (6to4), when the IPv4 address is
+///   blocked: the connection goes to that IPv4 address
 fn is_private_ipv6(ip: &Ipv6Addr) -> bool {
     if ip.is_unspecified() {
         return true;
@@ -198,20 +213,68 @@ fn is_private_ipv6(ip: &Ipv6Addr) -> bool {
 
     let segments = ip.segments();
 
-    // fe80::/10
-    if segments[0] & 0xffc0 == 0xfe80 {
-        return true;
-    }
     // fc00::/7
     if segments[0] & 0xfe00 == 0xfc00 {
         return true;
     }
-    // IPv4-mapped IPv6: ::ffff:x.x.x.x
-    if let Some(mapped) = ip.to_ipv4_mapped() {
-        return is_private_ipv4(&mapped);
+    // fe80::/10
+    if segments[0] & 0xffc0 == 0xfe80 {
+        return true;
+    }
+    // ff00::/8
+    if segments[0] & 0xff00 == 0xff00 {
+        return true;
+    }
+    // Documentation: 2001:db8::/32 and 3fff::/20
+    if (segments[0] == 0x2001 && segments[1] == 0x0db8)
+        || (segments[0] == 0x3fff && segments[1] & 0xf000 == 0)
+    {
+        return true;
+    }
+    // Site-local fec0::/10 (deprecated, still routed inside sites)
+    if segments[0] & 0xffc0 == 0xfec0 {
+        return true;
+    }
+    // Discard-only 100::/64
+    if segments[..4] == [0x0100, 0, 0, 0] {
+        return true;
+    }
+    // Local-use NAT64 64:ff9b:1::/48: its translator is on the local network,
+    // and where it puts the IPv4 address depends on its prefix length
+    if segments[..3] == [0x64, 0xff9b, 1] {
+        return true;
+    }
+    // Teredo 2001::/32 carries its client's IPv4 address obscured, so it is
+    // refused as a whole
+    if segments[0] == 0x2001 && segments[1] == 0 {
+        return true;
+    }
+    if let Some(embedded) = embedded_ipv4(ip) {
+        return is_private_ipv4(&embedded);
     }
 
     false
+}
+
+/// The IPv4 address that an IPv6 address carries: in the last 32 bits of an
+/// IPv4-mapped (`::ffff:0:0/96`), IPv4-translated (`::ffff:0:0:0/96`),
+/// IPv4-compatible (`::/96`) or NAT64 (`64:ff9b::/96`) address, and in bits 16
+/// to 48 of a 6to4 address (`2002::/16`)
+fn embedded_ipv4(ip: &Ipv6Addr) -> Option<Ipv4Addr> {
+    let segments = ip.segments();
+    let octets = ip.octets();
+    if segments[0] == 0x2002 {
+        return Some(Ipv4Addr::new(octets[2], octets[3], octets[4], octets[5]));
+    }
+    match segments[..6] {
+        [0, 0, 0, 0, 0, 0xffff]
+        | [0, 0, 0, 0, 0xffff, 0]
+        | [0, 0, 0, 0, 0, 0]
+        | [0x64, 0xff9b, 0, 0, 0, 0] => Some(Ipv4Addr::new(
+            octets[12], octets[13], octets[14], octets[15],
+        )),
+        _ => None,
+    }
 }
 
 /// Check whether an IP address (v4 or v6) is private/reserved.
@@ -224,16 +287,18 @@ pub fn is_private_ip(ip: &IpAddr) -> bool {
 
 /// Check whether a hostname is a known private/internal name.
 fn is_private_hostname(host: &str) -> bool {
+    // "localhost." is the same name as "localhost" to the resolver
     let lower = host.to_lowercase();
+    let name = lower.trim_end_matches('.');
 
     for blocked in BLOCKED_HOSTNAMES {
-        if lower == *blocked {
+        if name == *blocked {
             return true;
         }
     }
 
     for suffix in BLOCKED_HOSTNAME_SUFFIXES {
-        if lower.ends_with(suffix) {
+        if name.ends_with(suffix) {
             return true;
         }
     }
@@ -241,35 +306,72 @@ fn is_private_hostname(host: &str) -> bool {
     false
 }
 
-/// Extract the host from a URL string without requiring the `url` crate.
-/// Returns the host portion (without port, userinfo, or brackets for IPv6).
-fn extract_host(url: &str) -> Option<&str> {
-    let rest = url.split_once("://").map(|(_, r)| r)?;
-
-    // Strip path, query, fragment
-    let authority = rest.split('/').next().unwrap_or(rest);
-    let authority = authority.split('?').next().unwrap_or(authority);
-    let authority = authority.split('#').next().unwrap_or(authority);
-
-    // Strip userinfo
-    let host_port = if let Some((_, hp)) = authority.rsplit_once('@') {
-        hp
-    } else {
-        authority
+/// Refuse a host that is, or names, a private/internal address. The host is
+/// the one the `url` crate parsed, the parser reqwest connects with, so an
+/// IP address is checked however it was spelled (decimal, octal, hex,
+/// shortened, full-width digits).
+fn check_host(host: &Host<&str>) -> Result<(), ValidationError> {
+    let ip = match host {
+        Host::Ipv4(ip) => IpAddr::V4(*ip),
+        Host::Ipv6(ip) => IpAddr::V6(*ip),
+        Host::Domain(name) => {
+            if name.trim_end_matches('.').is_empty() {
+                return Err(ValidationError::InvalidUrl("host is empty".to_string()));
+            }
+            if is_private_hostname(name) {
+                return Err(ValidationError::SsrfBlocked(format!(
+                    "host '{}' is a private/internal hostname",
+                    name
+                )));
+            }
+            return Ok(());
+        }
     };
 
-    if host_port.is_empty() {
-        return None;
+    if is_private_ip(&ip) {
+        return Err(ValidationError::SsrfBlocked(format!(
+            "host '{}' is a private/reserved IP address",
+            ip
+        )));
     }
 
-    // Handle IPv6 bracket notation
-    if host_port.starts_with('[') {
-        let end = host_port.find(']')?;
-        Some(&host_port[1..end])
-    } else {
-        // Strip port for IPv4/hostname
-        Some(host_port.rsplit_once(':').map_or(host_port, |(h, _)| h))
+    Ok(())
+}
+
+/// Read the body of `response`, refusing it as soon as more than `max` bytes
+/// have arrived.
+///
+/// reqwest decompresses gzip and brotli bodies as they are read, so the bytes
+/// are counted after decompression: what is counted is what is held in
+/// memory. A Content-Length over `max` refuses an uncompressed body before it
+/// is read. A decompressed body has no length (reqwest drops the header), so
+/// it is counted while it is read; the chunk that goes over `max` is read
+/// before the body is refused.
+pub async fn read_body_capped(
+    mut response: reqwest::Response,
+    max: usize,
+) -> anyhow::Result<Vec<u8>> {
+    if let Some(len) = response.content_length() {
+        if len > max as u64 {
+            return Err(ValidationError::BodyTooLarge { max, read: 0 }.into());
+        }
     }
+
+    let mut body = Vec::new();
+    // The error of a failed read names the URL, whose path can hold a key
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(reqwest::Error::without_url)?
+    {
+        let read = body.len() + chunk.len();
+        if read > max {
+            return Err(ValidationError::BodyTooLarge { max, read }.into());
+        }
+        body.extend_from_slice(&chunk);
+    }
+
+    Ok(body)
 }
 
 /// Input validator
@@ -365,11 +467,19 @@ impl Validator {
     /// Checks:
     /// 1. URL is non-empty and within length limits
     /// 2. URL does not contain control characters
-    /// 3. URL scheme is in the compile-time allow list (https, ipfs, data)
-    /// 4. If the URL has a host component and it is an IP literal, the IP
-    ///    must not be in a private/reserved range
-    /// 5. If the host is a hostname, it must not be a known private hostname
-    ///    (localhost, *.local, *.internal, etc.)
+    /// 3. URL parses (with the `url` crate, as reqwest parses it) and its
+    ///    scheme is in the compile-time allow list (https, ipfs, data)
+    /// 4. Except for data URLs, which have no network host, the URL has a
+    ///    host and it is not a private/reserved IP address (see
+    ///    [`is_private_ip`]), localhost, or a known internal hostname
+    ///    (*.localhost, *.local, *.internal, etc.)
+    ///
+    /// Host names are not resolved: a public name whose DNS answer is an
+    /// internal address passes, and nothing makes the connection go to a
+    /// checked address. Resolving the name and pinning the connection to the
+    /// checked address is a decision for the owner. A redirect is not seen
+    /// here either: a client that fetches a checked URL has to refuse
+    /// redirects or check each hop.
     pub fn validate_url(&self, url: &str) -> Result<String, ValidationError> {
         let url = url.trim();
 
@@ -385,50 +495,34 @@ impl Validator {
             )));
         }
 
-        // Basic URL validation - no control characters
+        // The parser drops tabs and line breaks; refusing them keeps what is
+        // checked the same as what was written
         if url.chars().any(|c| c.is_control()) {
             return Err(ValidationError::InvalidUrl(
                 "contains control characters".to_string(),
             ));
         }
 
-        // Check for valid scheme (compile-time constant list)
-        let scheme_lower = url
-            .split_once(':')
-            .map(|(s, _)| s.to_lowercase())
-            .unwrap_or_default();
+        // The parse error does not quote the URL
+        let parsed = Url::parse(url)
+            .map_err(|e| ValidationError::InvalidUrl(format!("does not parse: {}", e)))?;
 
-        if !ALLOWED_SCHEMES.contains(&scheme_lower.as_str()) {
+        // Check for valid scheme (compile-time constant list); the parser
+        // lower-cases it
+        let scheme = parsed.scheme();
+        if !ALLOWED_SCHEMES.contains(&scheme) {
             return Err(ValidationError::InvalidUrl(format!(
                 "scheme '{}' not allowed. Allowed: {:?}",
-                scheme_lower, ALLOWED_SCHEMES
+                scheme, ALLOWED_SCHEMES
             )));
         }
 
-        // Data URIs and IPFS CIDs do not have network hosts to SSRF-check.
-        // Only check URLs with "://" (network-based schemes).
-        if url.contains("://") {
-            if let Some(host) = extract_host(url) {
-                if !host.is_empty() {
-                    // Check if host is an IP literal
-                    if let Ok(ip) = host.parse::<IpAddr>() {
-                        if is_private_ip(&ip) {
-                            return Err(ValidationError::SsrfBlocked(format!(
-                                "host '{}' is a private/reserved IP address",
-                                ip
-                            )));
-                        }
-                    } else {
-                        // Host is a hostname -- check against blocklist
-                        if is_private_hostname(host) {
-                            return Err(ValidationError::SsrfBlocked(format!(
-                                "host '{}' is a private/internal hostname",
-                                host
-                            )));
-                        }
-                    }
-                }
-            }
+        // Data URIs carry their payload inline and have no host to connect to
+        if scheme != "data" {
+            let host = parsed
+                .host()
+                .ok_or_else(|| ValidationError::InvalidUrl("has no host".to_string()))?;
+            check_host(&host)?;
         }
 
         Ok(url.to_string())
@@ -774,19 +868,136 @@ mod tests {
         assert!(!is_private_hostname("api.worldcoin.org"));
     }
 
+    // ===== SSRF: other spellings of an internal address =====
+
+    /// Each URL is one that reqwest connects to an internal host with: the
+    /// `url` crate reads all of these as 127.0.0.1, 169.254.169.254 or
+    /// localhost.
     #[test]
-    fn test_extract_host() {
-        assert_eq!(
-            extract_host("https://example.com/path"),
-            Some("example.com")
-        );
-        assert_eq!(extract_host("https://10.0.0.1:8080/path"), Some("10.0.0.1"));
-        assert_eq!(extract_host("https://[::1]:443/path"), Some("::1"));
-        assert_eq!(
-            extract_host("https://user:pass@example.com/path"),
-            Some("example.com")
-        );
-        assert_eq!(extract_host("ipfs://QmHash/path"), Some("QmHash"));
+    fn test_ssrf_blocks_every_spelling_the_url_parser_reads_as_internal() {
+        let v = Validator::new();
+        for url in [
+            "https://2130706433/",
+            "https://127.1/",
+            "https://0x7f.0.0.1/",
+            "https://localhost./",
+            "https:/127.0.0.1/x",
+            "https://169.254.169.254\\@example.com/",
+            "https://①②⑦.⓪.⓪.①/",
+            "https://0177.0.0.1/",
+            "https:\\\\127.0.0.1\\x",
+            "https://LocalHost../",
+            "https://app.localhost/",
+        ] {
+            let err = v.validate_url(url).unwrap_err();
+            assert!(
+                matches!(err, ValidationError::SsrfBlocked(_)),
+                "{url}: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ssrf_blocks_this_network_multicast_and_documentation_ipv4() {
+        let v = Validator::new();
+        for url in [
+            "https://0.1.2.3/",
+            "https://224.0.0.1/",
+            "https://239.255.255.250/",
+            "https://192.0.2.1/",
+            "https://198.51.100.1/",
+            "https://203.0.113.1/",
+            "https://100.127.255.255/",
+        ] {
+            let err = v.validate_url(url).unwrap_err();
+            assert!(
+                matches!(err, ValidationError::SsrfBlocked(_)),
+                "{url}: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ssrf_blocks_ipv6_multicast_documentation_and_embedded_ipv4() {
+        let v = Validator::new();
+        for url in [
+            "https://[ff02::1]/",
+            "https://[2001:db8::1]/",
+            "https://[::ffff:169.254.169.254]/",
+            "https://[::ffff:7f00:1]/",
+            "https://[::127.0.0.1]/",
+            "https://[::10.0.0.1]/",
+            "https://[64:ff9b::127.0.0.1]/",
+            "https://[64:ff9b::a9fe:a9fe]/",
+            "https://[fc00::1]/",
+            "https://[febf::1]/",
+            // Documentation 3fff::/20, site-local, discard-only
+            "https://[3fff::1]/",
+            "https://[3fff:fff::1]/",
+            "https://[fec0::1]/",
+            "https://[100::1]/",
+            // IPv4-translated, local-use NAT64, 6to4 and Teredo
+            "https://[::ffff:0:7f00:1]/",
+            "https://[64:ff9b:1::a9fe:a9fe]/",
+            "https://[64:ff9b:1::8.8.8.8]/",
+            "https://[2002:7f00:1::]/",
+            "https://[2002:a9fe:a9fe::1]/",
+            "https://[2001::1]/",
+        ] {
+            let err = v.validate_url(url).unwrap_err();
+            assert!(
+                matches!(err, ValidationError::SsrfBlocked(_)),
+                "{url}: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ssrf_allows_public_addresses_embedded_in_ipv6() {
+        let v = Validator::new();
+        assert!(v.validate_url("https://[::ffff:8.8.8.8]/").is_ok());
+        assert!(v.validate_url("https://[64:ff9b::8.8.8.8]/").is_ok());
+        assert!(v.validate_url("https://[::ffff:0:808:808]/").is_ok());
+        assert!(v.validate_url("https://[2002:808:808::1]/").is_ok());
+        // Outside 3fff::/20 and 2001::/32
+        assert!(v.validate_url("https://[3fff:1000::1]/").is_ok());
+        assert!(v.validate_url("https://[2001:4860::8888]/").is_ok());
+        assert!(v.validate_url("https://172.32.0.1/").is_ok());
+        assert!(v.validate_url("https://100.128.0.1/").is_ok());
+    }
+
+    #[test]
+    fn test_url_that_does_not_parse_or_has_no_host_is_refused() {
+        let v = Validator::new();
+        for url in [
+            "https://",
+            "https://exa mple.com/",
+            "https://[::1/",
+            "https://999.0.0.1/",
+            "https://./",
+            "ipfs:QmTest",
+            "not a url",
+        ] {
+            let err = v.validate_url(url).unwrap_err();
+            assert!(
+                matches!(err, ValidationError::InvalidUrl(_)),
+                "{url}: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_url_with_tab_or_line_break_is_refused() {
+        let v = Validator::new();
+        assert!(v.validate_url("https://exam\tple.com/").is_err());
+        assert!(v.validate_url("https://127.0.\n0.1/").is_err());
+    }
+
+    #[test]
+    fn test_scheme_is_checked_case_insensitively() {
+        let v = Validator::new();
+        assert!(v.validate_url("HTTPS://example.com/").is_ok());
+        assert!(v.validate_url("HTTP://example.com/").is_err());
     }
 
     // ===== Data URIs and IPFS are allowed (no host to SSRF-check) =====

@@ -42,7 +42,8 @@ impl RegistryClient {
     /// Submit a proof bundle to the registry.
     ///
     /// The `proof_bundle` is sent as-is to `POST {url}/proofs`. Returns the
-    /// registry's response containing the assigned proof ID.
+    /// registry's response containing the assigned proof ID; a response
+    /// without one is an error.
     pub async fn submit_proof(
         &self,
         proof_bundle: &serde_json::Value,
@@ -71,8 +72,14 @@ impl RegistryClient {
             .await
             .map_err(|e| format!("Failed to parse registry response: {}", e))?;
 
+        let id = body["id"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| format!("Proof-registry at {} returned no proof id", endpoint))?
+            .to_string();
+
         Ok(RegistrySubmitResult {
-            id: body["id"].as_str().unwrap_or("").to_string(),
+            id,
             status: body["status"].as_str().unwrap_or("unknown").to_string(),
             transparency_index: body["transparency_index"].as_u64(),
             proof_hash: body["proof_hash"].as_str().map(|s| s.to_string()),
@@ -93,6 +100,49 @@ mod tests {
     fn test_registry_client_creation() {
         let client = RegistryClient::new("http://localhost:3200".to_string());
         assert_eq!(client.url(), "http://localhost:3200");
+    }
+
+    /// Serve `reply` with HTTP 200 for every `POST /proofs`; returns the base URL.
+    async fn registry_replying(reply: serde_json::Value) -> String {
+        let app = axum::Router::new().route(
+            "/proofs",
+            axum::routing::post(move || {
+                let reply = reply.clone();
+                async move { axum::Json(reply) }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        url
+    }
+
+    #[tokio::test]
+    async fn test_submit_proof_returns_registry_id() {
+        let url = registry_replying(serde_json::json!({"id": "p-1", "status": "stored"})).await;
+        let result = RegistryClient::new(url)
+            .submit_proof(&serde_json::json!({}))
+            .await
+            .unwrap();
+        assert_eq!(result.id, "p-1");
+        assert_eq!(result.status, "stored");
+    }
+
+    #[tokio::test]
+    async fn test_submit_proof_without_id_is_an_error() {
+        for reply in [
+            serde_json::json!({}),
+            serde_json::json!({"status": "stored"}),
+            serde_json::json!({"id": "", "status": "stored"}),
+            serde_json::json!({"id": 7}),
+        ] {
+            let url = registry_replying(reply.clone()).await;
+            let result = RegistryClient::new(url)
+                .submit_proof(&serde_json::json!({}))
+                .await;
+            let err = result.expect_err(&reply.to_string());
+            assert!(err.contains("returned no proof id"), "{err}");
+        }
     }
 
     #[test]

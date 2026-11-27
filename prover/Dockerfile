@@ -12,7 +12,7 @@
 FROM rust:1.92-bookworm AS builder
 
 # Install build dependencies
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
@@ -25,11 +25,15 @@ WORKDIR /app
 # Copy manifests first for dependency caching
 COPY Cargo.toml Cargo.lock* ./
 
-# Create dummy main.rs for dependency compilation
-RUN mkdir -p src && echo "fn main() {}" > src/main.rs
+# Create dummy sources for dependency compilation (one per [[bin]]/[[bench]]
+# target declared in Cargo.toml, otherwise cargo rejects the manifest)
+RUN mkdir -p src && echo "fn main() {}" > src/main.rs \
+    && mkdir -p src/bin && echo "fn main() {}" > src/bin/prove_benchmark.rs \
+    && echo "fn main() {}" > src/bin/test_recursive_wrapper.rs \
+    && mkdir -p benches && echo "fn main() {}" > benches/prover_benchmarks.rs
 
 # Build dependencies only (cached layer)
-RUN cargo build --release && rm -rf src
+RUN cargo build --release && rm -rf src benches
 
 # Copy actual source code
 COPY src ./src
@@ -50,7 +54,7 @@ RUN if [ -n "$FEATURES" ]; then \
 FROM debian:bookworm-slim
 
 # Install runtime dependencies (curl needed for HEALTHCHECK)
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     libssl3 \
@@ -73,6 +77,9 @@ USER prover
 # Environment variables (override at runtime)
 ENV RUST_LOG=info
 ENV DATA_DIR=/app/data
+# `run` serves /health and /metrics on HEALTH_PORT (default 8081); pin it to
+# the port that HEALTHCHECK/EXPOSE below and prover/docker-compose.yml use.
+ENV HEALTH_PORT=9090
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

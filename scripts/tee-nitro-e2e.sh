@@ -78,6 +78,11 @@ log "Anvil running (PID=$ANVIL_PID)"
 log "Deploying TEEMLVerifier..."
 cd "$ROOT_DIR/contracts"
 
+# TEEMLVerifier.initialize rejects address(0). This flow never resolves a ZK dispute,
+# so a non-zero placeholder is enough unless a real RemainderVerifier is supplied.
+REMAINDER_VERIFIER="${REMAINDER_VERIFIER:-0xDDdDddDdDdddDDddDDddDDDDdDdDDdDDdDDDDDDd}"
+export REMAINDER_VERIFIER
+
 DEPLOY_OUTPUT=$(forge script script/DeployTEEMLVerifier.s.sol:DeployTEEMLVerifier \
     --rpc-url "$RPC_URL" \
     --private-key "$DEPLOYER_KEY" \

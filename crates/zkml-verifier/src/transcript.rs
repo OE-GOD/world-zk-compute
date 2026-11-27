@@ -52,7 +52,7 @@ pub fn setup_transcript(
 
     // 4. Absorb EC commitment points (pairs of coordinates)
     assert!(
-        input_commit_coords.len() % 2 == 0,
+        input_commit_coords.len().is_multiple_of(2),
         "input_commit_coords must have even length (x,y pairs)"
     );
     for pair in input_commit_coords.chunks(2) {
@@ -197,8 +197,8 @@ mod tests {
         assert_eq!(bytes[0], 0x08);
         assert_eq!(bytes[1], 0x07);
         assert_eq!(bytes[7], 0x01);
-        for i in 8..32 {
-            assert_eq!(bytes[i], 0);
+        for byte in &bytes[8..32] {
+            assert_eq!(*byte, 0);
         }
     }
 
@@ -243,42 +243,76 @@ mod tests {
         assert_eq!(val, U256::from_u64(42));
     }
 
-    #[test]
-    fn test_sha256_hash_chain_empty() {
-        let (fq1, fq2) = sha256_hash_chain(&[]);
-        let _ = fq1;
-        let _ = fq2;
+    // Known answers from the Remainder prover's own transcript for the small
+    // e2e circuit: contracts/test/fixtures/e2e_fixture.json, fields
+    // `circuit_hash_raw`, `transcript_trace` and `challenges` (the same values
+    // are logged in contracts/test/fixtures/transcript_trace.json, lines 1-9).
+
+    /// A big-endian hex number of up to 64 digits as a U256.
+    fn word(hex_str: &str) -> U256 {
+        let bytes: [u8; 32] = hex::decode(format!("{hex_str:0>64}"))
+            .unwrap()
+            .try_into()
+            .unwrap();
+        U256::from_be_bytes(&bytes)
+    }
+
+    fn e2e_circuit_hash() -> [u8; 32] {
+        hex::decode("8fd701309893d4017fb8d56a77c19f5abcf1cf8a7515974f2c6557c4264baa5d")
+            .unwrap()
+            .try_into()
+            .unwrap()
+    }
+
+    fn e2e_public_inputs() -> [Fq; 2] {
+        [Fq::from_u64(6), Fq::from_u64(20)]
+    }
+
+    /// The two input-layer commitment points, flattened as [x0, y0, x1, y1].
+    fn e2e_commitment_coords() -> [U256; 4] {
+        [
+            word("2eeb7bd87c1b7c95c131910efca8571acc66c94b51779765756e79d9ebed31b6"),
+            word("1f66dc66b8da788540d53f32f26019f774f59ac10da91267aeb66d671e26d01d"),
+            word("0e44b3e1e95eeb6e0babbb2b771ee94654c4598d049038541a00477e706ae0cf"),
+            word("1cdb96dd96b51e74a58ada5ff0af0ea9f4263cf06aca3b34ba699148538e86d8"),
+        ]
     }
 
     #[test]
-    fn test_sha256_hash_chain_single() {
-        let elements = [U256::ZERO];
-        let (fq1, fq2) = sha256_hash_chain(&elements);
-        let _ = fq1;
-        let _ = fq2;
+    fn test_hash_to_fq_pair_matches_remainder_circuit_hash_elements() {
+        let (fq1, fq2) = hash_to_fq_pair(&e2e_circuit_hash());
+        assert_eq!(fq1.0, word("5a9fc1776ad5b87f01d493983001d78f"));
+        assert_eq!(fq2.0, word("5daa4b26c457652c4f9715758acff1bc"));
     }
 
     #[test]
-    fn test_setup_transcript_no_panic() {
-        let circuit_hash = [0xABu8; 32];
-        let pub_inputs: &[Fq] = &[];
-        let ec_coords: &[U256] = &[];
-        let sponge = setup_transcript(&circuit_hash, pub_inputs, ec_coords);
-        let _ = sponge;
+    fn test_sha256_hash_chain_of_public_inputs_matches_remainder() {
+        let inputs: Vec<U256> = e2e_public_inputs().iter().map(|f| f.0).collect();
+        let (h1, h2) = sha256_hash_chain(&inputs);
+        assert_eq!(h1.0, word("a998b9d31f69d8ae8e48768cf8b8a5ff"));
+        assert_eq!(h2.0, word("c06bcddbc1b4d72d89678361cd10177b"));
     }
 
     #[test]
-    fn test_setup_transcript_with_inputs() {
-        let circuit_hash = [0x42u8; 32];
-        let pub_inputs = [Fq::from_u64(100), Fq::from_u64(200)];
-        let ec_coords = [
-            U256::from_u64(1),
-            U256::from_u64(2),
-            U256::from_u64(3),
-            U256::from_u64(4),
-        ];
-        let sponge = setup_transcript(&circuit_hash, &pub_inputs, &ec_coords);
-        let _ = sponge;
+    fn test_sha256_hash_chain_of_commitments_matches_remainder() {
+        let (h1, h2) = sha256_hash_chain(&e2e_commitment_coords());
+        assert_eq!(h1.0, word("8d4fbb91db66887927da89b98a2a25ce"));
+        assert_eq!(h2.0, word("470be40ac7841ffbf81a9bd7e2629166"));
+    }
+
+    /// The sponge state after setup is private; the first challenge squeezed
+    /// from it (Remainder's "Challenge for claim on output") pins it down.
+    #[test]
+    fn test_setup_transcript_first_challenge_matches_remainder() {
+        let mut sponge = setup_transcript(
+            &e2e_circuit_hash(),
+            &e2e_public_inputs(),
+            &e2e_commitment_coords(),
+        );
+        assert_eq!(
+            sponge.squeeze().0,
+            word("2c441387afe4db31a8f9a4586e8da16e5f5133f8a4abb805b9a28f85ecf92701")
+        );
     }
 
     #[test]

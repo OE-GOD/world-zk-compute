@@ -36,11 +36,26 @@ pub fn load_or_generate_key(key_path: &str) -> Result<SigningKey, String> {
     // 3. Generate a new key.
     let key = SigningKey::random(&mut rand_core::OsRng);
     let key_hex = hex::encode(key.to_bytes());
-    std::fs::write(key_path, &key_hex)
+    write_private_file(key_path, &key_hex)
         .map_err(|e| format!("failed to save signing key to {key_path}: {e}"))?;
 
     tracing::warn!("Generated new ECDSA signing key and saved to {key_path}");
     Ok(key)
+}
+
+/// Write a file that holds a private key: on Unix it is created readable and
+/// writable by the owner only.
+fn write_private_file(path: &str, contents: &str) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)?.write_all(contents.as_bytes())
 }
 
 /// Get the verifying (public) key from a signing key.
@@ -57,6 +72,10 @@ pub fn verifying_key_hex(vk: &VerifyingKey) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Held by every test that sets or removes `REGISTRY_SIGNING_KEY`: the
+    /// variable is process-wide and the test harness runs tests in parallel.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn test_load_key_from_file() {
@@ -82,6 +101,7 @@ mod tests {
     fn test_generate_new_key_to_file() {
         // Test the file-generation path of load_or_generate_key.
         // We temporarily clear the env var and restore it after.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let saved = std::env::var("REGISTRY_SIGNING_KEY").ok();
         std::env::remove_var("REGISTRY_SIGNING_KEY");
 
@@ -100,6 +120,14 @@ mod tests {
         let file_key = SigningKey::from_slice(&file_bytes).unwrap();
         assert_eq!(key.to_bytes(), file_key.to_bytes());
 
+        // The file holds a private key: nobody but the owner may read it.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&key_path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+
         // Restore env var if it was set by another test.
         if let Some(val) = saved {
             std::env::set_var("REGISTRY_SIGNING_KEY", val);
@@ -108,6 +136,8 @@ mod tests {
 
     #[test]
     fn test_load_from_env() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
         // Generate a known key.
         let key = SigningKey::random(&mut rand_core::OsRng);
         let key_hex = hex::encode(key.to_bytes());

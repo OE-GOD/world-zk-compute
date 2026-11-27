@@ -3,9 +3,10 @@
 //! Proof bundles are stored via a [`ProofStorage`] backend (for portability
 //! and easy backup), while SQLite indexes metadata for fast search.
 
+use std::ops::Bound;
 use std::sync::Arc;
 
-use chrono::Utc;
+use chrono::{DateTime, Datelike, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use zkml_verifier::ProofBundle;
@@ -47,6 +48,19 @@ pub struct DbStats {
     pub verified_count: usize,
     pub failed_count: usize,
     pub total_storage_bytes: u64,
+}
+
+/// Text form of an instant for comparison with the `created_at` column.
+///
+/// `created_at` holds `to_rfc3339()` of a UTC time, so text order is time order
+/// for four-digit years. A later year would sort before them all, so it is
+/// replaced by the last instant of the year 9999.
+fn created_at_text(t: DateTime<Utc>) -> String {
+    if t.year() > 9999 {
+        "9999-12-31T23:59:59.999999999+00:00".to_string()
+    } else {
+        t.to_rfc3339()
+    }
 }
 
 /// SQLite-backed proof index with pluggable storage backend for bundles.
@@ -198,12 +212,12 @@ impl ProofDb {
             .map_err(|e| format!("failed to query proof: {e}"))
     }
 
-    /// Search proofs by model hash and/or date range.
+    /// Search proofs by model hash and/or creation time (`from` is inclusive).
     pub fn search(
         &self,
         model_hash: Option<&str>,
-        from: Option<&str>,
-        to: Option<&str>,
+        from: Option<DateTime<Utc>>,
+        to: Bound<DateTime<Utc>>,
         limit: usize,
     ) -> Result<Vec<StoredProof>, String> {
         let mut sql = String::from(
@@ -219,11 +233,16 @@ impl ProofDb {
         }
         if let Some(f) = from {
             sql.push_str(&format!(" AND created_at >= ?{}", param_values.len() + 1));
-            param_values.push(Box::new(f.to_string()));
+            param_values.push(Box::new(created_at_text(f)));
         }
-        if let Some(t) = to {
-            sql.push_str(&format!(" AND created_at <= ?{}", param_values.len() + 1));
-            param_values.push(Box::new(t.to_string()));
+        let upper = match to {
+            Bound::Included(t) => Some(("<=", t)),
+            Bound::Excluded(t) => Some(("<", t)),
+            Bound::Unbounded => None,
+        };
+        if let Some((op, t)) = upper {
+            sql.push_str(&format!(" AND created_at {op} ?{}", param_values.len() + 1));
+            param_values.push(Box::new(created_at_text(t)));
         }
 
         sql.push_str(&format!(
@@ -415,9 +434,12 @@ impl ProofDb {
         serde_json::from_str(&text).map_err(|e| format!("failed to parse bundle: {e}"))
     }
 
-    /// Check if the database is healthy (can execute a simple query).
+    /// Check if the database is healthy (the proofs table can be read).
     pub fn is_healthy(&self) -> bool {
-        self.conn.query_row("SELECT 1", [], |_| Ok(())).is_ok()
+        self.conn
+            .query_row("SELECT id, created_at FROM proofs LIMIT 1", [], |_| Ok(()))
+            .optional()
+            .is_ok()
     }
 }
 
@@ -442,6 +464,10 @@ mod tests {
             prover_version: Some("0.1.0-test".to_string()),
             circuit_hash: Some("0xdeadbeef".to_string()),
         }
+    }
+
+    fn utc(s: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(s).unwrap().to_utc()
     }
 
     fn make_test_db() -> (ProofDb, tempfile::TempDir) {
@@ -513,7 +539,9 @@ mod tests {
         )
         .unwrap();
 
-        let results = db.search(Some("model-a"), None, None, 50).unwrap();
+        let results = db
+            .search(Some("model-a"), None, Bound::Unbounded, 50)
+            .unwrap();
         assert_eq!(results.len(), 2);
         for r in &results {
             assert_eq!(r.model_hash, "model-a");
@@ -536,13 +564,73 @@ mod tests {
 
         // Search with a wide date range that includes all.
         let results = db
-            .search(None, Some("2020-01-01"), Some("2030-12-31"), 50)
+            .search(
+                None,
+                Some(utc("2020-01-01T00:00:00Z")),
+                Bound::Included(utc("9999-12-31T00:00:00Z")),
+                50,
+            )
             .unwrap();
         assert_eq!(results.len(), 3);
 
-        // Search with a narrow range that excludes all (far future).
-        let results = db.search(None, Some("2099-01-01"), None, 50).unwrap();
+        // Search with a range that excludes all (far future).
+        let results = db
+            .search(
+                None,
+                Some(utc("9999-01-01T00:00:00Z")),
+                Bound::Unbounded,
+                50,
+            )
+            .unwrap();
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_search_range_bounds() {
+        let (db, _tmp) = make_test_db();
+        let bundle = make_test_bundle();
+        let meta = ProofMetadata {
+            model_hash: "m".into(),
+            circuit_hash: "c".into(),
+        };
+        db.store("p", &bundle, &meta).unwrap();
+
+        // Every precision that to_rfc3339() writes.
+        for at in [
+            "2026-11-24T09:19:16Z",
+            "2026-11-24T09:19:16.010Z",
+            "2026-11-24T09:19:16.010210Z",
+            "2026-11-24T09:19:16.010210001Z",
+        ] {
+            let t = utc(at);
+            db.conn
+                .execute(
+                    "UPDATE proofs SET created_at = ?1 WHERE id = 'p'",
+                    params![t.to_rfc3339()],
+                )
+                .unwrap();
+            let found = |from, to| db.search(None, from, to, 50).unwrap().len() == 1;
+            let ns = chrono::Duration::nanoseconds(1);
+
+            assert!(found(Some(t), Bound::Unbounded), "{at}");
+            assert!(found(Some(t - ns), Bound::Unbounded), "{at}");
+            assert!(!found(Some(t + ns), Bound::Unbounded), "{at}");
+
+            assert!(found(None, Bound::Included(t)), "{at}");
+            assert!(found(None, Bound::Included(t + ns)), "{at}");
+            assert!(!found(None, Bound::Included(t - ns)), "{at}");
+
+            assert!(!found(None, Bound::Excluded(t)), "{at}");
+            assert!(found(None, Bound::Excluded(t + ns)), "{at}");
+
+            // Years that RFC 3339 cannot write in four digits.
+            let year_10000 = utc("9999-12-31T23:59:59-01:00");
+            assert!(found(None, Bound::Excluded(year_10000)), "{at}");
+            assert!(!found(Some(year_10000), Bound::Unbounded), "{at}");
+            let year_before_0 = utc("0000-01-01T00:00:00+01:00");
+            assert!(found(Some(year_before_0), Bound::Unbounded), "{at}");
+            assert!(!found(None, Bound::Included(year_before_0)), "{at}");
+        }
     }
 
     #[test]
@@ -558,7 +646,7 @@ mod tests {
             db.store(&format!("limit-{i}"), &bundle, &meta).unwrap();
         }
 
-        let results = db.search(None, None, None, 3).unwrap();
+        let results = db.search(None, None, Bound::Unbounded, 3).unwrap();
         assert_eq!(results.len(), 3);
     }
 
@@ -696,5 +784,17 @@ mod tests {
     fn test_health_check() {
         let (db, _tmp) = make_test_db();
         assert!(db.is_healthy());
+
+        let meta = ProofMetadata {
+            model_hash: "m".into(),
+            circuit_hash: "c".into(),
+        };
+        db.store("p", &make_test_bundle(), &meta).unwrap();
+        assert!(db.is_healthy());
+
+        db.conn
+            .execute_batch("ALTER TABLE proofs RENAME TO proofs_gone;")
+            .unwrap();
+        assert!(!db.is_healthy());
     }
 }

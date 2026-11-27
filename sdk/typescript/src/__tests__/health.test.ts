@@ -16,6 +16,35 @@ function restoreFetch() {
   globalThis.fetch = originalFetch;
 }
 
+/**
+ * A fetch that sends 200 headers and the start of a JSON body, then stalls.
+ * Like a real fetch, the body stream fails with AbortError once the
+ * request's signal aborts.
+ */
+function stallingBodyFetch(): typeof fetch {
+  return async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"status":'));
+        init?.signal?.addEventListener('abort', () => {
+          controller.error(new DOMException('The operation was aborted.', 'AbortError'));
+        });
+      },
+    });
+    return new Response(body, {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+}
+
+function jsonResponse(body: unknown, status: number): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
 describe('checkHealth', () => {
   afterEach(() => {
     restoreFetch();
@@ -96,7 +125,7 @@ describe('checkHealth', () => {
           last_indexed_block: 0,
           total_results: 0,
         }),
-        { status: 500, headers: { 'Content-Type': 'application/json' } },
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
       ),
     );
 
@@ -228,6 +257,37 @@ describe('checkHealth', () => {
     );
 
     // Missing status field defaults to 'unknown', which is not 'ok'
+    await expect(checkHealth('http://localhost:8081')).rejects.toThrow(
+      ServiceHealthError,
+    );
+  });
+
+  it('times out when the body stalls after the headers arrive', async () => {
+    mockFetch(stallingBodyFetch());
+    await expect(
+      checkHealth('http://localhost:8081', { timeout: 50 }),
+    ).rejects.toThrow(TimeoutError);
+  }, 2000);
+
+  it('reports a rate-limited answer as a failed check with its HTTP status', async () => {
+    mockFetch(async () => jsonResponse({ error: 'rate limit exceeded' }, 429));
+    const err = await checkHealth('http://localhost:8081').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NetworkError);
+    expect(err).not.toBeInstanceOf(ServiceHealthError);
+    expect((err as NetworkError).httpStatus).toBe(429);
+  });
+
+  it('reports a 503 without a JSON body as a failed check with its HTTP status', async () => {
+    mockFetch(async () => new Response('<html>Service Unavailable</html>', { status: 503 }));
+    const err = await checkHealth('http://localhost:8081').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NetworkError);
+    expect((err as NetworkError).httpStatus).toBe(503);
+  });
+
+  it('treats a 503 as unhealthy even when the body says ok', async () => {
+    mockFetch(async () =>
+      jsonResponse({ status: 'ok', last_indexed_block: 5, total_results: 1 }, 503),
+    );
     await expect(checkHealth('http://localhost:8081')).rejects.toThrow(
       ServiceHealthError,
     );
@@ -378,6 +438,28 @@ describe('checkReady', () => {
     await expect(
       checkReady('http://localhost:8081', { timeout: 50 }),
     ).rejects.toThrow(TimeoutError);
+  });
+
+  it('times out when the body stalls after the headers arrive', async () => {
+    mockFetch(stallingBodyFetch());
+    await expect(
+      checkReady('http://localhost:8081', { timeout: 50 }),
+    ).rejects.toThrow(TimeoutError);
+  }, 2000);
+
+  it('reports a rate-limited answer as a failed check with its HTTP status', async () => {
+    mockFetch(async () => jsonResponse({ error: 'rate limit exceeded' }, 429));
+    const err = await checkReady('http://localhost:8081').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NetworkError);
+    expect((err as NetworkError).httpStatus).toBe(429);
+  });
+
+  it('reports not ready for a 503 even when the body says ready', async () => {
+    mockFetch(async () =>
+      jsonResponse({ ready: true, checks: { db: 'ok', indexing: 'ok' } }, 503),
+    );
+    const ready = await checkReady('http://localhost:8081');
+    expect(ready.ready).toBe(false);
   });
 
   it('exports IndexerReadyResponse type correctly', () => {

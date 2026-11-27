@@ -20,7 +20,7 @@ env:
 jobs:
   # ── Job 1: TEE Happy Path ────────────────────────────────────────────────
   # Self-contained script: starts Anvil, deploys TEEMLVerifier, runs full
-  # happy path (owner, pause/unpause, input validation, 2-step ownership,
+  # happy path (admin, pause/unpause, input validation, admin transfer,
   # register enclave, submit, finalize, verify).
   tee-happy-path:
     name: TEE Happy Path E2E
@@ -35,12 +35,6 @@ jobs:
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
-
-      - name: Install forge dependencies
-        working-directory: contracts
-        run: |
-          forge install foundry-rs/forge-std --no-git
-          forge install risc0/risc0-ethereum --no-git
 
       - name: Run TEE happy path E2E
         run: bash scripts/tee-e2e.sh
@@ -62,12 +56,6 @@ jobs:
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
-
-      - name: Install forge dependencies
-        working-directory: contracts
-        run: |
-          forge install foundry-rs/forge-std --no-git
-          forge install risc0/risc0-ethereum --no-git
 
       - name: Install Python (for fixture parsing)
         uses: actions/setup-python@v5
@@ -105,24 +93,18 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            sdk/target
+            target
           key: ${{ runner.os }}-cargo-sdk-e2e-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-sdk-e2e-
-
-      - name: Install forge dependencies
-        working-directory: contracts
-        run: |
-          forge install foundry-rs/forge-std --no-git
-          forge install risc0/risc0-ethereum --no-git
 
       - name: Run Rust SDK E2E
         run: bash scripts/tee-sdk-e2e.sh
 
   # ── Job 4: Python SDK E2E ────────────────────────────────────────────────
   # Starts Anvil, deploys TEEMLVerifier, installs the Python SDK and runs
-  # a comprehensive E2E covering owner, pause, enclave registration,
-  # submit, finalize, ownership transfer, revocation.
+  # a comprehensive E2E covering admin, pause, enclave registration,
+  # submit, finalize, admin transfer, revocation.
   python-sdk-e2e:
     name: Python SDK TEE E2E
     runs-on: ubuntu-latest
@@ -137,12 +119,6 @@ jobs:
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
 
-      - name: Install forge dependencies
-        working-directory: contracts
-        run: |
-          forge install foundry-rs/forge-std --no-git
-          forge install risc0/risc0-ethereum --no-git
-
       - name: Install Python
         uses: actions/setup-python@v5
         with:
@@ -153,8 +129,8 @@ jobs:
 
   # ── Job 5: TypeScript SDK E2E ────────────────────────────────────────────
   # Starts Anvil, deploys TEEMLVerifier, installs the TypeScript SDK and
-  # runs E2E tests covering owner reads, pause/unpause, enclave
-  # registration, submit, finalize, ownership transfer, revocation.
+  # runs E2E tests covering admin reads, pause/unpause, enclave
+  # registration, submit, finalize, admin transfer, revocation.
   typescript-sdk-e2e:
     name: TypeScript SDK TEE E2E
     runs-on: ubuntu-latest
@@ -169,23 +145,12 @@ jobs:
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
 
-      - name: Install forge dependencies
-        working-directory: contracts
-        run: |
-          forge install foundry-rs/forge-std --no-git
-          forge install risc0/risc0-ethereum --no-git
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
           cache-dependency-path: sdk/typescript/package-lock.json
-
-      - name: Install Python (needed by forge create JSON parsing)
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
 
       - name: Run TypeScript SDK TEE E2E
         run: bash scripts/typescript-sdk-tee-e2e.sh
@@ -226,16 +191,10 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            sdk/target
+            target
           key: ${{ runner.os }}-cargo-sdk-batch-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-sdk-batch-
-
-      - name: Install forge dependencies
-        working-directory: contracts
-        run: |
-          forge install foundry-rs/forge-std --no-git
-          forge install risc0/risc0-ethereum --no-git
 
       - name: Start Anvil and deploy contracts
         run: |
@@ -260,7 +219,7 @@ jobs:
           import json, sys
           data = json.load(open('broadcast/DeployRemainderDAG.s.sol/31337/run-latest.json'))
           for tx in data['transactions']:
-              if tx.get('transactionType') == 'CREATE':
+              if tx.get('transactionType') == 'CREATE' and tx.get('contractName') == 'UUPSProxy':
                   print(tx['contractAddress']); sys.exit(0)
           sys.exit(1)
           ")
@@ -319,12 +278,6 @@ jobs:
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
 
-      - name: Install forge dependencies
-        working-directory: contracts
-        run: |
-          forge install foundry-rs/forge-std --no-git
-          forge install risc0/risc0-ethereum --no-git
-
       - name: Start Anvil
         run: |
           anvil --port 8545 --silent --gas-limit 500000000 --code-size-limit 200000 &
@@ -346,8 +299,10 @@ jobs:
           BROADCAST_FILE=$(find broadcast/DeployAll.s.sol -name "run-latest.json" | head -1)
           echo "Broadcast file: $BROADCAST_FILE"
 
-          REMAINDER=$(jq -r '.transactions[] | select(.contractName == "RemainderVerifier") | .contractAddress // empty' "$BROADCAST_FILE" | head -1)
-          TEE=$(jq -r '.transactions[] | select(.contractName == "TEEMLVerifier") | .contractAddress // empty' "$BROADCAST_FILE" | head -1)
+          # Both contracts sit behind UUPS proxies, and the proxies are what callers use:
+          # 1st UUPSProxy = RemainderVerifier, 2nd UUPSProxy = TEEMLVerifier.
+          REMAINDER=$(jq -r '[.transactions[] | select(.transactionType == "CREATE" and .contractName == "UUPSProxy")] | .[0].contractAddress // empty' "$BROADCAST_FILE")
+          TEE=$(jq -r '[.transactions[] | select(.transactionType == "CREATE" and .contractName == "UUPSProxy")] | .[1].contractAddress // empty' "$BROADCAST_FILE")
 
           echo "RemainderVerifier: $REMAINDER"
           echo "TEEMLVerifier: $TEE"
@@ -362,12 +317,16 @@ jobs:
             exit 1
           fi
 
-          # Verify TEEMLVerifier owner
-          OWNER=$(cast call "$TEE" "owner()(address)" --rpc-url http://127.0.0.1:8545)
-          echo "TEEMLVerifier owner: $OWNER"
+          # Verify TEEMLVerifier admin
+          ADMIN=$(cast call "$TEE" "admin()(address)" --rpc-url http://127.0.0.1:8545)
+          echo "TEEMLVerifier admin: $ADMIN"
 
           # Verify RemainderVerifier link
           RV=$(cast call "$TEE" "remainderVerifier()(address)" --rpc-url http://127.0.0.1:8545)
           echo "TEEMLVerifier.remainderVerifier: $RV"
+          if [ "$(echo "$RV" | tr '[:upper:]' '[:lower:]')" != "$(echo "$REMAINDER" | tr '[:upper:]' '[:lower:]')" ]; then
+            echo "ERROR: TEEMLVerifier.remainderVerifier does not point at the deployed RemainderVerifier"
+            exit 1
+          fi
 
           echo "DeployAll smoke test PASSED"

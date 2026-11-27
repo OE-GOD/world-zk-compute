@@ -20,7 +20,7 @@ You have an ML model (XGBoost, LightGBM, Random Forest, etc.). World ZK Compute 
 
 | Tool | Required for | Install |
 |------|-------------|---------|
-| **Rust** 1.82+ | Core build | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
+| **Rust** 1.92+ | Core build | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
 | **Foundry** | Solidity contracts + demos | `curl -L https://foundry.paradigm.xyz \| bash && foundryup` |
 | **Docker** | Full stack (optional) | [Docker Desktop](https://docs.docker.com/get-docker/) |
 
@@ -126,14 +126,14 @@ docs/                   Full documentation
 |------------|--------|
 | XGBoost | Supported |
 | LightGBM | Supported |
-| Random Forest | Supported |
-| Logistic Regression | Supported |
+| Random Forest | Broken: converter can produce verified proofs of the wrong class |
+| Logistic Regression | Broken: placeholder converter crashes before proving |
 
 ## SDKs
 
 | Language | Install | Docs |
 |----------|---------|------|
-| Rust | `cargo add zkml-verifier` | [Crate docs](crates/zkml-verifier/README.md) |
+| Rust | Path dependency on `crates/zkml-verifier` (not on crates.io; the `zkml-verifier` crate there is unrelated) | [Crate docs](crates/zkml-verifier/README.md) |
 | Python | Build from source (see [Quick Start](docs/QUICKSTART.md#python)) | [Quick Start](docs/QUICKSTART.md#python) |
 | JavaScript | WASM build (see [Quick Start](docs/QUICKSTART.md#javascript-browser--wasm)) | [Quick Start](docs/QUICKSTART.md#javascript-browser--wasm) |
 | REST API | `docker compose -f docker-compose.verifier.yml up` | [API Reference](docs/API_REFERENCE.md) |

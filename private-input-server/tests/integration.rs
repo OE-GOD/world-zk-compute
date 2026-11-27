@@ -553,7 +553,12 @@ async fn test_fetch_returns_octet_stream_content_type() {
     let resp = post_fetch(app.clone(), 60, &auth).await;
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .unwrap()
+        .to_str()
+        .unwrap();
     assert_eq!(ct, "application/octet-stream");
 }
 
@@ -568,7 +573,7 @@ async fn test_file_backed_storage_persists_across_stores() {
     // Phase 1: Create a store, upload data, drop the store
     {
         let store1 = store::InputStore::with_storage_dir(dir.path().to_path_buf()).unwrap();
-        store1.put(200, b"persistent payload".to_vec());
+        store1.put(200, b"persistent payload".to_vec()).unwrap();
     }
 
     // Phase 2: Create a new store from the same directory and verify recovery
@@ -626,7 +631,7 @@ async fn test_file_backed_storage_writes_bin_file() {
     let dir = tempfile::tempdir().unwrap();
     let store = store::InputStore::with_storage_dir(dir.path().to_path_buf()).unwrap();
 
-    store.put(55, b"check disk file".to_vec());
+    store.put(55, b"check disk file".to_vec()).unwrap();
 
     let file_path = dir.path().join("55.bin");
     assert!(file_path.exists(), "55.bin should exist on disk");
@@ -635,17 +640,38 @@ async fn test_file_backed_storage_writes_bin_file() {
 }
 
 #[tokio::test]
+async fn test_upload_answers_500_when_the_input_cannot_be_written() {
+    let parent = tempfile::tempdir().unwrap();
+    let dir = parent.path().join("inputs");
+    let state = Arc::new(AppState {
+        store: store::InputStore::with_storage_dir(dir.clone()).unwrap(),
+        rpc_url: "http://localhost:8545".to_string(),
+        engine_address: Address::ZERO,
+        skip_chain_verification: true,
+    });
+    // The directory is gone, so the input cannot be written.
+    std::fs::remove_dir(&dir).unwrap();
+
+    let resp = post_upload(test_app_with_state(state.clone()), 77, b"lost".to_vec()).await;
+    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(state.store.is_empty());
+}
+
+#[tokio::test]
 async fn test_file_backed_storage_remove_deletes_file() {
     let dir = tempfile::tempdir().unwrap();
     let store = store::InputStore::with_storage_dir(dir.path().to_path_buf()).unwrap();
 
-    store.put(66, b"to be removed".to_vec());
+    store.put(66, b"to be removed".to_vec()).unwrap();
     let file_path = dir.path().join("66.bin");
     assert!(file_path.exists());
 
     store.remove(66);
     assert!(!file_path.exists(), "file should be deleted after remove");
-    assert!(store.get(66).is_none(), "get should return None after remove");
+    assert!(
+        store.get(66).is_none(),
+        "get should return None after remove"
+    );
 }
 
 // ===========================================================================

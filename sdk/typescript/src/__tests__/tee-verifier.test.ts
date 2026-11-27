@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { teeMLVerifierAbi } from '../tee-verifier-abi';
 import { TEEVerifier } from '../tee-verifier';
+import { ApiError } from '../errors';
 
 describe('teeMLVerifierAbi', () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -133,5 +134,39 @@ describe('TEEVerifier class', () => {
   it('should not have owner() method (replaced by admin)', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect((TEEVerifier.prototype as any).owner).toBeUndefined();
+  });
+
+  // A mined transaction that reverted still yields a receipt; only its
+  // status says the call failed. The constructor opens no connection, so the
+  // viem clients it builds are swapped for mocks before any call.
+  const verifierWithReceipt = (status: 'success' | 'reverted') => {
+    const verifier = new TEEVerifier({
+      rpcUrl: 'http://localhost:1',
+      privateKey: '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80',
+      contractAddress: '0x1234567890abcdef1234567890abcdef12345678',
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const internals = verifier as any;
+    internals.publicClient = {
+      waitForTransactionReceipt: async () => ({ status, blockNumber: 7n }),
+    };
+    internals.walletClient = { writeContract: async () => '0xdead' };
+    return verifier;
+  };
+
+  it('rejects a write whose transaction was mined but reverted', async () => {
+    const err = await verifierWithReceipt('reverted')
+      .finalize('0x01')
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).code).toBe('WZK-4002');
+    expect((err as ApiError).details).toMatchObject({
+      transactionHash: '0xdead',
+      functionName: 'finalize',
+    });
+  });
+
+  it('returns the hash of a write whose transaction succeeded', async () => {
+    await expect(verifierWithReceipt('success').finalize('0x01')).resolves.toBe('0xdead');
   });
 });

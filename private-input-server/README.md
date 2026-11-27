@@ -67,7 +67,7 @@ Supports `.env` file via `dotenvy`.
 ## Storage
 
 - **In-memory** (default): Fast, but data is lost on restart
-- **File-backed** (`STORAGE_DIR`): Inputs persisted as `{request_id}.bin` files with in-memory cache
+- **File-backed** (`STORAGE_DIR`): Inputs persisted as `{request_id}.bin` files with in-memory cache. Each file is written to a temporary file, synced and renamed into place. On Unix a missing directory is created 0700, an existing one keeps its mode (a warning is logged when group or other users can access it), each file is created 0600, and the directory is synced after the rename. An upload that cannot be written answers 500.
 
 ## Rate Limiting
 
@@ -85,9 +85,10 @@ RPC_URL=https://eth-mainnet.g.alchemy.com/v2/KEY \
 ENGINE_ADDRESS=0x... \
 cargo run --release
 
-# Docker
+# Docker: the Dockerfile does not build this crate. It runs the in-memory Python
+# stub server.py on port 3001 (POST /inputs, GET /inputs/<sha256>, no authentication).
 docker build -t private-input-server .
-docker run -p 8090:8090 -e RPC_URL=... -e ENGINE_ADDRESS=... private-input-server
+docker run -p 3001:3001 private-input-server
 ```
 
 ## Testing

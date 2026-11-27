@@ -36,3 +36,4 @@ flate2 = "1"                # Gzip compression for cold-storage proof archival
 tempfile = "3"
 serial_test = "3"
 alloy = { version = "1.0", features = ["full", "provider-anvil-node"] }
+tokio = { version = "1", features = ["full", "test-util"] }  # paused clock for timeout tests

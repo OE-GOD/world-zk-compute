@@ -335,7 +335,7 @@ if should_run "stylus"; then
     if [[ -n "$NATIVE_TARGET" ]]; then
         run_suite "Stylus GKR Verifier" \
             "$ROOT_DIR/contracts/stylus/gkr-verifier" \
-            cargo test --target "$NATIVE_TARGET"
+            cargo test --no-default-features --target "$NATIVE_TARGET"
     else
         skip_suite "Stylus GKR Verifier" "could not detect native Rust target"
     fi

@@ -6,17 +6,17 @@ set -euo pipefail
 #
 # Tests the TypeScript SDK TEEVerifier against a live Anvil instance:
 #   1. Start Anvil
-#   2. Deploy TEEMLVerifier via forge create
+#   2. Deploy TEEMLVerifier behind its UUPS proxy (forge script)
 #   3. Install TypeScript SDK
 #   4. Run TypeScript E2E covering:
-#      - owner() read
+#      - admin() read
 #      - pause / unpause / paused()
 #      - registerEnclave
-#      - submitResult (with ECDSA attestation signed in TypeScript)
+#      - submitResult (with EIP-712 attestation signed in TypeScript)
 #      - getResult
 #      - isResultValid (before and after finalize)
 #      - fast-forward past challenge window + finalize
-#      - 2-step ownership transfer
+#      - admin transfer (changeAdmin)
 #      - revokeEnclave
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -30,7 +30,6 @@ RPC_URL="http://127.0.0.1:${ANVIL_PORT}"
 
 # Anvil account #0 -- admin / submitter
 ADMIN_KEY="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
-ADMIN_ADDR="0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
 
 log() { echo "==> $*"; }
 ok()  { echo "  [OK] $*"; }
@@ -63,15 +62,27 @@ ok "Anvil running (PID: $ANVIL_PID)"
 log "Step 2: Deploying TEEMLVerifier..."
 cd "$CONTRACTS_DIR"
 
-TEE_VERIFIER=$(forge create src/tee/TEEMLVerifier.sol:TEEMLVerifier \
-    --broadcast --json \
-    --rpc-url "$RPC_URL" \
-    --private-key "$ADMIN_KEY" \
-    --constructor-args "$ADMIN_ADDR" "0x0000000000000000000000000000000000000000" \
-    2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['deployedTo'])")
+# TEEMLVerifier.initialize rejects address(0). This flow never resolves a ZK dispute,
+# so a non-zero placeholder is enough unless a real RemainderVerifier is supplied.
+REMAINDER_VERIFIER="${REMAINDER_VERIFIER:-0xDDdDddDdDdddDDddDDddDDDDdDdDDdDDdDDDDDDd}"
+
+# TEEMLVerifier is UUPS-upgradeable: deploy the implementation behind a proxy and
+# initialize it through the proxy (the implementation itself cannot be initialized).
+if ! DEPLOY_OUTPUT=$(DEPLOYER_KEY="$ADMIN_KEY" REMAINDER_VERIFIER="$REMAINDER_VERIFIER" \
+    forge script script/DeployTEEMLVerifier.s.sol:DeployTEEMLVerifier \
+    --rpc-url "$RPC_URL" --broadcast 2>&1); then
+    err "Failed to deploy TEEMLVerifier"
+    echo "$DEPLOY_OUTPUT" >&2
+    exit 1
+fi
+
+# The script prints the proxy address; the broadcast entry named "TEEMLVerifier" is the
+# implementation, which must not be used directly.
+TEE_VERIFIER=$(awk '/TEEMLVerifier deployed at:/ { print $NF; exit }' <<< "$DEPLOY_OUTPUT")
 
 if [ -z "$TEE_VERIFIER" ]; then
-    err "Failed to deploy TEEMLVerifier"
+    err "TEEMLVerifier proxy address not found in deploy output"
+    echo "$DEPLOY_OUTPUT" >&2
     exit 1
 fi
 ok "TEEMLVerifier deployed at: $TEE_VERIFIER"
@@ -87,13 +98,10 @@ ok "TypeScript SDK installed"
 
 log "Step 4: Running TypeScript SDK TEE E2E tests..."
 
-npx tsx src/tee-e2e.ts \
+if ! npx tsx src/tee-e2e.ts \
     --rpc-url "$RPC_URL" \
     --private-key "$ADMIN_KEY" \
-    --contract "$TEE_VERIFIER"
-
-TS_EXIT=$?
-if [ "$TS_EXIT" -ne 0 ]; then
+    --contract "$TEE_VERIFIER"; then
     err "TypeScript SDK TEE E2E tests FAILED"
     exit 1
 fi
@@ -106,7 +114,7 @@ echo "================================================================"
 echo "  TypeScript SDK TEE Verifier E2E -- PASSED"
 echo "================================================================"
 echo "  Contract:  $TEE_VERIFIER"
-echo "  Tested:    owner, paused, pause/unpause, registerEnclave,"
+echo "  Tested:    admin, paused, pause/unpause, registerEnclave,"
 echo "             submitResult, getResult, isResultValid, finalize,"
-echo "             2-step ownership transfer, revokeEnclave"
+echo "             admin transfer, revokeEnclave"
 echo "================================================================"

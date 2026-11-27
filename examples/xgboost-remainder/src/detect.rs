@@ -27,6 +27,7 @@ pub const FORMAT_MLP: &str = "mlp";
 /// | MLP                 | `"model_type"` == `"mlp"`                   |
 /// | Random forest       | `"n_estimators"` or `"forest"`              |
 /// | Logistic regression | `"weights"` (with or without `"bias"`)      |
+/// | XGBoost (this crate's `XgboostModel` layout, e.g. `sample_model.json`) | `"num_features"` and `"trees"` |
 pub fn detect_model_format(json_str: &str) -> Result<&'static str, String> {
     let v: serde_json::Value =
         serde_json::from_str(json_str).map_err(|e| format!("Invalid JSON: {}", e))?;
@@ -54,6 +55,12 @@ pub fn detect_model_format(json_str: &str) -> Result<&'static str, String> {
     // Logistic regression: has "weights" key
     if v.get("weights").is_some() {
         return Ok(FORMAT_LOGISTIC_REGRESSION);
+    }
+
+    // This crate's own serialized XgboostModel (sample_model.json); the
+    // "xgboost" loader accepts it alongside the xgb.save_model format.
+    if v.get("num_features").is_some() && v.get("trees").is_some() {
+        return Ok(FORMAT_XGBOOST);
     }
 
     Err("Could not detect model format. Use --model-format to specify.".into())
@@ -161,6 +168,29 @@ mod tests {
             detect_model_format(json).unwrap(),
             FORMAT_LOGISTIC_REGRESSION
         );
+    }
+
+    // ===== This crate's XgboostModel layout =====
+
+    /// Read a model file that ships with the crate. The files are read at test
+    /// time instead of with `include_str!` so that building the crate needs
+    /// nothing outside `src/` (the Dockerfile copies only that).
+    fn crate_file(relative: &str) -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(relative);
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    }
+
+    #[test]
+    fn test_detect_sample_model_file() {
+        // The file the README, the Dockerfile and scripts/remainder-e2e.sh use.
+        let json = crate_file("sample_model.json");
+        assert_eq!(detect_model_format(&json).unwrap(), FORMAT_XGBOOST);
+    }
+
+    #[test]
+    fn test_random_forest_with_trees_is_not_taken_for_xgboost() {
+        let json = crate_file("test-model/random_forest_sample.json");
+        assert_eq!(detect_model_format(&json).unwrap(), FORMAT_RANDOM_FOREST);
     }
 
     // ===== Unknown / error cases =====

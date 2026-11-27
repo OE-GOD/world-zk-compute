@@ -10,6 +10,19 @@ const DEFAULT_PROVER_CONNECT_TIMEOUT_SECS: u64 = 5;
 /// Proving can take several minutes, so default is generous.
 const DEFAULT_PROVER_REQUEST_TIMEOUT_SECS: u64 = 300;
 
+/// Longest prefix of `s` that is at most `max` bytes long and ends on a
+/// character boundary. Used to shorten response bodies for log lines.
+fn body_preview(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 /// How the operator communicates with the prover.
 #[derive(Debug, Clone)]
 pub enum ProverMode {
@@ -245,13 +258,29 @@ impl ProofManager {
     ) -> anyhow::Result<()> {
         fs::create_dir_all(&self.proofs_dir).await?;
         let output_path = self.proofs_dir.join(format!("{}.json", result_id));
+        // The prover writes to a temporary name, and the file gets its final
+        // name only after the prover has exited successfully. A temporary
+        // file left by an earlier attempt is removed first, so that only this
+        // run's output can be moved into place.
+        //
+        // The temporary name is the same for every attempt, on this path and
+        // on the HTTP path: this relies on one generation per result id at a
+        // time, which holds for the one caller (the pre-computation started
+        // by `submit`, once per submitted result, retrying in sequence). Two
+        // at once could move a half-written file into place.
+        let tmp_path = self.proofs_dir.join(format!("{}.json.tmp", result_id));
+        match fs::remove_file(&tmp_path).await {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
 
         tracing::info!(
             "Generating proof (subprocess): {} --model {} --features {} --output {}",
             self.precompute_bin,
             self.model_path,
             features,
-            output_path.display()
+            tmp_path.display()
         );
 
         let status = Command::new(&self.precompute_bin)
@@ -260,13 +289,22 @@ impl ProofManager {
             .arg("--features")
             .arg(features)
             .arg("--output")
-            .arg(&output_path)
+            .arg(&tmp_path)
             .status()
             .await?;
 
         if !status.success() {
+            let _ = fs::remove_file(&tmp_path).await;
             anyhow::bail!("Proof generation failed with status: {}", status);
         }
+
+        fs::rename(&tmp_path, &output_path).await.map_err(|e| {
+            anyhow::anyhow!(
+                "Prover exited successfully but {} could not be moved into place: {}",
+                tmp_path.display(),
+                e
+            )
+        })?;
 
         tracing::info!("Proof generated (subprocess): {}", output_path.display());
         Ok(())
@@ -317,7 +355,7 @@ impl ProofManager {
                 result_id = result_id,
                 endpoint = %endpoint,
                 status = %status,
-                body_preview = %if text.len() > 200 { &text[..200] } else { &text },
+                body_preview = %body_preview(&text, 200),
                 "Prover HTTP request returned non-success status"
             );
             anyhow::bail!("Prover HTTP request failed ({}): {}", status, text);
@@ -376,7 +414,7 @@ impl ProofManager {
             tracing::warn!(
                 result_id = result_id,
                 endpoint = %endpoint,
-                body_preview = %if body.len() > 200 { &body[..200] } else { &body },
+                body_preview = %body_preview(&body, 200),
                 error = %e,
                 "Prover response is not valid JSON"
             );
@@ -483,7 +521,11 @@ impl ProofManager {
             }
         }
 
-        fs::write(&output_path, &body).await?;
+        // Write under a temporary name and rename, so the file is complete
+        // whenever it exists under its final name.
+        let tmp_path = self.proofs_dir.join(format!("{}.json.tmp", result_id));
+        fs::write(&tmp_path, &body).await?;
+        fs::rename(&tmp_path, &output_path).await?;
         tracing::info!("Proof received and saved (HTTP): {}", output_path.display());
         Ok(())
     }
@@ -519,6 +561,9 @@ impl ProofManager {
 }
 
 #[cfg(test)]
+// ENV_MUTEX serialises tests that edit process env vars; each #[tokio::test] has its
+// own runtime, so holding the std guard across an await cannot deadlock here.
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
     use std::sync::Mutex;
@@ -1144,5 +1189,314 @@ mod tests {
             "Expected empty receipt string error, got: {}",
             err_msg
         );
+    }
+
+    #[test]
+    fn test_body_preview_cuts_at_char_boundary() {
+        // 301 bytes; byte 200 is the second byte of an 'é'.
+        let body = format!("x{}", "é".repeat(150));
+        assert!(!body.is_char_boundary(200));
+        let preview = body_preview(&body, 200);
+        assert_eq!(preview.len(), 199);
+        assert!(body.starts_with(preview));
+
+        assert_eq!(body_preview("short", 200), "short");
+        let ascii = "a".repeat(300);
+        assert_eq!(body_preview(&ascii, 200).len(), 200);
+    }
+
+    /// Subscriber that formats WARN events (as the operator does by default)
+    /// and discards the output.
+    fn warn_subscriber() -> impl tracing::Subscriber + Send + Sync {
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(std::io::sink)
+            .finish()
+    }
+
+    #[tokio::test]
+    async fn test_generate_proof_http_error_body_with_multibyte_char_at_cut() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let pm = make_test_pm(&dir);
+
+        let body = format!("x{}", "é".repeat(150));
+        let resp = format!(
+            "HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body,
+        );
+        let (mock_url, _h) = spawn_mock_server(resp).await;
+
+        let _guard = tracing::subscriber::set_default(warn_subscriber());
+        let err = pm
+            .generate_proof_http(&mock_url, "test-multibyte-502", "[1.0, 2.0]")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("502"), "Expected status error, got: {}", err);
+    }
+
+    #[tokio::test]
+    async fn test_generate_proof_http_invalid_json_with_multibyte_char_at_cut() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let pm = make_test_pm(&dir);
+
+        let body = format!("x{}", "é".repeat(150));
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body,
+        );
+        let (mock_url, _h) = spawn_mock_server(resp).await;
+
+        let _guard = tracing::subscriber::set_default(warn_subscriber());
+        let err = pm
+            .generate_proof_http(&mock_url, "test-multibyte-json", "[1.0, 2.0]")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("not valid JSON"),
+            "Expected invalid JSON error, got: {}",
+            err
+        );
+    }
+
+    fn stored_proof_json(proof_hex: &str) -> String {
+        format!(
+            r#"{{"proof_hex":"{}","circuit_hash":"0x1234","public_inputs_hex":"0xab","gens_hex":"0xcd"}}"#,
+            proof_hex
+        )
+    }
+
+    fn file_names(dir: &std::path::Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// While the HTTP response is being written to disk, the proof must not be
+    /// visible under its final name with only part of its bytes.
+    #[tokio::test]
+    async fn test_generate_proof_http_never_exposes_partial_file() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let pm = make_test_pm(&dir);
+
+        let body = stored_proof_json(&format!("0x{}", "ab".repeat(8 * 1024 * 1024)));
+        let full_len = body.len() as u64;
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body,
+        );
+        let (mock_url, _h) = spawn_mock_server(resp).await;
+
+        let final_path = dir.path().join("big.json");
+        let stop = Arc::new(AtomicBool::new(false));
+        let watcher = {
+            let final_path = final_path.clone();
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                let mut partial_sizes = Vec::new();
+                while !stop.load(Ordering::Relaxed) {
+                    if let Ok(meta) = std::fs::metadata(&final_path) {
+                        if meta.len() != full_len {
+                            partial_sizes.push(meta.len());
+                        }
+                    }
+                }
+                partial_sizes
+            })
+        };
+
+        let result = pm.generate_proof_http(&mock_url, "big", "[1.0, 2.0]").await;
+        stop.store(true, Ordering::Relaxed);
+        let partial_sizes = watcher.join().unwrap();
+        result.unwrap();
+
+        assert!(
+            partial_sizes.is_empty(),
+            "big.json was visible with {} of {} bytes",
+            partial_sizes[0],
+            full_len
+        );
+        assert_eq!(std::fs::metadata(&final_path).unwrap().len(), full_len);
+        assert_eq!(file_names(dir.path()), ["big.json"]);
+    }
+
+    /// A reader that opened an earlier proof for the same result keeps a
+    /// complete file when the proof is generated again.
+    #[tokio::test]
+    async fn test_generate_proof_http_replaces_existing_proof_atomically() {
+        use std::io::Read;
+
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let pm = make_test_pm(&dir);
+
+        let old = stored_proof_json(&format!("0x{}", "11".repeat(64)));
+        let final_path = dir.path().join("regen.json");
+        std::fs::write(&final_path, &old).unwrap();
+        let mut reader = std::fs::File::open(&final_path).unwrap();
+
+        let new = stored_proof_json("0xdeadbeef");
+        let resp = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            new.len(),
+            new,
+        );
+        let (mock_url, _h) = spawn_mock_server(resp).await;
+        pm.generate_proof_http(&mock_url, "regen", "[1.0, 2.0]")
+            .await
+            .unwrap();
+
+        let mut seen = String::new();
+        reader.read_to_string(&mut seen).unwrap();
+        assert_eq!(seen, old, "open reader must still see the old proof whole");
+        assert_eq!(std::fs::read_to_string(&final_path).unwrap(), new);
+        assert_eq!(
+            pm.read_proof("regen").unwrap().unwrap().proof_hex,
+            "0xdeadbeef"
+        );
+        assert_eq!(file_names(dir.path()), ["regen.json"]);
+    }
+
+    /// Stand-in prover: writes the first half of the proof to the `--output`
+    /// path, records whether `final_path` exists at that moment, then either
+    /// writes the rest or fails.
+    #[cfg(unix)]
+    fn write_two_step_prover(
+        dir: &std::path::Path,
+        final_path: &std::path::Path,
+        fail_half_way: bool,
+    ) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let proof = stored_proof_json("0xdeadbeef");
+        let (first, second) = proof.split_at(proof.len() / 2);
+        let script = format!(
+            "#!/bin/sh\n\
+             while [ $# -gt 0 ]; do\n  [ \"$1\" = --output ] && out=\"$2\"\n  shift\ndone\n\
+             printf '%s' '{first}' > \"$out\"\n\
+             [ -e '{final_path}' ] && touch '{seen}'\n\
+             {fail}\
+             printf '%s' '{second}' >> \"$out\"\n",
+            first = first,
+            second = second,
+            final_path = final_path.display(),
+            seen = dir.join("seen-partial").display(),
+            fail = if fail_half_way { "exit 1\n" } else { "" },
+        );
+        let path = dir.join("prover.sh");
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_generate_proof_subprocess_never_exposes_partial_file() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("PROVER_URL");
+        std::env::remove_var("PROVER_TIMEOUT_SECS");
+        let dir = tempfile::tempdir().unwrap();
+        let proofs = dir.path().join("proofs");
+        let final_path = proofs.join("0xrid.json");
+        let prover = write_two_step_prover(dir.path(), &final_path, false);
+        let pm = ProofManager::new(
+            prover.to_str().unwrap(),
+            "model.json",
+            proofs.to_str().unwrap(),
+            0,
+            1,
+        )
+        .unwrap();
+
+        pm.generate_proof("0xrid", "[1.0, 2.0]").await.unwrap();
+
+        assert!(
+            !dir.path().join("seen-partial").exists(),
+            "0xrid.json existed while the prover was still writing it"
+        );
+        assert_eq!(
+            pm.read_proof("0xrid").unwrap().unwrap().proof_hex,
+            "0xdeadbeef"
+        );
+        assert_eq!(file_names(&proofs), ["0xrid.json"]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_generate_proof_subprocess_failure_leaves_no_proof() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("PROVER_URL");
+        std::env::remove_var("PROVER_TIMEOUT_SECS");
+        let dir = tempfile::tempdir().unwrap();
+        let proofs = dir.path().join("proofs");
+        let final_path = proofs.join("0xrid.json");
+        let prover = write_two_step_prover(dir.path(), &final_path, true);
+        let pm = ProofManager::new(
+            prover.to_str().unwrap(),
+            "model.json",
+            proofs.to_str().unwrap(),
+            0,
+            1,
+        )
+        .unwrap();
+
+        assert!(pm.generate_proof("0xrid", "[1.0, 2.0]").await.is_err());
+
+        assert!(
+            !pm.has_proof("0xrid"),
+            "half-written file counts as a proof"
+        );
+        assert!(pm.read_proof("0xrid").unwrap().is_none());
+        // The failed run's temporary file is gone as well.
+        assert_eq!(file_names(&proofs), Vec::<String>::new());
+    }
+
+    /// A temporary file left by an earlier attempt is never moved into
+    /// place: a prover that exits successfully without writing its output is
+    /// an error, and nothing is left behind.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_generate_proof_subprocess_ignores_stale_temporary_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("PROVER_URL");
+        std::env::remove_var("PROVER_TIMEOUT_SECS");
+        let dir = tempfile::tempdir().unwrap();
+        let proofs = dir.path().join("proofs");
+        std::fs::create_dir_all(&proofs).unwrap();
+        std::fs::write(proofs.join("0xrid.json.tmp"), "{\"proof_hex\": \"0xdead").unwrap();
+        let prover = dir.path().join("prover.sh");
+        std::fs::write(&prover, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&prover, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let pm = ProofManager::new(
+            prover.to_str().unwrap(),
+            "model.json",
+            proofs.to_str().unwrap(),
+            0,
+            1,
+        )
+        .unwrap();
+
+        assert!(pm.generate_proof("0xrid", "[1.0, 2.0]").await.is_err());
+
+        assert!(
+            !pm.has_proof("0xrid"),
+            "a stale temporary file became the proof"
+        );
+        assert!(file_names(&proofs).is_empty());
     }
 }

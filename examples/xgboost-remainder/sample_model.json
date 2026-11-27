@@ -1,7 +1,7 @@
 {
   "num_features": 5,
   "num_classes": 2,
-  "max_depth": 3,
+  "max_depth": 2,
   "base_score": 0.0,
   "trees": [
     {

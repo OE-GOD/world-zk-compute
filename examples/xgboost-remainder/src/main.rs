@@ -16,15 +16,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tracing::Level;
 
-mod abi_encode;
-mod circuit;
-mod detect;
-mod lightgbm;
-mod logistic_regression;
-mod mlp;
-mod model;
-mod random_forest;
-mod server;
+use xgboost_remainder::{circuit, detect, lightgbm, mlp, model, random_forest, server};
 
 /// XGBoost Remainder prover CLI
 #[derive(Parser)]
@@ -46,7 +38,7 @@ struct Cli {
     #[arg(long)]
     execute_only: bool,
 
-    /// Model format: "auto" (detect from JSON), "xgboost", "lightgbm", "random_forest", or "logistic_regression"
+    /// Model format: "auto" (detect from JSON), "xgboost", "lightgbm", or "random_forest"
     #[arg(long, default_value = "auto")]
     model_format: String,
 
@@ -126,9 +118,21 @@ async fn main() -> Result<()> {
     // Initialize tracing
     tracing_subscriber::fmt().with_max_level(Level::INFO).init();
 
-    let cli = Cli::parse();
+    run(Cli::parse()).await
+}
 
-    // Load model (supports XGBoost, LightGBM, Random Forest, and Logistic Regression JSON formats)
+/// Print how long proving took and how large the encoded proof is.
+fn print_proof_stats(prove_time: std::time::Duration, proof_size_bytes: usize) {
+    println!(
+        "Proof generated and verified in {:.2}s",
+        prove_time.as_secs_f64()
+    );
+    println!("Proof size: {} bytes", proof_size_bytes);
+}
+
+/// Run the CLI: load the model, then start the server or prove one input.
+async fn run(cli: Cli) -> Result<()> {
+    // Load model (supports XGBoost, LightGBM, and Random Forest JSON formats)
     let detected_format = if cli.model_format == "auto" {
         let fmt = detect::detect_model_format_from_file(&cli.model)
             .map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -142,21 +146,20 @@ async fn main() -> Result<()> {
         "lightgbm" => {
             lightgbm::load_lightgbm_json(&cli.model).map_err(|e| anyhow::anyhow!("{}", e))?
         }
-        "random_forest" => {
-            random_forest::load_random_forest_json(&cli.model)
-                .map_err(|e| anyhow::anyhow!("{}", e))?
-        }
+        "random_forest" => random_forest::load_random_forest_json(&cli.model)
+            .map_err(|e| anyhow::anyhow!("{}", e))?,
+        // The tree conversion for logistic regression is a placeholder (one leaf, weights
+        // ignored): it predicts the wrong class and panics in circuit construction.
         "logistic_regression" => {
-            let lr = logistic_regression::LogisticRegressionModel::from_file(&cli.model)
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
-            lr.to_xgboost_model()
+            anyhow::bail!("Model format 'logistic_regression' is not supported by this CLI")
         }
         "mlp" => mlp::load_mlp_json(&cli.model).map_err(|e| anyhow::anyhow!("{}", e))?,
         other => anyhow::bail!(
-            "Unknown model format '{}'. Supported: auto, xgboost, lightgbm, random_forest, logistic_regression, mlp",
+            "Unknown model format '{}'. Supported: auto, xgboost, lightgbm, random_forest, mlp",
             other
         ),
     };
+    model::validate_model(&model).map_err(|e| anyhow::anyhow!("{}", e))?;
     println!(
         "Loaded {} model: {} trees, {} features, max_depth={}",
         detected_format,
@@ -191,6 +194,8 @@ async fn main() -> Result<()> {
     let input: XgboostInput = serde_json::from_str(&input_json)?;
     println!("Input features: {:?}", input.features);
 
+    model::check_feature_count(&model, &input.features).map_err(|e| anyhow::anyhow!("{}", e))?;
+
     // Run inference (no proof)
     let predicted_class = model::predict(&model, &input.features);
     println!("Predicted class: {}", predicted_class);
@@ -200,24 +205,16 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Build circuit and generate Hyrax proof
+    // Build circuit and generate Hyrax proof (one proof in either output mode)
     println!("Building GKR circuit and generating Hyrax proof...");
     let start = std::time::Instant::now();
-    let (proof_bytes, circuit_hash, public_inputs) =
-        circuit::build_and_prove(&model, &input.features, predicted_class)?;
-    let prove_time = start.elapsed();
-
-    println!(
-        "Proof generated and verified in {:.2}s",
-        prove_time.as_secs_f64()
-    );
-    println!("Proof size: {} bytes", proof_bytes.len());
 
     if cli.bundle {
         // Build self-contained ProofBundle JSON with generators and circuit description
         use sha2::Digest;
         let bundle_data =
             circuit::build_and_prove_bundle(&model, &input.features, predicted_class)?;
+        print_proof_stats(start.elapsed(), bundle_data.proof_bytes.len());
         let model_bytes = std::fs::read(&cli.model)?;
 
         let bundle = serde_json::json!({
@@ -243,6 +240,11 @@ async fn main() -> Result<()> {
             bundle_data.gens_bytes.len()
         );
     } else {
+        let (proof_bytes, circuit_hash, public_inputs) =
+            circuit::build_and_prove(&model, &input.features, predicted_class)?;
+        let prove_time = start.elapsed();
+        print_proof_stats(prove_time, proof_bytes.len());
+
         // Legacy output format
         let output = ProofOutput {
             proof_hex: hex::encode(&proof_bytes),
@@ -259,4 +261,157 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsString;
+
+    /// Set in the child process of `test_bundle_mode_proves_once`: where to write the bundle.
+    const CHILD_OUTPUT_ENV: &str = "XGBOOST_REMAINDER_TEST_BUNDLE_OUTPUT";
+
+    /// `--bundle` generates one proof, and the printed proof size is that of the
+    /// proof written to the bundle.
+    ///
+    /// The number of proofs is only visible in what the CLI prints, so the test
+    /// runs itself again as a child process that executes the CLI, and reads the
+    /// child's stdout.
+    #[test]
+    fn test_bundle_mode_proves_once() {
+        if let Some(output) = std::env::var_os(CHILD_OUTPUT_ENV) {
+            let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            let cli = Cli::parse_from([
+                OsString::from("xgboost-remainder"),
+                "--model".into(),
+                manifest_dir.join("sample_model.json").into(),
+                "--input".into(),
+                manifest_dir.join("sample_input.json").into(),
+                "--output".into(),
+                output,
+                "--bundle".into(),
+            ]);
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(run(cli))
+                .unwrap();
+            return;
+        }
+
+        let output = std::env::temp_dir().join(format!(
+            "xgboost-remainder-bundle-test-{}.json",
+            std::process::id()
+        ));
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::test_bundle_mode_proves_once",
+                "--nocapture",
+            ])
+            .env(CHILD_OUTPUT_ENV, &output)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&child.stdout);
+        // Read and remove the file first, so a failing child leaves nothing behind.
+        let bundle_json = std::fs::read_to_string(&output);
+        std::fs::remove_file(&output).ok();
+        assert!(
+            child.status.success(),
+            "child failed:\n{}\n{}",
+            stdout,
+            String::from_utf8_lossy(&child.stderr)
+        );
+
+        let bundle: serde_json::Value = serde_json::from_str(&bundle_json.unwrap()).unwrap();
+        let proof_hex = bundle["proof_hex"].as_str().unwrap();
+        let proof_size = proof_hex.trim_start_matches("0x").len() / 2;
+
+        assert_eq!(
+            stdout.matches("Generating Hyrax proof...").count(),
+            1,
+            "expected one proof:\n{}",
+            stdout
+        );
+        assert!(
+            stdout.contains(&format!("Proof size: {} bytes\n", proof_size)),
+            "printed proof size is not that of the bundle ({} bytes):\n{}",
+            proof_size,
+            stdout
+        );
+    }
+
+    /// Run the CLI on a model and an input written to a temporary directory.
+    fn run_on(
+        name: &str,
+        model: &model::XgboostModel,
+        features: &[f64],
+        args: &[&str],
+    ) -> Result<()> {
+        let dir = std::env::temp_dir().join(format!(
+            "xgboost-remainder-cli-test-{}-{}",
+            name,
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let model_path = dir.join("model.json");
+        let input_path = dir.join("input.json");
+        std::fs::write(&model_path, serde_json::to_vec(model).unwrap()).unwrap();
+        let input = XgboostInput {
+            features: features.to_vec(),
+            expected_class: 1,
+        };
+        std::fs::write(&input_path, serde_json::to_vec(&input).unwrap()).unwrap();
+
+        let mut argv: Vec<OsString> = vec![
+            "xgboost-remainder".into(),
+            "--model".into(),
+            model_path.into(),
+            "--input".into(),
+            input_path.into(),
+            "--output".into(),
+            dir.join("output.json").into(),
+        ];
+        argv.extend(args.iter().map(OsString::from));
+        let result = std::panic::catch_unwind(|| {
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(run(Cli::parse_from(argv)))
+        });
+        std::fs::remove_dir_all(&dir).unwrap();
+        result.expect("the CLI panicked")
+    }
+
+    #[test]
+    fn test_unprovable_model_is_an_error() {
+        let features = [0.6, 0.2, 0.8, 0.5, 0.3];
+
+        let mut bad_feature = model::sample_model();
+        bad_feature.trees[0].nodes[0].feature_index = 5;
+        let mut no_trees = model::sample_model();
+        no_trees.trees.clear();
+
+        for args in [&[][..], &["--execute-only"], &["--bundle"]] {
+            let err = run_on("bad-feature", &bad_feature, &features, args).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                "Tree 0: node 0 splits on feature 5, but the model has 5 features"
+            );
+        }
+        let err = run_on(
+            "no-trees",
+            &no_trees,
+            &features,
+            &["--serve", "--port", "0"],
+        );
+        assert_eq!(err.unwrap_err().to_string(), "Model has no trees");
+    }
+
+    #[test]
+    fn test_wrong_feature_count_is_an_error() {
+        let model = model::sample_model();
+        for args in [&[][..], &["--execute-only"], &["--bundle"]] {
+            let err = run_on("feature-count", &model, &[0.6, 0.2], args).unwrap_err();
+            assert_eq!(err.to_string(), "Expected 5 features, got 2");
+        }
+    }
 }

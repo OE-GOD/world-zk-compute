@@ -68,7 +68,7 @@ pub fn prepare_circuit_inputs(model: &XgboostModel, features: &[f64]) -> Circuit
     for _ in num_trees..num_trees_padded {
         flat_path_bits.extend(vec![false; max_depth]);
     }
-    let pb_nv = next_log2(num_trees_padded * max_depth);
+    let pb_nv = model::next_log2(num_trees_padded * max_depth);
     while flat_path_bits.len() < (1 << pb_nv) {
         flat_path_bits.push(false);
     }
@@ -79,7 +79,7 @@ pub fn prepare_circuit_inputs(model: &XgboostModel, features: &[f64]) -> Circuit
 
     // Decomp bits witness (committed)
     let decomp_bits_raw = model::compute_comparison_witness(model, features, max_depth, decomp_k);
-    let decomp_nv = next_log2(vt_padded * decomp_k);
+    let decomp_nv = model::next_log2(vt_padded * decomp_k);
     let mut decomp_bits_padded = vec![false; 1 << decomp_nv];
     for t in 0..num_trees {
         for k in 0..max_depth {
@@ -139,7 +139,8 @@ pub fn prepare_circuit_inputs(model: &XgboostModel, features: &[f64]) -> Circuit
 }
 
 /// Build the circuit, set inputs, generate and verify a Hyrax proof.
-/// Returns Ok on successful verification, Err on failure.
+/// Panics if the witness does not satisfy the circuit or verification fails;
+/// returns Ok(()) otherwise.
 #[cfg(test)]
 fn prove_and_verify(inputs: &CircuitInputs) -> Result<()> {
     let base_circuit = build_full_inference_circuit(
@@ -210,11 +211,20 @@ fn prove_and_verify(inputs: &CircuitInputs) -> Result<()> {
 /// Build a GKR circuit for XGBoost inference, generate a Hyrax proof, and verify it.
 ///
 /// Returns (serialized_proof, circuit_hash, public_inputs_bytes).
+/// Panics if the witness does not satisfy the circuit or verification fails;
+/// `Err` is returned when [`model::validate_model`] refuses the model, the number of
+/// features is not the model's, or ABI-encoding the proof fails. That check means the
+/// model is well formed, within [`model::MAX_TREE_DEPTH`], [`model::MAX_LEAF_SLOTS`] and
+/// [`model::MAX_FEATURES`], and has a tree per class when it has more than 2 classes; an
+/// accepted model can still be too large to prove on the machine.
 pub fn build_and_prove(
     model: &XgboostModel,
     features: &[f64],
     predicted_class: u32,
 ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+    model::validate_model(model).map_err(anyhow::Error::msg)?;
+    model::check_feature_count(model, features).map_err(anyhow::Error::msg)?;
+
     let inputs = prepare_circuit_inputs(model, features);
 
     println!(
@@ -298,7 +308,8 @@ pub fn build_and_prove(
     println!("  Proof verified successfully in Rust!");
 
     // === Serialize proof for on-chain verification ===
-    // Circuit hash (identifies the circuit structure)
+    // Model description hash (SHA-256 over model fields; not the circuit
+    // description hash that the proof transcript absorbs)
     let circuit_hash: [u8; 32] = {
         use sha2::{Digest, Sha256};
         let circuit_desc = build_circuit_description(model);
@@ -368,16 +379,8 @@ pub struct CachedProver {
     pub verifier_config: GKRCircuitVerifierConfig,
     /// Cached Pedersen committer (generator points, expensive to create).
     pub pedersen_committer: PedersenCommitter<Bn256Point>,
-    /// Cached model parameters for input preparation.
-    #[allow(dead_code)]
-    pub fi_padded: Vec<usize>,
-    #[allow(dead_code)]
-    pub num_trees_padded: usize,
+    /// Depth of the deepest tree in the model.
     pub max_depth: usize,
-    #[allow(dead_code)]
-    pub num_features_padded: usize,
-    #[allow(dead_code)]
-    pub decomp_k: usize,
     /// Cached circuit description bytes (for ProofBundle serialization).
     pub circuit_desc: Vec<u8>,
 }
@@ -390,7 +393,15 @@ impl CachedProver {
     /// - Computes the circuit hash
     /// - Initializes Pedersen commitment generators
     /// - Pre-computes prover/verifier configs
-    pub fn new(model: XgboostModel) -> Self {
+    ///
+    /// Returns `Err` when [`model::validate_model`] refuses the model: it is not well
+    /// formed, is over [`model::MAX_TREE_DEPTH`], [`model::MAX_LEAF_SLOTS`] or
+    /// [`model::MAX_FEATURES`], or has more than 2 classes and fewer trees than classes.
+    /// An accepted model can still be too large to set up or prove on the machine: at the
+    /// limits the comparison tables built here take many gigabytes.
+    pub fn new(model: XgboostModel) -> Result<Self> {
+        model::validate_model(&model).map_err(anyhow::Error::msg)?;
+
         // Compute model-dependent parameters
         let max_depth = model.trees.iter().map(model::tree_depth).max().unwrap_or(0);
         let num_trees_padded = model.trees.len().next_power_of_two();
@@ -442,31 +453,32 @@ impl CachedProver {
         let pedersen_committer =
             PedersenCommitter::new(512, "xgboost-remainder Pedersen committer", None);
 
-        CachedProver {
+        Ok(CachedProver {
             model,
             base_circuit,
             circuit_hash,
             prover_config,
             verifier_config,
             pedersen_committer,
-            fi_padded,
-            num_trees_padded,
             max_depth,
-            num_features_padded,
-            decomp_k,
             circuit_desc,
-        }
+        })
     }
 
     /// Generate and verify a proof for the given features.
     ///
     /// Reuses the cached circuit and generators — only witness-dependent
     /// computation is done per call.
+    /// Panics if the witness does not satisfy the circuit or verification fails;
+    /// `Err` is returned when the number of features is not the model's or ABI-encoding
+    /// the proof fails.
     pub fn prove(
         &self,
         features: &[f64],
         predicted_class: u32,
     ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
+        model::check_feature_count(&self.model, features).map_err(anyhow::Error::msg)?;
+
         let inputs = prepare_circuit_inputs(&self.model, features);
 
         // Clone the cached base circuit for this request
@@ -543,8 +555,8 @@ impl CachedProver {
 /// Leaf ordering is big-endian: leaf index = b_0 * 2^(d-1) + b_1 * 2^(d-2) + ... + b_{d-1}.
 /// The fold processes b_0 first (root decision), splitting each tree's leaves into
 /// first-half (left subtree) and second-half (right subtree).
-#[allow(dead_code)]
-pub fn build_tree_inference_circuit(num_trees_padded: usize, max_depth: usize) -> Circuit<Fr> {
+#[cfg(test)]
+fn build_tree_inference_circuit(num_trees_padded: usize, max_depth: usize) -> Circuit<Fr> {
     assert!(num_trees_padded.is_power_of_two());
     assert!(max_depth > 0);
 
@@ -985,20 +997,6 @@ fn build_circuit_description(model: &XgboostModel) -> Vec<u8> {
     desc
 }
 
-/// Compute ceil(log2(n)), minimum 1
-fn next_log2(n: usize) -> usize {
-    if n <= 1 {
-        return 1;
-    }
-    let mut v = n - 1;
-    let mut log = 0;
-    while v > 0 {
-        v >>= 1;
-        log += 1;
-    }
-    log
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1016,12 +1014,12 @@ mod tests {
 
     #[test]
     fn test_next_log2() {
-        assert_eq!(next_log2(1), 1);
-        assert_eq!(next_log2(2), 1);
-        assert_eq!(next_log2(3), 2);
-        assert_eq!(next_log2(4), 2);
-        assert_eq!(next_log2(5), 3);
-        assert_eq!(next_log2(8), 3);
+        assert_eq!(model::next_log2(1), 1);
+        assert_eq!(model::next_log2(2), 1);
+        assert_eq!(model::next_log2(3), 2);
+        assert_eq!(model::next_log2(4), 2);
+        assert_eq!(model::next_log2(5), 3);
+        assert_eq!(model::next_log2(8), 3);
     }
 
     /// Test that the tree inference circuit builds without panicking.
@@ -1057,6 +1055,126 @@ mod tests {
         assert!(!proof.is_empty());
         assert_eq!(hash.len(), 32);
         assert_eq!(public_inputs.len(), 4);
+
+        // The proof layout, model hash and public inputs of the sample model
+        assert_eq!(proof.len(), 133_860);
+        assert_eq!(
+            hex::encode(hash),
+            "be187961806d04554186d6d0d5baffafe98692f9b12bfba27574d858c427622d"
+        );
+        assert_eq!(public_inputs, [0, 0, 0, 1]);
+    }
+
+    /// Models the prover cannot handle, and the error each one gives.
+    fn unprovable_models() -> Vec<(XgboostModel, &'static str)> {
+        let mut no_trees = model::sample_model();
+        no_trees.trees.clear();
+
+        let mut single_leaves = model::sample_model();
+        for tree in &mut single_leaves.trees {
+            tree.nodes = vec![TreeNode {
+                feature_index: -1,
+                threshold: 0.0,
+                left_child: 0,
+                right_child: 0,
+                leaf_value: 0.5,
+                is_leaf: true,
+            }];
+        }
+
+        let mut feature_out_of_range = model::sample_model();
+        feature_out_of_range.trees[0].nodes[0].feature_index = 5;
+
+        let mut negative_feature = model::sample_model();
+        negative_feature.trees[0].nodes[0].feature_index = -1;
+
+        let mut child_out_of_range = model::sample_model();
+        child_out_of_range.trees[1].nodes[2].right_child = 5;
+
+        let mut cycle = model::sample_model();
+        cycle.trees[1].nodes[2].left_child = 0;
+
+        let mut too_few_trees = model::sample_model();
+        too_few_trees.num_classes = 3;
+
+        let mut wrong_depth_field = model::sample_model();
+        wrong_depth_field.max_depth = 3;
+
+        vec![
+            (no_trees, "Model has no trees"),
+            (
+                single_leaves,
+                "Model has depth 0: every tree is a single leaf",
+            ),
+            (
+                feature_out_of_range,
+                "Tree 0: node 0 splits on feature 5, but the model has 5 features",
+            ),
+            (
+                negative_feature,
+                "Tree 0: node 0 splits on feature -1, but the model has 5 features",
+            ),
+            (
+                child_out_of_range,
+                "Tree 1: node 2 has child index 5, but the tree has 5 nodes",
+            ),
+            (
+                cycle,
+                "Tree 1: node 2 has child 0, which leads back to it: the path never reaches a leaf",
+            ),
+            (
+                too_few_trees,
+                "Model has 3 classes but 2 trees: a model with more than 2 classes needs \
+                 at least one tree per class",
+            ),
+            (
+                wrong_depth_field,
+                "Model's max_depth field is 3, but its deepest tree is 2 levels deep",
+            ),
+        ]
+    }
+
+    #[test]
+    fn test_build_and_prove_rejects_unprovable_models() {
+        let features = [0.6, 0.2, 0.8, 0.5, 0.3];
+        for (model, expected) in unprovable_models() {
+            let err = build_and_prove(&model, &features, 1).unwrap_err();
+            assert_eq!(err.to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn test_build_and_prove_bundle_rejects_unprovable_models() {
+        let features = [0.6, 0.2, 0.8, 0.5, 0.3];
+        for (model, expected) in unprovable_models() {
+            let err = build_and_prove_bundle(&model, &features, 1).err().unwrap();
+            assert_eq!(err.to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn test_cached_prover_rejects_unprovable_models() {
+        for (model, expected) in unprovable_models() {
+            let err = CachedProver::new(model).err().unwrap();
+            assert_eq!(err.to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn test_wrong_feature_count_is_an_error() {
+        let model = model::sample_model();
+        let prover = CachedProver::new(model.clone()).unwrap();
+        for len in [0, 4, 6, 9] {
+            let features = vec![0.6; len];
+            let expected = format!("Expected 5 features, got {}", len);
+
+            let err = build_and_prove(&model, &features, 1).unwrap_err();
+            assert_eq!(err.to_string(), expected);
+            let err = build_and_prove_bundle(&model, &features, 1).err().unwrap();
+            assert_eq!(err.to_string(), expected);
+            let err = prover.prove(&features, 1).unwrap_err();
+            assert_eq!(err.to_string(), expected);
+        }
     }
 
     /// Test with a minimal 1-tree depth-1 model.
@@ -1202,9 +1320,8 @@ mod tests {
         let (path_bits_2d, _) = model::compute_path_bits(&model, &features);
         let num_trees = model.trees.len();
         let num_trees_padded = num_trees.next_power_of_two();
-        let tree_nv = num_trees_padded.trailing_zeros() as usize;
         let pb_count = num_trees_padded * max_depth;
-        let pb_nv = next_log2(pb_count);
+        let pb_nv = model::next_log2(pb_count);
         let leaves_per_tree = 1usize << max_depth;
 
         let base_circuit = build_tree_inference_circuit(num_trees_padded, max_depth);
@@ -1590,15 +1707,6 @@ mod tests {
         format!("0x{}", hex::encode(&be))
     }
 
-    /// Convert Fq to big-endian hex string
-    fn fq_to_hex(val: &Fq) -> String {
-        let repr = val.to_repr();
-        let bytes: &[u8] = repr.as_ref();
-        let mut be = bytes.to_vec();
-        be.reverse();
-        format!("0x{}", hex::encode(&be))
-    }
-
     /// Compute point template by analyzing how claim.point relates to bindings and claim_points.
     fn compute_point_template(
         point: &[Fr],
@@ -1740,7 +1848,6 @@ mod tests {
         let desc = verifiable.get_gkr_circuit_description_ref();
         eprintln!("FS challenges count: {}", desc.fiat_shamir_challenges.len());
         for (i, fs) in desc.fiat_shamir_challenges.iter().enumerate() {
-            use remainder::layer::LayerDescription;
             eprintln!(
                 "  FS {}: layer_id={:?}, num_bits={}",
                 i,

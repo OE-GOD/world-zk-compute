@@ -6,11 +6,13 @@ This document explains how to build, validate, and publish the `zkml-verifier` p
 
 The `zkml-verifier` crate (`crates/zkml-verifier/`) produces three distributable artifacts:
 
-| Target | Registry | Package Name | Install |
+| Target | Registry | Package Name | Install (from a checkout) |
 |--------|----------|-------------|---------|
-| Python (ctypes FFI) | PyPI | `zkml-verifier` | `pip install zkml-verifier` |
-| JavaScript (WASM) | npm | `zkml-verifier` | `npm install zkml-verifier` |
-| Rust | crates.io | `zkml-verifier` | `cargo add zkml-verifier` |
+| Python (ctypes FFI) | PyPI | `zkml-verifier` | `pip install ./crates/zkml-verifier/python` |
+| JavaScript (WASM) | npm | `zkml-verifier` (`@worldzk/verifier` when built by `publish-npm.yml`) | build `pkg/` with `wasm-pack` (see below) |
+| Rust | crates.io | `zkml-verifier` | path dependency `zkml-verifier = { path = "crates/zkml-verifier" }`; CLI: `cargo install --path crates/zkml-verifier` |
+
+None of the three is published yet, so there is no registry install: PyPI and npm return 404 for these names, and the crates.io name `zkml-verifier` belongs to an unrelated project, so `cargo add zkml-verifier` or `cargo install zkml-verifier` would fetch someone else's code.
 
 ## Prerequisites
 
@@ -32,7 +34,7 @@ cargo build --release --lib -p zkml-verifier
 # 2. Build the Python wheel (skipping Rust build since we already built)
 cd crates/zkml-verifier/python
 pip install build wheel
-ZKML_SKIP_BUILD=1 ZKML_LIB_DIR=../../target/release python -m build --wheel
+ZKML_SKIP_BUILD=1 ZKML_LIB_DIR=../../../target/release python -m build --wheel
 ```
 
 The wheel is written to `crates/zkml-verifier/python/dist/`.
@@ -65,7 +67,7 @@ twine check dist/*
 twine upload dist/*
 ```
 
-For CI, set the `PYPI_TOKEN` secret and use the workflow described below.
+In CI this wheel is built and uploaded by `.github/workflows/publish-pypi.yml`, which uses PyPI trusted publishing (no token). The `PYPI_TOKEN` secret and the workflows described below publish the separate Python SDK in `sdk/python`, not this wheel.
 
 ### Platform Wheels
 
@@ -144,7 +146,7 @@ result.free(); // Free WASM memory
 
 ## Rust Crate (crates.io)
 
-The Rust crate is published directly from `crates/zkml-verifier/`.
+The Rust crate would be published directly from `crates/zkml-verifier/`, but not under its current name: `zkml-verifier` on crates.io belongs to an unrelated project.
 
 ### Validate
 
@@ -171,7 +173,7 @@ Triggered by pushing a `v*` tag (e.g., `v0.1.0`). Runs tests, builds Docker imag
 
 ### SDK Publish Workflow (`.github/workflows/sdk-publish.yml`)
 
-Triggered by pushing an `sdk-v*` tag or manual dispatch. More comprehensive than the release workflow:
+Triggered by pushing an `sdk-v*` tag or manual dispatch, and as a dry run by pull requests that touch `sdk/**`. More comprehensive than the release workflow:
 
 1. **Version consistency check** -- verifies TypeScript, Python, and Rust SDK versions match
 2. **npm publish** -- builds, tests, and publishes TypeScript SDK

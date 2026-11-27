@@ -16,7 +16,8 @@ tokio = { version = "1.0", features = ["full"] }
 ### Python
 
 ```bash
-pip install worldzk[web3]
+# From a checkout of this repository (the package is not published on PyPI)
+pip install -e 'sdk/python[web3]'
 ```
 
 Requires Python 3.9+. The `[web3]` extra installs `web3` and `eth-account`.
@@ -24,9 +25,10 @@ Requires Python 3.9+. The `[web3]` extra installs `web3` and `eth-account`.
 ### TypeScript
 
 ```bash
-npm install @worldzk/sdk
-# or
-pnpm add @worldzk/sdk
+# From a checkout of this repository (the package is not published on npm)
+cd sdk/typescript && npm ci && npm run build
+# then, in your project, add it as a file: dependency
+npm install /path/to/world-zk-compute/sdk/typescript
 ```
 
 Requires Node.js 18.3+. Uses `viem` internally.
@@ -251,8 +253,8 @@ valid = verifier.is_result_valid(result_id)
 print(f"Valid: {valid}")
 
 result = verifier.get_result(result_id)
-print(f"Submitter: {result['submitter']}")
-print(f"Finalized: {result['finalized']}")
+print(f"Submitter: {result.submitter}")
+print(f"Finalized: {result.finalized}")
 ```
 
 ### TypeScript
@@ -272,14 +274,14 @@ console.log('Finalized:', result.finalized);
 
 ### Rust
 
-The Rust SDK uses the operator's `EventWatcher` for event polling:
+The Rust SDK provides `TEEEventWatcher` for event polling:
 
 ```rust
-use world_zk_sdk::EventWatcher;
+use world_zk_sdk::{TEEEvent, TEEEventWatcher};
 use alloy::primitives::Address;
 
 let contract: Address = "0x5FbDB2315678afecb367f032d93F642f64180aa3".parse()?;
-let watcher = EventWatcher::new("http://localhost:8545", contract);
+let watcher = TEEEventWatcher::new("http://localhost:8545", contract);
 
 let mut from_block = 0u64;
 loop {
@@ -289,13 +291,13 @@ loop {
             TEEEvent::ResultSubmitted { result_id, .. } => {
                 println!("New result: {result_id}");
             }
-            TEEEvent::ResultChallenged { result_id, challenger } => {
+            TEEEvent::ResultChallenged { result_id, challenger, .. } => {
                 println!("Challenged: {result_id} by {challenger}");
             }
-            TEEEvent::ResultFinalized { result_id } => {
+            TEEEvent::ResultFinalized { result_id, .. } => {
                 println!("Finalized: {result_id}");
             }
-            TEEEvent::ResultExpired { result_id } => {
+            TEEEvent::ResultExpired { result_id, .. } => {
                 println!("Expired: {result_id}");
             }
         }
@@ -308,9 +310,15 @@ loop {
 ### Python
 
 ```python
-events = verifier.get_past_events("ResultSubmitted", from_block=0)
+from worldzk import TEEEventWatcher
+
+watcher = TEEEventWatcher(
+    contract_address="0x5FbDB2315678afecb367f032d93F642f64180aa3",
+    rpc_url="http://localhost:8545",
+)
+events, next_block = watcher.poll_events(from_block=0, event_types=["ResultSubmitted"])
 for event in events:
-    print(f"Result: {event['args']['resultId'].hex()}")
+    print(f"Result: {event.result_id.hex()}")
 ```
 
 ### TypeScript
@@ -323,43 +331,43 @@ const watcher = new TEEEventWatcher({
   contractAddress: '0x5FbDB2315678afecb367f032d93F642f64180aa3',
 });
 
-const events = await watcher.getPastEvents('ResultSubmitted', {
-  fromBlock: 0n,
-});
+const events = await watcher.getPastEvents('ResultSubmitted', 0n);
 for (const event of events) {
-  console.log('Result ID:', event.args.resultId);
+  if (event.event === 'ResultSubmitted') {
+    console.log('Result ID:', event.data.resultId);
+  }
 }
 ```
 
 ---
 
-## Owner / Pause Operations
+## Admin / Pause Operations
 
 ### Rust
 
 ```rust
-let owner = verifier.owner().await?;
+let admin = verifier.admin().await?;
 verifier.pause().await?;    // Emergency stop
 verifier.unpause().await?;  // Resume
-verifier.transfer_ownership(new_owner).await?; // Ownable2Step
+verifier.change_admin(new_admin).await?; // one-step, takes effect immediately
 ```
 
 ### Python
 
 ```python
-owner = verifier.owner()
+admin = verifier.admin()
 verifier.pause()
 verifier.unpause()
-verifier.transfer_ownership(new_owner)
+verifier.change_admin(new_admin)
 ```
 
 ### TypeScript
 
 ```typescript
-const owner = await verifier.owner();
+const admin = await verifier.admin();
 await verifier.pause();
 await verifier.unpause();
-await verifier.transferOwnership(newOwner);
+await verifier.changeAdmin(newAdmin);
 ```
 
 ---

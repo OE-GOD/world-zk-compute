@@ -27,8 +27,10 @@ any other EVM chain.
 ### Large Contracts (Require Relaxed Code Size Limits)
 
 These contracts exceed the EIP-170 24KB contract code size limit and
-can only be deployed on chains with relaxed limits (e.g., Arbitrum,
-World Chain, or local Anvil with `--code-size-limit 200000`):
+can only be deployed where that limit is raised. Of the chains in
+`deployments/chains.json` that is only a local Anvil started with
+`--code-size-limit 200000`: Ethereum, Arbitrum and World Chain all
+enforce the 24KB limit (checked against their public RPCs on 2026-11-22):
 
 | Contract | Purpose | Approx Size |
 |----------|---------|-------------|
@@ -103,8 +105,8 @@ entry contains the configuration needed for deployment and operation.
 |-------|----------|------------|-----------|-----------------|----------|
 | localhost | 31337 | 200KB | 500M | -- | No |
 | sepolia | 11155111 | 24KB | 30M | `0x925d...187` | Yes |
-| arbitrum-sepolia | 421614 | 200KB | 500M | -- | No |
-| world-chain-sepolia | 4801 | 200KB | 500M | -- | No |
+| arbitrum-sepolia | 421614 | 24KB | 500M | -- | Yes |
+| world-chain-sepolia | 4801 | 24KB | 500M | -- | Yes |
 
 ## Verifier Router Addresses
 
@@ -122,7 +124,7 @@ If a chain does not have a verifier router, you must either:
 1. Deploy a `MockRiscZeroVerifier` (for testing), or
 2. Use a custom verifier (RemainderVerifier, eZKL) via `ProgramRegistry`.
 
-The `DeployTestnet.s.sol` script accepts `VERIFIER_ADDRESS` as an
+The `DeployTestnet.s.sol` script accepts `RISC_ZERO_VERIFIER` as an
 environment variable, allowing you to point to any verifier router.
 
 ## Deployment Records
@@ -168,12 +170,11 @@ coordinated:
 1. **Enclave keys**: The same TEE enclave key can be registered on
    multiple `TEEMLVerifier` instances across chains. Use the Admin CLI:
    ```bash
-   admin-cli register-enclave \
+   admin-cli \
      --rpc-url $RPC_URL \
      --contract $TEE_VERIFIER_ADDRESS \
      --private-key $OWNER_KEY \
-     --enclave-key $ENCLAVE_ADDRESS \
-     --image-hash $PCR0_HASH
+     register-enclave $ENCLAVE_ADDRESS $PCR0_HASH
    ```
 
 2. **RemainderVerifier**: Must be wired to `TEEMLVerifier` via
@@ -253,12 +254,11 @@ independent set of registrations.
 
 7. **Register enclave keys** (if using TEE path)
    ```bash
-   admin-cli register-enclave \
+   admin-cli \
      --rpc-url $RPC_URL \
      --contract $TEE_VERIFIER_ADDRESS \
      --private-key $OWNER_KEY \
-     --enclave-key $ENCLAVE_ADDRESS \
-     --image-hash $PCR0_HASH
+     register-enclave $ENCLAVE_ADDRESS $PCR0_HASH
    ```
 
 8. **Update deployment records**
@@ -266,8 +266,8 @@ independent set of registrations.
    - Optionally update `deployments/registry.json` with full metadata.
 
 9. **Configure services**
-   - Set `RPC_URL`, `CONTRACT_ADDRESS`, and `CHAIN_ID` in operator
-     and indexer environment variables.
+   - Set `OPERATOR_RPC_URL` and `TEE_VERIFIER_ADDRESS` for the operator,
+     and `RPC_URL` and `CONTRACT_ADDRESS` for the indexer.
    - Update Docker Compose or Helm values for the new chain.
 
 10. **Run E2E validation**
@@ -289,7 +289,10 @@ independent set of registrations.
 
 ### Arbitrum (Sepolia / One)
 
-- **Code size limit**: 200KB+ (relaxed). All contracts deployable.
+- **Code size limit**: 24KB, as on Ethereum (Arbitrum One and Arbitrum
+  Sepolia reject the creation of a 30,000-byte contract; checked
+  2026-11-22). `RemainderVerifier` cannot be deployed there, so the items
+  below that rely on it do not apply until it fits.
 - **Gas limit**: 500M+ (Arbitrum uses ArbGas). Single-tx GKR
   verification is feasible but expensive (~254M gas).
 - **Stylus support**: Arbitrum Stylus enables WASM execution.
@@ -300,7 +303,7 @@ independent set of registrations.
   `cargo stylus deploy`, then register in `RemainderVerifier`:
   ```bash
   cd contracts/stylus/gkr-verifier
-  cargo stylus deploy --private-key $KEY --rpc-url $RPC
+  cargo stylus deploy --private-key $KEY --endpoint $RPC
   ```
 - **L1 data costs**: Calldata on Arbitrum is priced by L1 data
   posting costs. Large proofs (~400KB) cost significant L1 fees.
@@ -308,8 +311,11 @@ independent set of registrations.
 
 ### World Chain (Sepolia / Mainnet)
 
-- **Code size limit**: 200KB+ (OP Stack based). All contracts deployable.
-- **Gas limit**: 500M+. Full ZK verification possible.
+- **Code size limit**: 24KB, as on Ethereum (World Chain and World Chain
+  Sepolia reject the creation of a 30,000-byte contract; checked
+  2026-11-22). `RemainderVerifier` cannot be deployed there; only the
+  TEE-path contracts are deployable.
+- **Gas limit**: 500M+.
 - **No Stylus**: World Chain is OP Stack based, not Orbit, so Stylus
   WASM is not available. Use the Solidity GKR verifier or Groth16 hybrid.
 - **Gas pricing**: OP Stack uses L1 data costs similar to Arbitrum.
@@ -329,7 +335,7 @@ independent set of registrations.
 | Script | Purpose |
 |--------|---------|
 | `scripts/deploy-multichain.sh` | Deploy to one or all chains from chains.json |
-| `scripts/deploy-sepolia.sh` | Deploy ExecutionEngine to Ethereum Sepolia |
+| `scripts/deploy-sepolia.sh` | Deploy RemainderVerifier + TEEMLVerifier + DAG circuit to Arbitrum Sepolia (the RemainderVerifier step cannot succeed on the live chain: 24KB limit) |
 | `scripts/deploy-sepolia-tee.sh` | Deploy TEEMLVerifier + register enclave on Sepolia |
 | `scripts/deploy.sh` | General-purpose deployment helper |
 | `contracts/script/DeployAll.s.sol` | Forge script: deploy full stack |

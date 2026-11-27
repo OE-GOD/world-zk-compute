@@ -1,15 +1,17 @@
 //! Advanced alerting module with multi-channel routing, dedup, and escalation.
 //!
-//! Supports Slack webhooks, PagerDuty Events API v2, email (SMTP), and
-//! generic webhooks. Alerts are routed by severity:
+//! Channel types exist for Slack webhooks, PagerDuty Events API v2, email
+//! (SMTP), and generic webhooks, but delivery is not implemented: the default
+//! sender ([`LogOnlySender`]) only logs. Alerts are routed by severity:
 //!
 //! - **Critical** -- PagerDuty + Slack + GenericWebhook
 //! - **Warning** -- Slack + GenericWebhook
 //! - **Info** -- log only (no external notification)
 //!
-//! Duplicate alerts (same `alert_type` + `source`) are suppressed within a
-//! configurable dedup window (default 5 minutes). Un-acknowledged critical
-//! alerts trigger escalation after the escalation timeout (default 15 minutes).
+//! Duplicate alerts (same `alert_type` + `source` + `result_id` in the metadata,
+//! if any) are suppressed within a configurable dedup window (default 5 minutes).
+//! Un-acknowledged critical alerts are escalated after the escalation timeout (default 15 minutes) by
+//! [`AlertManager::check_escalations`], which the operator binary does not call.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -59,6 +61,7 @@ pub enum AlertChannel {
         #[serde(default)]
         channel: Option<String>,
     },
+    #[serde(alias = "pagerduty")]
     PagerDuty {
         routing_key: String,
         service_name: String,
@@ -258,8 +261,8 @@ pub struct AlertStats {
 // Internal state
 // ---------------------------------------------------------------------------
 
-/// Dedup key: (alert_type, source).
-type DedupKey = (String, String);
+/// Dedup key: (alert_type, source, `result_id` from the metadata).
+type DedupKey = (String, String, Option<String>);
 
 /// Tracks a sent alert for dedup and escalation.
 #[derive(Debug, Clone)]
@@ -275,7 +278,7 @@ struct TrackedAlert {
 struct AlertState {
     /// All tracked alerts by alert ID.
     alerts: HashMap<String, TrackedAlert>,
-    /// Most recent alert timestamp by (alert_type, source) for dedup.
+    /// Most recent alert timestamp by dedup key.
     dedup_map: HashMap<DedupKey, u64>,
     /// Running statistics.
     stats: AlertStats,
@@ -318,8 +321,9 @@ impl AlertManager {
     /// - **Warning**: Slack + GenericWebhook
     /// - **Info**: log only (no channel dispatch)
     ///
-    /// Duplicate alerts (same `alert_type` + `source`) within the dedup window
-    /// are suppressed and an `Err` is returned.
+    /// Duplicate alerts (same `alert_type` + `source` + `result_id` in the
+    /// metadata, if any) within the dedup window are suppressed and an `Err` is
+    /// returned.
     pub fn send_alert(
         &self,
         severity: AlertSeverity,
@@ -332,10 +336,21 @@ impl AlertManager {
         let mut state = self.state.lock().map_err(|e| format!("lock error: {e}"))?;
 
         // --- Dedup check ---
-        let dedup_key = (alert_type.to_string(), source.to_string());
+        let dedup_key = (
+            alert_type.to_string(),
+            source.to_string(),
+            metadata.get("result_id").cloned(),
+        );
         if let Some(&last_ts) = state.dedup_map.get(&dedup_key) {
             if now.saturating_sub(last_ts) < self.config.dedup_window_secs {
                 state.stats.total_suppressed += 1;
+                tracing::info!(
+                    alert_type = %alert_type,
+                    source = %source,
+                    result_id = dedup_key.2.as_deref().unwrap_or(""),
+                    message = %message,
+                    "Alert suppressed (duplicate within the dedup window)"
+                );
                 return Err(format!(
                     "alert suppressed (dedup): type={alert_type} source={source}"
                 ));
@@ -700,6 +715,85 @@ mod tests {
             sent.is_empty(),
             "info alerts should not be dispatched to any channel"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // Dedup looks at the result id
+    // ------------------------------------------------------------------
+    #[test]
+    fn test_alert_dedup_is_per_result() {
+        let mock = MockSender::default();
+        let mgr = AlertManager::with_sender(full_config(), Box::new(mock.clone()));
+        let send = |result_id: Option<&str>, other: &str| {
+            let mut metadata = HashMap::new();
+            if let Some(id) = result_id {
+                metadata.insert("result_id".to_string(), id.to_string());
+            }
+            metadata.insert("error".to_string(), other.to_string());
+            mgr.send_alert(
+                AlertSeverity::Critical,
+                "dispute_failed",
+                "operator",
+                "Dispute resolution failed",
+                metadata,
+            )
+        };
+
+        assert!(send(Some("0x01"), "a").is_ok());
+        assert!(send(Some("0x02"), "a").is_ok(), "another result");
+        assert!(send(None, "a").is_ok(), "no result");
+
+        // The rest of the metadata does not count.
+        assert!(send(Some("0x01"), "b").is_err());
+        assert!(send(Some("0x02"), "b").is_err());
+        assert!(send(None, "b").is_err());
+
+        let stats = mgr.get_alert_stats();
+        assert_eq!(stats.total_sent, 3);
+        assert_eq!(stats.total_suppressed, 3);
+    }
+
+    /// A suppressed alert leaves a line in the log at info level.
+    #[test]
+    fn test_suppressed_alert_is_logged_at_info() {
+        #[derive(Clone, Default)]
+        struct Buffer(Arc<StdMutex<Vec<u8>>>);
+        impl std::io::Write for Buffer {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        // Next to a second dispatcher, a callsite that another test's thread
+        // reached first is not left silent for this one.
+        let _second = tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
+        let logs = Buffer::default();
+        let writer = logs.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || {
+            let mgr = AlertManager::new(AlertConfig::default());
+            for _ in 0..2 {
+                let metadata = HashMap::from([("result_id".to_string(), "0xabc".to_string())]);
+                let _ = mgr.send_alert(AlertSeverity::Warning, "t", "s", "m", metadata);
+            }
+        });
+
+        let logged = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+        let line = logged
+            .lines()
+            .find(|line| line.contains("Alert suppressed"))
+            .unwrap_or_else(|| panic!("no line for the suppressed alert: {logged}"));
+        assert!(line.contains(" INFO "), "{line}");
+        assert!(line.contains("0xabc"), "{line}");
     }
 
     // ------------------------------------------------------------------

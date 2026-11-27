@@ -8,6 +8,10 @@ use crate::types::ProofMetadata;
 /// Gzip magic bytes (first two bytes of any gzip stream).
 const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
 
+/// Largest decompressed size of a gzip bundle, in bytes (64 MiB). A larger one
+/// is a parse error, so a small gzip stream cannot expand without a bound.
+pub const MAX_DECOMPRESSED_BUNDLE_BYTES: usize = 64 * 1024 * 1024;
+
 /// A self-contained proof bundle with everything needed for verification.
 ///
 /// All binary fields are hex-encoded (with optional "0x" prefix).
@@ -53,7 +57,8 @@ impl ProofBundle {
     /// Parse a bundle from a JSON file path.
     ///
     /// Auto-detects gzip-compressed files (by magic bytes, not file extension)
-    /// so both `.json` and `.json.gz` files work transparently.
+    /// so both `.json` and `.json.gz` files work transparently. A gzip file that
+    /// decompresses to more than [`MAX_DECOMPRESSED_BUNDLE_BYTES`] is an error.
     pub fn from_file(path: &str) -> Result<Self> {
         let data = std::fs::read(path)
             .map_err(|e| VerifyError::BundleParse(format!("read {}: {}", path, e)))?;
@@ -63,14 +68,12 @@ impl ProofBundle {
     /// Deserialize from compressed (gzip) or uncompressed JSON bytes.
     ///
     /// Auto-detects gzip by checking for the magic bytes `0x1f 0x8b` at the
-    /// start of the data. Falls back to plain JSON parsing otherwise.
+    /// start of the data. Falls back to plain JSON parsing otherwise. Gzip data
+    /// that decompresses to more than [`MAX_DECOMPRESSED_BUNDLE_BYTES`] is an
+    /// error; decompression stops as soon as the limit is passed.
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
-        if data.len() >= 2 && data[0] == GZIP_MAGIC[0] && data[1] == GZIP_MAGIC[1] {
-            let mut decoder = flate2::read::GzDecoder::new(data);
-            let mut json = String::new();
-            decoder
-                .read_to_string(&mut json)
-                .map_err(|e| VerifyError::BundleParse(format!("gzip decompress: {}", e)))?;
+        if Self::is_compressed(data) {
+            let json = decompress(data)?;
             serde_json::from_str(&json).map_err(|e| VerifyError::BundleParse(e.to_string()))
         } else {
             serde_json::from_slice(data).map_err(|e| VerifyError::BundleParse(e.to_string()))
@@ -79,8 +82,9 @@ impl ProofBundle {
 
     /// Serialize to compressed JSON (gzip).
     ///
-    /// Typically achieves 85-95% size reduction on proof bundles because the
-    /// hex-encoded proof/gens data compresses extremely well.
+    /// Roughly halves a proof bundle (49.5% smaller for the 88-layer XGBoost
+    /// fixture): the hex encoding compresses, the underlying field elements
+    /// do not.
     pub fn to_compressed_json(&self) -> Result<Vec<u8>> {
         let json = serde_json::to_vec(self)
             .map_err(|e| VerifyError::BundleParse(format!("serialize: {}", e)))?;
@@ -143,6 +147,24 @@ impl ProofBundle {
             prover_version: self.prover_version.clone().unwrap_or_default(),
         }
     }
+}
+
+/// Decompress a gzip stream of at most [`MAX_DECOMPRESSED_BUNDLE_BYTES`] of
+/// UTF-8 text.
+fn decompress(data: &[u8]) -> Result<String> {
+    let mut json = Vec::new();
+    // One byte more than the limit is enough to tell that there is more.
+    flate2::read::GzDecoder::new(data)
+        .take(MAX_DECOMPRESSED_BUNDLE_BYTES as u64 + 1)
+        .read_to_end(&mut json)
+        .map_err(|e| VerifyError::BundleParse(format!("gzip decompress: {}", e)))?;
+    if json.len() > MAX_DECOMPRESSED_BUNDLE_BYTES {
+        return Err(VerifyError::BundleParse(format!(
+            "gzip decompress: decompressed bundle exceeds {} bytes",
+            MAX_DECOMPRESSED_BUNDLE_BYTES
+        )));
+    }
+    String::from_utf8(json).map_err(|e| VerifyError::BundleParse(format!("gzip decompress: {}", e)))
 }
 
 /// Decode a hex string (with optional "0x" prefix) to bytes.
@@ -282,7 +304,7 @@ mod tests {
             100.0 - (compressed_size as f64 / original_size as f64 * 100.0)
         );
 
-        // Hex-encoded proof data compresses very well; expect at least 30% reduction
+        // The hex encoding is redundant, so gzip must make the bundle smaller
         assert!(
             compressed_size < original_size,
             "compressed ({compressed_size}) should be smaller than original ({original_size})"
@@ -319,6 +341,61 @@ mod tests {
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A gzip stream of `make_test_bundle()` followed by spaces (which JSON
+    /// allows), `size` bytes long when decompressed.
+    fn gzip_bundle_padded_to(size: usize) -> Vec<u8> {
+        let json = serde_json::to_vec(&make_test_bundle()).unwrap();
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+        encoder.write_all(&json).unwrap();
+        let spaces = vec![b' '; 1 << 20];
+        let mut left = size - json.len();
+        while left > 0 {
+            let n = left.min(spaces.len());
+            encoder.write_all(&spaces[..n]).unwrap();
+            left -= n;
+        }
+        encoder.finish().unwrap()
+    }
+
+    const OVER_LIMIT_ERROR: &str =
+        "bundle parse error: gzip decompress: decompressed bundle exceeds 67108864 bytes";
+
+    #[test]
+    fn test_gzip_bundle_at_the_limit_parses() {
+        let at_limit = gzip_bundle_padded_to(MAX_DECOMPRESSED_BUNDLE_BYTES);
+        let restored = ProofBundle::from_bytes(&at_limit).unwrap();
+        assert_eq!(restored.proof_hex, make_test_bundle().proof_hex);
+    }
+
+    #[test]
+    fn test_gzip_bundle_over_the_limit_rejected() {
+        let over = gzip_bundle_padded_to(MAX_DECOMPRESSED_BUNDLE_BYTES + 1);
+        assert!(over.len() < 100_000, "compressed to {} bytes", over.len());
+        let err = ProofBundle::from_bytes(&over).unwrap_err();
+        assert!(matches!(err, VerifyError::BundleParse(_)), "{err}");
+        assert_eq!(err.to_string(), OVER_LIMIT_ERROR);
+
+        // Loading from a file has the same limit.
+        let dir =
+            std::env::temp_dir().join(format!("zkml-verifier-gzip-limit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("over.json.gz");
+        std::fs::write(&path, &over).unwrap();
+        let result = ProofBundle::from_file(path.to_str().unwrap());
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(result.unwrap_err().to_string(), OVER_LIMIT_ERROR);
+    }
+
+    /// The stream is cut off far past the limit. Reading all of it would report
+    /// the cut; the limit error shows that decompression stopped before that.
+    #[test]
+    fn test_gzip_decompression_stops_at_the_limit() {
+        let mut over = gzip_bundle_padded_to(2 * MAX_DECOMPRESSED_BUNDLE_BYTES);
+        over.truncate(over.len() * 3 / 4);
+        let err = ProofBundle::from_bytes(&over).unwrap_err();
+        assert_eq!(err.to_string(), OVER_LIMIT_ERROR);
     }
 
     #[test]

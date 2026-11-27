@@ -34,6 +34,7 @@ import {
 const SEPOLIA_RPC_URL = process.env.SEPOLIA_RPC_URL;
 
 // Try to load deployment addresses
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let DEPLOYMENT: Record<string, any> = {};
 const DEPLOY_FILE = path.resolve(
   __dirname,

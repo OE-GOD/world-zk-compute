@@ -26,6 +26,33 @@ const RETRY_DELAYS: Partial<Record<ErrorCode, number>> = {
 };
 
 /**
+ * Error code for an error body without a `code`, chosen by HTTP status so
+ * the error gets the class and retry behaviour the SDK gives that code.
+ * A gateway's 502 or 504 means the upstream failed or timed out, so they map
+ * to the network codes; a plain 500 or other 5xx is not known to be
+ * transient, so it is not retried.
+ */
+function codeForStatus(httpStatus: number): ErrorCode {
+  switch (httpStatus) {
+    case 401:
+      return ErrorCode.Unauthorized;
+    case 403:
+      return ErrorCode.Forbidden;
+    case 404:
+      return ErrorCode.RequestNotFound;
+    case 429:
+      return ErrorCode.RateLimited;
+    case 502:
+      return ErrorCode.NetworkError;
+    case 503:
+      return ErrorCode.ServiceUnavailable;
+    case 504:
+      return ErrorCode.ConnectionTimeout;
+  }
+  return httpStatus >= 500 ? ErrorCode.InternalError : ErrorCode.InvalidRequest;
+}
+
+/**
  * Base error class for World ZK Compute SDK
  */
 export class WorldZKError extends Error {
@@ -68,10 +95,45 @@ export class ApiError extends WorldZKError {
   }
 
   /**
-   * Create ApiError from API response
+   * Create ApiError from API response.
+   *
+   * The body may lack the structured fields: a proxy's HTML error page
+   * arrives as `{}`, and the services answer `{"error": "..."}` (the
+   * indexer's 429 adds `retry_after_seconds`). Without a `code`, the HTTP
+   * status picks one (401 WZK-1030, 403 WZK-1031, 404 WZK-1021, 429 WZK-1040,
+   * 502 WZK-5000, 503 WZK-2010, 504 WZK-5001, other 4xx WZK-1000, other 5xx
+   * WZK-2000), so the caller gets the real status and message and transient
+   * failures are still retried. Without a structured `retry`, a finite,
+   * positive `retry_after_seconds` becomes the retry delay; any other value
+   * leaves the code's default delay.
    */
-  static fromResponse(data: ApiErrorResponse, httpStatus: number = 500): ApiError {
-    const { code, message, details, requestId, traceId, retry } = data;
+  static fromResponse(
+    data:
+      | (Partial<ApiErrorResponse> & { error?: unknown; retry_after_seconds?: unknown })
+      | null
+      | undefined,
+    httpStatus: number = 500
+  ): ApiError {
+    const body = data ?? {};
+    const { details, requestId, traceId } = body;
+    const code = typeof body.code === 'string' ? body.code : codeForStatus(httpStatus);
+    const retryAfterSeconds = body.retry_after_seconds;
+    const retry =
+      body.retry ??
+      (typeof retryAfterSeconds === 'number' &&
+      Number.isFinite(retryAfterSeconds) &&
+      retryAfterSeconds >= 0
+        ? {
+            retryable: RETRYABLE_CODES.has(code as ErrorCode),
+            retryAfterMs: retryAfterSeconds * 1000,
+          }
+        : undefined);
+    const message =
+      typeof body.message === 'string'
+        ? body.message
+        : typeof body.error === 'string'
+          ? body.error
+          : `HTTP ${httpStatus}`;
 
     // Determine the appropriate error class
     if (code.startsWith('WZK-103')) {

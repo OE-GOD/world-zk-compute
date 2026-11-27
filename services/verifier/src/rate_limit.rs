@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::{
     extract::Request,
@@ -68,6 +68,28 @@ impl TokenBucket {
     }
 }
 
+/// How often buckets that have refilled completely are dropped.
+const PRUNE_INTERVAL: Duration = Duration::from_secs(60);
+
+/// The token buckets of all clients seen recently.
+struct Buckets {
+    by_client: HashMap<String, TokenBucket>,
+    /// Last time full buckets were dropped.
+    last_prune: Instant,
+}
+
+impl Buckets {
+    /// Drop every bucket that has refilled to its maximum. Such a bucket is
+    /// indistinguishable from the new one its client would be given.
+    fn prune(&mut self) {
+        self.by_client.retain(|_, bucket| {
+            bucket.refill();
+            bucket.tokens < bucket.max_tokens
+        });
+        self.last_prune = Instant::now();
+    }
+}
+
 /// Shared rate limiter state.
 ///
 /// Supports two modes:
@@ -77,7 +99,8 @@ impl TokenBucket {
 ///    clients fall back to `default_rpm`.
 #[derive(Clone)]
 pub struct RateLimitState {
-    buckets: Arc<Mutex<HashMap<String, TokenBucket>>>,
+    buckets: Arc<Mutex<Buckets>>,
+    prune_interval: Duration,
     default_rpm: u32,
     tenant_store: Option<Arc<TenantStore>>,
 }
@@ -91,7 +114,11 @@ impl RateLimitState {
     /// Create a new rate limiter with the given default requests-per-minute limit.
     pub fn new(rpm: u32) -> Self {
         Self {
-            buckets: Arc::new(Mutex::new(HashMap::new())),
+            buckets: Arc::new(Mutex::new(Buckets {
+                by_client: HashMap::new(),
+                last_prune: Instant::now(),
+            })),
+            prune_interval: PRUNE_INTERVAL,
             default_rpm: rpm,
             tenant_store: None,
         }
@@ -123,11 +150,17 @@ impl RateLimitState {
     ///
     /// If the client has a per-tenant rate limit that differs from the bucket's
     /// current configuration, the bucket is recreated with the new limit.
+    /// Buckets that have refilled completely are dropped once per prune interval.
     async fn check(&self, client_id: &str) -> (bool, u32, u64) {
         let rpm = self.resolve_rpm(client_id);
         let mut buckets = self.buckets.lock().await;
 
+        if buckets.last_prune.elapsed() >= self.prune_interval {
+            buckets.prune();
+        }
+
         let bucket = buckets
+            .by_client
             .entry(client_id.to_string())
             .or_insert_with(|| TokenBucket::new(rpm));
 
@@ -145,7 +178,6 @@ impl RateLimitState {
 /// Uses the `X-API-Key` header (via `extract_client_id`) to identify callers.
 /// If no API key is present, falls back to IP-based identification.
 ///
-/// - `/health` is never rate-limited.
 /// - Returns 429 with `X-RateLimit-Remaining` and `X-RateLimit-Reset` headers
 ///   when the limit is exceeded.
 /// - Adds rate limit headers to successful responses too.
@@ -154,11 +186,6 @@ pub async fn rate_limit_middleware(
     request: Request,
     next: Next,
 ) -> Response {
-    // /health is never rate-limited
-    if request.uri().path() == "/health" {
-        return next.run(request).await;
-    }
-
     let client_id = extract_client_id(request.headers());
     let (allowed, remaining, reset_secs) = state.check(&client_id).await;
 
@@ -245,6 +272,53 @@ mod tests {
         // After 2 seconds at 1/sec, should have ~2 tokens
         let (allowed, _, _) = bucket.try_consume();
         assert!(allowed);
+    }
+
+    #[tokio::test]
+    async fn test_refilled_buckets_are_dropped() {
+        let mut state = RateLimitState::new(60); // 60/min = 1/sec
+        state.prune_interval = Duration::ZERO; // prune on every check
+
+        state.check("idle").await;
+        state.check("busy").await;
+        assert_eq!(state.buckets.lock().await.by_client.len(), 2);
+
+        // "idle" used its one token 2 seconds ago, so it has it back.
+        state
+            .buckets
+            .lock()
+            .await
+            .by_client
+            .get_mut("idle")
+            .unwrap()
+            .last_refill = Instant::now() - Duration::from_secs(2);
+
+        state.check("new").await;
+        {
+            let buckets = state.buckets.lock().await;
+            let mut clients: Vec<&str> = buckets.by_client.keys().map(String::as_str).collect();
+            clients.sort_unstable();
+            assert_eq!(clients, ["busy", "new"]);
+        }
+
+        // A client whose bucket was dropped is treated as before: a full bucket.
+        let (allowed, remaining, _) = state.check("idle").await;
+        assert!(allowed);
+        assert_eq!(remaining, 59);
+    }
+
+    #[tokio::test]
+    async fn test_buckets_in_use_survive_pruning() {
+        let mut state = RateLimitState::new(2);
+        state.prune_interval = Duration::ZERO;
+
+        // Pruning on every check must not hand an exhausted client new tokens.
+        let (allowed, _, _) = state.check("client").await;
+        assert!(allowed);
+        let (allowed, _, _) = state.check("client").await;
+        assert!(allowed);
+        let (allowed, _, _) = state.check("client").await;
+        assert!(!allowed);
     }
 
     #[tokio::test]

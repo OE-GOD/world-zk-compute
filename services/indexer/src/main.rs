@@ -14,6 +14,7 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use tee_watcher::redact::{redact_urls, url_origin};
 use tee_watcher::{parse_log, TEEEvent};
 use tracing::{error, info, warn};
 
@@ -643,7 +644,20 @@ async fn poll_and_index(
         .to_block(latest);
 
     let logs = provider.get_logs(&filter).await?;
-    let events: Vec<TEEEvent> = logs.iter().filter_map(parse_log).collect();
+    let events: Vec<(Option<u64>, TEEEvent)> = logs
+        .iter()
+        .filter_map(|log| parse_log(log).map(|event| (log.block_number, event)))
+        .collect();
+
+    for (block, event) in &events {
+        if let Err(e) = storage.apply_event(event) {
+            return Err(stop_at_failed_event(storage, *block, e));
+        }
+        // Broadcast to WebSocket clients
+        let ws_event = tee_event_to_ws_event(event);
+        broadcaster.broadcast(ws_event);
+    }
+    storage.set_last_indexed_block(latest + 1)?;
 
     if !events.is_empty() {
         info!(
@@ -654,17 +668,24 @@ async fn poll_and_index(
         );
     }
 
-    for event in &events {
-        if let Err(e) = storage.apply_event(event) {
-            error!("failed to apply event: {}", e);
-        }
-        // Broadcast to WebSocket clients
-        let ws_event = tee_event_to_ws_event(event);
-        broadcaster.broadcast(ws_event);
-    }
-    storage.set_last_indexed_block(latest + 1)?;
-
     Ok(())
+}
+
+/// Move the cursor to the block of an event that could not be written, so the
+/// next poll starts there. Without a block number the cursor stays where it is.
+/// Returns the error for the poll loop.
+fn stop_at_failed_event(
+    storage: &dyn Storage,
+    block: Option<u64>,
+    error: anyhow::Error,
+) -> anyhow::Error {
+    let Some(block) = block else {
+        return anyhow::anyhow!("failed to apply event (no block number): {error}");
+    };
+    if let Err(e) = storage.set_last_indexed_block(block) {
+        error!("failed to move the cursor to block {}: {}", block, e);
+    }
+    anyhow::anyhow!("failed to apply event in block {block}: {error}")
 }
 
 // ---------------------------------------------------------------------------
@@ -745,28 +766,41 @@ pub(crate) struct AppState {
     pub(crate) storage: Arc<dyn Storage>,
     #[allow(dead_code)] // stored for lifetime management; websocket routes receive it separately
     pub(crate) broadcaster: Arc<EventBroadcaster>,
+    /// The rate limiter's trusted proxies, so that handlers that log a client
+    /// address name it the way the rate limiter counts it.
+    pub(crate) trusted_proxies: rate_limit::TrustedProxyConfig,
 }
 
 // ---------------------------------------------------------------------------
 // App builder (delegates to routes module)
 // ---------------------------------------------------------------------------
 
+/// Router with the default rate limit and no background cleanup, for tests.
+#[cfg(test)]
 pub fn build_app(storage: Arc<dyn Storage>, broadcaster: Arc<EventBroadcaster>) -> Router {
     routes::build_app(
         storage,
         broadcaster,
-        rate_limit::RateLimitConfig::default(),
-        rate_limit::TrustedProxyConfig::default(),
+        rate_limit::RateLimitLayer::new_without_cleanup(
+            rate_limit::RateLimitConfig::default(),
+            rate_limit::TrustedProxyConfig::default(),
+        ),
     )
 }
 
+/// The production router. Its rate limiter drops idle clients' buckets in
+/// the background, so it must be built inside the tokio runtime.
 pub fn build_app_with_rate_limit(
     storage: Arc<dyn Storage>,
     broadcaster: Arc<EventBroadcaster>,
     rate_limit_config: rate_limit::RateLimitConfig,
     trusted_proxies: rate_limit::TrustedProxyConfig,
 ) -> Router {
-    routes::build_app(storage, broadcaster, rate_limit_config, trusted_proxies)
+    routes::build_app(
+        storage,
+        broadcaster,
+        rate_limit::RateLimitLayer::new(rate_limit_config, trusted_proxies),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -801,11 +835,86 @@ async fn shutdown_signal() {
 }
 
 // ---------------------------------------------------------------------------
+// Command line
+// ---------------------------------------------------------------------------
+
+const USAGE: &str = "\
+Usage: tee-indexer [--help | --version]
+
+Indexes TEEMLVerifier events into a database and serves them over HTTP and
+WebSocket. Without arguments the server starts; it is configured by environment
+variables:
+
+  RPC_URL                    JSON-RPC endpoint (default http://localhost:8545)
+  CONTRACT_ADDRESS           TEEMLVerifier contract (default: the zero address)
+  POLL_INTERVAL_SECS         Seconds between polls (default 12)
+  PORT                       Port to listen on (default 8081)
+  DB_TYPE                    sqlite or postgres (default sqlite)
+  DB_PATH                    SQLite database file (default ./indexer.db)
+  DATABASE_URL               Postgres URL, required when DB_TYPE=postgres
+  DB_MAX_CONNECTIONS, DB_MIN_CONNECTIONS, DB_ACQUIRE_TIMEOUT_SECS,
+  DB_MAX_LIFETIME_SECS, DB_IDLE_TIMEOUT_SECS
+                             Postgres connection pool
+  API_KEY                    Key that API requests must carry (default: none needed)
+  ADMIN_API_KEY              Key for the admin endpoints (default: none, no such
+                             endpoints)
+  RATE_LIMIT_PER_IP          Requests per IP per minute (default 100)
+  TRUSTED_PROXIES            CIDR ranges of the proxies in front; behind them a
+                             client is the right-most X-Forwarded-For address
+                             outside these ranges (HTTP and WebSocket limits)
+  MAX_WS_CONNECTIONS         WebSocket connections in total (default 100)
+  MAX_WS_CONNECTIONS_PER_IP  WebSocket connections per IP (default 5)
+  LOG_FORMAT                 json, or anything else for text (default json)
+  RUST_LOG                   Log filter (default info)
+";
+
+/// What the command line asks for.
+enum Command {
+    Serve,
+    Help,
+    Version,
+}
+
+/// Parse the command line (without the program name). An argument that is not
+/// known is returned as the error.
+fn parse_args(args: impl Iterator<Item = std::ffi::OsString>) -> Result<Command, String> {
+    let mut command = Command::Serve;
+    for arg in args {
+        let requested = match arg.to_str() {
+            Some("--help" | "-h") => Command::Help,
+            Some("--version" | "-V") => Command::Version,
+            _ => return Err(arg.to_string_lossy().into_owned()),
+        };
+        // The first one counts.
+        if matches!(command, Command::Serve) {
+            command = requested;
+        }
+    }
+    Ok(command)
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    match parse_args(std::env::args_os().skip(1)) {
+        Ok(Command::Serve) => {}
+        Ok(Command::Help) => {
+            print!("{USAGE}");
+            return Ok(());
+        }
+        Ok(Command::Version) => {
+            println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        Err(arg) => {
+            eprintln!("error: unexpected argument {arg:?} (try --help)");
+            std::process::exit(2);
+        }
+    }
+
     let log_format = std::env::var("LOG_FORMAT").unwrap_or_else(|_| "json".into());
     let filter =
         tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
@@ -835,7 +944,7 @@ async fn main() -> anyhow::Result<()> {
     let start_time = std::time::Instant::now();
 
     info!("tee-indexer starting");
-    info!("  rpc_url:          {}", config.rpc_url);
+    info!("  rpc_url:          {}", url_origin(&config.rpc_url));
     info!("  contract_address: {:#x}", config.contract_address);
     info!("  db_type:          {}", config.db_type);
     info!("  db_path:          {}", config.db_path);
@@ -847,8 +956,7 @@ async fn main() -> anyhow::Result<()> {
                 .database_url
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("DATABASE_URL is required when DB_TYPE=postgres"))?;
-            let redacted = &url[..url.find('@').unwrap_or(url.len()).min(30)];
-            info!("  database_url:     {}...", redacted);
+            info!("  database_url:     {}", url_origin(url));
             #[cfg(feature = "postgres")]
             {
                 let pool_config = pg_storage::PgStorageConfig::from_env();
@@ -858,7 +966,6 @@ async fn main() -> anyhow::Result<()> {
             }
             #[cfg(not(feature = "postgres"))]
             {
-                let _ = redacted;
                 anyhow::bail!(
                     "Postgres backend requires the 'postgres' feature. \
                      Rebuild with: cargo build --features postgres"
@@ -910,8 +1017,9 @@ async fn main() -> anyhow::Result<()> {
     // This caps the sleep at 60x the base interval (e.g. 12s * 60 = 720s = 12 min).
     // On success the backoff resets immediately.
     //
-    // Logging is throttled: first 3 failures log at WARN, subsequent at ERROR
-    // (every 5th failure). This prevents log flooding during extended outages.
+    // Logging is throttled: failures 1 and 2 log at WARN, the third at ERROR
+    // when the circuit breaker opens, then every fifth at ERROR. This prevents
+    // log flooding during extended outages.
     const MAX_BACKOFF_MULTIPLIER: u64 = 60;
     const CIRCUIT_BREAKER_THRESHOLD: u32 = 3;
 
@@ -961,6 +1069,8 @@ async fn main() -> anyhow::Result<()> {
                             consecutive_failures = 0;
                         }
                         Err(e) => {
+                            // The error names the RPC URL, which can hold an API key.
+                            let e = redact_urls(&e.to_string());
                             let prev_failures = consecutive_failures;
                             consecutive_failures = consecutive_failures.saturating_add(1);
                             let next_multiplier =
@@ -1290,7 +1400,339 @@ mod tests {
         assert_eq!(row.status, "finalized");
     }
 
+    // -- Polling tests --
+
+    /// SQLite storage whose `apply_event` fails for one result while `failing`
+    /// is set, and records the results it was called for. While
+    /// `cursor_failing` is set, every write of the cursor fails too.
+    struct FailingStorage {
+        inner: SqliteStorage,
+        fail_for: B256,
+        failing: AtomicBool,
+        cursor_failing: AtomicBool,
+        applied: Mutex<Vec<B256>>,
+    }
+
+    impl FailingStorage {
+        fn new(fail_for: B256) -> Self {
+            Self {
+                inner: SqliteStorage::open_in_memory().unwrap(),
+                fail_for,
+                failing: AtomicBool::new(true),
+                cursor_failing: AtomicBool::new(false),
+                applied: Mutex::new(Vec::new()),
+            }
+        }
+
+        /// The results written since the last call.
+        fn take_applied(&self) -> Vec<B256> {
+            std::mem::take(&mut *self.applied.lock().unwrap())
+        }
+    }
+
+    impl Storage for FailingStorage {
+        fn insert_result(
+            &self,
+            id: &str,
+            model_hash: &str,
+            input_hash: &str,
+            submitter: &str,
+            block_number: u64,
+        ) -> anyhow::Result<usize> {
+            self.inner
+                .insert_result(id, model_hash, input_hash, submitter, block_number)
+        }
+
+        fn update_result_status(
+            &self,
+            id: &str,
+            status: &str,
+            challenger: Option<&str>,
+        ) -> anyhow::Result<usize> {
+            self.inner.update_result_status(id, status, challenger)
+        }
+
+        fn get_result(&self, id: &str) -> anyhow::Result<Option<ResultRow>> {
+            self.inner.get_result(id)
+        }
+
+        fn list_results(&self, filter: &ResultFilter) -> anyhow::Result<Vec<ResultRow>> {
+            self.inner.list_results(filter)
+        }
+
+        fn count_results(&self, filter: &ResultFilter) -> anyhow::Result<u64> {
+            self.inner.count_results(filter)
+        }
+
+        fn get_stats(&self) -> anyhow::Result<StatsResponse> {
+            self.inner.get_stats()
+        }
+
+        fn get_last_indexed_block(&self) -> u64 {
+            self.inner.get_last_indexed_block()
+        }
+
+        fn set_last_indexed_block(&self, block: u64) -> anyhow::Result<()> {
+            if self.cursor_failing.load(Ordering::SeqCst) {
+                anyhow::bail!("database is locked");
+            }
+            self.inner.set_last_indexed_block(block)
+        }
+
+        fn get_total_results(&self) -> u64 {
+            self.inner.get_total_results()
+        }
+
+        fn apply_event(&self, event: &TEEEvent) -> anyhow::Result<()> {
+            let TEEEvent::ResultSubmitted { result_id, .. } = event else {
+                anyhow::bail!("unexpected event {event:?}");
+            };
+            if *result_id == self.fail_for && self.failing.load(Ordering::SeqCst) {
+                anyhow::bail!("disk full");
+            }
+            self.inner.apply_event(event)?;
+            self.applied.lock().unwrap().push(*result_id);
+            Ok(())
+        }
+    }
+
+    fn rid(n: u8) -> B256 {
+        B256::from([n; 32])
+    }
+
+    /// A `ResultSubmitted` log of result `rid(n)`.
+    fn submitted_log(n: u8, block: Option<u64>) -> serde_json::Value {
+        serde_json::json!({
+            "address": Address::ZERO,
+            "topics": [topic_result_submitted(), rid(n), B256::ZERO, B256::ZERO],
+            "data": B256::ZERO,
+            "blockNumber": block.map(|b| format!("{b:#x}")),
+            "blockHash": null,
+            "transactionHash": null,
+            "transactionIndex": null,
+            "logIndex": null,
+            "removed": false,
+        })
+    }
+
+    /// Serve `eth_blockNumber` (always `latest`) and `eth_getLogs` (the `logs`
+    /// from `fromBlock` on, and those without a block number) on a free port.
+    async fn spawn_rpc(latest: u64, logs: Vec<serde_json::Value>) -> String {
+        let parse = |v: &serde_json::Value| {
+            v.as_str()
+                .map(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).unwrap())
+        };
+        let handler = move |axum::Json(req): axum::Json<serde_json::Value>| async move {
+            let result = match req["method"].as_str().unwrap() {
+                "eth_blockNumber" => serde_json::json!(format!("{latest:#x}")),
+                "eth_getLogs" => {
+                    let from = parse(&req["params"][0]["fromBlock"]).unwrap();
+                    logs.into_iter()
+                        .filter(|log| parse(&log["blockNumber"]).is_none_or(|b| b >= from))
+                        .collect()
+                }
+                other => panic!("unexpected RPC method {other}"),
+            };
+            axum::Json(serde_json::json!({"jsonrpc": "2.0", "id": req["id"], "result": result}))
+        };
+        let app = Router::new().route("/", axum::routing::post(handler));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        url
+    }
+
+    /// The result ids of the events broadcast after sequence id `since`.
+    fn broadcast_since(broadcaster: &EventBroadcaster, since: u64) -> Vec<String> {
+        broadcaster
+            .events_since(since)
+            .iter()
+            .map(|e| e.data["result_id"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    fn ids(ns: &[u8]) -> Vec<String> {
+        ns.iter().map(|n| format!("{:#x}", rid(*n))).collect()
+    }
+
+    #[tokio::test]
+    async fn test_poll_stops_at_the_first_failed_write() {
+        let storage = FailingStorage::new(rid(3));
+        let broadcaster = test_broadcaster();
+        let url = spawn_rpc(
+            50,
+            vec![
+                submitted_log(1, Some(10)),
+                submitted_log(2, Some(20)),
+                submitted_log(3, Some(20)),
+                submitted_log(4, Some(30)),
+            ],
+        )
+        .await;
+
+        let err = poll_and_index(&url, Address::ZERO, &storage, &broadcaster)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "failed to apply event in block 20: disk full"
+        );
+        // Block 10 is done; block 20 is polled again.
+        assert_eq!(storage.get_last_indexed_block(), 20);
+        assert_eq!(storage.take_applied(), [rid(1), rid(2)]);
+        assert_eq!(broadcast_since(&broadcaster, 0), ids(&[1, 2]));
+
+        // As long as the write fails, the cursor stays, and every retry writes
+        // and broadcasts again the events of block 20 before the failed one.
+        let before = broadcaster.current_sequence_id() - 1;
+        poll_and_index(&url, Address::ZERO, &storage, &broadcaster)
+            .await
+            .unwrap_err();
+        assert_eq!(storage.get_last_indexed_block(), 20);
+        assert_eq!(storage.take_applied(), [rid(2)]);
+        assert_eq!(broadcast_since(&broadcaster, before), ids(&[2]));
+
+        // With a working storage the next poll completes, without block 10.
+        storage.failing.store(false, Ordering::SeqCst);
+        let before = broadcaster.current_sequence_id() - 1;
+        poll_and_index(&url, Address::ZERO, &storage, &broadcaster)
+            .await
+            .unwrap();
+        assert_eq!(storage.get_last_indexed_block(), 51);
+        assert_eq!(storage.take_applied(), [rid(2), rid(3), rid(4)]);
+        assert_eq!(broadcast_since(&broadcaster, before), ids(&[2, 3, 4]));
+        assert_eq!(storage.get_total_results(), 4);
+    }
+
+    #[tokio::test]
+    async fn test_poll_keeps_the_cursor_when_the_failed_log_has_no_block() {
+        let storage = FailingStorage::new(rid(2));
+        storage.set_last_indexed_block(7).unwrap();
+        let broadcaster = test_broadcaster();
+        let url = spawn_rpc(
+            50,
+            vec![
+                submitted_log(1, Some(10)),
+                submitted_log(2, None),
+                submitted_log(3, Some(30)),
+            ],
+        )
+        .await;
+
+        let err = poll_and_index(&url, Address::ZERO, &storage, &broadcaster)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "failed to apply event (no block number): disk full"
+        );
+        assert_eq!(storage.get_last_indexed_block(), 7);
+        assert_eq!(storage.take_applied(), [rid(1)]);
+        assert_eq!(broadcast_since(&broadcaster, 0), ids(&[1]));
+
+        // The retry starts at the cursor again, so the event of block 10 is
+        // written and broadcast once more.
+        let before = broadcaster.current_sequence_id() - 1;
+        poll_and_index(&url, Address::ZERO, &storage, &broadcaster)
+            .await
+            .unwrap_err();
+        assert_eq!(storage.get_last_indexed_block(), 7);
+        assert_eq!(storage.take_applied(), [rid(1)]);
+        assert_eq!(broadcast_since(&broadcaster, before), ids(&[1]));
+
+        storage.failing.store(false, Ordering::SeqCst);
+        poll_and_index(&url, Address::ZERO, &storage, &broadcaster)
+            .await
+            .unwrap();
+        assert_eq!(storage.get_last_indexed_block(), 51);
+        assert_eq!(storage.get_total_results(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_poll_retries_a_failed_write_in_the_latest_block() {
+        let storage = FailingStorage::new(rid(2));
+        let broadcaster = test_broadcaster();
+        let url = spawn_rpc(
+            50,
+            vec![submitted_log(1, Some(40)), submitted_log(2, Some(50))],
+        )
+        .await;
+
+        let err = poll_and_index(&url, Address::ZERO, &storage, &broadcaster)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "failed to apply event in block 50: disk full"
+        );
+        // The cursor is at the latest block, not past it.
+        assert_eq!(storage.get_last_indexed_block(), 50);
+        assert_eq!(storage.take_applied(), [rid(1)]);
+
+        // The next poll is not skipped although no new block has come.
+        storage.failing.store(false, Ordering::SeqCst);
+        poll_and_index(&url, Address::ZERO, &storage, &broadcaster)
+            .await
+            .unwrap();
+        assert_eq!(storage.get_last_indexed_block(), 51);
+        assert_eq!(storage.take_applied(), [rid(2)]);
+        assert_eq!(storage.get_total_results(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_poll_returns_the_write_error_when_the_cursor_cannot_move() {
+        let storage = FailingStorage::new(rid(2));
+        storage.set_last_indexed_block(7).unwrap();
+        storage.cursor_failing.store(true, Ordering::SeqCst);
+        let broadcaster = test_broadcaster();
+        let url = spawn_rpc(
+            50,
+            vec![
+                submitted_log(1, Some(10)),
+                submitted_log(2, Some(20)),
+                submitted_log(3, Some(30)),
+            ],
+        )
+        .await;
+
+        let err = poll_and_index(&url, Address::ZERO, &storage, &broadcaster)
+            .await
+            .unwrap_err();
+        // The poll reports the event it could not write, not the cursor.
+        assert_eq!(
+            err.to_string(),
+            "failed to apply event in block 20: disk full"
+        );
+        assert_eq!(storage.get_last_indexed_block(), 7);
+        assert_eq!(storage.take_applied(), [rid(1)]);
+
+        // Once both work again, the poll starts from the old cursor.
+        storage.cursor_failing.store(false, Ordering::SeqCst);
+        storage.failing.store(false, Ordering::SeqCst);
+        poll_and_index(&url, Address::ZERO, &storage, &broadcaster)
+            .await
+            .unwrap();
+        assert_eq!(storage.get_last_indexed_block(), 51);
+        assert_eq!(storage.take_applied(), [rid(1), rid(2), rid(3)]);
+        assert_eq!(storage.get_total_results(), 3);
+    }
+
     // -- HTTP endpoint tests --
+
+    #[tokio::test]
+    async fn test_production_router_spawns_rate_limit_cleanup() {
+        // The cleanup task is the only task building the router spawns; without
+        // it the rate limiter keeps a bucket for every client address for ever.
+        let metrics = tokio::runtime::Handle::current().metrics();
+        let before = metrics.num_alive_tasks();
+        let _app = build_app_with_rate_limit(
+            test_storage(),
+            test_broadcaster(),
+            rate_limit::RateLimitConfig::default(),
+            rate_limit::TrustedProxyConfig::none(),
+        );
+        assert_eq!(metrics.num_alive_tasks(), before + 1);
+    }
 
     #[tokio::test]
     async fn test_health_endpoint() {

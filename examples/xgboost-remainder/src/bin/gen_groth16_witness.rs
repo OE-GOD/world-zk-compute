@@ -8,6 +8,11 @@
 //! circuit operates over Fr, and the Solidity verifier reduces Fq->Fr via
 //! `% FR_MODULUS`.
 //!
+//! The replay supports the toy circuit only (`a * b - expected`, one committed
+//! and one public input layer): it assumes that layer chain, two input claims and
+//! one public layer. `--circuit xgboost` is refused before proving; the XGBoost
+//! (DAG) circuit has its own generator, gen_dag_groth16_witness.
+//!
 //! Usage:
 //!   cargo run --release --bin gen_groth16_witness               # num_vars=1 (default)
 //!   cargo run --release --bin gen_groth16_witness -- --num-vars 4  # num_vars=4
@@ -35,9 +40,7 @@ use shared_types::{
     perform_function_under_verifier_config, Bn256Point, Fq, Fr,
 };
 
-#[path = "../abi_encode.rs"]
-#[allow(clippy::all)]
-mod abi_encode;
+use xgboost_remainder::abi_encode;
 
 fn build_circuit(num_vars: usize) -> Circuit<Fr> {
     let mut builder = CircuitBuilder::<Fr>::new();
@@ -170,69 +173,25 @@ fn setup_toy_circuit() -> CircuitSetup {
     }
 }
 
-fn setup_xgboost_circuit() -> CircuitSetup {
-    let num_trees = parse_arg_usize("--trees", 1);
-    let depth = parse_arg_usize("--depth", 1);
-    let num_features = parse_arg_usize("--features", 2);
-    let num_trees_padded = num_trees.next_power_of_two();
-
-    eprintln!(
-        "XGBoost circuit: trees={} (padded={}), depth={}, features={}",
-        num_trees, num_trees_padded, depth, num_features
-    );
-
-    // Generate a deterministic test model
-    let model = xgboost_remainder::model::generate_model(num_trees, depth, num_features);
-    let features = xgboost_remainder::model::generate_features(num_features, 123);
-
-    let inputs = xgboost_remainder::circuit::prepare_circuit_inputs(&model, &features);
-
-    let base_circuit = xgboost_remainder::circuit::build_full_inference_circuit(
-        inputs.num_trees_padded,
-        inputs.max_depth,
-        inputs.num_features_padded,
-        &inputs.fi_padded,
-        inputs.decomp_k,
-    );
-    let mut prover_circuit = base_circuit.clone();
-    let verifier_circuit = base_circuit.clone();
-
-    prover_circuit.set_input("path_bits", inputs.flat_path_bits.into());
-    prover_circuit.set_input("features", inputs.features_quantized.into());
-    prover_circuit.set_input("decomp_bits", inputs.decomp_bits_padded.into());
-    prover_circuit.set_input("leaf_values", inputs.leaf_values_padded.clone().into());
-    prover_circuit.set_input("expected_sum", vec![inputs.expected_sum].into());
-    prover_circuit.set_input("thresholds", inputs.thresholds_padded.into());
-    prover_circuit.set_input("is_real", inputs.is_real_padded.into());
-
-    // Public values = leaf_values + expected_sum (the full public input layer)
-    // NOTE: The actual public input order depends on the circuit builder's shred ordering.
-    // We'll extract the correct values from the proof's public_inputs field later.
-    let pub_values_placeholder: Vec<Fr> = Vec::new(); // filled from proof
-
-    CircuitSetup {
-        prover_circuit,
-        verifier_circuit,
-        pub_values: pub_values_placeholder,
-        transcript_label: "gen-test-proof transcript",
-        pedersen_seed: "gen-test-proof Pedersen committer seed string for generating bases",
+/// Check the `--circuit` value before any proving starts.
+///
+/// Only the toy circuit is replayed here. The XGBoost circuit is refused up
+/// front: proving it first and refusing afterwards cost a full proof for nothing.
+fn check_circuit_type(circuit_type: &str) -> Result<()> {
+    match circuit_type {
+        "toy" => Ok(()),
+        "xgboost" => anyhow::bail!(
+            "--circuit xgboost is not supported here: use the gen_dag_groth16_witness binary \
+             for the XGBoost (DAG) circuit"
+        ),
+        other => anyhow::bail!("Unknown circuit type: {}. Only 'toy' is supported.", other),
     }
 }
 
-// NOTE: DAG circuit witness generation is in gen_dag_groth16_witness.rs
-// The generate_dag_witness stub was removed because it had unresolvable type errors.
-
 fn main() -> Result<()> {
     let circuit_type = parse_arg("--circuit").unwrap_or_else(|| "toy".to_string());
-
-    let mut setup = match circuit_type.as_str() {
-        "toy" => setup_toy_circuit(),
-        "xgboost" => setup_xgboost_circuit(),
-        other => {
-            eprintln!("Unknown circuit type: {}. Use 'toy' or 'xgboost'.", other);
-            std::process::exit(1);
-        }
-    };
+    check_circuit_type(&circuit_type)?;
+    let setup = setup_toy_circuit();
 
     let config = GKRCircuitProverConfig::hyrax_compatible_runtime_optimized_default();
     let verifier_config = GKRCircuitVerifierConfig::new_from_prover_config(&config, false);
@@ -258,16 +217,6 @@ fn main() -> Result<()> {
         &mut transcript
     );
 
-    // Extract public input values from the proof (correct for any circuit type)
-    if setup.pub_values.is_empty() {
-        // For XGBoost: extract public values from the proof's public_inputs field
-        for (_layer_id, mle_opt) in &proof.public_inputs {
-            if let Some(mle) = mle_opt {
-                setup.pub_values = mle.f.iter().collect();
-                break;
-            }
-        }
-    }
     let pub_values = &setup.pub_values;
 
     // Verify proof (full verification, ensures proof is valid)
@@ -288,13 +237,6 @@ fn main() -> Result<()> {
         &proof_config
     );
     eprintln!("Proof verified in Rust!");
-
-    // ================================================================
-    // DAG circuits (xgboost) use gen_dag_groth16_witness binary
-    // ================================================================
-    if circuit_type == "xgboost" {
-        anyhow::bail!("XGBoost/DAG witness generation moved to gen_dag_groth16_witness binary");
-    }
 
     // ================================================================
     // Replay ECTranscript to extract all challenges as Fr values.
@@ -912,4 +854,21 @@ fn main() -> Result<()> {
     println!("{}", serde_json::to_string_pretty(&output)?);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn xgboost_circuit_is_refused_and_points_to_the_dag_generator() {
+        let err = check_circuit_type("xgboost").unwrap_err().to_string();
+        assert!(err.contains("gen_dag_groth16_witness"), "{}", err);
+    }
+
+    #[test]
+    fn only_the_toy_circuit_is_accepted() {
+        assert!(check_circuit_type("toy").is_ok());
+        assert!(check_circuit_type("dag").is_err());
+    }
 }

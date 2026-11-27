@@ -24,6 +24,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
@@ -42,6 +44,9 @@ jobs:
             target
           key: release-rust-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Build contract artifacts (loaded by sdk/tests/integration_tee.rs)
+        run: cd contracts && forge build --skip test --skip script
+
       - name: Run Rust tests
         run: |
           cargo test --manifest-path sdk/Cargo.toml
@@ -50,8 +55,8 @@ jobs:
           cargo test --manifest-path services/admin-cli/Cargo.toml
           cargo test --manifest-path services/indexer/Cargo.toml
           cargo test --manifest-path prover/Cargo.toml
-          cargo test -p watcher
-          cargo test -p world-zk-events
+          cargo test -p tee-watcher
+          cargo test -p tee-events
 
       - name: Run contract tests
         run: cd contracts && forge test -vv
@@ -64,16 +69,23 @@ jobs:
     strategy:
       matrix:
         include:
+          # context must be the directory each Dockerfile's COPY paths are
+          # relative to (see docker-compose*.yml / deploy/docker/Makefile.docker)
           - image: operator
             dockerfile: services/operator/Dockerfile
+            context: .
           - image: indexer
             dockerfile: services/indexer/Dockerfile
+            context: .
           - image: enclave
             dockerfile: tee/Dockerfile
+            context: tee
           - image: admin-cli
             dockerfile: services/admin-cli/Dockerfile
+            context: .
           - image: prover
             dockerfile: prover/Dockerfile
+            context: prover
     steps:
       - uses: actions/checkout@v4
 
@@ -91,20 +103,27 @@ jobs:
         id: version
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          # Image names must be lowercase; github.repository keeps the owner's case.
+          REPO=$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')
+          {
+            echo "tag=${TAG}"
+            echo "version=${TAG#v}"
+            echo "repo=${REPO}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
-          context: .
+          context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
           push: true
           tags: |
-            ghcr.io/${{ github.repository }}/${{ matrix.image }}:${{ steps.version.outputs.tag }}
-            ghcr.io/${{ github.repository }}/${{ matrix.image }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            ghcr.io/${{ steps.version.outputs.repo }}/${{ matrix.image }}:${{ steps.version.outputs.tag }}
+            ghcr.io/${{ steps.version.outputs.repo }}/${{ matrix.image }}:latest
+          # One cache scope per image; with the shared default scope each
+          # matrix job overwrites the others' cache.
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
 
   create-release:
     name: Create Release
@@ -120,7 +139,10 @@ jobs:
         id: version
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          # Image names must be lowercase; github.repository keeps the owner's case.
+          REPO=$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "repo=${REPO}" >> "$GITHUB_OUTPUT"
 
       - name: Generate release notes
         id: notes
@@ -145,11 +167,11 @@ jobs:
             ## Docker Images
 
             ```bash
-            docker pull ghcr.io/${{ github.repository }}/operator:${{ steps.version.outputs.tag }}
-            docker pull ghcr.io/${{ github.repository }}/indexer:${{ steps.version.outputs.tag }}
-            docker pull ghcr.io/${{ github.repository }}/enclave:${{ steps.version.outputs.tag }}
-            docker pull ghcr.io/${{ github.repository }}/admin-cli:${{ steps.version.outputs.tag }}
-            docker pull ghcr.io/${{ github.repository }}/prover:${{ steps.version.outputs.tag }}
+            docker pull ghcr.io/${{ steps.version.outputs.repo }}/operator:${{ steps.version.outputs.tag }}
+            docker pull ghcr.io/${{ steps.version.outputs.repo }}/indexer:${{ steps.version.outputs.tag }}
+            docker pull ghcr.io/${{ steps.version.outputs.repo }}/enclave:${{ steps.version.outputs.tag }}
+            docker pull ghcr.io/${{ steps.version.outputs.repo }}/admin-cli:${{ steps.version.outputs.tag }}
+            docker pull ghcr.io/${{ steps.version.outputs.repo }}/prover:${{ steps.version.outputs.tag }}
             ```
 
             ## Changes
@@ -163,7 +185,6 @@ jobs:
     needs: build-and-test
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    if: ${{ secrets.NPM_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -202,7 +223,6 @@ jobs:
     needs: build-and-test
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    if: ${{ secrets.PYPI_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
 

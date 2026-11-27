@@ -1,1 +1,3 @@
-worldzk[web3]>=1.0.0
+# The worldzk package is not published on PyPI; install it from this checkout.
+# Run pip from this directory: the path is resolved relative to where pip runs.
+../../sdk/python[web3]

@@ -623,7 +623,7 @@ resource "aws_ecs_task_definition" "proof_registry" {
     efs_volume_configuration {
       file_system_id     = aws_efs_file_system.proof_registry.id
       transit_encryption = "ENABLED"
-      authorization_configuration {
+      authorization_config {
         access_point_id = aws_efs_access_point.proof_registry.id
         iam             = "ENABLED"
       }
@@ -649,7 +649,7 @@ resource "aws_ecs_task_definition" "proof_registry" {
     environment = [
       { name = "PORT", value = "3001" },
       { name = "RUST_LOG", value = "info" },
-      { name = "DATABASE_PATH", value = "/data/registry.db" },
+      { name = "PROOF_DB_PATH", value = "/data/registry.db" },
       { name = "PROOF_BUCKET", value = aws_s3_bucket.proofs.id },
       { name = "AWS_REGION", value = var.aws_region }
     ]
@@ -687,8 +687,11 @@ resource "aws_ecs_task_definition" "proof_generator" {
       protocol      = "tcp"
     }]
 
+    # The binary takes its port from --port, not from PORT; the image default
+    # is 3100. Same arguments as the image CMD, on the port mapped above.
+    command = ["--mock", "--host", "0.0.0.0", "--port", "3002", "--model-dir", "/app/data/models"]
+
     environment = [
-      { name = "PORT", value = "3002" },
       { name = "RUST_LOG", value = "info" },
       { name = "PROOF_BUCKET", value = aws_s3_bucket.proofs.id },
       { name = "AWS_REGION", value = var.aws_region },

@@ -33,9 +33,10 @@
       "explorerApiKey": "ARBISCAN_API_KEY",
       "verifierRouter": "",
       "gasMultiplier": 1.0,
-      "codeSizeLimit": 200000,
+      "codeSizeLimit": 24576,
       "gasLimit": 500000000,
-      "notes": "Primary deployment target. Supports large contracts and high gas limits."
+      "teeOnly": true,
+      "notes": "Arbitrum Sepolia testnet. Enforces the 24576-byte contract size limit (checked 2026-11-22: creating a 30000-byte contract is rejected with 'max code size exceeded'), so RemainderVerifier (136 KB) cannot be deployed. Only TEEMLVerifier + ExecutionEngine are deployable."
     },
     {
       "name": "world-chain-sepolia",
@@ -45,9 +46,10 @@
       "explorerApiKey": "WORLDSCAN_API_KEY",
       "verifierRouter": "",
       "gasMultiplier": 1.0,
-      "codeSizeLimit": 200000,
+      "codeSizeLimit": 24576,
       "gasLimit": 500000000,
-      "notes": "World Chain Sepolia testnet."
+      "teeOnly": true,
+      "notes": "World Chain Sepolia testnet. Enforces the 24576-byte contract size limit (checked 2026-11-22: creating a 30000-byte contract is rejected with CreateContractSizeLimit), so RemainderVerifier (136 KB) cannot be deployed. Only TEEMLVerifier + ExecutionEngine are deployable."
     }
   ]
 }

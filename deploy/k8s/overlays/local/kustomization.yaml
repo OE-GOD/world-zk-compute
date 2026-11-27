@@ -1,7 +1,7 @@
 ---
 # Kustomize overlay for local development (Anvil).
 #
-# Applies to the base manifests at ../../ and patches the ConfigMap
+# Applies to the base manifests at ../../base and patches the ConfigMap
 # with local-dev values:
 #   - Anvil RPC at http://anvil:8545
 #   - Chain ID 31337 (Anvil default)
@@ -22,7 +22,7 @@ kind: Kustomization
 namespace: world-zk
 
 resources:
-  - ../../
+  - ../../base
 
 patches:
   - path: configmap-patch.yaml

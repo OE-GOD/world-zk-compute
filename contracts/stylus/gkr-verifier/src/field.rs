@@ -1,6 +1,6 @@
-/// BN254 field arithmetic for Fq (base field) and Fr (scalar field).
-/// Uses simple [u64; 4] limb representation with direct modular arithmetic.
-/// Fq/Fr share common implementations via free functions to minimize WASM code size.
+//! BN254 field arithmetic for Fq (base field) and Fr (scalar field).
+//! Uses simple [u64; 4] limb representation with direct modular arithmetic.
+//! Fq/Fr share common implementations via free functions to minimize WASM code size.
 
 /// BN254 base field modulus Fq
 pub const FQ_MOD: [u64; 4] = [
@@ -189,16 +189,6 @@ fn field_inv(a: &U256, modulus: &[u64; 4]) -> U256 {
     field_pow(a, &exp, modulus)
 }
 
-fn field_from_be_bytes(bytes: &[u8; 32], modulus: &[u64; 4]) -> U256 {
-    let v = U256::from_be_bytes(bytes);
-    let m = U256(*modulus);
-    if v.gte(&m) {
-        v.sub_no_mod(&m)
-    } else {
-        v
-    }
-}
-
 // ============================================================
 // Fq (base field) — thin wrapper
 // ============================================================
@@ -218,6 +208,10 @@ impl Fq {
     pub const ONE: Fq = Fq(U256::ONE);
     pub const MODULUS: U256 = U256(FQ_MOD);
 
+    /// Wrap `v` as it is: nothing is reduced. `mul` (and so `square`,
+    /// `pow5`, `inv`) reduces any 256-bit operand fully, but `add`, `sub`,
+    /// `neg` and equality assume operands below q, so a caller that does not
+    /// go through `mul` first must pass a reduced value.
     #[inline(always)]
     pub fn new(v: U256) -> Self {
         Fq(v)
@@ -225,9 +219,6 @@ impl Fq {
     #[inline(always)]
     pub fn from_u64(v: u64) -> Self {
         Fq(U256::from_u64(v))
-    }
-    pub fn from_be_bytes(bytes: &[u8; 32]) -> Self {
-        Fq(field_from_be_bytes(bytes, &FQ_MOD))
     }
 
     #[inline]
@@ -252,9 +243,6 @@ impl Fq {
     }
     pub fn inv(&self) -> Fq {
         Fq(field_inv(&self.0, &FQ_MOD))
-    }
-    pub fn pow(&self, exp: &U256) -> Fq {
-        Fq(field_pow(&self.0, exp, &FQ_MOD))
     }
 
     #[inline]
@@ -284,6 +272,10 @@ impl Fr {
     pub const ONE: Fr = Fr(U256::ONE);
     pub const MODULUS: U256 = U256(FR_MOD);
 
+    /// Wrap `v` as it is: nothing is reduced. `mul` (and so `square`, `inv`)
+    /// reduces any 256-bit operand fully, but `add`, `sub`, `neg` and equality
+    /// assume operands below r, so a caller that does not go through `mul`
+    /// first must pass a reduced value.
     #[inline(always)]
     pub fn new(v: U256) -> Self {
         Fr(v)
@@ -291,9 +283,6 @@ impl Fr {
     #[inline(always)]
     pub fn from_u64(v: u64) -> Self {
         Fr(U256::from_u64(v))
-    }
-    pub fn from_be_bytes(bytes: &[u8; 32]) -> Self {
-        Fr(field_from_be_bytes(bytes, &FR_MOD))
     }
 
     pub fn from_fq(fq: &Fq) -> Fr {
@@ -326,9 +315,6 @@ impl Fr {
     }
     pub fn inv(&self) -> Fr {
         Fr(field_inv(&self.0, &FR_MOD))
-    }
-    pub fn pow(&self, exp: &U256) -> Fr {
-        Fr(field_pow(&self.0, exp, &FR_MOD))
     }
 }
 

@@ -1,86 +1,115 @@
 // Package worldzk provides response types for the World ZK Compute API.
 package worldzk
 
-// HealthResponse is the aggregated health of all backend services.
+import "strconv"
+
+// HealthResponse is the aggregated health of all backend services
+// (gateway `GET /health`).
 type HealthResponse struct {
-	Status       string            `json:"status"`
-	Services     []ServiceHealth   `json:"services,omitempty"`
-	Backends     map[string]string `json:"backends,omitempty"`
-	HealthyCount int               `json:"healthy_count,omitempty"`
-	TotalCount   int               `json:"total_count,omitempty"`
+	// Status is "healthy", "degraded" or "unhealthy".
+	Status       string          `json:"status"`
+	Services     []ServiceHealth `json:"services,omitempty"`
+	HealthyCount int             `json:"healthy_count"`
+	TotalCount   int             `json:"total_count"`
 }
 
 // ServiceHealth describes the health of a single backend service.
 type ServiceHealth struct {
 	Name    string `json:"name"`
-	Status  string `json:"status"`
-	Latency int    `json:"latency_ms,omitempty"`
+	Healthy bool   `json:"healthy"`
+	// ResponseMs is how long the backend's /health took, when it answered.
+	ResponseMs uint64 `json:"response_ms,omitempty"`
+	// Error is set when the backend could not be reached.
+	Error string `json:"error,omitempty"`
 }
 
-// ModelResponse is returned when a model is uploaded.
+// ModelResponse is returned when a model is uploaded (`POST /models`).
 type ModelResponse struct {
-	ModelID   string `json:"model_id"`
-	ModelHash string `json:"model_hash"`
-	Name      string `json:"name,omitempty"`
-	Format    string `json:"format,omitempty"`
+	ModelID string `json:"model_id"`
+	// ModelHash is the proof generator's identifier: SHA-256 of the model after
+	// it was parsed and re-serialized. It is neither the keccak256 nor the
+	// SHA-256 of the uploaded file.
+	ModelHash   string `json:"model_hash"`
+	CircuitHash string `json:"circuit_hash"`
+	Format      string `json:"format"`
+	Active      bool   `json:"active"`
 }
 
-// ProveResponse is returned when a proof is generated.
+// ProveResponse is returned when a proof is generated (`POST /prove`).
 type ProveResponse struct {
-	ProofID      string  `json:"proof_id"`
-	ModelID      string  `json:"model_id"`
-	ModelHash    string  `json:"model_hash,omitempty"`
-	CircuitHash  string  `json:"circuit_hash,omitempty"`
-	Output       string  `json:"output,omitempty"`
-	ProveTimeMs  uint64  `json:"prove_time_ms,omitempty"`
-	ProofBundle  *Bundle `json:"proof_bundle,omitempty"`
+	// ProofID is the proof generator's own identifier. The proof registry does
+	// not know it: use RegistryProofID with Verify and GetReceipt.
+	ProofID     string `json:"proof_id"`
+	ModelHash   string `json:"model_hash"`
+	CircuitHash string `json:"circuit_hash"`
+	// Output is the predicted label.
+	Output string `json:"output"`
+	// Mock is true when the generator runs with --mock and the bundle is a placeholder.
+	Mock        bool    `json:"mock"`
+	ProveTimeMs uint64  `json:"prove_time_ms"`
+	ProofBundle *Bundle `json:"proof_bundle,omitempty"`
+	// RegistryProofID is the ID under which the generator stored the proof in
+	// the proof registry. Empty when the generator has no registry configured
+	// or the hand-off failed.
+	RegistryProofID string `json:"registry_proof_id,omitempty"`
 }
 
-// Bundle is a self-contained proof bundle.
+// Bundle is the proof data inside a ProveResponse.
 type Bundle struct {
-	ProofHex              string                 `json:"proof_hex"`
-	GensHex               string                 `json:"gens_hex"`
-	DAGCircuitDescription map[string]interface{} `json:"dag_circuit_description,omitempty"`
-	PublicInputsHex       string                 `json:"public_inputs_hex,omitempty"`
-	ModelHash             string                 `json:"model_hash,omitempty"`
-	CircuitHash           string                 `json:"circuit_hash,omitempty"`
-	ProverVersion         string                 `json:"prover_version,omitempty"`
-	Timestamp             *uint64                `json:"timestamp,omitempty"`
+	ProofHex        string `json:"proof_hex"`
+	PublicInputsHex string `json:"public_inputs_hex"`
+	ProofSizeBytes  uint64 `json:"proof_size_bytes"`
 }
 
-// VerifyResponse is the result of proof verification.
+// VerifyResponse is the result of proof verification (`POST /proofs/{id}/verify`).
 type VerifyResponse struct {
 	Verified  bool   `json:"verified"`
 	ReceiptID string `json:"receipt_id,omitempty"`
 	Error     string `json:"error,omitempty"`
 }
 
-// ReceiptResponse is a verification receipt for a proof.
+// ReceiptResponse is a verification receipt for a proof (`GET /proofs/{id}/receipt`).
 type ReceiptResponse struct {
-	ReceiptID  string `json:"receipt_id"`
-	ProofID    string `json:"proof_id"`
-	Verified   bool   `json:"verified"`
-	VerifiedAt string `json:"verified_at"`
-	Signature  string `json:"signature"`
+	ReceiptID       string `json:"receipt_id"`
+	ProofID         string `json:"proof_id"`
+	CircuitHash     string `json:"circuit_hash"`
+	ModelHash       string `json:"model_hash"`
+	Verified        bool   `json:"verified"`
+	VerifiedAt      string `json:"verified_at"`
+	VerifierVersion string `json:"verifier_version"`
+	VerifierHost    string `json:"verifier_host"`
+	Signature       string `json:"signature"`
+	// Error is the reason the verification failed. Empty when it succeeded.
+	Error string `json:"error,omitempty"`
 }
 
-// ProofSummary describes a single proof entry in a list response.
+// ProofSummary describes a single stored proof (an entry of `GET /proofs`).
 type ProofSummary struct {
-	ProofID     string `json:"proof_id"`
-	ModelID     string `json:"model_id,omitempty"`
-	ModelHash   string `json:"model_hash,omitempty"`
-	CircuitHash string `json:"circuit_hash,omitempty"`
-	CreatedAt   string `json:"created_at,omitempty"`
-	Verified    *bool  `json:"verified,omitempty"`
+	// ProofID is the registry's proof ID (JSON field "id").
+	ProofID     string `json:"id"`
+	ModelHash   string `json:"model_hash"`
+	CircuitHash string `json:"circuit_hash"`
+	CreatedAt   string `json:"created_at"`
+	// Verified is nil until the proof has been verified once.
+	Verified       *bool   `json:"verified"`
+	VerifiedAt     *string `json:"verified_at"`
+	ProofSizeBytes uint64  `json:"proof_size_bytes"`
+	Deleted        bool    `json:"deleted"`
 }
 
-// StatsResponse contains proof registry statistics.
+// proofListResponse is the envelope `GET /proofs` answers with.
+type proofListResponse struct {
+	Proofs []ProofSummary `json:"proofs"`
+	Count  int            `json:"count"`
+}
+
+// StatsResponse contains proof registry statistics (`GET /stats`).
 type StatsResponse struct {
-	TotalProofs    int            `json:"total_proofs"`
-	TotalModels    int            `json:"total_models"`
-	TotalVerified  int            `json:"total_verified"`
-	ProofsByModel  map[string]int `json:"proofs_by_model,omitempty"`
-	AvgProveTimeMs float64        `json:"avg_prove_time_ms,omitempty"`
+	TotalProofs       int    `json:"total_proofs"`
+	ActiveProofs      int    `json:"active_proofs"`
+	VerifiedCount     int    `json:"verified_count"`
+	FailedCount       int    `json:"failed_count"`
+	TotalStorageBytes uint64 `json:"total_storage_bytes"`
 }
 
 // APIError represents an error response from the gateway.
@@ -91,30 +120,5 @@ type APIError struct {
 
 // Error implements the error interface.
 func (e *APIError) Error() string {
-	return "worldzk: HTTP " + intToStr(e.StatusCode) + ": " + e.Body
-}
-
-// intToStr converts an int to a string without importing strconv.
-func intToStr(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := false
-	if n < 0 {
-		neg = true
-		n = -n
-	}
-	digits := make([]byte, 0, 10)
-	for n > 0 {
-		digits = append(digits, byte('0'+n%10))
-		n /= 10
-	}
-	if neg {
-		digits = append(digits, '-')
-	}
-	// reverse
-	for i, j := 0, len(digits)-1; i < j; i, j = i+1, j-1 {
-		digits[i], digits[j] = digits[j], digits[i]
-	}
-	return string(digits)
+	return "worldzk: HTTP " + strconv.Itoa(e.StatusCode) + ": " + e.Body
 }

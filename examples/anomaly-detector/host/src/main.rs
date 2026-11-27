@@ -9,9 +9,8 @@
 //! Detection teams can use this as a template for integrating
 //! their algorithms with the World ZK Compute network.
 
-use alloy::primitives::{Address, B256, U256};
 use serde::{Deserialize, Serialize};
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 
 /// Detection input format (matches guest program)
 #[derive(Serialize, Deserialize)]
@@ -58,7 +57,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Step 2: Compute input hash
     let input_hash = compute_hash(&input_bytes);
-    println!("   - Input hash: 0x{}", hex::encode(&input_hash));
+    println!("   - Input hash: 0x{}", hex::encode(input_hash));
 
     // Step 3: Upload input to IPFS or data URL
     println!("\n2. Uploading input data...");
@@ -68,7 +67,7 @@ async fn main() -> anyhow::Result<()> {
     // Step 4: Get the program image ID
     // (This would be computed from the guest ELF)
     let image_id = get_program_image_id();
-    println!("\n3. Program image ID: 0x{}", hex::encode(&image_id));
+    println!("\n3. Program image ID: 0x{}", hex::encode(image_id));
 
     // Step 5: Submit to World ZK Compute
     println!("\n4. Submitting detection job to World ZK Compute...");
@@ -102,7 +101,8 @@ async fn main() -> anyhow::Result<()> {
 
     println!("\n7. Proof verified on-chain!");
     println!("   - Results are cryptographically guaranteed correct");
-    println!("   - No one can see the raw data, only the proven results");
+    println!("   - Inputs are visible to the prover and to anyone who can fetch the input URL;");
+    println!("     this example's data: URL would put the whole input in the request");
 
     println!("\n=== Detection Complete ===");
 
@@ -122,9 +122,9 @@ fn create_sample_input() -> DetectionInput {
                 id
             },
             features: vec![
-                100.0 + (i as f64 * 2.0),  // Normal range: 100-116
-                50.0 + (i as f64 * 0.5),   // Normal range: 50-54
-                1.0,                        // Normal: 1.0
+                100.0 + (i as f64 * 2.0), // Normal range: 100-116
+                50.0 + (i as f64 * 0.5),  // Normal range: 50-54
+                1.0,                      // Normal: 1.0
             ],
             timestamp: 1700000000 + (i as u64 * 3600),
         });

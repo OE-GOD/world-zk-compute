@@ -79,7 +79,7 @@ A hash measurement of the enclave image and configuration. PCR0 corresponds to t
 ## Ethereum and Smart Contracts
 
 **EIP-170**
-Ethereum standard limiting deployed contract bytecode to 24,576 bytes. Relevant for L1 deployments; L2s like Arbitrum allow larger contracts.
+Ethereum standard limiting deployed contract bytecode to 24,576 bytes. Enforced on Ethereum L1 and also on Arbitrum and World Chain (checked against their public RPCs in November 2026; the testnets are recorded in `deployments/chains.json`).
 
 **EIP-1967 (UUPS Proxy)**
 A proxy pattern where the upgrade logic lives in the implementation contract. Storage slots for the implementation address and admin address are defined at fixed, non-colliding locations.

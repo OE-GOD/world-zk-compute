@@ -116,7 +116,7 @@ pub fn export_to_file(
 /// inference proof records, verification status, and dispute outcomes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditRecord {
-    /// ISO-8601 timestamp when the proof was archived.
+    /// Unix timestamp (seconds) as a string, taken when the proof was archived.
     pub timestamp: String,
     /// Model hash (hex).
     pub model_hash: String,

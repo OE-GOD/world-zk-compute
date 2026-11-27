@@ -133,24 +133,28 @@ tx_block_from_json() {
     echo "$1" | python3 -c "import sys,json; print(int(json.load(sys.stdin).get('blockNumber','0x0'),16))" 2>/dev/null || echo "0"
 }
 
-# sign_attestation <modelHash> <inputHash> <resultData> <privateKey>
-# Mirrors the contract: message = keccak256(encodePacked(modelHash, inputHash, keccak256(result)))
-# cast wallet sign adds the EIP-191 "\x19Ethereum Signed Message:\n32" prefix automatically.
+# Sign a TEE attestation the way TEEMLVerifier.submitResult checks it (EIP-712):
+#   structHash = keccak256(abi.encode(RESULT_TYPEHASH, modelHash, inputHash, keccak256(result)))
+#   digest     = keccak256("\x19\x01" || DOMAIN_SEPARATOR || structHash)
+# The domain separator binds the signature to this chain and this verifier, so it is
+# read from the deployed contract.
+# sign_attestation <modelHash> <inputHash> <resultData> <privateKey> <teeVerifierAddress>
 sign_attestation() {
-    local model_hash="${1#0x}"
-    local input_hash="${2#0x}"
+    local model_hash="$1"
+    local input_hash="$2"
     local result_data="$3"
     local private_key="$4"
+    local verifier="$5"
 
-    local result_hash
+    local result_hash typehash domain struct_hash digest
     result_hash=$(cast keccak "$result_data")
-    result_hash="${result_hash#0x}"
+    typehash=$(cast call --rpc-url "$RPC_URL" "$verifier" "RESULT_TYPEHASH()(bytes32)")
+    domain=$(cast call --rpc-url "$RPC_URL" "$verifier" "DOMAIN_SEPARATOR()(bytes32)")
+    struct_hash=$(cast keccak "$(cast abi-encode "f(bytes32,bytes32,bytes32,bytes32)" \
+        "$typehash" "$model_hash" "$input_hash" "$result_hash")")
+    digest=$(cast keccak "0x1901${domain#0x}${struct_hash#0x}")
 
-    local packed="0x${model_hash}${input_hash}${result_hash}"
-    local message
-    message=$(cast keccak "$packed")
-
-    cast wallet sign --private-key "$private_key" "$message"
+    cast wallet sign --no-hash --private-key "$private_key" "$digest"
 }
 
 # compute_result_id <sender> <modelHash> <inputHash> <blockNumber>
@@ -238,7 +242,12 @@ if [ ! -d "lib/risc0-ethereum" ]; then
     forge install risc0/risc0-ethereum --no-git --no-commit 2>/dev/null || true
 fi
 
+# TEEMLVerifier.initialize rejects address(0). This flow never resolves a ZK dispute,
+# so a non-zero placeholder is enough unless a real RemainderVerifier is supplied.
+REMAINDER_VERIFIER="${REMAINDER_VERIFIER:-0xDDdDddDdDdddDDddDDddDDDDdDdDDdDDdDDDDDDd}"
+
 FORGE_OUTPUT=$(PRIVATE_KEY="$DEPLOYER_KEY" FEE_RECIPIENT="$DEPLOYER_ADDR" \
+    REMAINDER_VERIFIER="$REMAINDER_VERIFIER" \
     forge script script/DeployFullStack.s.sol:DeployFullStack \
     --rpc-url "$RPC_URL" \
     --broadcast 2>&1) || {
@@ -446,7 +455,7 @@ fi
 # --- B2: Submit TEE-attested result ---
 log "B2: Submitting TEE-attested result..."
 
-ATTESTATION=$(sign_attestation "$TEST_MODEL_HASH" "$TEST_INPUT_HASH" "$TEST_RESULT" "$ENCLAVE_KEY")
+ATTESTATION=$(sign_attestation "$TEST_MODEL_HASH" "$TEST_INPUT_HASH" "$TEST_RESULT" "$ENCLAVE_KEY" "$TEE_VERIFIER_ADDR")
 info "Attestation signature generated"
 
 B2_TX=$(cast send --rpc-url "$RPC_URL" \

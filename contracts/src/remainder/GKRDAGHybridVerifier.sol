@@ -27,6 +27,8 @@ library GKRDAGHybridVerifier {
     error OnChainMLEMismatch();
     error NotEnoughCommitsForPoP();
     error Log2OfZero();
+    error SumcheckRoundCountMismatch();
+    error LayerProofCountMismatch();
 
     // ========================================================================
     // CONSTANTS
@@ -81,40 +83,6 @@ library GKRDAGHybridVerifier {
     // TRANSCRIPT REPLAY
     // ========================================================================
 
-    /// @notice Replay the full DAG Poseidon transcript and collect all Fiat-Shamir challenges.
-    /// @dev Follows the exact absorb/squeeze sequence of GKRDAGVerifier.verifyComputeLayers()
-    ///      + CommittedSumcheckVerifier.verify() + GKRDAGVerifier.verifyInputLayers().
-    function replayDAGTranscript(
-        GKRVerifier.GKRProof memory proof,
-        GKRDAGVerifier.DAGCircuitDescription memory desc,
-        PoseidonSponge.Sponge memory sponge
-    ) internal pure returns (DAGTranscriptChallenges memory challenges) {
-        uint256 numLayers = desc.numComputeLayers;
-
-        // Step 1: Squeeze output challenges (numVars = first layer's message count)
-        uint256 numVars = proof.layerProofs[0].sumcheckProof.messages.length;
-        challenges.outputChallenges = new uint256[](numVars);
-        for (uint256 i = 0; i < numVars; i++) {
-            challenges.outputChallenges[i] = PoseidonSponge.squeeze(sponge) % FR_MODULUS;
-        }
-
-        // Absorb output claim commitment
-        PoseidonSponge.absorb(sponge, proof.outputClaimCommitments[0].x);
-        PoseidonSponge.absorb(sponge, proof.outputClaimCommitments[0].y);
-
-        // Step 2: Process each compute layer
-        challenges.layers = new DAGLayerChallenges[](numLayers);
-        challenges.allBindings = new uint256[][](numLayers);
-
-        for (uint256 i = 0; i < numLayers; i++) {
-            challenges.layers[i] = _replayOneLayer(i, proof.layerProofs[i], desc, sponge);
-            challenges.allBindings[i] = challenges.layers[i].bindings;
-        }
-
-        // Step 3: Process input layers
-        challenges.inputGroups = _replayInputLayers(proof, desc, challenges.allBindings, sponge);
-    }
-
     /// @notice Replay one compute layer's transcript and collect challenges.
     function _replayOneLayer(
         uint256 layerIdx,
@@ -122,6 +90,12 @@ library GKRDAGHybridVerifier {
         GKRDAGVerifier.DAGCircuitDescription memory desc,
         PoseidonSponge.Sponge memory sponge
     ) private pure returns (DAGLayerChallenges memory layerCh) {
+        // The registered description fixes the number of sumcheck rounds of each layer. Without
+        // this check the proof would choose it, and with it the number of bindings.
+        if (lp.sumcheckProof.messages.length != desc.numSumcheckRounds[layerIdx]) {
+            revert SumcheckRoundCountMismatch();
+        }
+
         // Count claims for this layer
         uint256 numClaims = _countClaimsFor(layerIdx, desc);
         if (layerIdx == 0) numClaims++; // Output claim targets layer 0
@@ -164,72 +138,6 @@ library GKRDAGHybridVerifier {
         }
     }
 
-    /// @notice Replay input layer transcript and collect per-group challenges.
-    function _replayInputLayers(
-        GKRVerifier.GKRProof memory proof,
-        GKRDAGVerifier.DAGCircuitDescription memory desc,
-        uint256[][] memory allBindings,
-        PoseidonSponge.Sponge memory sponge
-    ) private pure returns (DAGInputGroupChallenges[] memory allGroupChallenges) {
-        // Count total input groups across all committed input layers
-        uint256 totalGroups = 0;
-        uint256 dagInputIdx = 0;
-
-        // First pass: count groups
-        for (uint256 inputIdx = 0; inputIdx < desc.numInputLayers; inputIdx++) {
-            if (desc.inputIsCommitted[inputIdx]) {
-                uint256 targetLayer = desc.numComputeLayers + inputIdx;
-                uint256 numClaims = _countClaimsFor(targetLayer, desc);
-                // numGroups == numClaims (prover creates one group per claim)
-                totalGroups += numClaims;
-                dagInputIdx++;
-            }
-        }
-
-        allGroupChallenges = new DAGInputGroupChallenges[](totalGroups);
-        uint256 groupIdx = 0;
-        dagInputIdx = 0;
-
-        // Second pass: replay transcript for each input layer
-        for (uint256 inputIdx = 0; inputIdx < desc.numInputLayers; inputIdx++) {
-            uint256 targetLayer = desc.numComputeLayers + inputIdx;
-
-            if (desc.inputIsCommitted[inputIdx]) {
-                // Collect and sort claim points (must match GKRDAGVerifier's order)
-                uint256[][] memory claimPoints = _collectClaimPoints(targetLayer, desc, allBindings);
-
-                // Sort claims lexicographically and group by R-half
-                uint256[] memory sortedIndices = _sortClaimIndices(claimPoints);
-                uint256 numRows = proof.inputProofs[dagInputIdx].commitmentRows.length;
-                uint256 n = claimPoints[0].length;
-                uint256 lHalfLen = _log2(numRows > 0 ? numRows : 1);
-                uint256 logNCols = n - lHalfLen;
-
-                uint256[][] memory groups = _groupClaimsByRHalf(claimPoints, sortedIndices, logNCols);
-
-                // Replay per-group transcript
-                for (uint256 g = 0; g < groups.length; g++) {
-                    uint256 groupSize = groups[g].length;
-
-                    // Squeeze RLC coefficients for this group
-                    allGroupChallenges[groupIdx].rlcCoeffs = _squeezeMultiple(sponge, groupSize);
-
-                    // Absorb comEval
-                    // The dagInputProofs aren't available in GKRProof, but the comEval is stored
-                    // in the proof in a specific order. We need to access it via the DAGInputLayerProof.
-                    // Since we're working with the standard GKR proof struct for transcript replay,
-                    // we need the caller to pass DAG input proofs separately.
-                    // For now, this is handled by the outer function.
-
-                    groupIdx++;
-                }
-
-                dagInputIdx++;
-            }
-            // Public (non-committed) input layers don't have transcript elements
-        }
-    }
-
     /// @notice Full transcript replay including input layer PODP/comEval absorptions.
     /// @dev This is the main entry point that has access to DAGInputLayerProofs.
     function replayDAGTranscriptFull(
@@ -240,8 +148,15 @@ library GKRDAGHybridVerifier {
     ) internal pure returns (DAGTranscriptChallenges memory challenges) {
         uint256 numLayers = desc.numComputeLayers;
 
-        // Step 1: Squeeze output challenges
-        uint256 numVars = proof.layerProofs[0].sumcheckProof.messages.length;
+        // One layer proof per compute layer of the registered description, as in
+        // GKRDAGVerifier.checkLayerProofCount: an extra one would never be read (a second encoding
+        // of the same proof) and a missing one would be indexed past the end. verifyDAGECChecks
+        // runs only after this replay, on the same proof.
+        if (proof.layerProofs.length != numLayers) revert LayerProofCountMismatch();
+
+        // Step 1: Squeeze one output challenge per variable of layer 0, counted from the registered
+        // description rather than from the proof
+        uint256 numVars = desc.numSumcheckRounds[0];
         challenges.outputChallenges = new uint256[](numVars);
         for (uint256 i = 0; i < numVars; i++) {
             challenges.outputChallenges[i] = PoseidonSponge.squeeze(sponge) % FR_MODULUS;
@@ -427,7 +342,6 @@ library GKRDAGHybridVerifier {
         HyraxVerifier.PedersenGens memory gens
     ) private view {
         uint256 n = lp.sumcheckProof.messages.length;
-        if (n == 0) return; // Zero-round layer: no sumcheck to verify
 
         // Compute alpha and oracleEval
         HyraxVerifier.G1Point memory alpha = HyraxVerifier.multiScalarMul(lp.sumcheckProof.messages, layerCh.gammas);
@@ -532,6 +446,7 @@ library GKRDAGHybridVerifier {
 
         // Fold per-claim sub-tensors into combined tensor of size numRows
         uint256 numRows = dagProof.commitmentRows.length;
+        _checkLTensorShape(ecCtx.challenges.inputGroups[groupIdx], numRows, ltLen);
         uint256[] memory lTensor = _foldLTensor(lTensorFull, numRows);
 
         // comX = MSM(rows, lTensor)
@@ -549,6 +464,14 @@ library GKRDAGHybridVerifier {
             ecCtx.outputs.zDotR[groupIdx],
             ecCtx.gens
         );
+    }
+
+    /// @notice Require one sub-tensor per claim, each with one coefficient per commitment row (2^lHalf rows).
+    function _checkLTensorShape(DAGInputGroupChallenges memory groupCh, uint256 numRows, uint256 ltLen) private pure {
+        // forge-lint: disable-next-line(incorrect-shift)
+        if (numRows != (1 << groupCh.lBindings.length) || ltLen != groupCh.rlcCoeffs.length * numRows) {
+            revert HyraxVerifier.LCoeffsLengthMismatch();
+        }
     }
 
     /// @notice Fold per-claim sub-tensors into combined tensor by summing.

@@ -5,7 +5,7 @@
 //! Old unversioned paths (`/results`, `/stats`) are preserved as
 //! backward-compatible aliases.
 
-use axum::extract::{Path, Query, RawQuery, State};
+use axum::extract::{ConnectInfo, Path, Query, RawQuery, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Request, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Json, Response};
@@ -15,7 +15,9 @@ use std::sync::Arc;
 use tower_http::set_header::SetResponseHeaderLayer;
 use uuid::Uuid;
 
-use super::rate_limit::{RateLimitConfig, RateLimitLayer, TrustedProxyConfig};
+use super::rate_limit::{client_ip, RateLimitLayer};
+#[cfg(test)]
+use super::rate_limit::{RateLimitConfig, TrustedProxyConfig};
 use super::websocket::{self, EventBroadcaster};
 use super::{AppState, PaginatedResponse, ResultFilter, ResultRow, StatsResponse, Storage};
 
@@ -506,9 +508,19 @@ pub(crate) async fn handle_ready(State(state): State<AppState>) -> impl IntoResp
 }
 
 pub(crate) async fn handle_admin_reset(
+    connect_info: Option<ConnectInfo<std::net::SocketAddr>>,
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
+    // The audit log names the client the way the rate limiter counts it:
+    // forwarding headers are read only from a trusted proxy, and from the
+    // right, so a client cannot write the address that gets logged.
+    let client_ip = client_ip(
+        connect_info.map(|ci| ci.0.ip()),
+        &headers,
+        &state.trusted_proxies,
+    );
+
     // Authenticate via X-Admin-Key header
     let expected_key = std::env::var("ADMIN_API_KEY").unwrap_or_default();
     let provided_key = headers
@@ -517,12 +529,6 @@ pub(crate) async fn handle_admin_reset(
         .unwrap_or("");
 
     if expected_key.is_empty() || provided_key != expected_key {
-        let client_ip = headers
-            .get("x-forwarded-for")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.split(',').next())
-            .map(|s| s.trim().to_string())
-            .unwrap_or_else(|| "unknown".to_string());
         tracing::warn!(
             target: "audit",
             event = "admin_reset_denied",
@@ -540,12 +546,6 @@ pub(crate) async fn handle_admin_reset(
 
     state.storage.reset_lock_state();
 
-    let client_ip = headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.split(',').next())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
     tracing::info!(
         target: "audit",
         event = "admin_reset",
@@ -572,30 +572,22 @@ pub(crate) async fn handle_admin_reset(
 /// `Authorization: Bearer <key>`. Health, readiness, and WebSocket endpoints
 /// remain public.
 ///
-/// The `rate_limit_config` controls the maximum number of requests per IP
-/// within a sliding time window. Set via `RATE_LIMIT_PER_IP` env var
-/// (default 100 req/min).
+/// `rate_layer` limits the requests per client within a sliding time window
+/// (`RATE_LIMIT_PER_IP`, default 100 req/min). Its trusted proxies also decide
+/// which address the per-IP WebSocket limit counts a connection under.
 pub fn build_app(
     storage: Arc<dyn Storage>,
     broadcaster: Arc<EventBroadcaster>,
-    rate_limit_config: RateLimitConfig,
-    trusted_proxies: TrustedProxyConfig,
+    rate_layer: RateLimitLayer,
 ) -> Router {
     let api_key: Option<String> = std::env::var("API_KEY").ok().filter(|k| !k.is_empty());
-    build_app_with_key(
-        storage,
-        broadcaster,
-        rate_limit_config,
-        trusted_proxies,
-        api_key,
-    )
+    build_app_with_layer(storage, broadcaster, rate_layer, api_key)
 }
 
-/// Build the application router with an explicit API key value.
-///
-/// This is the inner implementation behind [`build_app`]. Production code
-/// should use `build_app` (reads `API_KEY` from the environment). Tests
-/// call this directly to avoid env-var mutation races.
+/// Build the application router with an explicit API key value and a rate
+/// limiter without background cleanup. Tests call this directly to avoid
+/// env-var mutation races.
+#[cfg(test)]
 pub fn build_app_with_key(
     storage: Arc<dyn Storage>,
     broadcaster: Arc<EventBroadcaster>,
@@ -603,9 +595,24 @@ pub fn build_app_with_key(
     trusted_proxies: TrustedProxyConfig,
     api_key: Option<String>,
 ) -> Router {
+    build_app_with_layer(
+        storage,
+        broadcaster,
+        RateLimitLayer::new_without_cleanup(rate_limit_config, trusted_proxies),
+        api_key,
+    )
+}
+
+fn build_app_with_layer(
+    storage: Arc<dyn Storage>,
+    broadcaster: Arc<EventBroadcaster>,
+    rate_layer: RateLimitLayer,
+    api_key: Option<String>,
+) -> Router {
     let state = AppState {
         storage,
         broadcaster: broadcaster.clone(),
+        trusted_proxies: rate_layer.trusted_proxies().clone(),
     };
 
     // Versioned API routes under /api/v1
@@ -623,12 +630,10 @@ pub fn build_app_with_key(
     // WebSocket route uses its own state type
     let ws_routes = Router::new()
         .route("/ws/events", get(websocket::ws_handler))
-        .with_state(broadcaster);
-
-    // Use new_without_cleanup so tests don't need a tokio runtime at layer
-    // construction time. In production the main() function constructs the
-    // layer with cleanup enabled via build_app_with_rate_limit.
-    let rate_layer = RateLimitLayer::new_without_cleanup(rate_limit_config, trusted_proxies);
+        .with_state(websocket::WsState {
+            broadcaster,
+            trusted_proxies: rate_layer.trusted_proxies().clone(),
+        });
 
     // Group API routes behind the optional API-key middleware so that
     // /health, /ready, and /ws/events remain publicly accessible.
@@ -1320,7 +1325,7 @@ mod tests {
 
         let long_id = "x".repeat(200);
         let req = axum::http::Request::builder()
-            .uri(&format!("/api/v1/results/{}", long_id))
+            .uri(format!("/api/v1/results/{}", long_id))
             .body(Body::empty())
             .unwrap();
 
@@ -1424,7 +1429,7 @@ mod tests {
 
         let long_status = "a".repeat(300);
         let req = axum::http::Request::builder()
-            .uri(&format!("/api/v1/results?status={}", long_status))
+            .uri(format!("/api/v1/results?status={}", long_status))
             .body(Body::empty())
             .unwrap();
 
@@ -1452,7 +1457,7 @@ mod tests {
 
         let long_submitter = format!("0x{}", "a".repeat(300));
         let req = axum::http::Request::builder()
-            .uri(&format!("/api/v1/results?submitter={}", long_submitter))
+            .uri(format!("/api/v1/results?submitter={}", long_submitter))
             .body(Body::empty())
             .unwrap();
 
@@ -1480,7 +1485,7 @@ mod tests {
 
         let long_hash = "h".repeat(300);
         let req = axum::http::Request::builder()
-            .uri(&format!("/api/v1/results?model_hash={}", long_hash))
+            .uri(format!("/api/v1/results?model_hash={}", long_hash))
             .body(Body::empty())
             .unwrap();
 
@@ -1797,6 +1802,139 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_rate_limit_not_bypassed_by_client_written_xff_entries() {
+        // Behind a trusted proxy on 127.0.0.1, one client sends a different
+        // made-up X-Forwarded-For value with every request. The proxy appends
+        // the real address, 198.51.100.7, which is what gets counted.
+        let rl_config = RateLimitConfig {
+            max_requests: 3,
+            window: std::time::Duration::from_secs(60),
+        };
+        let trusted = TrustedProxyConfig::from_env_str("127.0.0.0/8");
+        let app = build_app_with_key(test_storage(), test_broadcaster(), rl_config, trusted, None);
+
+        let mut statuses = Vec::new();
+        for i in 0..10u8 {
+            let mut req = axum::http::Request::builder()
+                .uri("/health")
+                .header("x-forwarded-for", format!("203.0.113.{i}, 198.51.100.7"))
+                .body(Body::empty())
+                .unwrap();
+            req.extensions_mut()
+                .insert(axum::extract::ConnectInfo(std::net::SocketAddr::new(
+                    std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+                    12345,
+                )));
+            statuses.push(app.clone().oneshot(req).await.unwrap().status());
+        }
+        let allowed = statuses.iter().filter(|s| **s == StatusCode::OK).count();
+        assert_eq!(allowed, 3, "{statuses:?}");
+    }
+
+    // -----------------------------------------------------------------------
+    // WebSocket limits
+    // -----------------------------------------------------------------------
+
+    /// Serve `app` on a loopback port, with the socket peer available to the
+    /// handlers as in production.
+    async fn serve_with_peer(app: Router) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+        addr
+    }
+
+    type ClientWs = tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >;
+
+    /// Open `/ws/events` as a proxy would for the client `xff`.
+    async fn ws_connect_via_proxy(
+        addr: std::net::SocketAddr,
+        xff: &str,
+    ) -> Result<ClientWs, tokio_tungstenite::tungstenite::Error> {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let mut req = format!("ws://{addr}/ws/events")
+            .into_client_request()
+            .unwrap();
+        req.headers_mut()
+            .insert("x-forwarded-for", xff.parse().unwrap());
+        tokio_tungstenite::connect_async(req)
+            .await
+            .map(|(ws, _)| ws)
+    }
+
+    #[tokio::test]
+    async fn test_ws_per_ip_limit_counts_clients_behind_trusted_proxy() {
+        let broadcaster = test_broadcaster();
+        let per_ip = broadcaster.max_per_ip();
+        let app = build_app_with_key(
+            test_storage(),
+            broadcaster.clone(),
+            test_rate_limit_config(),
+            TrustedProxyConfig::from_env_str("127.0.0.0/8"),
+            None,
+        );
+        let addr = serve_with_peer(app).await;
+
+        // More clients than the per-IP limit, all arriving through the proxy.
+        let mut open = Vec::new();
+        for i in 0..=per_ip {
+            let ws = ws_connect_via_proxy(addr, &format!("203.0.113.{i}"))
+                .await
+                .unwrap_or_else(|e| panic!("client {i} refused: {e}"));
+            open.push(ws);
+        }
+        let first: std::net::IpAddr = "203.0.113.0".parse().unwrap();
+        let proxy: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+        assert_eq!(broadcaster.connections_for_ip(first), 1);
+        assert_eq!(broadcaster.connections_for_ip(proxy), 0);
+
+        // One client is still held to the per-IP limit.
+        for _ in 1..per_ip {
+            open.push(ws_connect_via_proxy(addr, "203.0.113.0").await.unwrap());
+        }
+        assert!(ws_connect_via_proxy(addr, "203.0.113.0").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_ws_oversized_client_message_closes_connection() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+
+        let app = build_app_with_key(
+            test_storage(),
+            test_broadcaster(),
+            test_rate_limit_config(),
+            TrustedProxyConfig::default(),
+            None,
+        );
+        let addr = serve_with_peer(app).await;
+        let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/ws/events"))
+            .await
+            .unwrap();
+
+        let big = "x".repeat(2 * websocket::MAX_CLIENT_MESSAGE_BYTES);
+        ws.send(Message::Text(big)).await.unwrap();
+
+        // The server drops the connection instead of buffering the message.
+        let next = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next())
+            .await
+            .expect("connection still open 5 s after an oversized message");
+        assert!(
+            !matches!(next, Some(Ok(Message::Text(_)))),
+            "unexpected message: {next:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_rate_limit_applies_to_all_endpoints() {
         let s = test_storage();
         s.insert_result("0x01", "0xm", "0xi", "0xa", 1).unwrap();
@@ -1842,11 +1980,13 @@ mod tests {
     // Admin reset endpoint tests
     // -----------------------------------------------------------------------
 
-    /// All admin reset tests run in a single test to avoid env var races.
-    /// Multiple tests that set/remove ADMIN_API_KEY cannot run in parallel
-    /// since env vars are process-global.
+    /// Held by every test that sets or removes ADMIN_API_KEY: env vars are
+    /// process-global, and the tests run in parallel.
+    static ADMIN_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     #[tokio::test]
     async fn test_admin_reset_auth_scenarios() {
+        let _env = ADMIN_ENV_LOCK.lock().await;
         // --- Scenario 1: no ADMIN_API_KEY → route not registered → 404 ---
         std::env::remove_var("ADMIN_API_KEY");
         let app = build_app_with_key(
@@ -1926,6 +2066,96 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Collects what the `tracing` macros print on this thread until the
+    /// returned guard is dropped.
+    fn capture_logs() -> (
+        std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+        tracing::subscriber::DefaultGuard,
+    ) {
+        #[derive(Clone)]
+        struct Sink(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Sink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Sink(buf.clone());
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(move || sink.clone())
+            .finish();
+        (buf, tracing::subscriber::set_default(subscriber))
+    }
+
+    /// An admin reset request from `peer` with the given key and
+    /// X-Forwarded-For header.
+    fn admin_reset_request(peer: [u8; 4], key: &str, xff: &str) -> Request<Body> {
+        let mut req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/admin/reset")
+            .header("x-admin-key", key)
+            .header("x-forwarded-for", xff)
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut()
+            .insert(axum::extract::ConnectInfo(std::net::SocketAddr::new(
+                std::net::IpAddr::from(peer),
+                12345,
+            )));
+        req
+    }
+
+    // The test runs on one thread (the default tokio test runtime), so the
+    // thread-local log capture sees the handler's events.
+    #[tokio::test]
+    async fn test_admin_reset_audit_log_client_ip_cannot_be_chosen_by_the_client() {
+        let _env = ADMIN_ENV_LOCK.lock().await;
+        std::env::set_var("ADMIN_API_KEY", "audit-test-key");
+        let app = build_app_with_key(
+            test_storage(),
+            test_broadcaster(),
+            test_rate_limit_config(),
+            TrustedProxyConfig::from_env_str("10.0.0.0/8"),
+            None,
+        );
+        let (logs, guard) = capture_logs();
+
+        // Through the trusted proxy 10.0.0.1, which appended 203.0.113.50;
+        // the client wrote 6.6.6.6 itself.
+        let req = admin_reset_request([10, 0, 0, 1], "wrong-key", "6.6.6.6, 203.0.113.50");
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        // Straight from an untrusted peer, whose header is ignored.
+        let req = admin_reset_request([198, 51, 100, 7], "audit-test-key", "6.6.6.6");
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        drop(guard);
+        std::env::remove_var("ADMIN_API_KEY");
+        let logs = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+        let line = |needle: &str| {
+            logs.lines()
+                .find(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("no log line with {needle:?} in:\n{logs}"))
+                .to_string()
+        };
+        assert!(
+            line("admin_reset_denied").contains("client_ip=203.0.113.50"),
+            "{logs}"
+        );
+        assert!(
+            line("Admin reset executed successfully").contains("client_ip=198.51.100.7"),
+            "{logs}"
+        );
+        assert!(!logs.contains("6.6.6.6"), "{logs}");
     }
 
     // -----------------------------------------------------------------------
@@ -2972,7 +3202,7 @@ mod tests {
 
         let long_id = "x".repeat(200);
         let req = axum::http::Request::builder()
-            .uri(&format!("/api/v1/results?after_id={}", long_id))
+            .uri(format!("/api/v1/results?after_id={}", long_id))
             .body(Body::empty())
             .unwrap();
 

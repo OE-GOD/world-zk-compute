@@ -59,6 +59,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
@@ -70,8 +72,17 @@ jobs:
         with:
           shared-key: workspace-test
 
+      - name: Install Foundry (SDK integration tests spawn Anvil)
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Build contract artifacts (loaded by sdk/tests/integration_tee.rs)
+        run: cd contracts && forge build --skip test --skip script
+
       - name: Run workspace tests
         run: cargo test --workspace
+
+      - name: Run proof-registry S3 tests (behind the s3 feature, off by default)
+        run: cargo test -p proof-registry --features s3
 
   # ── Prover (separate workspace, needs risc0) ────────────────────────────
 
@@ -194,12 +205,6 @@ jobs:
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
 
-      - name: Install dependencies
-        run: |
-          cd contracts
-          [ -d lib/forge-std ] || forge install foundry-rs/forge-std --no-git
-          [ -d lib/risc0-ethereum ] || forge install risc0/risc0-ethereum --no-git
-
       - name: Build contracts
         run: cd contracts && forge build
 
@@ -306,16 +311,10 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            sdk/target
+            target
           key: ${{ runner.os }}-cargo-sdk-e2e-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-sdk-e2e-
-
-      - name: Install forge dependencies
-        run: |
-          cd contracts
-          forge install foundry-rs/forge-std --no-git
-          forge install risc0/risc0-ethereum --no-git
 
       - name: Start Anvil and deploy contracts
         run: |
@@ -335,7 +334,7 @@ jobs:
           import json, sys
           data = json.load(open('broadcast/DeployRemainderDAG.s.sol/31337/run-latest.json'))
           for tx in data['transactions']:
-              if tx.get('transactionType') == 'CREATE':
+              if tx.get('transactionType') == 'CREATE' and tx.get('contractName') == 'UUPSProxy':
                   print(tx['contractAddress']); sys.exit(0)
           sys.exit(1)
           ")
@@ -392,12 +391,6 @@ jobs:
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
-
-      - name: Install forge dependencies
-        run: |
-          cd contracts
-          forge install foundry-rs/forge-std --no-git
-          forge install risc0/risc0-ethereum --no-git
 
       - name: Run TEE happy path E2E
         run: bash scripts/tee-e2e.sh

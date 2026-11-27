@@ -183,7 +183,6 @@ impl Attestor {
     /// * `input_hash` - keccak256 of the input
     /// * `result_bytes` - raw inference result (hashed internally)
     /// * `verifier_address` - address of the TEEMLVerifier contract
-    #[allow(dead_code)] // Used in tests; will be called from production EIP-712 flow
     pub fn sign_eip712_attestation(
         &self,
         model_hash: B256,
@@ -264,7 +263,12 @@ impl Attestor {
 
     /// ABI-encode a struct: keccak256(typehash || field1 || field2 || field3)
     #[allow(dead_code)] // Used in tests; will be called from production EIP-712 flow
-    fn abi_encode_struct(typehash: B256, field1: B256, field2: B256, field3: B256) -> Vec<u8> {
+    pub(crate) fn abi_encode_struct(
+        typehash: B256,
+        field1: B256,
+        field2: B256,
+        field3: B256,
+    ) -> Vec<u8> {
         let mut encoded = Vec::with_capacity(128);
         encoded.extend_from_slice(typehash.as_slice());
         encoded.extend_from_slice(field1.as_slice());

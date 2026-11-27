@@ -7,8 +7,10 @@ WORKDIR /build
 # Copy manifest + lockfile first for layer caching
 COPY Cargo.toml Cargo.lock ./
 
-# Copy source code
+# Copy source code (benches/ too: Cargo.toml declares a [[bench]] target and
+# cargo rejects the manifest when its source file is missing)
 COPY src/ src/
+COPY benches/ benches/
 
 # Build in release mode (only the main binary)
 RUN cargo build --release --bin xgboost-remainder
@@ -32,7 +34,7 @@ USER appuser
 EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
+  CMD curl -fsS http://localhost:3000/health || exit 1
 
 ENTRYPOINT ["xgboost-remainder"]
 CMD ["--model", "/app/model.json", "--serve", "--host", "0.0.0.0", "--port", "3000"]

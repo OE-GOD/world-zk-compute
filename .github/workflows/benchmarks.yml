@@ -43,6 +43,7 @@ jobs:
 
       - name: Run prover micro-benchmarks
         run: |
+          set -o pipefail
           cargo bench \
             --manifest-path prover/Cargo.toml \
             --bench prover_benchmarks \
@@ -51,6 +52,7 @@ jobs:
 
       - name: Run XGBoost Remainder benchmarks
         run: |
+          set -o pipefail
           cargo bench \
             --manifest-path examples/xgboost-remainder/Cargo.toml \
             --bench prover_bench \
@@ -59,6 +61,7 @@ jobs:
 
       - name: Run zkml-verifier benchmarks
         run: |
+          set -o pipefail
           cargo bench \
             -p zkml-verifier \
             --bench verify_bench \

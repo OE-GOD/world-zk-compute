@@ -35,7 +35,7 @@
 **Description**: The `initialize()` functions on `TEEMLVerifier`, `RemainderVerifier`, and `UpgradeableExecutionEngine` are protected by the `initializer` modifier, which prevents re-initialization. However, the implementation contract itself (not the proxy) can be initialized by anyone immediately after deployment and before the proxy is set up. An attacker who initializes the implementation contract directly could call `upgradeTo()` on it (since they would be the admin) and point it to a `selfdestruct` contract, bricking the implementation.
 
 **Affected files**:
-- `contracts/src/Upgradeable.sol` (lines 163-175, 404-423)
+- `contracts/src/Upgradeable.sol` (lines 170-182, 433-452)
 - `contracts/src/tee/TEEMLVerifier.sol` (lines 138-148)
 - `contracts/src/remainder/RemainderVerifier.sol` (lines 187-189)
 
@@ -57,7 +57,7 @@ Note: `RemainderVerifierUpgradeable.sol` already does this correctly (line 42-43
 
 **Description**: `UUPSUpgradeable._upgradeToAndCall()` performs a `delegatecall` with user-supplied `data` to a user-specified `newImplementation` address. While the function is gated by `onlyTimelocked`, the delegatecall target and calldata are fully controllable. If the timelock or admin key is compromised, an attacker can delegatecall arbitrary code in the proxy's context, draining all funds and corrupting all state.
 
-**Affected file**: `contracts/src/Upgradeable.sol` (line 193)
+**Affected file**: `contracts/src/Upgradeable.sol` (line 207)
 
 **Recommendation**: This is inherent to the UUPS pattern and acceptable given the `onlyTimelocked` guard. Mitigations:
 1. Always use a timelock with sufficient delay (currently supported via `setTimelock()`)
@@ -88,7 +88,7 @@ Note: `RemainderVerifierUpgradeable.sol` already does this correctly (line 42-43
 
 **Description**: `UUPSUpgradeable.setTimelock()` allows setting `timelock` to `address(0)`, which disables timelock protection and falls back to admin-only. While this is documented behavior, there is no event distinction between "intentionally disabled" and "accidentally set to zero". The `setTimelock` function also lacks a two-step pattern, meaning a typo could lock out upgrade capability if the admin intended to set a timelock but provided a wrong address.
 
-**Affected file**: `contracts/src/Upgradeable.sol` (lines 226-229)
+**Affected file**: `contracts/src/Upgradeable.sol` (lines 249-252)
 
 **Recommendation**: This is by design (address(0) = disable timelock), but consider:
 1. Adding a separate `disableTimelock()` function for clarity

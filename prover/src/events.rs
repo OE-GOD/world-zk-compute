@@ -1,22 +1,20 @@
 //! Event Subscription for Instant Job Detection
 //!
-//! Subscribes to ExecutionRequested events via WebSocket for instant
-//! detection of new jobs (vs 5-second polling delay).
+//! Subscribes to ExecutionRequested events via WebSocket so that a new job
+//! is noticed without waiting for the next 5-second poll.
 //!
-//! ## Benefits
-//!
-//! - **Instant detection**: New jobs detected within ~100ms vs 5s polling
-//! - **Reduced RPC calls**: No repeated getPendingRequests calls
-//! - **Lower latency**: Combined with prefetching, near-instant job processing
+//! Events that pass the image and tip filters are sent on a channel. The main
+//! loop uses them only as a wake-up: it then polls `getPendingRequests` as it
+//! does on every cycle. The event contents are not added to the job queue.
 //!
 //! ## Architecture
 //!
 //! ```text
 //! WebSocket Connection
 //!        ↓
-//! [Event Received] → [Parse ExecutionRequested] → [Add to Job Queue]
-//!        ↓                                              ↓
-//! [Reconnect on Error]                           [Start Prefetching]
+//! [Event Received] → [Parse ExecutionRequested] → [Filter] → [Send on channel]
+//!        ↓                                                         ↓
+//! [Reconnect on Error]                                   [Main loop polls now]
 //! ```
 
 use crate::contracts::IExecutionEngine;
@@ -86,7 +84,10 @@ impl EventSubscriber {
         let mut consecutive_errors = 0u32;
 
         loop {
-            info!("Connecting to WebSocket: {}", self.config.ws_url);
+            info!(
+                "Connecting to WebSocket: {}",
+                crate::redact::url_origin(&self.config.ws_url)
+            );
 
             match self.subscribe_loop().await {
                 Ok(()) => {
@@ -97,7 +98,11 @@ impl EventSubscriber {
                 }
                 Err(e) => {
                     consecutive_errors += 1;
-                    error!("WebSocket error (attempt {}): {:?}", consecutive_errors, e);
+                    error!(
+                        "WebSocket error (attempt {}): {}",
+                        consecutive_errors,
+                        crate::redact::redact_urls(&format!("{:?}", e))
+                    );
 
                     // Exponential backoff
                     reconnect_delay = Self::next_reconnect_delay(

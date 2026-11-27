@@ -56,7 +56,7 @@ impl SDKMetrics {
     ///
     /// Returns an error if metrics with the same names are already registered.
     pub fn new() -> Result<Self, prometheus::Error> {
-        Self::with_registry(&prometheus::default_registry())
+        Self::with_registry(prometheus::default_registry())
     }
 
     /// Create and register metrics with a custom Prometheus registry.

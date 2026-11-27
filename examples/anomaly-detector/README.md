@@ -1,9 +1,11 @@
 # Anomaly Detector -- risc0-zkvm Guest Program
 
 A statistical anomaly detection algorithm that runs inside the RISC Zero
-zkVM. It analyzes data points, flags outliers, and produces a
-zero-knowledge proof -- the raw data stays private while the detection
-results are publicly verifiable on-chain.
+zkVM. It analyzes data points, flags outliers, and produces a proof of
+the result. Inputs are visible to the prover that executes the job and to
+anyone who can fetch the input URL, which is published with the request.
+The host in this example builds a `data:` URL, so if its request were
+submitted, the whole input would be published with it.
 
 ## What it does
 
@@ -14,8 +16,9 @@ vector and timestamp), detection parameters, and a threshold, then:
 2. Scores each point using z-score normalization.
 3. Flags points exceeding `threshold * 3.0` (3-sigma rule).
 4. Computes an overall risk score.
-5. Hashes all inputs with SHA-256 and commits the detection results
-   (flagged IDs, anomaly count, risk score, input hash) to the journal.
+5. Hashes the data points and the threshold with SHA-256 (not the reserved
+   parameters below) and commits the detection results (flagged IDs,
+   anomaly count, risk score, input hash) to the journal.
 
 Use cases: Sybil detection, presentation attack detection, operator
 fraud detection, geographic anomaly detection.
@@ -24,7 +27,7 @@ fraud detection, geographic anomaly detection.
 
 ```
 anomaly-detector/
-  Cargo.toml              workspace root (members: host, methods/guest)
+  Cargo.toml              workspace root (members: host, methods)
   host/
     src/main.rs            host program -- prepares input, demonstrates
                            the World ZK Compute submission flow
@@ -108,9 +111,9 @@ anomalous) and walks through the World ZK Compute submission flow.
 | Parameter | Description |
 |-----------|-------------|
 | `threshold` | Base sensitivity (multiplied by 3 for z-score cutoff) |
-| `window_size` | Sliding window size for temporal analysis |
-| `min_cluster_size` | Minimum cluster size for density-based methods |
-| `distance_threshold` | Distance cutoff for clustering |
+| `window_size` | Reserved: read by the guest but not used |
+| `min_cluster_size` | Reserved: read by the guest but not used |
+| `distance_threshold` | Reserved: read by the guest but not used |
 
 ## Related
 

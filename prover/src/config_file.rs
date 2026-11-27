@@ -212,12 +212,54 @@ impl Default for LoggingSection {
     }
 }
 
+/// What a config file that does not parse says: what is wrong, and where. The
+/// text of a toml error also quotes the line it stopped at, which can be the
+/// one with a key or a token in it, and a value that is of the wrong type.
+/// Neither is repeated here.
+fn toml_error_text(e: &toml::de::Error, source: &str) -> String {
+    // What was expected is listed from the grammar, and three messages hold
+    // the name of a key. Any other line of a message is cut where it starts
+    // to quote, and the message ends there: a value can have more lines.
+    const SHOWN: [&str; 4] = [
+        "expected ",
+        "missing field",
+        "unknown field",
+        "duplicate key",
+    ];
+    let mut what = String::new();
+    for line in e.message().lines() {
+        let quote = match line.find(['`', '"']) {
+            Some(quote) if !SHOWN.iter().any(|start| line.starts_with(start)) => Some(quote),
+            _ => None,
+        };
+        if !what.is_empty() {
+            what.push_str("; ");
+        }
+        what.push_str(line[..quote.unwrap_or(line.len())].trim_end_matches([' ', ',']));
+        if quote.is_some() {
+            break;
+        }
+    }
+    if what.is_empty() {
+        what.push_str("invalid TOML");
+    }
+    match e.span().and_then(|span| source.get(..span.start)) {
+        Some(before) => {
+            let line = before.matches('\n').count() + 1;
+            let column = before.chars().rev().take_while(|c| *c != '\n').count() + 1;
+            format!("{what} at line {line}, column {column}")
+        }
+        None => what,
+    }
+}
+
 impl Config {
     /// Load configuration from a TOML file
     pub fn from_file(path: impl AsRef<Path>) -> anyhow::Result<Self> {
         let path = path.as_ref();
         let content = std::fs::read_to_string(path)?;
-        let mut config: Config = toml::from_str(&content)?;
+        let mut config: Config = toml::from_str(&content)
+            .map_err(|e| anyhow::anyhow!("{}", toml_error_text(&e, &content)))?;
 
         // Apply environment variable overrides
         config.apply_env_overrides();
@@ -328,6 +370,27 @@ impl Config {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    /// A message ends where it is cut: a value that has more lines does not
+    /// come through on the next one.
+    #[test]
+    fn test_toml_error_text_ends_where_it_is_cut() {
+        #[derive(Debug, Deserialize)]
+        enum Mode {}
+        #[derive(Debug, Deserialize)]
+        struct WithMode {
+            #[allow(dead_code)]
+            mode: Mode,
+        }
+
+        let toml = "mode = \"\"\"SECRET\nSECRET\"\"\"";
+        let error = toml::from_str::<WithMode>(toml).unwrap_err();
+        assert!(error.message().contains("SECRET"), "{}", error.message());
+        assert_eq!(
+            toml_error_text(&error, toml),
+            "unknown variant at line 1, column 8"
+        );
+    }
 
     #[test]
     fn test_default_config() {

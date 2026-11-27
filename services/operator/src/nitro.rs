@@ -548,7 +548,7 @@ pub fn validate_pcr0(
     expected_pcr0: &str,
 ) -> Result<(), AttestationError> {
     let expected = expected_pcr0.strip_prefix("0x").unwrap_or(expected_pcr0);
-    if attestation.pcr0 != expected {
+    if !attestation.pcr0.eq_ignore_ascii_case(expected) {
         return Err(AttestationError::PcrMismatch(format!(
             "Expected PCR0={}, got {}",
             expected, attestation.pcr0
@@ -737,6 +737,18 @@ mod tests {
 
         let expected_pcr0 = "0".repeat(96);
         validate_pcr0(&attestation, &expected_pcr0).unwrap();
+    }
+
+    #[test]
+    fn test_validate_pcr0_ignores_hex_case() {
+        let doc = create_mock_doc();
+        let mut attestation = parse_attestation(&doc).unwrap();
+        // `parse_attestation` produces lower-case hex.
+        attestation.pcr0 = "ab".repeat(48);
+
+        validate_pcr0(&attestation, &"AB".repeat(48)).unwrap();
+        validate_pcr0(&attestation, &format!("0x{}", "aB".repeat(48))).unwrap();
+        assert!(validate_pcr0(&attestation, &"AC".repeat(48)).is_err());
     }
 
     #[test]
@@ -1270,7 +1282,7 @@ mod tests {
     fn test_truncated_cbor_rejected() {
         // Completely malformed base64 that decodes to invalid CBOR.
         use base64::Engine;
-        let b64 = base64::engine::general_purpose::STANDARD.encode(&[0xA1, 0x01, 0x02]);
+        let b64 = base64::engine::general_purpose::STANDARD.encode([0xA1, 0x01, 0x02]);
         let result = parse_attestation(&b64);
         assert!(result.is_err(), "Truncated CBOR should be rejected");
     }

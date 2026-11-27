@@ -13,7 +13,7 @@
 //!     let client = Client::new(
 //!         "http://localhost:8545",
 //!         "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
-//!         "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+//!         "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
 //!     )?;
 //!
 //!     let fixture = DAGFixture::load("path/to/fixture.json")?;
@@ -45,7 +45,7 @@ pub mod verifier;
 #[cfg(feature = "metrics")]
 pub mod metrics;
 
-pub use client::Client;
+pub use client::{Client, TransactionReverted};
 pub use event_watcher::{TEEEvent, TEEEventWatcher};
 pub use execution_engine::{ExecutionEngineClient, RequestStatus};
 pub use fixture::{DAGFixture, ProofData};

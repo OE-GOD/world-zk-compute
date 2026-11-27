@@ -37,7 +37,7 @@ assert!(result.verified);
 | Feature | Description |
 |---------|-------------|
 | `wasm`  | Enables `wasm-bindgen` exports for browser/Node.js usage via `wasm-pack` |
-| `ffi`   | Enables C-ABI FFI functions (`zkml_verify_json`, `zkml_verify_raw`, etc.) |
+| `ffi`   | No effect. The C-ABI functions (`zkml_verify_json`, `zkml_verify_raw`, etc.) are always compiled on native targets; the flag is kept so existing build commands keep working |
 
 ### WASM
 
@@ -57,7 +57,7 @@ console.log(result.verified, result.circuit_hash);
 Build the shared library:
 
 ```sh
-cargo build --release --features ffi -p zkml-verifier
+cargo build --release --lib -p zkml-verifier
 ```
 
 The resulting `libzkml_verifier.so` / `libzkml_verifier.dylib` exposes:
@@ -73,10 +73,17 @@ The resulting `libzkml_verifier.so` / `libzkml_verifier.dylib` exposes:
 The crate also ships a small binary for command-line verification:
 
 ```sh
-cargo install zkml-verifier
-zkml-verifier verify proof_bundle.json
-zkml-verifier verify proof_bundle.json --hybrid --json
+# From a checkout of this repository. The crate is not published: the
+# `zkml-verifier` name on crates.io belongs to an unrelated project.
+cargo install --path crates/zkml-verifier
+zkml-verifier verify proof_bundle.json --json
+zkml-verifier bundle --proof proof.bin --gens gens.bin --desc circuit.json -o proof_bundle.json
 ```
+
+`verify` exits 0 when the proof verifies and 1 otherwise; with `--json` the
+result (or the error) is printed as JSON on stdout. `verify --hybrid` only
+replays the transcript and prints field outputs: it skips the elliptic-curve
+checks, so it does not verify a proof.
 
 ## License
 
@@ -85,4 +92,4 @@ Apache-2.0. See [LICENSE](../../LICENSE) in the repository root.
 ## Links
 
 - [Repository](https://github.com/OE-GOD/world-zk-compute)
-- [Documentation](https://docs.rs/zkml-verifier)
+- API documentation: `cargo doc -p zkml-verifier --no-deps --open`

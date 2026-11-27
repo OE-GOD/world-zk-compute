@@ -31,7 +31,7 @@ import argparse
 import signal
 import sys
 import time
-from typing import List, Optional, Sequence
+from collections.abc import Sequence
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -336,7 +336,7 @@ _COMMAND_DISPATCH = {
 }
 
 
-def main(argv: Optional[Sequence[str]] = None) -> None:
+def main(argv: Sequence[str] | None = None) -> None:
     """Entry point for the ``worldzk`` CLI."""
     parser = _build_parser()
     args = parser.parse_args(argv)

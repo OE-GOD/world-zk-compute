@@ -52,10 +52,11 @@ def _find_library() -> str:
 
     Search order:
     1. ZKML_LIB_DIR environment variable
-    2. Inside this package directory (wheel install)
-    3. Cargo target/release or target/debug (development)
-    4. Workspace-level target directories
-    5. System library paths
+    2. CARGO_TARGET_DIR/release and CARGO_TARGET_DIR/debug, if set
+    3. Inside this package directory (wheel install)
+    4. Cargo target/release or target/debug (development)
+    5. Workspace-level target directories
+    6. System library paths
     """
     lib_name = _lib_filename()
 
@@ -70,7 +71,6 @@ def _find_library() -> str:
         # 4. Workspace-level target (workspace root is 5 levels up)
         str(Path(__file__).parent.parent.parent.parent.parent / "target" / "release"),
         str(Path(__file__).parent.parent.parent.parent.parent / "target" / "debug"),
-        # 5. Per-agent target dirs (CI / multi-agent builds)
     ]
 
     # Also check any CARGO_TARGET_DIR that might be set
@@ -92,7 +92,7 @@ def _find_library() -> str:
     raise FileNotFoundError(
         f"Could not find {lib_name}. "
         f"Build with: cargo build --release -p zkml-verifier\n"
-        f"Or install via: pip install zkml-verifier\n"
+        f"Or install from a checkout: pip install ./crates/zkml-verifier/python\n"
         f"Or set ZKML_LIB_DIR to the directory containing {lib_name}"
     )
 
@@ -173,10 +173,12 @@ def verify_json(json_str: str) -> Dict[str, Any]:
             - dag_circuit_description: circuit topology as JSON object
 
     Returns:
-        Dict with "verified" (bool) and optionally "error" (str).
+        ``{"verified": True, "error": None}`` when the proof verifies.
 
     Raises:
-        VerifyError: If verification encounters a fatal error.
+        VerifyError: If the bundle is malformed or the proof is rejected
+            (the native verifier reports a failed check as an error, so a
+            rejected proof raises instead of returning ``verified: False``).
     """
     lib = _Library.get()
     error_ptr = ctypes.c_char_p()
@@ -210,10 +212,12 @@ def verify_bundle(bundle: Dict[str, Any]) -> Dict[str, Any]:
         bundle: Dict with proof_hex, gens_hex, dag_circuit_description, etc.
 
     Returns:
-        Dict with "verified" (bool) and optionally "error" (str).
+        ``{"verified": True, "error": None}`` when the proof verifies.
 
     Raises:
-        VerifyError: If verification encounters a fatal error.
+        VerifyError: If the bundle is malformed or the proof is rejected
+            (the native verifier reports a failed check as an error, so a
+            rejected proof raises instead of returning ``verified: False``).
     """
     return verify_json(json.dumps(bundle))
 
@@ -225,10 +229,13 @@ def verify_file(path: str) -> Dict[str, Any]:
         path: Path to a JSON file containing the proof bundle.
 
     Returns:
-        Dict with "verified" (bool) and optionally "error" (str).
+        ``{"verified": True, "error": None}`` when the proof verifies.
 
     Raises:
-        VerifyError: If the file cannot be read or verification fails.
+        VerifyError: If the file cannot be read, the bundle is malformed or
+            the proof is rejected (the native verifier reports a failed check
+            as an error, so a rejected proof raises instead of returning
+            ``verified: False``).
         FileNotFoundError: If the file does not exist.
     """
     if not Path(path).exists():

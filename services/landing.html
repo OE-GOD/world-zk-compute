@@ -575,15 +575,15 @@ footer {
                 <div class="sdk-grid">
                     <div class="sdk-card">
                         <span class="sdk-lang">Python</span>
-                        <code>pip install zkml-verifier</code>
+                        <code>pip install ./crates/zkml-verifier/python</code>
                     </div>
                     <div class="sdk-card">
                         <span class="sdk-lang">JavaScript</span>
-                        <code>npm install @worldzk/verifier</code>
+                        <code>wasm-pack build --target web crates/zkml-verifier -- --features wasm &amp;&amp; npm install ./crates/zkml-verifier/pkg</code>
                     </div>
                     <div class="sdk-card">
                         <span class="sdk-lang">Rust</span>
-                        <code>cargo add zkml-verifier</code>
+                        <code>cargo add --path /path/to/world-zk-compute/crates/zkml-verifier</code>
                     </div>
                 </div>
                 <div class="sdk-extra">

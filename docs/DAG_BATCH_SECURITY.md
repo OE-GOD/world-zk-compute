@@ -2,16 +2,17 @@
 
 This document describes the security model for multi-transaction DAG batch verification
 in the `RemainderVerifier` / `DAGBatchVerifier` contracts. The batch verifier splits a
-single ~252M gas GKR DAG verification into 15 sequential transactions, each fitting
-within the 30M block gas limit.
+single GKR DAG verification (about 198M gas for the phase1a fixture, `eth_estimateGas` on
+Anvil) into 15 sequential transactions. It was tuned for a 30M block gas limit; measured as
+real transactions on Anvil, two of the 15 are above it (31.4M and 31.7M gas).
 
 ## Overview
 
 The batch verification pipeline consists of three phases:
 
-1. **Start** (1 tx, ~17.5M gas): Decode proof, initialize transcript, squeeze output challenges, store initial session state.
-2. **Continue** (11 txs, ~13-28M gas each): Process 8 compute layers per transaction via GKR sumcheck verification.
-3. **Finalize** (3 txs, ~9-22M gas each): Verify committed input evaluations and public input claims, 16 eval groups per transaction.
+1. **Start** (1 tx, 8.6M gas measured): Decode proof, initialize transcript, squeeze output challenges, store initial session state.
+2. **Continue** (11 txs, 18.6-31.7M gas each measured): Process 8 compute layers per transaction via GKR sumcheck verification.
+3. **Finalize** (3 txs, 14.7-27.7M gas each measured): Verify committed input evaluations and public input claims, 16 eval groups per transaction.
 
 Total: 15 transactions for the 88-layer XGBoost sample circuit.
 
@@ -77,31 +78,33 @@ Finalize: requires nextBatchIdx == totalBatches (all compute batches done)
 
 ### Design Constraint
 
-Ethereum's block gas limit is 30M. The full DAG verification costs ~252M gas, requiring
-the work to be split across multiple transactions.
+Ethereum's block gas limit is 30M. The full DAG verification costs about 198M gas (phase1a
+fixture, `eth_estimateGas` on Anvil), requiring the work to be split across multiple transactions.
 
 ### Constant Tuning
 
 | Constant | Value | Rationale |
 |---|---|---|
-| `LAYERS_PER_BATCH` | 8 | 88 layers / 8 = 11 batches. Per-batch gas: 13-28M (all under 30M). |
-| `GROUPS_PER_FINALIZE_BATCH` | 16 | 34 groups / 16 = 3 finalize txs. Per-finalize gas: 9-22M (all under 30M). |
+| `LAYERS_PER_BATCH` | 8 | 88 layers / 8 = 11 batches. Per-batch gas, measured: 18.6-31.7M (two batches above 30M: 31.4M and 31.7M). |
+| `GROUPS_PER_FINALIZE_BATCH` | 16 | 34 groups / 16 = 3 finalize txs. Per-finalize gas, measured: 14.7-27.7M (all under 30M). |
 
 ### Gas Profile (88-layer XGBoost Circuit)
 
+Measured for the phase1a fixture as real transactions on a local Anvil chain (gas used per receipt).
+
 | Phase | Gas Range | Notes |
 |---|---|---|
-| Start | ~17.5M | Proof decoding + transcript init + output challenge squeeze |
-| Continue (per batch) | ~13-28M | Varies by layer complexity (num_vars 0-5) |
-| Finalize (per batch) | ~9-22M | Varies by group size and claim count |
-| Cleanup | ~2-5M | Gas refunds from zeroing storage slots |
+| Start | 8.6M | Proof decoding + transcript init + output challenge squeeze |
+| Continue (per batch) | 18.6-31.7M | Varies by layer complexity (num_vars 0-5); the 7th and 8th batches use 31.4M and 31.7M |
+| Finalize (per batch) | 14.7-27.7M | Varies by group size and claim count (27.7M, 27.7M, 14.7M) |
+| Cleanup | 1.8M | After the gas refund for zeroing storage slots |
 
 ### Calldata vs Storage Trade-off
 
 The full proof is re-supplied via calldata in each batch transaction rather than being
 stored on-chain. This is because calldata costs ~16 gas per byte vs ~20,000 gas per
-32-byte storage slot for a first write. For a ~50KB proof, calldata costs ~800K gas
-while storage would cost ~31M gas just for the initial write.
+32-byte storage slot for a first write. For the 133,860-byte fixture proof, calldata costs
+~1.9M gas per transaction while storage would cost ~84M gas just for the initial write.
 
 ---
 
@@ -111,8 +114,8 @@ while storage would cost ~31M gas just for the initial write.
 
 - **After successful verification**: The caller should invoke `cleanupDAGBatchSession()`
   after `finalizeDAGBatchVerify()` returns `true`.
-- **To abort a session**: A caller can invoke `cleanupDAGBatchSession()` at any time to
-  discard an incomplete verification session.
+- **An incomplete session cannot be discarded**: `cleanupDAGBatchSession()` reverts with
+  `BatchNotFinalized` until `finalizeDAGBatchVerify()` has returned `true`.
 - **Cleanup is not automatic**: The contract does not clean up after finalize. This is
   deliberate to allow the caller to read session state after verification if needed.
 
@@ -129,8 +132,9 @@ while storage would cost ~31M gas just for the initial write.
 ### Gas Refunds
 
 Zeroing storage slots triggers EIP-3529 gas refunds (up to 4,800 gas per slot cleared,
-capped at 20% of total transaction gas). For a typical 88-layer session, cleanup clears
-~500 storage slots, yielding ~2.4M gas in refunds.
+capped at 20% of total transaction gas). For the phase1a fixture session (88 layers), cleanup
+clears 415 non-zero storage slots. Uncapped that would be ~2.0M gas in refunds; the 20% cap
+limits it to ~0.45M, and the cleanup transaction uses 1.8M gas after the refund.
 
 ### Stale Session Risk
 
@@ -177,7 +181,7 @@ both transactions, and the second `start` would overwrite the first session's st
 different blocks without cleaning them up, consuming storage slots.
 
 **Mitigation**: This is a self-griefing attack -- the attacker pays gas for each
-`startDAGBatchVerify()` call (~17.5M gas). The storage cost is borne by the attacker.
+`startDAGBatchVerify()` call (8.6M gas measured). The storage cost is borne by the attacker.
 No other users are affected because session IDs are namespaced by sender address.
 
 **Additional consideration**: A contract using the batch verifier (e.g., `RemainderVerifier`)
@@ -222,7 +226,7 @@ blocks.
 |---|---|
 | Authentication | `session.verifier == msg.sender` check on every operation |
 | Ordering | `nextBatchIdx` counter enforces sequential processing |
-| Gas safety | Constants tuned so every batch fits within 30M block gas limit |
+| Gas safety | Constants tuned for a 30M block gas limit; measured, two of the eleven continue batches exceed it (31.4M and 31.7M) |
 | Replay prevention | Session ID includes `block.number` |
 | Namespace isolation | Session ID includes `msg.sender` |
 | Transcript integrity | Poseidon sponge state persisted and verified across batches |

@@ -5,6 +5,7 @@ import "forge-std/Test.sol";
 import "../src/remainder/RemainderVerifier.sol";
 import {UUPSUpgradeable, UUPSProxy} from "../src/Upgradeable.sol";
 import {DeployRemainderVerifierHelper} from "./helpers/DeployRemainderVerifier.sol";
+import {DAGProofLayerEditor} from "./helpers/DAGProofLayerEditor.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "../src/remainder/PoseidonSponge.sol";
 import "../src/remainder/SumcheckVerifier.sol";
@@ -178,6 +179,19 @@ contract SumcheckVerifierTest is Test {
         assertTrue(result.valid, "Valid sumcheck proof should verify");
         assertEq(result.challenges.length, 1);
         assertEq(result.challenges[0], challenge);
+    }
+
+    /// @notice A round with fewer than two evaluations is reported as an invalid proof
+    function test_verify_rejects_round_with_fewer_than_two_evals() public view {
+        for (uint256 numEvals = 0; numEvals < 2; numEvals++) {
+            SumcheckVerifier.RoundPoly[] memory rounds = new SumcheckVerifier.RoundPoly[](1);
+            rounds[0] = SumcheckVerifier.RoundPoly({evals: new uint256[](numEvals)});
+            SumcheckVerifier.SumcheckProof memory proof = SumcheckVerifier.SumcheckProof({rounds: rounds, finalEval: 0});
+
+            SumcheckVerifier.SumcheckResult memory result = SumcheckVerifier.verify(proof, 0, PoseidonSponge.init());
+
+            assertFalse(result.valid, "Round with fewer than two evaluations should not verify");
+        }
     }
 }
 
@@ -3687,6 +3701,37 @@ contract GKRHybridVerifierTest is Test, DeployRemainderVerifierHelper {
         );
     }
 
+    /// @notice The Groth16 verifier setters reject an address without code
+    function test_hybrid_setters_reject_verifier_without_code() public {
+        bytes32 circuitHash =
+            vm.parseJsonBytes32(vm.readFile("test/fixtures/groth16_e2e_fixture.json"), ".circuit_hash_raw");
+
+        vm.expectRevert(RemainderVerifier.ZeroAddress.selector);
+        remainderVerifier.setGroth16Verifier(address(0xBEEF));
+
+        vm.expectRevert(RemainderVerifier.ZeroAddress.selector);
+        remainderVerifier.setCircuitGroth16Verifier(circuitHash, address(0xBEEF), 78);
+    }
+
+    /// @notice A registered Groth16 verifier that has no code is a failed verification, not an accepted proof
+    function test_combined_rejects_groth16_verifier_without_code() public {
+        (
+            bytes memory innerProof,
+            bytes memory gensHex,
+            bytes32 circuitHash,
+            bytes memory publicValuesAbi,
+            uint256[8] memory groth16Proof,
+            uint256[] memory groth16Outputs
+        ) = _loadCombinedFixture();
+
+        vm.etch(address(groth16Verifier), "");
+
+        vm.expectRevert(RemainderVerifier.Groth16VerificationFailed.selector);
+        remainderVerifier.verifyWithGroth16(
+            innerProof, circuitHash, publicValuesAbi, gensHex, groth16Proof, groth16Outputs
+        );
+    }
+
     // ========================================================================
     // PUBLIC INPUT CLAIM VERIFICATION TESTS
     // ========================================================================
@@ -4124,6 +4169,85 @@ contract GKRDAGVerifierTest is Test, DeployRemainderVerifierHelper {
         assertTrue(valid, "DAG proof should verify");
     }
 
+    /// @notice The registered description, not the proof, fixes each layer's number of sumcheck
+    ///         rounds: the honest proof is rejected once a middle layer is registered with one more
+    function test_verifyDAGProof_rejects_layer_round_count_that_differs_from_description() public {
+        (
+            bytes memory proofHex,
+            bytes memory gensHex,
+            bytes32 circuitHash,
+            bytes memory publicInputsHex,
+            GKRDAGVerifier.DAGCircuitDescription memory desc
+        ) = _loadFixture();
+
+        desc.numSumcheckRounds[40] += 1;
+        verifier.registerDAGCircuit(circuitHash, abi.encode(desc), "xgboost-phase1a", keccak256(gensHex));
+
+        vm.expectRevert(GKRDAGVerifier.SumcheckRoundCountMismatch.selector);
+        verifier.verifyDAGProof(proofHex, circuitHash, publicInputsHex, gensHex);
+    }
+
+    /// @notice Every layer registered with zero rounds (the reader's b_rounds_zero case) is rejected,
+    ///         starting with layer 0, whose round count also sets the number of output challenges
+    function test_verifyDAGProof_rejects_description_with_zero_rounds_everywhere() public {
+        (
+            bytes memory proofHex,
+            bytes memory gensHex,
+            bytes32 circuitHash,
+            bytes memory publicInputsHex,
+            GKRDAGVerifier.DAGCircuitDescription memory desc
+        ) = _loadFixture();
+
+        assertGt(desc.numSumcheckRounds[0], 0, "layer 0 of the fixture has sumcheck rounds");
+        desc.numSumcheckRounds = new uint256[](desc.numComputeLayers);
+        verifier.registerDAGCircuit(circuitHash, abi.encode(desc), "xgboost-phase1a", keccak256(gensHex));
+
+        vm.expectRevert(GKRDAGVerifier.SumcheckRoundCountMismatch.selector);
+        verifier.verifyDAGProof(proofHex, circuitHash, publicInputsHex, gensHex);
+    }
+
+    /// @notice The registered description fixes the number of layer proofs: the honest proof with
+    ///         its last layer proof repeated (never read, so a second encoding of the same proof) is
+    ///         rejected
+    function test_verifyDAGProof_rejects_proof_with_one_layer_proof_more_than_description() public {
+        (
+            bytes memory proofHex,
+            bytes memory gensHex,
+            bytes32 circuitHash,
+            bytes memory publicInputsHex,
+            GKRDAGVerifier.DAGCircuitDescription memory desc
+        ) = _loadFixture();
+        verifier.registerDAGCircuit(circuitHash, abi.encode(desc), "xgboost-phase1a", keccak256(gensHex));
+
+        DAGProofLayerEditor editor = new DAGProofLayerEditor();
+        assertEq(editor.layerProofCount(proofHex), desc.numComputeLayers, "honest proof: one per compute layer");
+        bytes memory extra = editor.withLastLayerProofRepeated(proofHex);
+        assertEq(editor.layerProofCount(extra), desc.numComputeLayers + 1, "edited proof: one more");
+
+        vm.expectRevert(GKRDAGVerifier.LayerProofCountMismatch.selector);
+        verifier.verifyDAGProof(extra, circuitHash, publicInputsHex, gensHex);
+    }
+
+    /// @notice A proof with one layer proof fewer than the description has compute layers is rejected
+    ///         by the count check, not by reading past the end of the array
+    function test_verifyDAGProof_rejects_proof_with_one_layer_proof_fewer_than_description() public {
+        (
+            bytes memory proofHex,
+            bytes memory gensHex,
+            bytes32 circuitHash,
+            bytes memory publicInputsHex,
+            GKRDAGVerifier.DAGCircuitDescription memory desc
+        ) = _loadFixture();
+        verifier.registerDAGCircuit(circuitHash, abi.encode(desc), "xgboost-phase1a", keccak256(gensHex));
+
+        DAGProofLayerEditor editor = new DAGProofLayerEditor();
+        bytes memory fewer = editor.withoutLastLayerProof(proofHex);
+        assertEq(editor.layerProofCount(fewer), desc.numComputeLayers - 1, "edited proof: one fewer");
+
+        vm.expectRevert(GKRDAGVerifier.LayerProofCountMismatch.selector);
+        verifier.verifyDAGProof(fewer, circuitHash, publicInputsHex, gensHex);
+    }
+
     /// @notice Test unregistered circuit reverts
     function test_dag_unregistered_circuit_reverts() public {
         bytes32 fakeHash = keccak256("nonexistent");
@@ -4323,6 +4447,16 @@ contract GKRDAGHybridVerifierTest is Test, DeployRemainderVerifierHelper {
         assertTrue(layer0PodpChallenge != 0, "layer0 PODP challenge should be non-zero");
     }
 
+    /// @notice The public transcript replay goes through the same replay as verifyDAGWithGroth16 and
+    ///         rejects the phase1a proof with its last layer proof repeated
+    function test_replayDAGTranscriptPublic_rejects_proof_with_one_layer_proof_more_than_description() public {
+        (bytes memory proofHex,, bytes32 circuitHash, bytes memory publicInputsHex,) = _loadFixtureAndRegister();
+        bytes memory extra = new DAGProofLayerEditor().withLastLayerProofRepeated(proofHex);
+
+        vm.expectRevert(GKRDAGHybridVerifier.LayerProofCountMismatch.selector);
+        verifier.replayDAGTranscriptPublic(extra, circuitHash, publicInputsHex);
+    }
+
     /// @notice Test: DAG hybrid transcript produces same output challenges as direct verifier
     function test_dag_hybrid_vs_direct_transcript_consistency() public {
         (bytes memory proofHex, bytes memory gensHex, bytes32 circuitHash, bytes memory publicInputsHex,) =
@@ -4392,6 +4526,9 @@ import {DAGGroth16Verifier} from "../src/remainder/DAGRemainderGroth16Verifier.s
 contract GKRDAGGroth16E2ETest is Test, DeployRemainderVerifierHelper {
     RemainderVerifier verifier;
     DAGGroth16Verifier dagGroth16Verifier;
+    /// @dev When set to a layer index, _loadE2EFixtureAndRegister registers that layer with one
+    ///      more sumcheck round than the proof has (each test starts with the default: none)
+    uint256 bumpRoundsOfLayer = type(uint256).max;
 
     function setUp() public {
         verifier = _deployRemainderVerifier(address(this));
@@ -4435,6 +4572,7 @@ contract GKRDAGGroth16E2ETest is Test, DeployRemainderVerifierHelper {
         desc.oracleProductOffsets = vm.parseJsonUintArray(json, ".dag_circuit_description.oracleProductOffsets");
         desc.oracleResultIdxs = vm.parseJsonUintArray(json, ".dag_circuit_description.oracleResultIdxs");
         desc.oracleExprCoeffs = _parseUint256Array(json, ".dag_circuit_description.oracleExprCoeffs");
+        if (bumpRoundsOfLayer < desc.numComputeLayers) desc.numSumcheckRounds[bumpRoundsOfLayer] += 1;
 
         bytes32 gensHash = keccak256(gensHex);
         bytes memory descData = abi.encode(desc);
@@ -4481,6 +4619,58 @@ contract GKRDAGGroth16E2ETest is Test, DeployRemainderVerifierHelper {
         verifier.verifyDAGWithGroth16(innerProof, circuitHash, publicInputsAbi, gensHex, groth16Proof, groth16Outputs);
 
         emit log_string("DAG Groth16 E2E verification: PASSED");
+    }
+
+    /// @notice The hybrid path takes each layer's number of sumcheck rounds from the registered
+    ///         description: the honest proof and Groth16 wrapper are rejected once one layer is
+    ///         registered with one more round than the proof carries
+    function test_verifyDAGWithGroth16_rejects_layer_round_count_that_differs_from_description() public {
+        bumpRoundsOfLayer = 40;
+        (
+            bytes memory innerProof,
+            bytes memory gensHex,
+            bytes32 circuitHash,
+            bytes memory publicInputsAbi,
+            uint256[8] memory groth16Proof,
+            uint256[] memory groth16Outputs
+        ) = _loadE2EFixtureAndRegister();
+
+        vm.expectRevert(GKRDAGHybridVerifier.SumcheckRoundCountMismatch.selector);
+        verifier.verifyDAGWithGroth16(innerProof, circuitHash, publicInputsAbi, gensHex, groth16Proof, groth16Outputs);
+    }
+
+    /// @notice The hybrid path rejects the honest inner proof with its last layer proof repeated,
+    ///         although the extra layer proof would never be read
+    function test_verifyDAGWithGroth16_rejects_proof_with_one_layer_proof_more_than_description() public {
+        (
+            bytes memory innerProof,
+            bytes memory gensHex,
+            bytes32 circuitHash,
+            bytes memory publicInputsAbi,
+            uint256[8] memory groth16Proof,
+            uint256[] memory groth16Outputs
+        ) = _loadE2EFixtureAndRegister();
+        bytes memory extra = new DAGProofLayerEditor().withLastLayerProofRepeated(innerProof);
+
+        vm.expectRevert(GKRDAGHybridVerifier.LayerProofCountMismatch.selector);
+        verifier.verifyDAGWithGroth16(extra, circuitHash, publicInputsAbi, gensHex, groth16Proof, groth16Outputs);
+    }
+
+    /// @notice The hybrid path rejects an inner proof with one layer proof fewer than the description
+    ///         has compute layers by the count check, not by reading past the end of the array
+    function test_verifyDAGWithGroth16_rejects_proof_with_one_layer_proof_fewer_than_description() public {
+        (
+            bytes memory innerProof,
+            bytes memory gensHex,
+            bytes32 circuitHash,
+            bytes memory publicInputsAbi,
+            uint256[8] memory groth16Proof,
+            uint256[] memory groth16Outputs
+        ) = _loadE2EFixtureAndRegister();
+        bytes memory fewer = new DAGProofLayerEditor().withoutLastLayerProof(innerProof);
+
+        vm.expectRevert(GKRDAGHybridVerifier.LayerProofCountMismatch.selector);
+        verifier.verifyDAGWithGroth16(fewer, circuitHash, publicInputsAbi, gensHex, groth16Proof, groth16Outputs);
     }
 
     /// @notice Gas measurement for DAG hybrid Groth16 verification
@@ -4629,6 +4819,96 @@ contract GKRDAGGroth16E2ETest is Test, DeployRemainderVerifierHelper {
         vm.expectRevert();
         verifier.verifyDAGWithGroth16(innerProof, circuitHash, publicInputsAbi, gensHex, groth16Proof, groth16Outputs);
     }
+
+    // Layer 4 of the fixture has no sumcheck rounds; its claimed-sum point starts at this byte of the inner proof
+    uint256 constant ZERO_ROUND_LAYER = 4;
+    uint256 constant ZERO_ROUND_LAYER_SUM_OFFSET = 9860;
+
+    function dropSelector(bytes calldata proof) external pure returns (bytes memory) {
+        return proof[4:];
+    }
+
+    /// @dev Copy of the inner proof with the claimed sum of the zero-round layer replaced by (x, y)
+    function _replaceZeroRoundLayerSum(bytes memory innerProof, bytes memory publicInputsAbi, uint256 x, uint256 y)
+        internal
+        view
+        returns (bytes memory mutated)
+    {
+        mutated = bytes.concat(innerProof);
+        uint256 offset = ZERO_ROUND_LAYER_SUM_OFFSET;
+        assembly {
+            mstore(add(add(mutated, 32), offset), x)
+            mstore(add(add(mutated, 64), offset), y)
+        }
+
+        (GKRVerifier.GKRProof memory decoded,,,) =
+            verifier.decodeProofForDAGExternal(this.dropSelector(mutated), publicInputsAbi);
+        CommittedSumcheckVerifier.CommittedSumcheckProof memory sumcheck =
+        decoded.layerProofs[ZERO_ROUND_LAYER].sumcheckProof;
+        assertEq(sumcheck.messages.length, 0, "layer should have no sumcheck rounds");
+        assertEq(sumcheck.sum.x, x, "sum.x should be replaced");
+        assertEq(sumcheck.sum.y, y, "sum.y should be replaced");
+    }
+
+    /// @notice A layer without sumcheck rounds still gets its dot-product check:
+    ///         replacing its claimed sum by another curve point is rejected
+    function test_dag_e2e_rejects_replaced_sum_of_zero_round_layer() public {
+        (
+            bytes memory innerProof,
+            bytes memory gensHex,
+            bytes32 circuitHash,
+            bytes memory publicInputsAbi,
+            uint256[8] memory groth16Proof,
+            uint256[] memory groth16Outputs
+        ) = _loadE2EFixtureAndRegister();
+
+        innerProof = _replaceZeroRoundLayerSum(innerProof, publicInputsAbi, 1, 2);
+
+        vm.expectRevert(GKRDAGHybridVerifier.PODPEq2Failed.selector);
+        verifier.verifyDAGWithGroth16(innerProof, circuitHash, publicInputsAbi, gensHex, groth16Proof, groth16Outputs);
+    }
+
+    /// @notice Same, with a claimed sum that is not a curve point
+    function test_dag_e2e_rejects_off_curve_sum_of_zero_round_layer() public {
+        (
+            bytes memory innerProof,
+            bytes memory gensHex,
+            bytes32 circuitHash,
+            bytes memory publicInputsAbi,
+            uint256[8] memory groth16Proof,
+            uint256[] memory groth16Outputs
+        ) = _loadE2EFixtureAndRegister();
+
+        innerProof = _replaceZeroRoundLayerSum(innerProof, publicInputsAbi, 5, 5);
+
+        vm.expectRevert(HyraxVerifier.EcMulFailed.selector);
+        verifier.verifyDAGWithGroth16(innerProof, circuitHash, publicInputsAbi, gensHex, groth16Proof, groth16Outputs);
+    }
+
+    /// @notice The DAG Groth16 verifier setter rejects an address without code
+    function test_dag_setter_rejects_groth16_verifier_without_code() public {
+        (,, bytes32 circuitHash,,,) = _loadE2EFixtureAndRegister();
+
+        vm.expectRevert(RemainderVerifier.ZeroAddress.selector);
+        verifier.setDAGCircuitGroth16Verifier(circuitHash, address(0xBEEF), 3416);
+    }
+
+    /// @notice A registered Groth16 verifier that has no code is a failed verification, not an accepted proof
+    function test_dag_e2e_rejects_groth16_verifier_without_code() public {
+        (
+            bytes memory innerProof,
+            bytes memory gensHex,
+            bytes32 circuitHash,
+            bytes memory publicInputsAbi,
+            uint256[8] memory groth16Proof,
+            uint256[] memory groth16Outputs
+        ) = _loadE2EFixtureAndRegister();
+
+        vm.etch(address(dagGroth16Verifier), "");
+
+        vm.expectRevert(RemainderVerifier.Groth16VerificationFailed.selector);
+        verifier.verifyDAGWithGroth16(innerProof, circuitHash, publicInputsAbi, gensHex, groth16Proof, groth16Outputs);
+    }
 }
 
 // ========================================================================
@@ -4656,7 +4936,10 @@ contract DAGBatchVerifierTest is Test, DeployRemainderVerifierHelper {
         circuitHash = vm.parseJsonBytes32(json, ".circuit_hash_raw");
         publicInputsHex = vm.parseJsonBytes(json, ".public_inputs_hex");
 
-        GKRDAGVerifier.DAGCircuitDescription memory desc;
+        verifier.registerDAGCircuit(circuitHash, abi.encode(_fixtureDesc(json)), "xgboost-batch", keccak256(gensHex));
+    }
+
+    function _fixtureDesc(string memory json) internal pure returns (GKRDAGVerifier.DAGCircuitDescription memory desc) {
         desc.numComputeLayers = vm.parseJsonUint(json, ".dag_circuit_description.numComputeLayers");
         desc.numInputLayers = vm.parseJsonUint(json, ".dag_circuit_description.numInputLayers");
         desc.layerTypes = _parseJsonUint8Array(json, ".dag_circuit_description.layerTypes");
@@ -4670,8 +4953,6 @@ contract DAGBatchVerifierTest is Test, DeployRemainderVerifierHelper {
         desc.oracleProductOffsets = vm.parseJsonUintArray(json, ".dag_circuit_description.oracleProductOffsets");
         desc.oracleResultIdxs = vm.parseJsonUintArray(json, ".dag_circuit_description.oracleResultIdxs");
         desc.oracleExprCoeffs = _parseJsonUint256Array(json, ".dag_circuit_description.oracleExprCoeffs");
-
-        verifier.registerDAGCircuit(circuitHash, abi.encode(desc), "xgboost-batch", keccak256(gensHex));
     }
 
     function _parseJsonUint8Array(string memory json, string memory key) internal pure returns (uint8[] memory result) {
@@ -4740,6 +5021,80 @@ contract DAGBatchVerifierTest is Test, DeployRemainderVerifierHelper {
         // 34 eval groups / 16 per batch = 3 finalize calls (16 + 16 + 2)
         assertGe(finalizeCalls, 1, "at least 1 finalize call");
         emit log_named_uint("Finalize calls", finalizeCalls);
+    }
+
+    /// @notice Start rejects the honest proof with its last layer proof repeated, before a session exists
+    function test_dag_batch_start_rejects_proof_with_one_layer_proof_more_than_description() public {
+        bytes memory extra = new DAGProofLayerEditor().withLastLayerProofRepeated(proofHex);
+        vm.expectRevert(GKRDAGVerifier.LayerProofCountMismatch.selector);
+        verifier.startDAGBatchVerify(extra, circuitHash, publicInputsHex, gensHex);
+    }
+
+    /// @notice Start rejects a proof with one layer proof fewer than the description has compute layers
+    function test_dag_batch_start_rejects_proof_with_one_layer_proof_fewer_than_description() public {
+        bytes memory fewer = new DAGProofLayerEditor().withoutLastLayerProof(proofHex);
+        vm.expectRevert(GKRDAGVerifier.LayerProofCountMismatch.selector);
+        verifier.startDAGBatchVerify(fewer, circuitHash, publicInputsHex, gensHex);
+    }
+
+    /// @notice Continue re-decodes the re-supplied proof and checks its layer proof count again: the
+    ///         first batch (layers 0-7) rejects a proof whose extra layer proof sits after layer 87
+    function test_dag_batch_continue_rejects_proof_with_one_layer_proof_more_than_description() public {
+        bytes32 sessionId = verifier.startDAGBatchVerify(proofHex, circuitHash, publicInputsHex, gensHex);
+        bytes memory extra = new DAGProofLayerEditor().withLastLayerProofRepeated(proofHex);
+        vm.expectRevert(GKRDAGVerifier.LayerProofCountMismatch.selector);
+        verifier.continueDAGBatchVerify(sessionId, extra, publicInputsHex, gensHex);
+    }
+
+    /// @notice The first batch (layers 0-7) rejects a re-supplied proof that lacks layer 87, a layer
+    ///         that batch would never read
+    function test_dag_batch_continue_rejects_proof_with_one_layer_proof_fewer_than_description() public {
+        bytes32 sessionId = verifier.startDAGBatchVerify(proofHex, circuitHash, publicInputsHex, gensHex);
+        bytes memory fewer = new DAGProofLayerEditor().withoutLastLayerProof(proofHex);
+        vm.expectRevert(GKRDAGVerifier.LayerProofCountMismatch.selector);
+        verifier.continueDAGBatchVerify(sessionId, fewer, publicInputsHex, gensHex);
+    }
+
+    /// @dev Start and run every compute batch with the honest proof, so only finalize is left
+    function _sessionReadyToFinalize() internal returns (bytes32 sessionId) {
+        sessionId = verifier.startDAGBatchVerify(proofHex, circuitHash, publicInputsHex, gensHex);
+        (,, uint256 totalBatches,,,) = verifier.getDAGBatchSession(sessionId);
+        for (uint256 i = 0; i < totalBatches; i++) {
+            verifier.continueDAGBatchVerify(sessionId, proofHex, publicInputsHex, gensHex);
+        }
+    }
+
+    /// @notice Finalize reads the layer proofs' commitments from the re-supplied proof, so it checks
+    ///         the count too: the honest proof with its last layer proof repeated is rejected
+    function test_dag_batch_finalize_rejects_proof_with_one_layer_proof_more_than_description() public {
+        bytes32 sessionId = _sessionReadyToFinalize();
+        bytes memory extra = new DAGProofLayerEditor().withLastLayerProofRepeated(proofHex);
+        vm.expectRevert(GKRDAGVerifier.LayerProofCountMismatch.selector);
+        verifier.finalizeDAGBatchVerify(sessionId, extra, publicInputsHex, gensHex);
+    }
+
+    /// @notice Finalize rejects a re-supplied proof with one layer proof fewer than the description
+    ///         has compute layers by the count check
+    function test_dag_batch_finalize_rejects_proof_with_one_layer_proof_fewer_than_description() public {
+        bytes32 sessionId = _sessionReadyToFinalize();
+        bytes memory fewer = new DAGProofLayerEditor().withoutLastLayerProof(proofHex);
+        vm.expectRevert(GKRDAGVerifier.LayerProofCountMismatch.selector);
+        verifier.finalizeDAGBatchVerify(sessionId, fewer, publicInputsHex, gensHex);
+    }
+
+    /// @notice The batch path takes each layer's number of sumcheck rounds from the registered
+    ///         description: with layer 3 (first batch) registered with one more round than the
+    ///         honest proof carries, the first continue call is rejected
+    function test_dag_batch_rejects_layer_round_count_that_differs_from_description() public {
+        GKRDAGVerifier.DAGCircuitDescription memory desc =
+            _fixtureDesc(vm.readFile("test/fixtures/phase1a_dag_fixture.json"));
+        desc.numSumcheckRounds[3] += 1;
+        RemainderVerifier other = _deployRemainderVerifier(address(this));
+        other.registerDAGCircuit(circuitHash, abi.encode(desc), "xgboost-batch", keccak256(gensHex));
+
+        bytes32 sessionId = other.startDAGBatchVerify(proofHex, circuitHash, publicInputsHex, gensHex);
+        vm.expectRevert(GKRDAGVerifier.SumcheckRoundCountMismatch.selector);
+        other.continueDAGBatchVerify(sessionId, proofHex, publicInputsHex, gensHex);
     }
 
     // ========================================================================
@@ -4966,6 +5321,45 @@ contract DAGBatchVerifierTest is Test, DeployRemainderVerifierHelper {
             abi.encodePacked(uint256(1), uint256(1), uint256(2), uint256(1), uint256(2), uint256(1), uint256(2));
         vm.expectRevert(RemainderVerifier.InvalidGenerators.selector);
         verifier.startDAGBatchVerify(proofHex, circuitHash, publicInputsHex, wrongGens);
+    }
+
+    /// @dev The registered generators with the last message generator replaced by the curve generator (1, 2)
+    function _otherGens() internal view returns (bytes memory otherGens) {
+        otherGens = gensHex;
+        uint256 offset = 32 + 511 * 64;
+        assembly {
+            mstore(add(add(otherGens, 32), offset), 1)
+            mstore(add(add(otherGens, 64), offset), 2)
+        }
+        assertTrue(keccak256(otherGens) != keccak256(gensHex), "generators should differ");
+    }
+
+    /// @notice Continue with generators other than the registered ones reverts
+    function test_dag_batch_continue_wrong_gens_reverts() public {
+        bytes memory otherGens = _otherGens();
+        bytes32 sessionId = verifier.startDAGBatchVerify(proofHex, circuitHash, publicInputsHex, gensHex);
+
+        vm.expectRevert(RemainderVerifier.InvalidGenerators.selector);
+        verifier.continueDAGBatchVerify(sessionId, proofHex, publicInputsHex, otherGens);
+
+        (, uint256 nextBatch,,,,) = verifier.getDAGBatchSession(sessionId);
+        assertEq(nextBatch, 0, "session should not advance");
+    }
+
+    /// @notice Finalize with generators other than the registered ones reverts
+    function test_dag_batch_finalize_wrong_gens_reverts() public {
+        bytes memory otherGens = _otherGens();
+        bytes32 sessionId = verifier.startDAGBatchVerify(proofHex, circuitHash, publicInputsHex, gensHex);
+        (,, uint256 totalBatches,,,) = verifier.getDAGBatchSession(sessionId);
+        for (uint256 i = 0; i < totalBatches; i++) {
+            verifier.continueDAGBatchVerify(sessionId, proofHex, publicInputsHex, gensHex);
+        }
+
+        vm.expectRevert(RemainderVerifier.InvalidGenerators.selector);
+        verifier.finalizeDAGBatchVerify(sessionId, proofHex, publicInputsHex, otherGens);
+
+        (,,, bool finalized,,) = verifier.getDAGBatchSession(sessionId);
+        assertFalse(finalized, "session should not be finalized");
     }
 
     /// @notice Start with invalid proof selector reverts

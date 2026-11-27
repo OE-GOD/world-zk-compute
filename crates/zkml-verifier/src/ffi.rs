@@ -5,8 +5,13 @@
 //!
 //! # Safety
 //! All functions accepting raw pointers require the caller to guarantee:
-//! - Pointers are valid and point to `len` bytes of readable memory
-//! - String pointers are valid UTF-8 (for JSON functions)
+//! - Non-null pointers are valid and point to `len` bytes of readable memory
+//! - String pointers are null-terminated and valid UTF-8 (for JSON functions)
+//!
+//! A null `json_ptr` or `path_ptr`, and a null byte pointer with a non-zero
+//! length, are rejected with return value -1. `error_out` may be null. The
+//! public-input pointer and length of `zkml_verify_raw` are never read: the
+//! public-input bytes are not used by the verification.
 
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
@@ -18,7 +23,8 @@ use std::slice;
 /// # Safety
 /// `json_ptr` must point to a valid UTF-8 C string (null-terminated).
 ///
-/// Returns 1 if verification passes, 0 if it fails, -1 on error.
+/// Returns 1 if the proof verifies, -1 otherwise (rejected proof or error;
+/// see `error_out`).
 /// If `error_out` is non-null and an error occurs, a heap-allocated
 /// error string is written to `*error_out`. The caller must free it
 /// with `zkml_free_string`.
@@ -29,6 +35,11 @@ pub unsafe extern "C" fn zkml_verify_json(
 ) -> i32 {
     if !error_out.is_null() {
         unsafe { *error_out = std::ptr::null_mut() };
+    }
+
+    if json_ptr.is_null() {
+        write_error(error_out, "json_ptr is null");
+        return -1;
     }
 
     let result = panic::catch_unwind(|| {
@@ -59,10 +70,20 @@ pub unsafe extern "C" fn zkml_verify_json(
 /// Verify a proof from raw byte buffers.
 ///
 /// # Safety
-/// All pointer+length pairs must be valid. `circuit_desc_json_ptr` must be
-/// a null-terminated UTF-8 C string containing the DAG circuit description JSON.
+/// All pointer+length pairs must be valid. `circuit_desc_ptr` points to the
+/// circuit description in the flat 32-byte-word encoding (the same bytes the
+/// on-chain verifier takes), not to JSON. A null pointer is accepted only
+/// with length 0.
 ///
-/// Returns 1 if verification passes, 0 if it fails, -1 on error.
+/// The public inputs are not used: the verifier reads the inputs embedded in
+/// the proof. The parameters are kept for ABI compatibility.
+///
+/// The buffers are decoded with the same checked decoders as in the other
+/// entry points, so the same limits apply: an array of more than 100,000
+/// elements in the proof or in the generators is an error.
+///
+/// Returns 1 if the proof verifies, -1 otherwise (rejected proof or error;
+/// see `error_out`).
 #[no_mangle]
 pub unsafe extern "C" fn zkml_verify_raw(
     proof_ptr: *const u8,
@@ -79,18 +100,27 @@ pub unsafe extern "C" fn zkml_verify_raw(
         unsafe { *error_out = std::ptr::null_mut() };
     }
 
-    let result = panic::catch_unwind(|| {
-        let proof = unsafe { slice::from_raw_parts(proof_ptr, proof_len) };
-        let pub_inputs = if pub_inputs_ptr.is_null() || pub_inputs_len == 0 {
-            &[]
-        } else {
-            unsafe { slice::from_raw_parts(pub_inputs_ptr, pub_inputs_len) }
-        };
-        let gens = unsafe { slice::from_raw_parts(gens_ptr, gens_len) };
-        let circuit_desc = unsafe { slice::from_raw_parts(circuit_desc_ptr, circuit_desc_len) };
+    // Unused by the verifier; see the function documentation.
+    let _ = (pub_inputs_ptr, pub_inputs_len);
 
-        let verified = crate::verify_dag_proof_inner(proof, pub_inputs, gens, circuit_desc);
-        Ok::<bool, String>(verified)
+    let (proof, gens, circuit_desc) = unsafe {
+        match (
+            slice_or_empty(proof_ptr, proof_len),
+            slice_or_empty(gens_ptr, gens_len),
+            slice_or_empty(circuit_desc_ptr, circuit_desc_len),
+        ) {
+            (Some(p), Some(g), Some(c)) => (p, g, c),
+            _ => {
+                write_error(error_out, "null pointer with non-zero length");
+                return -1;
+            }
+        }
+    };
+
+    let result = panic::catch_unwind(|| {
+        let result = crate::verify_raw(proof, gens, circuit_desc)
+            .map_err(|e| format!("verify error: {}", e))?;
+        Ok::<bool, String>(result.verified)
     });
 
     match result {
@@ -112,7 +142,8 @@ pub unsafe extern "C" fn zkml_verify_raw(
 /// # Safety
 /// `path_ptr` must be a valid null-terminated UTF-8 C string.
 ///
-/// Returns 1 if verification passes, 0 if it fails, -1 on error.
+/// Returns 1 if the proof verifies, -1 otherwise (rejected proof or error;
+/// see `error_out`).
 #[no_mangle]
 pub unsafe extern "C" fn zkml_verify_file(
     path_ptr: *const c_char,
@@ -120,6 +151,11 @@ pub unsafe extern "C" fn zkml_verify_file(
 ) -> i32 {
     if !error_out.is_null() {
         unsafe { *error_out = std::ptr::null_mut() };
+    }
+
+    if path_ptr.is_null() {
+        write_error(error_out, "path_ptr is null");
+        return -1;
     }
 
     let result = panic::catch_unwind(|| {
@@ -169,6 +205,21 @@ pub extern "C" fn zkml_version() -> *const c_char {
     VERSION.as_ptr() as *const c_char
 }
 
+/// Build a byte slice from a pointer+length pair. A null pointer is only
+/// valid together with length 0 (and yields an empty slice).
+///
+/// # Safety
+/// A non-null `ptr` must point to `len` readable bytes.
+unsafe fn slice_or_empty<'a>(ptr: *const u8, len: usize) -> Option<&'a [u8]> {
+    if len == 0 {
+        Some(&[])
+    } else if ptr.is_null() {
+        None
+    } else {
+        Some(unsafe { slice::from_raw_parts(ptr, len) })
+    }
+}
+
 /// Write an error message to the error_out pointer.
 fn write_error(error_out: *mut *mut c_char, msg: &str) {
     if !error_out.is_null() {
@@ -209,6 +260,133 @@ mod tests {
         let result = unsafe { zkml_verify_file(path.as_ptr(), &mut error) };
         assert_eq!(result, -1);
         assert!(!error.is_null());
+        unsafe { zkml_free_string(error) };
+    }
+
+    #[test]
+    fn test_verify_json_null_pointer() {
+        let mut error: *mut c_char = std::ptr::null_mut();
+        let result = unsafe { zkml_verify_json(std::ptr::null(), &mut error) };
+        assert_eq!(result, -1);
+        assert!(!error.is_null());
+        unsafe { zkml_free_string(error) };
+        // A null error_out is allowed too.
+        let result = unsafe { zkml_verify_json(std::ptr::null(), std::ptr::null_mut()) };
+        assert_eq!(result, -1);
+    }
+
+    #[test]
+    fn test_verify_file_null_pointer() {
+        let mut error: *mut c_char = std::ptr::null_mut();
+        let result = unsafe { zkml_verify_file(std::ptr::null(), &mut error) };
+        assert_eq!(result, -1);
+        assert!(!error.is_null());
+        unsafe { zkml_free_string(error) };
+    }
+
+    #[test]
+    fn test_verify_json_malformed_circuit_description() {
+        // A well-formed bundle whose circuit description lacks every field
+        // must come back as an error string, not as a panic.
+        let proof = format!("0x{}{}", hex::encode(b"REM1"), "00".repeat(64));
+        let json = CString::new(format!(
+            r#"{{"proof_hex":"{proof}","gens_hex":"0x","dag_circuit_description":{{}}}}"#
+        ))
+        .unwrap();
+        let mut error: *mut c_char = std::ptr::null_mut();
+        let result = unsafe { zkml_verify_json(json.as_ptr(), &mut error) };
+        assert_eq!(result, -1);
+        let err_str = unsafe { CStr::from_ptr(error) }.to_str().unwrap();
+        assert!(
+            err_str.contains("dag_circuit_description.numComputeLayers"),
+            "unexpected error: {}",
+            err_str
+        );
+        unsafe { zkml_free_string(error) };
+    }
+
+    #[test]
+    fn test_verify_raw_null_and_empty() {
+        let mut error: *mut c_char = std::ptr::null_mut();
+        // Null pointer with a non-zero length is rejected without being read.
+        let result = unsafe {
+            zkml_verify_raw(
+                std::ptr::null(),
+                64,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                &mut error,
+            )
+        };
+        assert_eq!(result, -1);
+        let err_str = unsafe { CStr::from_ptr(error) }.to_str().unwrap();
+        assert!(err_str.contains("null pointer"), "unexpected: {}", err_str);
+        unsafe { zkml_free_string(error) };
+
+        // All-null with zero lengths is an (invalid) empty proof: an error, not a crash.
+        let mut error: *mut c_char = std::ptr::null_mut();
+        let result = unsafe {
+            zkml_verify_raw(
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                &mut error,
+            )
+        };
+        assert_eq!(result, -1);
+        let err_str = unsafe { CStr::from_ptr(error) }.to_str().unwrap();
+        assert!(err_str.contains("too short"), "unexpected: {}", err_str);
+        unsafe { zkml_free_string(error) };
+    }
+
+    #[test]
+    fn test_verify_raw_hostile_description_length() {
+        let fixture_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../contracts/test/fixtures/phase1a_dag_fixture.json"
+        );
+        let fixture: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(fixture_path).unwrap()).unwrap();
+        let proof = hex::decode(&fixture["proof_hex"].as_str().unwrap()[2..]).unwrap();
+        let gens = hex::decode(&fixture["gens_hex"].as_str().unwrap()[2..]).unwrap();
+        // The proof and the generators are the real ones, so decoding gets as
+        // far as the description. Its first array-length word (layerTypes,
+        // after the two layer counts) is set to 2^47.
+        let mut desc =
+            crate::test_utils::encode_circuit_desc_from_json(&fixture["dag_circuit_description"]);
+        desc[64..96].fill(0);
+        desc[64 + 26] = 0x80;
+        let mut error: *mut c_char = std::ptr::null_mut();
+        let result = unsafe {
+            zkml_verify_raw(
+                proof.as_ptr(),
+                proof.len(),
+                std::ptr::null(),
+                0,
+                gens.as_ptr(),
+                gens.len(),
+                desc.as_ptr(),
+                desc.len(),
+                &mut error,
+            )
+        };
+        assert_eq!(result, -1);
+        assert!(!error.is_null());
+        let err_str = unsafe { CStr::from_ptr(error) }.to_str().unwrap();
+        assert!(
+            err_str.contains("array length 140737488355328"),
+            "unexpected error: {}",
+            err_str
+        );
         unsafe { zkml_free_string(error) };
     }
 

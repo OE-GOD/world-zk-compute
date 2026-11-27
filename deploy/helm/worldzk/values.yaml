@@ -59,8 +59,9 @@ operator:
     failureThreshold: 3
   # -- Size limit for the ephemeral proof storage volume
   proofStorageSizeLimit: 1Gi
-  # -- Termination grace period in seconds
-  terminationGracePeriodSeconds: 30
+  # -- Termination grace period in seconds; longer than the operator's 60 s
+  # wait for running disputes at shutdown
+  terminationGracePeriodSeconds: 75
 
 # -- Indexer component configuration
 indexer:
@@ -230,7 +231,7 @@ enclave:
     # -- Image pull policy
     pullPolicy: IfNotPresent
   # -- Enclave HTTP port
-  port: 8090
+  port: 8080
   # -- Additional environment variables for the enclave
   env:
     MODEL_FORMAT: "xgboost"

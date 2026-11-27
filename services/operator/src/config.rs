@@ -13,7 +13,7 @@ pub struct ModelConfig {
     #[serde(default = "default_model_format")]
     pub model_format: String,
     /// Optional keccak256 hash of the model file for integrity verification.
-    /// If provided, the operator validates it on startup.
+    /// Checked by `Config::validate_models`, which is not called at startup.
     #[serde(default)]
     pub model_hash: Option<String>,
 }
@@ -44,7 +44,7 @@ pub struct ConfigFile {
     pub proof_retry_delay_secs: Option<u64>,
     /// Webhook URL for dispute notifications (optional).
     /// When set, the operator sends JSON payloads to this URL on
-    /// challenge, proof submission, and dispute resolution events.
+    /// challenge events.
     pub webhook_url: Option<String>,
     /// Generic retry: base delay in milliseconds between retries.
     pub retry_base_delay_ms: Option<u64>,
@@ -94,11 +94,52 @@ pub struct ConfigFile {
     pub proof_archive_dir: Option<String>,
 }
 
+/// What a config file that does not parse says: what is wrong, and where. The
+/// text of a toml error also quotes the line it stopped at, which can be the
+/// one with a key or a token in it, and a value that is of the wrong type.
+/// Neither is repeated here.
+fn toml_error_text(e: &toml::de::Error, source: &str) -> String {
+    // What was expected is listed from the grammar, and three messages hold
+    // the name of a key. Any other line of a message is cut where it starts
+    // to quote, and the message ends there: a value can have more lines.
+    const SHOWN: [&str; 4] = [
+        "expected ",
+        "missing field",
+        "unknown field",
+        "duplicate key",
+    ];
+    let mut what = String::new();
+    for line in e.message().lines() {
+        let quote = match line.find(['`', '"']) {
+            Some(quote) if !SHOWN.iter().any(|start| line.starts_with(start)) => Some(quote),
+            _ => None,
+        };
+        if !what.is_empty() {
+            what.push_str("; ");
+        }
+        what.push_str(line[..quote.unwrap_or(line.len())].trim_end_matches([' ', ',']));
+        if quote.is_some() {
+            break;
+        }
+    }
+    if what.is_empty() {
+        what.push_str("invalid TOML");
+    }
+    match e.span().and_then(|span| source.get(..span.start)) {
+        Some(before) => {
+            let line = before.matches('\n').count() + 1;
+            let column = before.chars().rev().take_while(|c| *c != '\n').count() + 1;
+            format!("{what} at line {line}, column {column}")
+        }
+        None => what,
+    }
+}
+
 impl ConfigFile {
     /// Parse a TOML string into a ConfigFile.
     pub fn from_toml_str(s: &str) -> anyhow::Result<Self> {
-        let cf: ConfigFile =
-            toml::from_str(s).map_err(|e| anyhow::anyhow!("Failed to parse TOML: {}", e))?;
+        let cf: ConfigFile = toml::from_str(s)
+            .map_err(|e| anyhow::anyhow!("Failed to parse TOML: {}", toml_error_text(&e, s)))?;
         Ok(cf)
     }
 
@@ -141,7 +182,7 @@ pub struct Config {
     pub proof_retry_delay_secs: u64,
     /// Webhook URL for dispute notifications (optional).
     /// When set, the operator POSTs JSON payloads to this URL on
-    /// challenge, proof submission, and dispute resolution events.
+    /// challenge events.
     /// Compatible with Slack incoming webhooks.
     pub webhook_url: Option<String>,
     /// Generic retry: base delay in milliseconds between retries (default: 1000).
@@ -210,6 +251,26 @@ pub struct Config {
     pub proof_archive_dir: String,
 }
 
+/// The value of the boolean environment variable `name`, or `None` if it is
+/// unset or empty.
+fn env_bool(name: &str) -> anyhow::Result<Option<bool>> {
+    match std::env::var_os(name) {
+        Some(value) => parse_bool(name, &value.to_string_lossy()),
+        None => Ok(None),
+    }
+}
+
+/// Parse the value of the boolean environment variable `name`. An error names
+/// the variable, not the value.
+fn parse_bool(name: &str, value: &str) -> anyhow::Result<Option<bool>> {
+    match value.to_ascii_lowercase().as_str() {
+        "" => Ok(None),
+        "true" | "1" | "yes" | "on" => Ok(Some(true)),
+        "false" | "0" | "no" | "off" => Ok(Some(false)),
+        _ => anyhow::bail!("{name} must be one of true, false, 1, 0, yes, no, on, off"),
+    }
+}
+
 impl Config {
     /// Load configuration with priority: env vars > config file > defaults.
     ///
@@ -276,9 +337,7 @@ impl Config {
             .or(file_cfg.precompute_bin)
             .unwrap_or_else(|| "precompute_proof".to_string());
 
-        let nitro_verification = std::env::var("NITRO_VERIFICATION")
-            .ok()
-            .and_then(|v| v.parse::<bool>().ok())
+        let nitro_verification = env_bool("NITRO_VERIFICATION")?
             .or(file_cfg.nitro_verification)
             .unwrap_or(false);
 
@@ -417,11 +476,7 @@ impl Config {
             file_cfg.models
         };
 
-        let dry_run = std::env::var("DRY_RUN")
-            .ok()
-            .and_then(|v| v.parse::<bool>().ok())
-            .or(file_cfg.dry_run)
-            .unwrap_or(false);
+        let dry_run = env_bool("DRY_RUN")?.or(file_cfg.dry_run).unwrap_or(false);
 
         let metrics_port = std::env::var("METRICS_PORT")
             .ok()
@@ -598,8 +653,8 @@ impl Config {
     /// Validate all configuration values for correctness.
     ///
     /// Checks:
-    /// - RPC URL starts with `http://`, `https://`, `ws://`, or `wss://`
-    /// - RPC URL uses `https://` or `wss://` for non-localhost targets (warns on `http://`)
+    /// - RPC URL starts with `http://` or `https://`
+    /// - RPC URL uses `https://` for non-localhost targets (warns on `http://`)
     /// - Private key is valid hex (64 hex chars or `0x`-prefixed 66 chars)
     /// - Contract addresses are valid Ethereum addresses (`0x` + 40 hex chars)
     /// - `prover_max_retries` <= 10 (warns if higher)
@@ -615,28 +670,26 @@ impl Config {
     pub fn validate(&self) -> Result<(), Vec<String>> {
         let mut errors: Vec<String> = Vec::new();
 
-        // 1. RPC URL must have a valid scheme
-        if !self.rpc_url.starts_with("http://")
-            && !self.rpc_url.starts_with("https://")
-            && !self.rpc_url.starts_with("ws://")
-            && !self.rpc_url.starts_with("wss://")
-        {
-            errors.push(format!(
-                "rpc_url '{}' is invalid: must start with http://, https://, ws://, or wss://",
-                self.rpc_url
-            ));
+        // 1. RPC URL must have a scheme that the HTTP providers can use
+        if !self.rpc_url.starts_with("http://") && !self.rpc_url.starts_with("https://") {
+            // The value is not quoted: an RPC URL can carry an API key.
+            errors.push(
+                "rpc_url is invalid: must start with http:// or https:// \
+                 (ws:// and wss:// are not supported)"
+                    .to_string(),
+            );
         }
 
         // 1b. Warn when using unencrypted transport for non-localhost RPC URLs.
         // This strongly suggests a mainnet or testnet endpoint where HTTPS should be used.
-        if (self.rpc_url.starts_with("http://") || self.rpc_url.starts_with("ws://"))
+        if self.rpc_url.starts_with("http://")
             && !self.rpc_url.contains("127.0.0.1")
             && !self.rpc_url.contains("localhost")
         {
             tracing::warn!(
-                rpc_url = %self.rpc_url,
-                "RPC URL uses unencrypted transport (http:// or ws://). \
-                 Use https:// or wss:// for mainnet and testnet endpoints to prevent \
+                rpc_url = %tee_watcher::redact::url_origin(&self.rpc_url),
+                "RPC URL uses unencrypted transport (http://). \
+                 Use https:// for mainnet and testnet endpoints to prevent \
                  private key and transaction data from being intercepted."
             );
         }
@@ -777,10 +830,10 @@ impl Config {
         // Webhook URL: scheme check + SSRF protection (if set)
         if let Some(ref url) = self.webhook_url {
             if !url.starts_with("http://") && !url.starts_with("https://") {
-                errors.push(format!(
-                    "webhook_url '{}' is invalid: must start with http:// or https://",
-                    url
-                ));
+                // The value is not quoted: a webhook URL carries its token.
+                errors.push(
+                    "webhook_url is invalid: must start with http:// or https://".to_string(),
+                );
             }
             if let Err(e) = crate::ssrf::validate_url_ssrf(url) {
                 errors.push(format!("webhook_url SSRF check failed: {}", e));
@@ -794,12 +847,12 @@ impl Config {
             }
         }
 
-        // Metrics port: 0 is valid (disabled / OS-assigned), but 1-1023 is
+        // Metrics port: 0 is valid (OS-assigned), but 1-1023 is
         // the privileged port range and almost certainly unintended.
         if self.metrics_port > 0 && self.metrics_port < 1024 {
             errors.push(format!(
                 "metrics_port {} is in the privileged range (1-1023). \
-                 Use a port >= 1024, or 0 to disable.",
+                 Use a port >= 1024, or 0 for an OS-assigned port.",
                 self.metrics_port
             ));
         }
@@ -1205,6 +1258,78 @@ private_key = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
             err_msg.contains("Failed to read config file"),
             "Error should mention file read failure, got: {}",
             err_msg
+        );
+    }
+
+    /// The error for a file that does not parse says what is wrong and where,
+    /// but not what stands there: it can be a key or a token.
+    #[test]
+    fn test_toml_error_does_not_quote_the_file() {
+        for line in [
+            r#"webhook_url = "https://hooks.example.com/SECRET"#,
+            r#"webhook_url = "https://hooks.example.com/"SECRET""#,
+            r#"webhook_url = https:/hooks.example.com/SECRET"#,
+            r#"rpc_url = ["SECRET"]"#,
+            r#"private_key = "0xSECRET"#,
+            r#"private_key = 12345678"#,
+            r#"prover_max_retries = "SECRET""#,
+        ] {
+            let error = match ConfigFile::from_toml_str(&format!("# a comment\n{line}\n")) {
+                Ok(_) => panic!("{line} parsed"),
+                Err(e) => e.to_string(),
+            };
+            assert!(
+                error.contains("Failed to parse TOML") && error.contains("at line 2, column"),
+                "{line}: {error}"
+            );
+            assert!(!error.contains("SECRET"), "{line}: {error}");
+            assert!(!error.contains("12345678"), "{line}: {error}");
+        }
+
+        // What was expected is shown, and a message that toml leaves empty
+        // says something.
+        for (toml, text) in [
+            (
+                r#"rpc_url "https://h/SECRET""#,
+                "expected `.`, `=` at line 1, column 9",
+            ),
+            ("\rrpc_url = \"SECRET\"", "invalid TOML at line 1, column 1"),
+        ] {
+            let Err(error) = ConfigFile::from_toml_str(toml) else {
+                panic!("{toml} parsed");
+            };
+            let error = error.to_string();
+            assert!(error.contains(text), "{toml}: {error}");
+            assert!(!error.contains("SECRET"), "{toml}: {error}");
+        }
+
+        // The name of a key is shown.
+        let twice = "rpc_url = \"a\"\nrpc_url = \"b\"\n";
+        let Err(error) = ConfigFile::from_toml_str(twice) else {
+            panic!("a duplicate key was accepted");
+        };
+        let error = error.to_string();
+        assert!(error.contains("duplicate key `rpc_url`"), "{error}");
+    }
+
+    /// A message ends where it is cut: a value that has more lines does not
+    /// come through on the next one.
+    #[test]
+    fn test_toml_error_text_ends_where_it_is_cut() {
+        #[derive(Debug, Deserialize)]
+        enum Mode {}
+        #[derive(Debug, Deserialize)]
+        struct WithMode {
+            #[allow(dead_code)]
+            mode: Mode,
+        }
+
+        let toml = "mode = \"\"\"SECRET\nSECRET\"\"\"";
+        let error = toml::from_str::<WithMode>(toml).unwrap_err();
+        assert!(error.message().contains("SECRET"), "{}", error.message());
+        assert_eq!(
+            toml_error_text(&error, toml),
+            "unknown variant at line 1, column 8"
         );
     }
 
@@ -1857,6 +1982,78 @@ dry_run = true
         clear_all_env_vars();
     }
 
+    #[test]
+    fn test_parse_bool_accepted_values() {
+        for value in ["true", "TRUE", "True", "1", "yes", "YES", "on", "On"] {
+            assert_eq!(parse_bool("X", value).unwrap(), Some(true), "{value}");
+        }
+        for value in ["false", "FALSE", "False", "0", "no", "NO", "off", "Off"] {
+            assert_eq!(parse_bool("X", value).unwrap(), Some(false), "{value}");
+        }
+        assert_eq!(parse_bool("X", "").unwrap(), None);
+    }
+
+    #[test]
+    fn test_parse_bool_error_names_the_variable_only() {
+        for value in ["SECRET", "2", "tru", " ", "true ", "y"] {
+            let err = parse_bool("DRY_RUN", value).unwrap_err();
+            let printed = format!("{err:?}");
+            assert_eq!(
+                printed,
+                "DRY_RUN must be one of true, false, 1, 0, yes, no, on, off"
+            );
+        }
+    }
+
+    #[test]
+    fn test_bool_env_vars() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_all_env_vars();
+
+        std::env::set_var(
+            "OPERATOR_PRIVATE_KEY",
+            "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+        );
+        std::env::set_var(
+            "TEE_VERIFIER_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
+        let mut tmpfile = tempfile::NamedTempFile::new().unwrap();
+        tmpfile
+            .write_all(b"dry_run = true\nnitro_verification = true\n")
+            .unwrap();
+        let path = tmpfile.path().to_str().unwrap().to_string();
+
+        std::env::set_var("DRY_RUN", "1");
+        std::env::set_var("NITRO_VERIFICATION", "Yes");
+        let config = Config::from_env(None).unwrap();
+        assert!(config.dry_run);
+        assert!(config.nitro_verification);
+
+        std::env::set_var("DRY_RUN", "off");
+        std::env::set_var("NITRO_VERIFICATION", "0");
+        let config = Config::from_env(Some(&path)).unwrap();
+        assert!(!config.dry_run);
+        assert!(!config.nitro_verification);
+
+        // Empty is the same as unset: the file's value counts.
+        std::env::set_var("DRY_RUN", "");
+        std::env::set_var("NITRO_VERIFICATION", "");
+        let config = Config::from_env(Some(&path)).unwrap();
+        assert!(config.dry_run);
+        assert!(config.nitro_verification);
+
+        for name in ["DRY_RUN", "NITRO_VERIFICATION"] {
+            std::env::set_var(name, "maybe");
+            let err = Config::from_env(Some(&path)).unwrap_err().to_string();
+            assert!(err.contains(name), "{err}");
+            assert!(!err.contains("maybe"), "{err}");
+            std::env::remove_var(name);
+        }
+
+        clear_all_env_vars();
+    }
+
     // ======================== Multi-contract config tests ========================
 
     #[test]
@@ -2341,18 +2538,23 @@ rpc_url = "https://rpc.example.com"
         assert!(errors.iter().any(|e| e.contains("rpc_url")));
     }
 
+    /// Every provider is an HTTP provider: with a WebSocket URL each poll fails.
     #[test]
-    fn test_validate_valid_rpc_url_ws() {
-        let mut config = make_valid_config();
-        config.rpc_url = "ws://127.0.0.1:8545".to_string();
-        assert!(config.validate().is_ok());
-    }
-
-    #[test]
-    fn test_validate_valid_rpc_url_wss() {
-        let mut config = make_valid_config();
-        config.rpc_url = "wss://rpc.example.com".to_string();
-        assert!(config.validate().is_ok());
+    fn test_validate_rejects_websocket_rpc_url() {
+        for url in [
+            "ws://127.0.0.1:8545/v2/SECRETKEY",
+            "wss://rpc.example.com/v2/SECRETKEY",
+        ] {
+            let mut config = make_valid_config();
+            config.rpc_url = url.to_string();
+            let errors = config.validate().unwrap_err().join("\n");
+            assert!(
+                errors.contains("rpc_url is invalid: must start with http:// or https://"),
+                "{errors}"
+            );
+            assert!(!errors.contains("SECRETKEY"), "{errors}");
+            assert!(!errors.contains("example.com"), "{errors}");
+        }
     }
 
     #[test]
@@ -2451,6 +2653,33 @@ rpc_url = "https://rpc.example.com"
         config.webhook_url = Some("not-a-url".to_string());
         let errors = config.validate().unwrap_err();
         assert!(errors.iter().any(|e| e.contains("webhook_url")));
+    }
+
+    /// Validation errors are logged and returned to the caller, so they must
+    /// not repeat a URL that carries a secret.
+    #[test]
+    fn test_validation_errors_do_not_quote_secret_urls() {
+        let mut config = make_valid_config();
+        config.webhook_url = Some("hooks.slack.com/services/T00/B00/SECRETTOKEN".to_string());
+        config.rpc_url = "arb-mainnet.example.com/v2/SECRETKEY".to_string();
+        let errors = config.validate().unwrap_err().join("\n");
+        assert!(errors.contains("webhook_url is invalid"), "{errors}");
+        assert!(errors.contains("rpc_url is invalid"), "{errors}");
+        assert!(!errors.contains("SECRET"), "{errors}");
+
+        // Without a scheme of its own and with "://" further on, everything
+        // before that was quoted (in lower case) as a scheme that is not
+        // allowed.
+        for url in [
+            "hooks.slack.com/services/T00/B00/SECRETTOKEN?next=https://example.com",
+            "SECRETUSER:SECRETPW@https://hooks.slack.com/x",
+        ] {
+            let mut config = make_valid_config();
+            config.webhook_url = Some(url.to_string());
+            let errors = config.validate().unwrap_err().join("\n");
+            assert!(errors.contains("webhook_url"), "{errors}");
+            assert!(!errors.to_lowercase().contains("secret"), "{errors}");
+        }
     }
 
     // -- metrics_port validation --

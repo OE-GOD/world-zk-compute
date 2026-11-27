@@ -9,7 +9,7 @@
 ## Test Plan
 
 - [ ] <!-- How was this tested? Include commands or test names. -->
-- [ ] <!-- e.g., cargo test -p operator -->
+- [ ] <!-- e.g., cargo test -p tee-operator -->
 - [ ] <!-- e.g., forge test --match-contract MyTest -->
 
 ## Checklist

@@ -34,8 +34,9 @@ operator:
         cpu: "500m"
     # -- Additional environment variables specific to the canary
     env: {}
-    # -- Termination grace period for canary pods
-    terminationGracePeriodSeconds: 30
+    # -- Termination grace period for canary pods; longer than the operator's
+    # 60 s wait for running disputes at shutdown
+    terminationGracePeriodSeconds: 75
     # -- Size limit for ephemeral proof storage on canary pods
     proofStorageSizeLimit: 1Gi
     # -- Flagger Canary CRD configuration

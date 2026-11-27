@@ -463,19 +463,19 @@ print(result.circuit_hash)   # 0x8e7c33...</span></pre>
         <div class="sdk-grid">
             <div class="sdk-item">
                 <div class="lang">Python</div>
-                <code>pip install zkml-verifier</code>
+                <code>pip install ./crates/zkml-verifier/python</code>
             </div>
             <div class="sdk-item">
                 <div class="lang">TypeScript</div>
-                <code>npm i @worldzk/sdk</code>
+                <code>(cd sdk/typescript &amp;&amp; npm ci &amp;&amp; npm run build) &amp;&amp; npm i ./sdk/typescript</code>
             </div>
             <div class="sdk-item">
                 <div class="lang">Rust</div>
-                <code>cargo add zkml-verifier</code>
+                <code>cargo add --path /path/to/world-zk-compute/crates/zkml-verifier</code>
             </div>
             <div class="sdk-item">
                 <div class="lang">Go</div>
-                <code>go get worldzk/sdk</code>
+                <code>go get github.com/OE-GOD/world-zk-compute/sdk/go</code>
             </div>
         </div>
 

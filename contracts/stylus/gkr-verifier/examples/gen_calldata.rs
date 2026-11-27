@@ -23,31 +23,19 @@ fn abi_encode_bytes(data: &[u8]) -> Vec<u8> {
     // Data padded to 32-byte boundary
     out.extend_from_slice(data);
     let pad = (32 - (data.len() % 32)) % 32;
-    out.extend(std::iter::repeat(0u8).take(pad));
+    out.extend(std::iter::repeat_n(0u8, pad));
     out
 }
 
 fn main() {
-    // Find fixture path relative to cargo manifest dir or via env var
+    // FIXTURE_PATH is used exactly as given; without it, the repository fixture.
     let fixture_path = env::var("FIXTURE_PATH").unwrap_or_else(|_| {
-        let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
-        format!(
-            "{}/../.././../contracts/test/fixtures/phase1a_dag_fixture.json",
-            manifest_dir
-        )
-    });
-
-    // Canonicalize to handle the relative path properly
-    let fixture_path = if fixture_path.contains("..") {
-        // Build the correct path from the manifest dir
         let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
         format!(
             "{}/../../../contracts/test/fixtures/phase1a_dag_fixture.json",
             manifest_dir
         )
-    } else {
-        fixture_path
-    };
+    });
 
     eprintln!("Loading fixture from: {}", fixture_path);
     let fixture_str = fs::read_to_string(&fixture_path)
@@ -76,13 +64,11 @@ fn main() {
     eprintln!("gens_data:         {} bytes", gens_data.len());
     eprintln!("circuit_desc_data: {} bytes", circuit_desc_data.len());
 
-    // Compute function selector: keccak256("verifyDagProof(bytes,bytes,bytes,bytes)")[:4]
-    // We compute it manually to avoid pulling in keccak crate
-    // Pre-computed: 0x75927775
-    // Let's verify by using a simple approach - the selector from export-abi
+    // Function selector: keccak256("verifyDagProof(bytes,bytes,bytes,bytes)")[:4],
+    // which is 0xa670718f. It is computed with `cast sig` to avoid a keccak
+    // dependency; without cast the example stops.
     let selector: [u8; 4] = {
         use std::process::Command;
-        // Try to use cast to compute selector, fall back to hardcoded
         let output = Command::new("cast")
             .args(["sig", "verifyDagProof(bytes,bytes,bytes,bytes)"])
             .output();
@@ -94,9 +80,7 @@ fn main() {
                 [bytes[0], bytes[1], bytes[2], bytes[3]]
             }
             _ => {
-                eprintln!("Warning: could not run `cast sig`, computing selector manually");
-                // Use tiny_keccak if available, otherwise panic
-                panic!("Please install foundry (cast) to compute the selector, or set SELECTOR env var");
+                panic!("could not run `cast sig`: install foundry (cast) to compute the selector");
             }
         }
     };

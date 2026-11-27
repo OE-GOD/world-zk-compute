@@ -119,8 +119,8 @@ fn verify_podp_hybrid(podp: &PODPProof, a_vector: &[U256], sponge: &mut Poseidon
 }
 
 /// Compute the j_star vector for PODP verification.
-/// j_star[i*(degree+1) + d] = gamma_inv[i] * (rhos[i] * coeff[d] - rhos[i+1] * bindings[i]^d)
-/// where coeff[d] = 2 if d==0, else 1
+/// `j_star[i*(degree+1) + d] = gamma_inv[i] * (rhos[i] * coeff[d] - rhos[i+1] * bindings[i]^d)`
+/// where `coeff[d]` = 2 if d==0, else 1
 pub fn compute_j_star(
     rhos: &[U256],
     gammas: &[U256],

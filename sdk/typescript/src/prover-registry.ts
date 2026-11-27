@@ -9,6 +9,7 @@ import type {
   WalletClient,
 } from 'viem';
 import { proverRegistryAbi } from './abi';
+import { waitForSuccess } from './transactions';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -39,6 +40,10 @@ export interface OnChainProverInfo {
  *
  * Read-only operations only require a `PublicClient`. Write operations
  * additionally require a `WalletClient`.
+ *
+ * Write methods wait for the receipt and resolve to the transaction hash only
+ * when the transaction succeeded; a mined but reverted transaction rejects
+ * with an `ApiError` whose code is `WZK-4002` (TransactionReverted).
  *
  * @example
  * ```ts
@@ -240,9 +245,14 @@ export class ProverRegistryClient {
   }
 
   /**
-   * Select a prover using weighted random selection based on stake and reputation.
+   * Pick a prover weighted by stake and reputation from the given seed.
    *
-   * @param seed - Random seed (e.g., blockhash or VRF output)
+   * The contract marks this function "UNSAFE: seed is caller-controlled. Use
+   * requestProverSelection/fulfillProverSelection for production": whoever
+   * chooses the seed can search for one that selects the prover they want.
+   * This client does not wrap those two functions.
+   *
+   * @param seed - Seed chosen by the caller; the result is only as unbiased as it
    */
   async selectProver(seed: bigint): Promise<Hex> {
     return this.publicClient.readContract({
@@ -330,10 +340,13 @@ export class ProverRegistryClient {
   }
 
   /**
-   * Record a successful proof and distribute reward (authorized callers).
+   * Record a successful proof (authorized callers).
+   *
+   * The contract adds `reward` to the prover's `totalEarnings` and updates its
+   * reputation; it transfers no tokens.
    *
    * @param proverAddress - The prover that succeeded
-   * @param reward - Reward amount earned
+   * @param reward - Amount added to the prover's recorded earnings
    * @returns The transaction hash
    */
   async recordSuccess(proverAddress: Hex, reward: bigint): Promise<Hex> {
@@ -385,7 +398,6 @@ export class ProverRegistryClient {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any);
 
-    await this.publicClient.waitForTransactionReceipt({ hash });
-    return hash;
+    return waitForSuccess(this.publicClient, hash, functionName);
   }
 }

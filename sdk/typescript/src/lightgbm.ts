@@ -497,6 +497,19 @@ function validateSample(
 // ============================================================================
 
 /**
+ * The 64-bit message length in bits that ends SHA-256 padding, as the
+ * [high, low] 32-bit words, for a message of `byteLen` bytes.
+ *
+ * `byteLen * 8` passes 2^32 at 512 MiB, so the high word is not always 0;
+ * dividing by 2^29 gives it without leaving exact integer arithmetic.
+ *
+ * Exported for tests only; not part of the package's public API.
+ */
+export function sha256BitLengthWords(byteLen: number): [number, number] {
+  return [Math.floor(byteLen / 0x20000000), (byteLen * 8) >>> 0];
+}
+
+/**
  * Synchronous SHA-256 implementation.
  *
  * We need a sync sha256 for inputDigest(). Since WebCrypto is async-only,
@@ -553,17 +566,17 @@ function sha256(data: Uint8Array): Uint8Array {
 
   // Pre-processing: padding
   const msgLen = data.length;
-  const bitLen = msgLen * 8;
-  // Message + 1 byte (0x80) + padding + 8 bytes length
-  const padLen = (((msgLen + 9 + 63) >>> 6) << 6);
+  // Message + 1 byte (0x80) + padding + 8 bytes length, rounded up to 64.
+  // Plain arithmetic, not shifts: shifts wrap at 2^31 bytes.
+  const padLen = Math.ceil((msgLen + 9) / 64) * 64;
   const padded = new Uint8Array(padLen);
   padded.set(data);
   padded[msgLen] = 0x80;
   // Write bit length as big-endian 64-bit
   const view = new DataView(padded.buffer);
-  // For messages < 2^32 bits, high word is 0
-  view.setUint32(padLen - 8, 0, false);
-  view.setUint32(padLen - 4, bitLen, false);
+  const [lenHigh, lenLow] = sha256BitLengthWords(msgLen);
+  view.setUint32(padLen - 8, lenHigh, false);
+  view.setUint32(padLen - 4, lenLow, false);
 
   // Initial hash values
   let h0 = 0x6a09e667;
@@ -670,7 +683,8 @@ export class LightGBMConverter {
   /**
    * Create a LightGBMConverter from a LightGBM dump_model() JSON string.
    *
-   * @param json - The JSON string from `model.dump_model()` or `model.save_model("model.json")`
+   * @param json - The JSON string `json.dumps(booster.dump_model())` gives; the file
+   *   `save_model()` writes is LightGBM's text format, not JSON, and is rejected
    * @returns A new LightGBMConverter instance
    * @throws {ModelParseError} If the JSON is invalid or the model structure is unsupported
    */

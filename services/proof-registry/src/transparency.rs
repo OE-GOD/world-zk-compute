@@ -246,10 +246,16 @@ impl TransparencyLog {
         Ok(leaves)
     }
 
-    /// Check if the log database is healthy.
-    #[allow(dead_code)]
+    /// Check if the log database is healthy (its table can be read).
     pub fn is_healthy(&self) -> bool {
-        self.conn.query_row("SELECT 1", [], |_| Ok(())).is_ok()
+        self.conn
+            .query_row(
+                "SELECT idx, proof_hash FROM transparency_log LIMIT 1",
+                [],
+                |_| Ok(()),
+            )
+            .optional()
+            .is_ok()
     }
 }
 
@@ -279,7 +285,7 @@ pub fn verify_inclusion(
     }
 
     // Recompute the expected proof length.
-    let expected_depth = tree_depth(tree_size as usize);
+    let expected_depth = tree_depth(tree_size);
     if proof.len() != expected_depth {
         return false;
     }
@@ -312,7 +318,7 @@ fn compute_root(leaves: &[[u8; 32]]) -> [u8; 32] {
         return [0u8; 32];
     }
 
-    let depth = tree_depth(leaves.len());
+    let depth = tree_depth(leaves.len() as u64);
     let padded_size = 1usize << depth;
 
     // Start with leaves, padded to a power of two.
@@ -334,7 +340,7 @@ fn compute_root(leaves: &[[u8; 32]]) -> [u8; 32] {
 
 /// Generate a Merkle proof (list of sibling hashes from leaf to root).
 fn merkle_proof(leaves: &[[u8; 32]], index: usize) -> Vec<[u8; 32]> {
-    let depth = tree_depth(leaves.len());
+    let depth = tree_depth(leaves.len() as u64);
     let padded_size = 1usize << depth;
 
     let mut level: Vec<[u8; 32]> = Vec::with_capacity(padded_size);
@@ -371,18 +377,15 @@ fn hash_pair(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
 
 /// Compute the depth of a binary tree that can hold `n` leaves.
 /// Returns 0 for n <= 1, ceil(log2(n)) otherwise.
-fn tree_depth(n: usize) -> usize {
+///
+/// `n` is a `u64` like the tree sizes in requests, so that a size is never
+/// cut down to the platform's pointer width first.
+fn tree_depth(n: u64) -> usize {
     if n <= 1 {
         return 0;
     }
-    // ceil(log2(n))
-    let mut depth = 0;
-    let mut size = 1;
-    while size < n {
-        size <<= 1;
-        depth += 1;
-    }
-    depth
+    // ceil(log2(n)) is the bit length of n - 1.
+    (u64::BITS - (n - 1).leading_zeros()) as usize
 }
 
 use rusqlite::OptionalExtension;
@@ -477,7 +480,7 @@ mod tests {
         let (mut log, _tmp) = make_test_log();
 
         // Append several leaves.
-        let hashes: Vec<[u8; 32]> = (0..5).map(|i| make_hash(i)).collect();
+        let hashes: Vec<[u8; 32]> = (0..5).map(make_hash).collect();
         for (i, h) in hashes.iter().enumerate() {
             log.append(*h, &format!("p{i}")).unwrap();
         }
@@ -592,6 +595,66 @@ mod tests {
     }
 
     #[test]
+    fn test_tree_depth_is_ceil_log2() {
+        // Reference: count the doublings needed to reach n.
+        fn by_doubling(n: u64) -> usize {
+            let mut depth = 0;
+            let mut size = 1u64;
+            while size < n {
+                size <<= 1;
+                depth += 1;
+            }
+            depth
+        }
+
+        for n in 0..=5000u64 {
+            assert_eq!(tree_depth(n), by_doubling(n), "n={n}");
+        }
+        // The reference cannot go past the top bit, so stop one power short.
+        for k in 1..u64::BITS - 1 {
+            for n in [(1u64 << k) - 1, 1u64 << k, (1u64 << k) + 1] {
+                assert_eq!(tree_depth(n), by_doubling(n), "n={n}");
+            }
+        }
+
+        assert_eq!(tree_depth(1u64 << 63), 63);
+    }
+
+    /// A tree size just above a multiple of 2^32 is not taken for a small
+    /// tree (it was, where `usize` has 32 bits, when the size was cast to
+    /// `usize`): an empty proof is not valid for it.
+    #[test]
+    fn test_tree_size_is_not_truncated_to_32_bits() {
+        let h = [0u8; 32];
+        assert_eq!(tree_depth((1u64 << 32) + 1), 33);
+        assert!(!verify_inclusion(&h, &h, 0, &[], (1u64 << 32) + 1));
+        assert!(!verify_inclusion(&h, &h, 0, &[], (7u64 << 32) + 1));
+    }
+
+    #[test]
+    fn test_tree_size_above_2_pow_63_terminates() {
+        // Run on its own thread so that a computation that never returns
+        // fails the test instead of blocking it.
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let h = [0u8; 32];
+            let depths = [tree_depth((1u64 << 63) + 1), tree_depth(u64::MAX)];
+            let valid = [
+                verify_inclusion(&h, &h, 0, &[], (1u64 << 63) + 1),
+                verify_inclusion(&h, &h, 0, &[], u64::MAX),
+            ];
+            tx.send((depths, valid)).unwrap();
+        });
+
+        let (depths, valid) = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("no result within 10 s");
+        assert_eq!(depths, [64; 2]);
+        // An empty proof cannot be valid for a tree of this size.
+        assert_eq!(valid, [false, false]);
+    }
+
+    #[test]
     fn test_large_tree_inclusion() {
         let (mut log, _tmp) = make_test_log();
 
@@ -628,7 +691,15 @@ mod tests {
 
     #[test]
     fn test_health_check() {
-        let (log, _tmp) = make_test_log();
+        let (mut log, _tmp) = make_test_log();
         assert!(log.is_healthy());
+
+        log.append(make_hash(0), "proof-0").unwrap();
+        assert!(log.is_healthy());
+
+        log.conn
+            .execute_batch("ALTER TABLE transparency_log RENAME TO log_gone;")
+            .unwrap();
+        assert!(!log.is_healthy());
     }
 }

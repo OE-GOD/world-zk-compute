@@ -110,5 +110,5 @@ class TestSepoliaIntegration:
         owner_address = "0x" + raw[-40:]
         zero_address = "0x" + "0" * 40
         assert owner_address != zero_address, (
-            f"owner() returned zero address; expected a real admin address"
+            "owner() returned zero address; expected a real admin address"
         )

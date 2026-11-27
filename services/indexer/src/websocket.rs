@@ -10,12 +10,13 @@
 //! use std::sync::Arc;
 //! use axum::Router;
 //! use axum::routing::get;
-//! use crate::websocket::{EventBroadcaster, ws_handler};
+//! use crate::rate_limit::TrustedProxyConfig;
+//! use crate::websocket::{EventBroadcaster, WsState, ws_handler};
 //!
 //! let broadcaster = Arc::new(EventBroadcaster::new(256));
 //! let app = Router::new()
 //!     .route("/ws/events", get(ws_handler))
-//!     .with_state(broadcaster);
+//!     .with_state(WsState { broadcaster, trusted_proxies: TrustedProxyConfig::none() });
 //! ```
 //!
 //! # Protocol
@@ -27,7 +28,8 @@
 //! {"subscribe": ["ResultSubmitted", "ResultChallenged"]}
 //! ```
 //!
-//! If no subscribe message is sent, all events are forwarded. The server sends
+//! If no subscribe message is sent, all events are forwarded. A client message
+//! or frame larger than [`MAX_CLIENT_MESSAGE_BYTES`] closes the connection. The server sends
 //! a ping frame every 30 seconds and disconnects if no pong is received within
 //! 10 seconds.
 //!
@@ -52,12 +54,14 @@ use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
+
+use super::rate_limit::{client_ip, TrustedProxyConfig};
 
 // ---------------------------------------------------------------------------
 // Configuration constants
@@ -68,6 +72,10 @@ const DEFAULT_MAX_WS_CONNECTIONS: usize = 100;
 
 /// Default maximum number of WebSocket connections from a single IP address.
 const DEFAULT_MAX_WS_PER_IP: usize = 5;
+
+/// Largest message or frame a client may send. The subscribe request, the
+/// only message a client has reason to send, fits many times over.
+pub const MAX_CLIENT_MESSAGE_BYTES: usize = 4 * 1024;
 
 /// Default number of recent events kept in the replay buffer.
 const DEFAULT_EVENT_BUFFER_SIZE: usize = 1000;
@@ -417,6 +425,15 @@ impl EventBroadcaster {
 // WebSocket handler
 // ---------------------------------------------------------------------------
 
+/// State of the WebSocket route.
+#[derive(Clone)]
+pub struct WsState {
+    pub broadcaster: Arc<EventBroadcaster>,
+    /// Proxies whose `X-Forwarded-For` names the client, as for the HTTP
+    /// rate limiter.
+    pub trusted_proxies: TrustedProxyConfig,
+}
+
 /// Axum handler for `GET /ws/events`.
 ///
 /// Upgrades the HTTP connection to a WebSocket and spawns a task to handle
@@ -425,25 +442,37 @@ impl EventBroadcaster {
 /// ```ignore
 /// Router::new()
 ///     .route("/ws/events", get(ws_handler))
-///     .with_state(Arc::new(EventBroadcaster::new(256)));
+///     .with_state(WsState {
+///         broadcaster: Arc::new(EventBroadcaster::new(256)),
+///         trusted_proxies: TrustedProxyConfig::none(),
+///     });
 /// ```
 pub async fn ws_handler(
     connect_info: Option<ConnectInfo<std::net::SocketAddr>>,
-    State(broadcaster): State<Arc<EventBroadcaster>>,
+    State(state): State<WsState>,
+    headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
-    let peer_ip = connect_info
-        .map(|ci| ci.0.ip())
-        .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+    let WsState {
+        broadcaster,
+        trusted_proxies,
+    } = state;
+    // Count the connection under the same client address as the HTTP rate
+    // limiter does; behind a proxy the socket peer is the proxy for everyone.
+    let client_ip = client_ip(connect_info.map(|ci| ci.0.ip()), &headers, &trusted_proxies);
 
-    if !broadcaster.try_acquire_slot_for_ip(peer_ip) {
+    if !broadcaster.try_acquire_slot_for_ip(client_ip) {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             "Too many WebSocket connections",
         )
             .into_response();
     }
-    ws.on_upgrade(move |socket| handle_ws_connection(socket, broadcaster, peer_ip))
+    // The only message a client sends is a small subscribe request; the
+    // default limits would let each connection make the server buffer 64 MiB.
+    ws.max_message_size(MAX_CLIENT_MESSAGE_BYTES)
+        .max_frame_size(MAX_CLIENT_MESSAGE_BYTES)
+        .on_upgrade(move |socket| handle_ws_connection(socket, broadcaster, client_ip))
         .into_response()
 }
 
@@ -456,7 +485,7 @@ pub async fn ws_handler(
 async fn handle_ws_connection(
     socket: WebSocket,
     broadcaster: Arc<EventBroadcaster>,
-    peer_ip: IpAddr,
+    client_ip: IpAddr,
 ) {
     let (mut ws_sender, mut ws_receiver) = socket.split();
     let mut event_rx = broadcaster.subscribe();
@@ -597,11 +626,11 @@ async fn handle_ws_connection(
         }
     }
 
-    broadcaster.release_slot_for_ip(peer_ip);
+    broadcaster.release_slot_for_ip(client_ip);
     info!(
         "WebSocket client disconnected (active: {}, ip: {})",
         broadcaster.active_connections(),
-        peer_ip,
+        client_ip,
     );
 }
 

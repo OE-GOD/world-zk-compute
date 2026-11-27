@@ -196,6 +196,115 @@ pub fn parse_log(log: &Log) -> Option<TEEEvent> {
 // TEEEventWatcher
 // ---------------------------------------------------------------------------
 
+/// Default for [`TEEEventWatcher::with_max_block_range`]: the widest block span
+/// requested from `eth_getLogs` in one call.
+pub const DEFAULT_MAX_BLOCK_RANGE: u64 = 10_000;
+
+/// Fetch and parse the watched contract's events in `from_block..=to_block`,
+/// asking for at most `max_block_range` blocks per `eth_getLogs` call.
+async fn fetch_events<P: Provider>(
+    provider: &P,
+    contract_address: Address,
+    from_block: u64,
+    to_block: u64,
+    max_block_range: u64,
+) -> anyhow::Result<Vec<TEEEvent>> {
+    let span = max_block_range.max(1);
+    let mut events = Vec::new();
+    let mut start = from_block;
+    while start <= to_block {
+        let end = to_block.min(start.saturating_add(span - 1));
+        let filter = Filter::new()
+            .address(contract_address)
+            .from_block(start)
+            .to_block(end);
+        let logs = provider.get_logs(&filter).await?;
+        events.extend(logs.iter().filter_map(parse_log));
+        match end.checked_add(1) {
+            Some(next) => start = next,
+            None => break,
+        }
+    }
+    Ok(events)
+}
+
+/// Position of the background watch loop.
+struct WatchCursor {
+    /// First block not yet delivered (`None` until the chain head has been
+    /// read once; watching starts at that head).
+    next_block: Option<u64>,
+    /// Blocks asked for in the next `eth_getLogs` call, between 1 and
+    /// `max_block_range`.
+    span: u64,
+    max_block_range: u64,
+}
+
+impl WatchCursor {
+    fn new(max_block_range: u64) -> Self {
+        let max_block_range = max_block_range.max(1);
+        Self {
+            next_block: None,
+            span: max_block_range,
+            max_block_range,
+        }
+    }
+}
+
+/// One iteration of the background watch loop: pass the events from
+/// `cursor.next_block` up to the chain head to `deliver`.
+///
+/// The range is fetched in chunks of `cursor.span` blocks. After each chunk
+/// its events are delivered, `cursor.next_block` moves past it and the span
+/// doubles (up to `cursor.max_block_range`). A failed `eth_getLogs` halves the
+/// span (down to 1) and ends the iteration with the error; the next iteration
+/// resumes at the chunk that failed, so no block is skipped or read twice.
+async fn poll_new_events<P: Provider>(
+    provider: &P,
+    contract_address: Address,
+    cursor: &mut WatchCursor,
+    deliver: &mut impl FnMut(TEEEvent),
+) -> anyhow::Result<()> {
+    let latest = provider.get_block_number().await?;
+    let mut start = *cursor.next_block.get_or_insert(latest);
+    while start <= latest {
+        let end = latest.min(start.saturating_add(cursor.span - 1));
+        let filter = Filter::new()
+            .address(contract_address)
+            .from_block(start)
+            .to_block(end);
+        let logs = match provider.get_logs(&filter).await {
+            Ok(logs) => logs,
+            Err(err) => {
+                cursor.span = (cursor.span / 2).max(1);
+                return Err(err.into());
+            }
+        };
+        logs.iter().filter_map(parse_log).for_each(&mut *deliver);
+        cursor.span = cursor.span.saturating_mul(2).min(cursor.max_block_range);
+        cursor.next_block = Some(end.saturating_add(1));
+        match end.checked_add(1) {
+            Some(next) => start = next,
+            None => break,
+        }
+    }
+    Ok(())
+}
+
+/// [`poll_new_events`], with a failure handed to `on_error` instead of returned.
+async fn poll_and_report<P: Provider>(
+    provider: &P,
+    contract_address: Address,
+    cursor: &mut WatchCursor,
+    callback: &mut impl FnMut(TEEEvent),
+    on_error: &mut impl FnMut(anyhow::Error),
+) {
+    if let Err(err) = poll_new_events(provider, contract_address, cursor, callback).await {
+        #[cfg(feature = "tracing")]
+        tracing::warn!(error = %err, "event watcher: poll failed, will retry");
+        on_error(err);
+    }
+}
+
 /// Watches TEEMLVerifier events via `eth_getLogs` polling.
 ///
 /// Supports one-shot polling via [`poll_events`](TEEEventWatcher::poll_events) and
@@ -203,6 +312,7 @@ pub fn parse_log(log: &Log) -> Option<TEEEvent> {
 pub struct TEEEventWatcher {
     rpc_url: String,
     contract_address: Address,
+    max_block_range: u64,
     stop_flag: Arc<AtomicBool>,
 }
 
@@ -212,8 +322,19 @@ impl TEEEventWatcher {
         Self {
             rpc_url: rpc_url.to_string(),
             contract_address,
+            max_block_range: DEFAULT_MAX_BLOCK_RANGE,
             stop_flag: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Set the widest block span requested from `eth_getLogs` in one call
+    /// (default [`DEFAULT_MAX_BLOCK_RANGE`], minimum 1).
+    ///
+    /// RPC providers reject log queries over too many blocks, and the limit
+    /// differs per provider. Longer spans are fetched in consecutive chunks.
+    pub fn with_max_block_range(mut self, max_block_range: u64) -> Self {
+        self.max_block_range = max_block_range.max(1);
+        self
     }
 
     /// Returns the watched contract address.
@@ -226,6 +347,9 @@ impl TEEEventWatcher {
     /// Returns a tuple of `(events, next_block)` where `next_block` is the block
     /// number to use for the next call (latest + 1). If `from_block` is beyond the
     /// latest block, returns an empty vec and `from_block` unchanged.
+    ///
+    /// The range is fetched in chunks of at most
+    /// [`with_max_block_range`](TEEEventWatcher::with_max_block_range) blocks.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(from_block)))]
     pub async fn poll_events(&self, from_block: u64) -> anyhow::Result<(Vec<TEEEvent>, u64)> {
         let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
@@ -235,71 +359,89 @@ impl TEEEventWatcher {
             return Ok((vec![], from_block));
         }
 
-        let filter = Filter::new()
-            .address(self.contract_address)
-            .from_block(from_block)
-            .to_block(latest);
+        let events = fetch_events(
+            &provider,
+            self.contract_address,
+            from_block,
+            latest,
+            self.max_block_range,
+        )
+        .await?;
 
-        let logs = provider.get_logs(&filter).await?;
-        let events: Vec<TEEEvent> = logs.iter().filter_map(parse_log).collect();
-
-        Ok((events, latest + 1))
+        Ok((events, latest.saturating_add(1)))
     }
 
     /// Start a continuous polling loop in a background task.
     ///
-    /// Calls `callback` for each new event. The loop polls every `poll_interval`.
+    /// Calls `callback` for each new event, starting at the chain head as of the
+    /// first successful poll. The loop polls every `poll_interval`. Each poll
+    /// reads the new blocks in chunks of at most
+    /// [`with_max_block_range`](TEEEventWatcher::with_max_block_range) blocks and
+    /// delivers the events of a chunk as soon as it was read.
+    ///
+    /// A poll that fails (RPC error) stops at the failing chunk, and the next
+    /// poll resumes there: events are delayed rather than dropped, and none is
+    /// delivered twice. After a failed `eth_getLogs` the next call asks for
+    /// half as many blocks (down to 1); after a successful one the span doubles
+    /// again, up to the configured maximum. So a provider that rejects wide
+    /// ranges slows the watcher down instead of stopping it.
+    ///
+    /// Poll errors are not reported to the caller (with the `tracing` feature
+    /// they are logged as warnings). Use
+    /// [`watch_with_errors`](TEEEventWatcher::watch_with_errors) to receive them.
+    ///
     /// Use [`stop`](TEEEventWatcher::stop) to signal the loop to exit.
     ///
-    /// Returns a `JoinHandle` that resolves when the loop finishes.
-    pub fn watch<F>(&self, mut callback: F, poll_interval: Duration) -> JoinHandle<()>
+    /// Returns a `JoinHandle` that resolves when the loop finishes. It resolves
+    /// immediately if the RPC URL cannot be parsed.
+    pub fn watch<F>(&self, callback: F, poll_interval: Duration) -> JoinHandle<()>
     where
         F: FnMut(TEEEvent) + Send + 'static,
     {
+        self.watch_with_errors(callback, |_| {}, poll_interval)
+    }
+
+    /// Like [`watch`](TEEEventWatcher::watch), and calls `on_error` with the
+    /// error of every poll that fails.
+    ///
+    /// The loop keeps polling after an error. A watcher whose polls fail every
+    /// time delivers nothing, and `on_error` is the only signal of that.
+    pub fn watch_with_errors<F, E>(
+        &self,
+        mut callback: F,
+        mut on_error: E,
+        poll_interval: Duration,
+    ) -> JoinHandle<()>
+    where
+        F: FnMut(TEEEvent) + Send + 'static,
+        E: FnMut(anyhow::Error) + Send + 'static,
+    {
         let rpc_url = self.rpc_url.clone();
         let contract_address = self.contract_address;
+        let max_block_range = self.max_block_range;
         let stop_flag = self.stop_flag.clone();
 
         // Reset the stop flag so watch can be called again after a stop.
         stop_flag.store(false, Ordering::SeqCst);
 
         tokio::spawn(async move {
-            let mut from_block: u64 = 0;
-
-            // Attempt to get the current block number for the starting point.
-            if let Ok(provider) = rpc_url
-                .parse()
-                .map(|url| ProviderBuilder::new().connect_http(url))
-            {
-                if let Ok(latest) = provider.get_block_number().await {
-                    from_block = latest;
-                }
-            }
+            let Ok(url) = rpc_url.parse() else {
+                #[cfg(feature = "tracing")]
+                tracing::error!(%rpc_url, "event watcher: invalid RPC URL, not watching");
+                return;
+            };
+            let provider = ProviderBuilder::new().connect_http(url);
+            let mut cursor = WatchCursor::new(max_block_range);
 
             while !stop_flag.load(Ordering::SeqCst) {
-                if let Ok(provider) = rpc_url
-                    .parse()
-                    .map(|url| ProviderBuilder::new().connect_http(url))
-                {
-                    if let Ok(latest) = provider.get_block_number().await {
-                        if from_block <= latest {
-                            let filter = Filter::new()
-                                .address(contract_address)
-                                .from_block(from_block)
-                                .to_block(latest);
-
-                            if let Ok(logs) = provider.get_logs(&filter).await {
-                                for log in &logs {
-                                    if let Some(event) = parse_log(log) {
-                                        callback(event);
-                                    }
-                                }
-                            }
-
-                            from_block = latest + 1;
-                        }
-                    }
-                }
+                poll_and_report(
+                    &provider,
+                    contract_address,
+                    &mut cursor,
+                    &mut callback,
+                    &mut on_error,
+                )
+                .await;
 
                 tokio::time::sleep(poll_interval).await;
             }
@@ -630,6 +772,283 @@ mod tests {
         assert!(!watcher.is_stopped());
         watcher.stop();
         assert!(watcher.is_stopped());
+    }
+
+    #[test]
+    fn test_watcher_max_block_range() {
+        let watcher = TEEEventWatcher::new("http://localhost:8545", Address::ZERO);
+        assert_eq!(watcher.max_block_range, DEFAULT_MAX_BLOCK_RANGE);
+        assert_eq!(watcher.with_max_block_range(0).max_block_range, 1);
+    }
+
+    // -- Polling against a mocked RPC transport --
+
+    /// A `ResultFinalized` log as `eth_getLogs` would return it.
+    fn finalized_log(id: u8, block_number: u64) -> Log {
+        mock_log(
+            vec![topic_result_finalized(), B256::from([id; 32])],
+            vec![],
+            block_number,
+        )
+    }
+
+    fn mocked_provider(asserter: &alloy::transports::mock::Asserter) -> impl Provider {
+        ProviderBuilder::new().connect_mocked_client(asserter.clone())
+    }
+
+    #[tokio::test]
+    async fn test_fetch_events_splits_wide_ranges() {
+        let asserter = alloy::transports::mock::Asserter::new();
+        let provider = mocked_provider(&asserter);
+
+        // Blocks 0..=30 with at most 10 blocks per call: 0-9, 10-19, 20-29, 30.
+        // Chunks of 11 blocks would cover the range in three calls.
+        asserter.push_success(&vec![finalized_log(1, 3)]);
+        asserter.push_success(&vec![finalized_log(2, 12)]);
+        asserter.push_success(&vec![finalized_log(3, 24)]);
+        asserter.push_success(&vec![finalized_log(4, 30)]);
+
+        let events = fetch_events(&provider, Address::ZERO, 0, 30, 10)
+            .await
+            .expect("four eth_getLogs calls");
+        let blocks: Vec<u64> = events
+            .iter()
+            .map(|event| match event {
+                TEEEvent::ResultFinalized { block_number, .. } => *block_number,
+                other => panic!("unexpected event {other:?}"),
+            })
+            .collect();
+        assert_eq!(blocks, vec![3, 12, 24, 30]);
+        assert!(asserter.read_q().is_empty(), "one response per chunk");
+
+        // A range that fits is a single call, also at the top of the u64 range.
+        asserter.push_success(&Vec::<Log>::new());
+        let events = fetch_events(&provider, Address::ZERO, u64::MAX - 2, u64::MAX, 10)
+            .await
+            .expect("one eth_getLogs call");
+        assert!(events.is_empty());
+        assert!(asserter.read_q().is_empty());
+    }
+
+    /// Block numbers of `ResultFinalized` events, in delivery order.
+    fn finalized_blocks(events: &[TEEEvent]) -> Vec<u64> {
+        events
+            .iter()
+            .map(|event| match event {
+                TEEEvent::ResultFinalized { block_number, .. } => *block_number,
+                other => panic!("unexpected event {other:?}"),
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn test_poll_new_events_retries_range_after_rpc_error() {
+        let asserter = alloy::transports::mock::Asserter::new();
+        let provider = mocked_provider(&asserter);
+        let mut cursor = WatchCursor::new(100);
+        let mut events = Vec::new();
+        let mut deliver = |event| events.push(event);
+
+        // First poll: learns the chain head (block 7) and reads that block.
+        asserter.push_success(&7u64);
+        asserter.push_success(&Vec::<Log>::new());
+        poll_new_events(&provider, Address::ZERO, &mut cursor, &mut deliver)
+            .await
+            .unwrap();
+        assert_eq!(cursor.next_block, Some(8));
+
+        // Second poll: the head moved to 9 but eth_getLogs fails.
+        asserter.push_success(&9u64);
+        asserter.push_failure_msg("upstream unavailable");
+        let err = poll_new_events(&provider, Address::ZERO, &mut cursor, &mut deliver).await;
+        assert!(err.is_err());
+        assert_eq!(
+            cursor.next_block,
+            Some(8),
+            "a failed poll must not skip blocks"
+        );
+
+        // Third poll: blocks 8..=9 are fetched again and the event is delivered.
+        asserter.push_success(&9u64);
+        asserter.push_success(&vec![finalized_log(5, 8)]);
+        poll_new_events(&provider, Address::ZERO, &mut cursor, &mut deliver)
+            .await
+            .unwrap();
+        assert_eq!(cursor.next_block, Some(10));
+
+        // Fourth poll: nothing new, no eth_getLogs call at all.
+        asserter.push_success(&9u64);
+        poll_new_events(&provider, Address::ZERO, &mut cursor, &mut deliver)
+            .await
+            .unwrap();
+        assert_eq!(cursor.next_block, Some(10));
+        assert!(asserter.read_q().is_empty());
+        assert_eq!(
+            events,
+            vec![TEEEvent::ResultFinalized {
+                result_id: B256::from([5; 32]),
+                block_number: 8,
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_watch_poll_halves_span_after_failed_request() {
+        let asserter = alloy::transports::mock::Asserter::new();
+        let provider = mocked_provider(&asserter);
+        let mut cursor = WatchCursor::new(8);
+        let mut events = Vec::new();
+        let mut callback = |event| events.push(event);
+        let mut errors = Vec::new();
+        let mut on_error = |err: anyhow::Error| errors.push(format!("{err:#}"));
+
+        // First poll: learns the chain head (block 10) and reads that block.
+        asserter.push_success(&10u64);
+        asserter.push_success(&Vec::<Log>::new());
+        poll_and_report(
+            &provider,
+            Address::ZERO,
+            &mut cursor,
+            &mut callback,
+            &mut on_error,
+        )
+        .await;
+        assert_eq!((cursor.next_block, cursor.span), (Some(11), 8));
+
+        // Second poll: the head is at 26 and the request for 11..=18 is rejected.
+        asserter.push_success(&26u64);
+        asserter.push_failure_msg("block range too wide");
+        poll_and_report(
+            &provider,
+            Address::ZERO,
+            &mut cursor,
+            &mut callback,
+            &mut on_error,
+        )
+        .await;
+        assert_eq!((cursor.next_block, cursor.span), (Some(11), 4));
+
+        // Third poll: 11..=14 (4 blocks), then 15..=22 and 23..=26 with the
+        // span doubled again. With the span still at 8 two calls would do, and
+        // the third response would be left in the queue.
+        asserter.push_success(&26u64);
+        asserter.push_success(&vec![finalized_log(1, 12)]);
+        asserter.push_success(&vec![finalized_log(2, 20)]);
+        asserter.push_success(&vec![finalized_log(3, 26)]);
+        poll_and_report(
+            &provider,
+            Address::ZERO,
+            &mut cursor,
+            &mut callback,
+            &mut on_error,
+        )
+        .await;
+        assert_eq!((cursor.next_block, cursor.span), (Some(27), 8));
+        assert!(asserter.read_q().is_empty(), "one response per chunk");
+
+        // Fourth poll: nothing new.
+        asserter.push_success(&26u64);
+        poll_and_report(
+            &provider,
+            Address::ZERO,
+            &mut cursor,
+            &mut callback,
+            &mut on_error,
+        )
+        .await;
+        assert!(asserter.read_q().is_empty());
+
+        assert_eq!(finalized_blocks(&events), vec![12, 20, 26]);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains("block range too wide"), "{errors:?}");
+    }
+
+    #[tokio::test]
+    async fn test_watch_poll_keeps_chunks_before_a_failed_one() {
+        let asserter = alloy::transports::mock::Asserter::new();
+        let provider = mocked_provider(&asserter);
+        let mut cursor = WatchCursor::new(4);
+        let mut events = Vec::new();
+        let mut callback = |event| events.push(event);
+        let mut errors = 0;
+        let mut on_error = |_err: anyhow::Error| errors += 1;
+
+        // First poll: learns the chain head (block 0) and reads that block.
+        asserter.push_success(&0u64);
+        asserter.push_success(&Vec::<Log>::new());
+        poll_and_report(
+            &provider,
+            Address::ZERO,
+            &mut cursor,
+            &mut callback,
+            &mut on_error,
+        )
+        .await;
+        assert_eq!((cursor.next_block, cursor.span), (Some(1), 4));
+
+        // Second poll: the head is at 12; 1..=4 is read, 5..=8 fails.
+        asserter.push_success(&12u64);
+        asserter.push_success(&vec![finalized_log(1, 2)]);
+        asserter.push_failure_msg("upstream unavailable");
+        poll_and_report(
+            &provider,
+            Address::ZERO,
+            &mut cursor,
+            &mut callback,
+            &mut on_error,
+        )
+        .await;
+        assert_eq!((cursor.next_block, cursor.span), (Some(5), 2));
+
+        // Third poll: resumes at block 5 with 5..=6, 7..=10 and 11..=12. A
+        // poll that started at block 1 again would need a fourth response.
+        asserter.push_success(&12u64);
+        asserter.push_success(&vec![finalized_log(2, 5)]);
+        asserter.push_success(&vec![finalized_log(3, 9)]);
+        asserter.push_success(&Vec::<Log>::new());
+        poll_and_report(
+            &provider,
+            Address::ZERO,
+            &mut cursor,
+            &mut callback,
+            &mut on_error,
+        )
+        .await;
+        assert_eq!((cursor.next_block, cursor.span), (Some(13), 4));
+        assert!(asserter.read_q().is_empty(), "one response per chunk");
+
+        assert_eq!(finalized_blocks(&events), vec![2, 5, 9]);
+        assert_eq!(errors, 1);
+    }
+
+    #[tokio::test]
+    async fn test_watch_with_errors_reports_failed_polls() {
+        // A port nothing listens on: every poll fails.
+        let closed_port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let watcher =
+            TEEEventWatcher::new(&format!("http://127.0.0.1:{closed_port}"), Address::ZERO);
+
+        let (errors, mut reported) = tokio::sync::mpsc::unbounded_channel();
+        let handle = watcher.watch_with_errors(
+            |event| panic!("unexpected event {event:?}"),
+            move |err| {
+                let _ = errors.send(err);
+            },
+            Duration::from_millis(1),
+        );
+        // The time limit turns a watcher that never reports into a failure.
+        for what in ["the first poll error", "the loop goes on after an error"] {
+            tokio::time::timeout(Duration::from_secs(30), reported.recv())
+                .await
+                .unwrap_or_else(|_| panic!("on_error was not called: {what}"))
+                .expect(what);
+        }
+        watcher.stop();
+        handle.await.unwrap();
     }
 
     #[test]

@@ -88,8 +88,7 @@ contract ReentrantExtender {
 /// @dev Contract that rejects ETH transfers
 contract ETHRejecter {
     // No receive or fallback — will cause ETH transfers to revert
-
-    }
+}
 
 /// @title TEEMLVerifierSecurityTest
 /// @notice Security-focused tests: reentrancy, timing attacks, edge cases, griefing

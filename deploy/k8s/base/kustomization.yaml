@@ -1,0 +1,23 @@
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Deploy all resources into the world-zk namespace.
+# Create the namespace first:  kubectl create namespace world-zk
+namespace: world-zk
+
+# Common labels applied to every resource's metadata (but NOT injected
+# into label selectors, which would break NetworkPolicy egress targets
+# and cross-service selectors). Using the labels transformer with
+# includeSelectors: false avoids this pitfall.
+labels:
+  - pairs:
+      app: world-zk-compute
+      app.kubernetes.io/managed-by: kustomize
+    includeSelectors: false
+
+# All Kubernetes resources
+resources:
+  - configmap.yaml
+  - operator-deployment.yaml
+  - indexer-deployment.yaml

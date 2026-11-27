@@ -26,6 +26,7 @@ spec:
         {{- end }}
       labels:
         {{- include "worldzk.labels" . | nindent 8 }}
+        {{- include "worldzk.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: prover
     spec:
       {{- with .Values.imagePullSecrets }}

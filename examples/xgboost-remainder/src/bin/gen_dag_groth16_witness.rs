@@ -34,9 +34,7 @@ use shared_types::{
 };
 use std::collections::HashMap;
 
-#[path = "../abi_encode.rs"]
-#[allow(clippy::all)]
-mod abi_encode;
+use xgboost_remainder::abi_encode;
 
 // ============================================================================
 // Utility functions
@@ -280,6 +278,10 @@ fn main() -> Result<()> {
     let num_trees = parse_arg_usize("--trees", 4);
     let depth = parse_arg_usize("--depth", 2);
     let num_features = parse_arg_usize("--features", 5);
+    // The sizes come from the command line: check them before generate_model
+    // allocates the trees.
+    xgboost_remainder::model::check_generated_model_size(num_trees, depth, num_features)
+        .map_err(anyhow::Error::msg)?;
 
     eprintln!(
         "XGBoost DAG circuit: trees={}, depth={}, features={}",
@@ -288,6 +290,8 @@ fn main() -> Result<()> {
 
     // Build XGBoost circuit
     let model = xgboost_remainder::model::generate_model(num_trees, depth, num_features);
+    // prepare_circuit_inputs does not check the model, and the sizes come from the command line.
+    xgboost_remainder::model::validate_model(&model).map_err(anyhow::Error::msg)?;
     let features = xgboost_remainder::model::generate_features(num_features, 123);
     let inputs = xgboost_remainder::circuit::prepare_circuit_inputs(&model, &features);
 
@@ -1367,9 +1371,7 @@ mod tests {
         let mut all_rlc_betas: Vec<Fr> = Vec::new();
         let mut all_z_dot_jstars: Vec<Fr> = Vec::new();
 
-        for (proof_idx, (layer_id, layer_proof)) in
-            proof.circuit_proof.layer_proofs.iter().enumerate()
-        {
+        for (layer_id, layer_proof) in proof.circuit_proof.layer_proofs.iter() {
             let layer_desc = desc
                 .intermediate_layers
                 .iter()
@@ -1526,7 +1528,7 @@ mod tests {
 
         for (j, il) in desc.input_layers.iter().enumerate() {
             let is_committed = private_input_ids.contains(&il.layer_id);
-            let claims = claim_tracker.remove(&il.layer_id).unwrap_or_default();
+            claim_tracker.remove(&il.layer_id);
 
             if is_committed {
                 let target_layer = num_compute + j;
@@ -1596,11 +1598,8 @@ mod tests {
                                 &pt_templates[atom_local_idx],
                                 &all_bindings[src_idx],
                             );
-                            let mle_val = evaluate_mle_fr(&pub_values, &pt);
-                            assert!(
-                                mle_val != Fr::zero() || true,
-                                "mleEval can be zero for valid inputs"
-                            );
+                            // The value itself can be zero for valid inputs.
+                            let _ = evaluate_mle_fr(&pub_values, &pt);
                             total_public_claims += 1;
                         }
                     }

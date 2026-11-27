@@ -221,6 +221,12 @@ fn count_ops(ops: &[serde_json::Value]) -> (usize, usize, usize) {
 }
 
 /// Separate operations into mul-only and add-only lists for the per-chunk format.
+///
+/// gnark's chunk circuit checks each mul op as result == scalar * point and each
+/// add op as result == point1 + point2. An MSM is therefore written out the way
+/// ec_main.go decomposeECOps does: one mul op per term carrying that term's own
+/// product, then one add op per further term for the running sum. The last sum
+/// (or the only product) is the MSM result, and that is checked here.
 fn split_mul_add(ops: &[serde_json::Value]) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
     let mut mul_ops = Vec::new();
     let mut add_ops = Vec::new();
@@ -241,21 +247,40 @@ fn split_mul_add(ops: &[serde_json::Value]) -> (Vec<serde_json::Value>, Vec<serd
                 }));
             }
             "msm" => {
-                // Expand MSM into individual mul + add operations for the chunk format.
-                // An MSM of N points is N muls followed by N-1 adds.
-                // However, since the gnark circuit may handle MSMs natively,
-                // we keep them as mul ops with the MSM metadata.
-                if let Some(points) = op["points"].as_array() {
-                    if let Some(scalars) = op["scalars"].as_array() {
-                        for (pt, s) in points.iter().zip(scalars.iter()) {
-                            mul_ops.push(json!({
-                                "point": pt.clone(),
-                                "scalar": s.clone(),
-                                "result": op["result"].clone(),  // MSM result for reference
+                let points = op["points"].as_array().expect("msm op must have points");
+                let scalars = op["scalars"].as_array().expect("msm op must have scalars");
+                assert_eq!(
+                    points.len(),
+                    scalars.len(),
+                    "msm op must have one scalar per point"
+                );
+                let mut sum: Option<Bn256Point> = None;
+                for (pt, s) in points.iter().zip(scalars.iter()) {
+                    let scalar = fr_from_hex(s.as_str().expect("msm scalar must be a hex string"));
+                    let term = point_from_json(pt) * scalar;
+                    mul_ops.push(json!({
+                        "point": pt.clone(),
+                        "scalar": s.clone(),
+                        "result": point_to_json(&term),
+                    }));
+                    sum = Some(match sum {
+                        None => term,
+                        Some(prev) => {
+                            let next = prev + term;
+                            add_ops.push(json!({
+                                "point1": point_to_json(&prev),
+                                "point2": point_to_json(&term),
+                                "result": point_to_json(&next),
                             }));
+                            next
                         }
-                    }
+                    });
                 }
+                assert_eq!(
+                    point_to_json(&sum.unwrap_or_else(Bn256Point::zero)),
+                    op["result"],
+                    "msm op result is not the sum of its terms"
+                );
             }
             _ => {}
         }
@@ -281,7 +306,10 @@ fn write_chunked_output(
 
     for (i, chunk) in chunks.iter().enumerate() {
         let (mul_ops, add_ops) = split_mul_add(chunk);
-        let (num_mul, num_add, num_msm) = count_ops(chunk);
+        // numMul and numAdd count the ops written to the chunk, MSM terms included;
+        // numMsm counts the MSMs they came from.
+        let (_, _, num_msm) = count_ops(chunk);
+        let (num_mul, num_add) = (mul_ops.len(), add_ops.len());
 
         let chunk_json = json!({
             "chunkIndex": i,
@@ -334,6 +362,42 @@ fn write_chunked_output(
 // ============================================================================
 // EC point serialization
 // ============================================================================
+
+/// Parse a 0x-prefixed big-endian hex string, as written by fq_to_hex / fr_to_hex,
+/// into little-endian field bytes.
+fn hex_to_le_repr(hex_str: &str) -> [u8; 32] {
+    let stripped = hex_str.strip_prefix("0x").unwrap_or(hex_str);
+    let be = hex::decode(stripped).expect("field element must be hex");
+    assert!(be.len() <= 32, "field element hex is longer than 32 bytes");
+    let mut le = [0u8; 32];
+    for (dst, src) in le.iter_mut().zip(be.iter().rev()) {
+        *dst = *src;
+    }
+    le
+}
+
+fn fq_from_hex(hex_str: &str) -> Fq {
+    let mut repr = <Fq as PrimeField>::Repr::default();
+    repr.as_mut().copy_from_slice(&hex_to_le_repr(hex_str));
+    Option::from(Fq::from_repr(repr)).expect("Fq hex must be below the field modulus")
+}
+
+fn fr_from_hex(hex_str: &str) -> Fr {
+    let mut repr = <Fr as PrimeField>::Repr::default();
+    repr.as_mut().copy_from_slice(&hex_to_le_repr(hex_str));
+    Option::from(Fr::from_repr(repr)).expect("Fr hex must be below the field modulus")
+}
+
+/// Parse a point written by point_to_json; (0, 0) stands for the identity.
+fn point_from_json(val: &serde_json::Value) -> Bn256Point {
+    let x = fq_from_hex(val["x"].as_str().expect("point x must be a hex string"));
+    let y = fq_from_hex(val["y"].as_str().expect("point y must be a hex string"));
+    if x == Fq::zero() && y == Fq::zero() {
+        Bn256Point::zero()
+    } else {
+        Bn256Point::from_xy(x, y)
+    }
+}
 
 fn point_to_json(p: &Bn256Point) -> serde_json::Value {
     match p.affine_coordinates() {
@@ -451,14 +515,43 @@ struct LayerExtract {
 }
 
 struct InputGroupExtract {
-    rlc_coeffs: Vec<Fr>,
     podp_challenge: Fr,
     podp_z_vector: Vec<Fr>,
     podp_z_delta: Fr,
     podp_z_beta: Fr,
-    l_half_bindings: Vec<Fr>,
+    /// Row combination of the group's claims, one entry per commitment row
+    /// (see `rlc_l_tensor`).
+    l_coeffs: Vec<Fr>,
     r_half_bindings: Vec<Fr>,
     _num_rows: usize,
+}
+
+/// The commitment-row combination the verifier uses for one input claim group:
+/// the sum over the group's claims c of rlc_coeff_c * tensor(L-half of claim c),
+/// with 2^l_half_len entries (one per commitment row).
+///
+/// Every claim of the group counts. Taking the first claim's L-half alone gives
+/// a different com_x, and the PODP check of a group with two or more claims
+/// then fails. Same as compute_rlc_tensor in crates/zkml-verifier/src/hyrax.rs.
+fn rlc_l_tensor(l_halves: &[&[Fr]], rlc_coeffs: &[Fr], l_half_len: usize) -> Vec<Fr> {
+    assert_eq!(
+        l_halves.len(),
+        rlc_coeffs.len(),
+        "one RLC coefficient per claim in the group"
+    );
+    let mut result = vec![Fr::zero(); 1usize << l_half_len];
+    for (l_half, coeff) in l_halves.iter().zip(rlc_coeffs.iter()) {
+        assert_eq!(
+            l_half.len(),
+            l_half_len,
+            "claim L-half has the wrong length"
+        );
+        let tensor = compute_tensor_product_fr(l_half);
+        for (acc, t_val) in result.iter_mut().zip(tensor.iter()) {
+            *acc += *coeff * *t_val;
+        }
+    }
+    result
 }
 
 // ============================================================================
@@ -585,6 +678,11 @@ fn group_claims_by_r_half(
 // ============================================================================
 
 /// Record PODP EC operations (Check 1 + Check 2)
+///
+/// Panics when a check does not hold. The checks are real asserts, not debug
+/// ones, because the scripts run this binary in release: a release build would
+/// otherwise write a witness whose equations no circuit can satisfy.
+#[allow(clippy::too_many_arguments)]
 fn record_podp_ec_ops(
     ec: &mut ECCollector,
     com_x: &Bn256Point, // alpha (for compute) or MSM result (for input)
@@ -608,7 +706,7 @@ fn record_podp_ec_ops(
     let msm_result = msm_gens_t(ec, message_gens, z_vector);
     let z_delta_h = ec_mul_t(ec, blinding_gen, z_delta);
     let rhs1 = ec_add_t(ec, &msm_result, &z_delta_h);
-    debug_assert_eq!(lhs1, rhs1, "PODP check 1 failed");
+    assert_eq!(lhs1, rhs1, "PODP check 1 failed");
 
     // Check 2: c * com_y + commit_d_dot_a == z_dot_a * g + z_beta * h
     let c_com_y = ec_mul_t(ec, com_y, challenge);
@@ -616,10 +714,13 @@ fn record_podp_ec_ops(
     let z_dot_a_g = ec_mul_t(ec, scalar_gen, z_dot_a);
     let z_beta_h = ec_mul_t(ec, blinding_gen, z_beta);
     let rhs2 = ec_add_t(ec, &z_dot_a_g, &z_beta_h);
-    debug_assert_eq!(lhs2, rhs2, "PODP check 2 failed");
+    assert_eq!(lhs2, rhs2, "PODP check 2 failed");
 }
 
 /// Record PoP EC operations (3 checks per product triple)
+///
+/// Panics when a check does not hold, in release builds too (see record_podp_ec_ops).
+#[allow(clippy::too_many_arguments)]
 fn record_pop_ec_ops(
     ec: &mut ECCollector,
     com_x: &Bn256Point,
@@ -643,7 +744,7 @@ fn record_pop_ec_ops(
     let z1_g = ec_mul_t(ec, scalar_gen, z1);
     let z2_h = ec_mul_t(ec, blinding_gen, z2);
     let rhs1 = ec_add_t(ec, &z1_g, &z2_h);
-    debug_assert_eq!(lhs1, rhs1, "PoP check 1 failed");
+    assert_eq!(lhs1, rhs1, "PoP check 1 failed");
 
     // Check 2: beta + c * com_y == z3 * g + z4 * h
     let c_com_y = ec_mul_t(ec, com_y, pop_challenge);
@@ -651,7 +752,7 @@ fn record_pop_ec_ops(
     let z3_g = ec_mul_t(ec, scalar_gen, z3);
     let z4_h = ec_mul_t(ec, blinding_gen, z4);
     let rhs2 = ec_add_t(ec, &z3_g, &z4_h);
-    debug_assert_eq!(lhs2, rhs2, "PoP check 2 failed");
+    assert_eq!(lhs2, rhs2, "PoP check 2 failed");
 
     // Check 3: delta + c * com_z == z3 * com_x + z5 * h
     let c_com_z = ec_mul_t(ec, com_z, pop_challenge);
@@ -659,7 +760,7 @@ fn record_pop_ec_ops(
     let z3_com_x = ec_mul_t(ec, com_x, z3);
     let z5_h = ec_mul_t(ec, blinding_gen, z5);
     let rhs3 = ec_add_t(ec, &z3_com_x, &z5_h);
-    debug_assert_eq!(lhs3, rhs3, "PoP check 3 failed");
+    assert_eq!(lhs3, rhs3, "PoP check 3 failed");
 }
 
 // ============================================================================
@@ -670,6 +771,10 @@ fn main() -> Result<()> {
     let num_trees = parse_arg_usize("--trees", 4);
     let depth = parse_arg_usize("--depth", 2);
     let num_features = parse_arg_usize("--features", 5);
+    // The sizes come from the command line: check them before generate_model
+    // allocates the trees.
+    xgboost_remainder::model::check_generated_model_size(num_trees, depth, num_features)
+        .map_err(anyhow::Error::msg)?;
     let chunk_size = parse_arg_usize("--chunk-size", 500);
     let output_dir: Option<PathBuf> = parse_arg("--output-dir").map(PathBuf::from);
     let _ops_digest_algo = parse_arg("--ops-digest-algo").unwrap_or_else(|| "sha256".to_string());
@@ -691,6 +796,8 @@ fn main() -> Result<()> {
     // ================================================================
 
     let model = xgboost_remainder::model::generate_model(num_trees, depth, num_features);
+    // prepare_circuit_inputs does not check the model, and the sizes come from the command line.
+    xgboost_remainder::model::validate_model(&model).map_err(anyhow::Error::msg)?;
     let features = xgboost_remainder::model::generate_features(num_features, 123);
     let inputs = xgboost_remainder::circuit::prepare_circuit_inputs(&model, &features);
 
@@ -1147,9 +1254,20 @@ fn main() -> Result<()> {
                 );
                 t.append_scalar_field_elem("Blinding factor for blinded inner product", z_beta);
 
+                // The claims of a group share the R-half (that is how they were
+                // grouped), so the first claim's R-half stands for all of them.
                 let first_claim_point = &resolved_claim_points[group[0]];
-                let l_half = first_claim_point[..l_half_len].to_vec();
                 let r_half = first_claim_point[l_half_len..].to_vec();
+                let l_halves: Vec<&[Fr]> = group
+                    .iter()
+                    .map(|&idx| &resolved_claim_points[idx][..l_half_len])
+                    .collect();
+                let l_coeffs = rlc_l_tensor(&l_halves, &group_rlc_coeffs, l_half_len);
+                assert_eq!(
+                    l_coeffs.len(),
+                    num_rows,
+                    "input commitment row count is not a power of two"
+                );
 
                 input_podp_commits.push(PodpCommits {
                     commit_d,
@@ -1159,12 +1277,11 @@ fn main() -> Result<()> {
                 input_com_evals.push(com_eval);
 
                 input_group_extracts.push(InputGroupExtract {
-                    rlc_coeffs: group_rlc_coeffs,
                     podp_challenge: input_podp_c,
                     podp_z_vector: z_vector,
                     podp_z_delta: z_delta,
                     podp_z_beta: z_beta,
-                    l_half_bindings: l_half,
+                    l_coeffs,
                     r_half_bindings: r_half,
                     _num_rows: num_rows,
                 });
@@ -1240,13 +1357,8 @@ fn main() -> Result<()> {
     let mut z_dot_rs: Vec<Fr> = Vec::new();
 
     for (g, ige) in input_group_extracts.iter().enumerate() {
-        let l_per_shred = compute_tensor_product_fr(&ige.l_half_bindings);
         l_tensor_offsets.push(l_tensor_flat.len());
-        for coeff in ige.rlc_coeffs.iter() {
-            for t_val in &l_per_shred {
-                l_tensor_flat.push(*coeff * *t_val);
-            }
-        }
+        l_tensor_flat.extend_from_slice(&ige.l_coeffs);
 
         let r_tensor = compute_tensor_product_fr(&ige.r_half_bindings);
         let z_dot_r: Fr = ige
@@ -1400,16 +1512,8 @@ fn main() -> Result<()> {
         let com_eval = &input_com_evals[g];
         let podp_commits = &input_podp_commits[g];
 
-        // MSM(commitment_rows, l_tensor) = com_x for PODP
-        let l_tensor = compute_tensor_product_fr(&ige.l_half_bindings);
-        // Scale l_tensor by RLC coefficients
-        let mut l_coeffs: Vec<Fr> = Vec::new();
-        for coeff in ige.rlc_coeffs.iter() {
-            for t_val in &l_tensor {
-                l_coeffs.push(*coeff * *t_val);
-            }
-        }
-        let com_x = msm_t(&mut ec, commitment_rows, &l_coeffs[..commitment_rows.len()]);
+        // com_x for the PODP = MSM(commitment_rows, row combination of the group's claims)
+        let com_x = msm_t(&mut ec, commitment_rows, &ige.l_coeffs);
 
         // R-tensor for a_vector
         let r_tensor = compute_tensor_product_fr(&ige.r_half_bindings);
@@ -1584,6 +1688,7 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ff::Field;
 
     #[test]
     #[ignore] // Slow test (~10s), run with: cargo test --bin gen_ec_groth16_witness -- --nocapture --ignored
@@ -2133,6 +2238,141 @@ mod tests {
         assert!(add_ops[0].get("point1").is_some());
         assert!(add_ops[0].get("point2").is_some());
         assert!(add_ops[0].get("result").is_some());
+    }
+
+    #[test]
+    fn test_rlc_l_tensor_sums_every_claim_of_the_group() {
+        // Two claims with one L-half variable each: tensor([a]) = [1 - a, a].
+        let (a0, a1) = (Fr::from(3u64), Fr::from(7u64));
+        let (c0, c1) = (Fr::from(5u64), Fr::from(11u64));
+        let l0 = [a0];
+        let l1 = [a1];
+        let got = rlc_l_tensor(&[&l0[..], &l1[..]], &[c0, c1], 1);
+        let want = vec![
+            c0 * (Fr::one() - a0) + c1 * (Fr::one() - a1),
+            c0 * a0 + c1 * a1,
+        ];
+        assert_eq!(got, want);
+
+        // A single claim is its tensor scaled by its coefficient.
+        let got = rlc_l_tensor(&[&l0[..]], &[c0], 1);
+        assert_eq!(got, vec![c0 * (Fr::one() - a0), c0 * a0]);
+    }
+
+    #[test]
+    #[should_panic(expected = "PODP check 1 failed")]
+    fn test_podp_check_failure_panics() {
+        let mut rng = thread_rng();
+        let mut ec = ECCollector::new();
+        let p = || Bn256Point::random(thread_rng());
+        let gens = vec![p(), p()];
+        record_podp_ec_ops(
+            &mut ec,
+            &p(),
+            &p(),
+            &Fr::random(&mut rng),
+            &p(),
+            &p(),
+            &[Fr::random(&mut rng), Fr::random(&mut rng)],
+            &Fr::random(&mut rng),
+            &Fr::random(&mut rng),
+            &Fr::random(&mut rng),
+            &gens,
+            &p(),
+            &p(),
+        );
+    }
+
+    /// Ops with real curve points: a mul, an add, and MSMs of 3, 1 and 5 terms.
+    fn real_ec_ops() -> (ECCollector, Vec<Bn256Point>) {
+        let mut rng = thread_rng();
+        let pts: Vec<Bn256Point> = (0..5).map(|_| Bn256Point::random(thread_rng())).collect();
+        let scs: Vec<Fr> = (0..5).map(|_| Fr::random(&mut rng)).collect();
+        let mut ec = ECCollector::new();
+        let mut msm_results = Vec::new();
+        ec_mul_t(&mut ec, &pts[0], &scs[0]);
+        ec_add_t(&mut ec, &pts[1], &pts[2]);
+        msm_results.push(msm_t(&mut ec, &pts[..3], &scs[..3]));
+        msm_results.push(msm_t(&mut ec, &pts[3..4], &scs[3..4]));
+        msm_results.push(msm_t(&mut ec, &pts, &scs));
+        (ec, msm_results)
+    }
+
+    #[test]
+    fn test_chunked_mul_ops_are_scalar_times_point() {
+        let (ec, _) = real_ec_ops();
+        let tmp = std::env::temp_dir().join(format!("ec_chunk_mul_check_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let circuit_hash = ["0x01".to_string(), "0x02".to_string()];
+        write_chunked_output(&tmp, &ec.ops, 2, "0xdeadbeef", &circuit_hash).unwrap();
+
+        let (mut num_mul, mut num_add) = (0, 0);
+        for i in 0..3 {
+            let chunk_str = std::fs::read_to_string(tmp.join(format!("chunk_{}.json", i))).unwrap();
+            let chunk: serde_json::Value = serde_json::from_str(&chunk_str).unwrap();
+            for op in chunk["mulOps"].as_array().unwrap() {
+                let product =
+                    point_from_json(&op["point"]) * fr_from_hex(op["scalar"].as_str().unwrap());
+                assert_eq!(point_to_json(&product), op["result"], "mul op {}", op);
+                num_mul += 1;
+            }
+            for op in chunk["addOps"].as_array().unwrap() {
+                let sum = point_from_json(&op["point1"]) + point_from_json(&op["point2"]);
+                assert_eq!(point_to_json(&sum), op["result"], "add op {}", op);
+                num_add += 1;
+            }
+            assert_eq!(
+                chunk["stats"]["numMul"],
+                chunk["mulOps"].as_array().unwrap().len()
+            );
+            assert_eq!(
+                chunk["stats"]["numAdd"],
+                chunk["addOps"].as_array().unwrap().len()
+            );
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+        // One mul per MSM term plus the plain mul; one add per further MSM term
+        // plus the plain add.
+        assert_eq!(num_mul, 1 + 3 + 1 + 5);
+        assert_eq!(num_add, 1 + 2 + 0 + 4);
+    }
+
+    #[test]
+    fn test_split_mul_add_msm_running_sum_ends_at_msm_result() {
+        let (ec, msm_results) = real_ec_ops();
+        // ops[2] is the 3-term MSM: its 2 adds end at the MSM result.
+        let (mul_ops, add_ops) = split_mul_add(&ec.ops[2..3]);
+        assert_eq!((mul_ops.len(), add_ops.len()), (3, 2));
+        assert_eq!(add_ops[0]["point1"], mul_ops[0]["result"]);
+        assert_eq!(add_ops[0]["point2"], mul_ops[1]["result"]);
+        assert_eq!(add_ops[1]["point1"], add_ops[0]["result"]);
+        assert_eq!(add_ops[1]["point2"], mul_ops[2]["result"]);
+        assert_eq!(add_ops[1]["result"], point_to_json(&msm_results[0]));
+        // ops[3] is the 1-term MSM: its one product is the MSM result.
+        let (mul_ops, add_ops) = split_mul_add(&ec.ops[3..4]);
+        assert_eq!((mul_ops.len(), add_ops.len()), (1, 0));
+        assert_eq!(mul_ops[0]["result"], point_to_json(&msm_results[1]));
+    }
+
+    #[test]
+    #[should_panic(expected = "msm op result is not the sum of its terms")]
+    fn test_split_mul_add_rejects_msm_with_wrong_result() {
+        let (mut ec, _) = real_ec_ops();
+        let mut op = ec.ops.swap_remove(2);
+        op["result"] = point_to_json(&Bn256Point::generator());
+        split_mul_add(&[op]);
+    }
+
+    #[test]
+    fn test_point_json_round_trip() {
+        let p = Bn256Point::random(thread_rng());
+        assert_eq!(point_from_json(&point_to_json(&p)), p);
+        assert_eq!(
+            point_from_json(&point_to_json(&Bn256Point::zero())),
+            Bn256Point::zero()
+        );
+        let s = Fr::random(thread_rng());
+        assert_eq!(fr_from_hex(&fr_to_hex(&s)), s);
     }
 
     #[test]

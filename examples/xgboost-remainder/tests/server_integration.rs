@@ -401,3 +401,100 @@ async fn test_batch_with_mixed_feature_counts() {
         .unwrap()
         .contains("Expected 5 features"));
 }
+
+/// With a 1 s timeout, /prove and /prove/bundle answer 504 while the proof
+/// (several seconds on the sample model) is still running, and /health still
+/// answers. One runtime worker: a proof run on it would hold every request.
+/// One worker also means one proof at a time, so the /prove/bundle request
+/// times out while it waits for the first, still running, proof to end.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[ignore]
+async fn test_prove_and_bundle_time_out_with_504_while_proof_runs() {
+    let port = free_port();
+    let config = ServerConfig {
+        port,
+        rate_limit: 0,
+        request_timeout_secs: 1,
+        ..ServerConfig::default()
+    };
+    let base_url = start_server(config).await;
+    let client = reqwest::Client::new();
+
+    for route in ["/prove", "/prove/bundle"] {
+        let start = std::time::Instant::now();
+        let resp = client
+            .post(format!("{}{}", base_url, route))
+            .json(&serde_json::json!({"features": [0.6, 0.2, 0.8, 0.5, 0.3]}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 504, "{}", route);
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "{} answered after {:?}",
+            route,
+            start.elapsed()
+        );
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert!(body["error"].as_str().unwrap().contains("timed out"));
+
+        // The timed-out proof keeps running on the blocking pool; the server
+        // still answers other requests.
+        let start = std::time::Instant::now();
+        let health = client
+            .get(format!("{}/health", base_url))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(health.status(), 200);
+        assert!(start.elapsed() < Duration::from_secs(1));
+    }
+}
+
+/// Two /prove requests sent at once on a server with one runtime worker: the
+/// server runs at most one proof at a time, so the second proof starts only
+/// when the first ends. Each response's prove_time_ms covers only its own
+/// proof, so a proof's start is its response time minus prove_time_ms.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[ignore]
+async fn test_one_worker_server_runs_one_proof_at_a_time() {
+    let port = free_port();
+    let config = ServerConfig {
+        port,
+        rate_limit: 0,
+        request_timeout_secs: 600,
+        ..ServerConfig::default()
+    };
+    let base_url = start_server(config).await;
+    let client = reqwest::Client::new();
+
+    let t0 = std::time::Instant::now();
+    let prove = || async {
+        let resp = client
+            .post(format!("{}/prove", base_url))
+            .json(&serde_json::json!({"features": [0.6, 0.2, 0.8, 0.5, 0.3]}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        let end = t0.elapsed();
+        let prove_time = Duration::from_millis(body["prove_time_ms"].as_u64().unwrap());
+        (end.saturating_sub(prove_time), end, prove_time)
+    };
+    let (a, b) = tokio::join!(prove(), prove());
+    let (first, second) = if a.1 <= b.1 { (a, b) } else { (b, a) };
+    let (_, first_end, first_prove) = first;
+    let (second_start, _, _) = second;
+
+    // Run one after the other, the second proof starts as the first ends (a
+    // few milliseconds before its response arrives). Run side by side, it
+    // starts at about t0, a whole proof before the first one ends.
+    assert!(
+        second_start + first_prove / 2 >= first_end,
+        "the proofs overlapped: second started at {:?}, first ended at {:?} after {:?}",
+        second_start,
+        first_end,
+        first_prove
+    );
+}

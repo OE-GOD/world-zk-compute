@@ -93,6 +93,42 @@ pub fn verify_auth_request(auth: &AuthRequest) -> Result<Address, AuthError> {
     Ok(claimed_address)
 }
 
+/// Scheme, host and port of a URL, for the log: the path or query of an RPC
+/// URL often holds the provider's API key. What is not a complete URL, or has a
+/// '@' behind the host, is not shown at all.
+pub fn url_origin(url: &str) -> String {
+    origin(url).unwrap_or_else(|| "<URL not shown>".to_string())
+}
+
+fn origin(url: &str) -> Option<String> {
+    let url = url.trim();
+    let (scheme, after_scheme) = url.split_once("://")?;
+    // The parser is lenient: it takes "http:host" for a URL, skips slashes in
+    // front of the host, and drops tabs and line breaks. What it then takes
+    // for the host can be a part of the credentials or the path.
+    let is_scheme = |c: char| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.');
+    if !scheme.chars().all(is_scheme)
+        || after_scheme.starts_with(['/', '\\'])
+        || url.contains(|c: char| c.is_whitespace() || c.is_control())
+    {
+        return None;
+    }
+    let parsed = reqwest::Url::parse(url).ok()?;
+    // A '@' behind the host can mean that a '/', '?' or '#' in the credentials
+    // was not encoded, and that what the parser takes for the host is a part
+    // of them. (Looked for in the text as written: the parser takes '..' out
+    // of a path.)
+    let host_end = after_scheme.find(['/', '\\', '?', '#']);
+    if host_end.is_some_and(|end| after_scheme[end..].contains('@')) {
+        return None;
+    }
+    let host = parsed.host_str()?;
+    Some(match parsed.port() {
+        Some(port) => format!("{}://{}:{}", parsed.scheme(), host, port),
+        None => format!("{}://{}", parsed.scheme(), host),
+    })
+}
+
 /// Verify on-chain that the prover has claimed this job
 ///
 /// Makes an RPC call to `ExecutionEngine.getRequest(requestId)` and checks:
@@ -132,12 +168,11 @@ pub async fn verify_on_chain_claim(
         .json(&payload)
         .send()
         .await
-        .map_err(|e| AuthError::RpcError(format!("RPC request failed: {}", e)))?;
+        .map_err(|e| AuthError::RpcError(format!("RPC request failed: {}", e.without_url())))?;
 
-    let result: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|e| AuthError::RpcError(format!("RPC response parse error: {}", e)))?;
+    let result: serde_json::Value = response.json().await.map_err(|e| {
+        AuthError::RpcError(format!("RPC response parse error: {}", e.without_url()))
+    })?;
 
     if let Some(error) = result.get("error") {
         return Err(AuthError::RpcError(format!("RPC error: {}", error)));
@@ -151,28 +186,7 @@ pub async fn verify_on_chain_claim(
     let bytes = hex::decode(data_hex.trim_start_matches("0x"))
         .map_err(|e| AuthError::RpcError(format!("Bad hex response: {}", e)))?;
 
-    // ABI decode the ExecutionRequest struct
-    // The struct fields in order (each 32 bytes):
-    // 0: id, 1: imageId, 2: inputDigest, 3: requester, 4: createdAt, 5: expiresAt,
-    // 6: callbackContract, 7: status, 8: claimedBy, 9: claimedAt, 10: claimDeadline,
-    // 11: tip, 12: maxTip
-    // Note: The struct is returned with an ABI offset word (32 bytes) at the start
-    if bytes.len() < 32 + 13 * 32 {
-        return Err(AuthError::RpcError(format!(
-            "Response too short: {} bytes",
-            bytes.len()
-        )));
-    }
-
-    let offset = 32; // Skip ABI offset word
-
-    // Status is field 7 (index 7) - uint8 packed, but ABI returns it as uint256
-    let status_offset = offset + 7 * 32;
-    let status = bytes[status_offset + 31]; // Last byte of the 32-byte word
-
-    // ClaimedBy is field 8 (index 8) - address (last 20 bytes of 32-byte word)
-    let claimer_offset = offset + 8 * 32;
-    let claimer = Address::from_slice(&bytes[claimer_offset + 12..claimer_offset + 32]);
+    let (status, claimer) = decode_claim(&bytes)?;
 
     // Status 1 = Claimed
     if status != 1 {
@@ -191,6 +205,33 @@ pub async fn verify_on_chain_claim(
         request_id, prover
     );
     Ok(())
+}
+
+/// Extract `(status, claimedBy)` from the ABI-encoded return of
+/// `ExecutionEngine.getRequest(uint256)`.
+///
+/// `ExecutionRequest` has only static fields, so the struct is returned
+/// inline (13 words, no leading offset word):
+/// 0: id, 1: imageId, 2: inputDigest, 3: requester, 4: createdAt, 5: expiresAt,
+/// 6: callbackContract, 7: status, 8: claimedBy, 9: claimedAt, 10: claimDeadline,
+/// 11: tip, 12: maxTip
+fn decode_claim(bytes: &[u8]) -> Result<(u8, Address), AuthError> {
+    if bytes.len() < 13 * 32 {
+        return Err(AuthError::RpcError(format!(
+            "Response too short: {} bytes",
+            bytes.len()
+        )));
+    }
+
+    // Status is field 7 - uint8, ABI-encoded as a full word
+    let status_offset = 7 * 32;
+    let status = bytes[status_offset + 31]; // Last byte of the 32-byte word
+
+    // ClaimedBy is field 8 - address (last 20 bytes of the word)
+    let claimer_offset = 8 * 32;
+    let claimer = Address::from_slice(&bytes[claimer_offset + 12..claimer_offset + 32]);
+
+    Ok((status, claimer))
 }
 
 /// Authentication errors
@@ -312,5 +353,86 @@ mod tests {
 
         let result = verify_auth_request(&auth);
         assert!(matches!(result, Err(AuthError::AddressMismatch { .. })));
+    }
+
+    /// Return data of `getRequest(1)` captured from a real ExecutionEngine on
+    /// anvil after `claimExecution(1)` by 0xf39F...2266: 13 words, no offset word.
+    const CLAIMED_REQUEST_HEX: &str = concat!(
+        "0000000000000000000000000000000000000000000000000000000000000001",
+        "1111111111111111111111111111111111111111111111111111111111111111",
+        "2222222222222222222222222222222222222222222222222222222222222222",
+        "000000000000000000000000f39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+        "000000000000000000000000000000000000000000000000000000006b02d9f3",
+        "000000000000000000000000000000000000000000000000000000006b02e803",
+        "0000000000000000000000000000000000000000000000000000000000000000",
+        "0000000000000000000000000000000000000000000000000000000000000001",
+        "000000000000000000000000f39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+        "000000000000000000000000000000000000000000000000000000006b02d9f4",
+        "000000000000000000000000000000000000000000000000000000006b02dc4c",
+        "00000000000000000000000000000000000000000000000000038d7ea4c68000",
+        "00000000000000000000000000000000000000000000000000038d7ea4c68000",
+    );
+
+    #[test]
+    fn test_decode_claim_from_real_get_request_return() {
+        let bytes = hex::decode(CLAIMED_REQUEST_HEX).unwrap();
+        assert_eq!(bytes.len(), 13 * 32);
+
+        let (status, claimer) = decode_claim(&bytes).unwrap();
+        assert_eq!(status, 1, "status must be Claimed");
+        let expected: Address = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+            .parse()
+            .unwrap();
+        assert_eq!(claimer, expected);
+    }
+
+    #[test]
+    fn test_decode_claim_rejects_short_response() {
+        let err = decode_claim(&[0u8; 12 * 32]).unwrap_err();
+        assert!(matches!(err, AuthError::RpcError(_)));
+    }
+
+    /// The error is answered to the HTTP client, so it must not name the RPC
+    /// URL: its path often holds the provider's API key.
+    #[tokio::test]
+    async fn test_rpc_failure_does_not_reveal_the_rpc_url() {
+        // An endpoint whose answer is not JSON, and one that refuses the
+        // connection. (reqwest names the URL only in the error of the second
+        // today; the first guards against a change there.)
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let not_json = format!("http://{}/v2/SECRETKEY", listener.local_addr().unwrap());
+        let app = axum::Router::new().fallback(|| async { "not JSON" });
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        for (rpc_url, failure) in [
+            (not_json.as_str(), "RPC response parse error"),
+            ("http://127.0.0.1:1/v2/SECRETKEY", "RPC request failed"),
+        ] {
+            let err = verify_on_chain_claim(rpc_url, &Address::ZERO, 1, &Address::ZERO)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(failure), "{err}");
+            assert!(!err.contains("SECRETKEY"), "{err}");
+        }
+    }
+
+    #[test]
+    fn test_url_origin_drops_path_query_and_credentials() {
+        for (url, origin) in [
+            (
+                "https://user:pw@rpc.example.com/v2/SECRETKEY?x=1",
+                "https://rpc.example.com",
+            ),
+            ("http://localhost:8545", "http://localhost:8545"),
+            ("SECRETKEY, not a URL", "<URL not shown>"),
+            ("http:///SECRETKEY", "<URL not shown>"),
+            ("https://user:1/SECRET@host/", "<URL not shown>"),
+            ("https://SECRET:1/x@host/..", "<URL not shown>"),
+            ("http:SECRET:1/x@h/?u=http://z", "<URL not shown>"),
+            ("https://\t/SECRET/x", "<URL not shown>"),
+        ] {
+            assert_eq!(url_origin(url), origin);
+        }
     }
 }

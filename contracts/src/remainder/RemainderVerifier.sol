@@ -482,6 +482,8 @@ contract RemainderVerifier is UUPSUpgradeable, Pausable, ReentrancyGuard {
                 ptr := add(ptr, 32)
             }
         }
+        // A call to an address without code succeeds and returns nothing, like an accepted proof
+        if (verifier.code.length == 0) revert Groth16VerificationFailed();
         (bool success, bytes memory returnData) = verifier.staticcall(data);
         if (!success) {
             if (returnData.length > 0) {
@@ -1094,7 +1096,7 @@ contract RemainderVerifier is UUPSUpgradeable, Pausable, ReentrancyGuard {
 
     /// @notice Set the Groth16 verifier contract address (for hybrid verification)
     function setGroth16Verifier(address _groth16Verifier) external onlyTimelocked {
-        if (_groth16Verifier == address(0)) revert ZeroAddress();
+        if (_groth16Verifier == address(0) || _groth16Verifier.code.length == 0) revert ZeroAddress();
         address oldVerifier = groth16Verifier;
         groth16Verifier = _groth16Verifier;
         emit Groth16VerifierUpdated(oldVerifier, _groth16Verifier);
@@ -1106,7 +1108,7 @@ contract RemainderVerifier is UUPSUpgradeable, Pausable, ReentrancyGuard {
         onlyTimelocked
     {
         if (circuits[circuitHash].circuitHash == bytes32(0)) revert CircuitNotRegistered();
-        if (verifier == address(0)) revert ZeroAddress();
+        if (verifier == address(0) || verifier.code.length == 0) revert ZeroAddress();
         circuitGroth16Verifiers[circuitHash] = verifier;
         circuitGroth16Selectors[circuitHash] = _computeGroth16Selector(groth16InputCount);
         emit CircuitGroth16VerifierUpdated(circuitHash, verifier, groth16InputCount);
@@ -1422,7 +1424,7 @@ contract RemainderVerifier is UUPSUpgradeable, Pausable, ReentrancyGuard {
         onlyTimelocked
     {
         if (dagCircuits[circuitHash].circuitHash == bytes32(0)) revert DAGCircuitNotRegistered();
-        if (verifier == address(0)) revert ZeroAddress();
+        if (verifier == address(0) || verifier.code.length == 0) revert ZeroAddress();
         dagCircuitGroth16Verifiers[circuitHash] = verifier;
         dagCircuitGroth16Selectors[circuitHash] = _computeGroth16Selector(groth16InputCount);
         emit DAGCircuitGroth16VerifierUpdated(circuitHash, verifier, groth16InputCount);
@@ -1517,7 +1519,7 @@ contract RemainderVerifier is UUPSUpgradeable, Pausable, ReentrancyGuard {
         onlyTimelocked
     {
         if (dagCircuits[circuitHash].circuitHash == bytes32(0)) revert DAGCircuitNotRegistered();
-        if (verifier == address(0)) revert ZeroAddress();
+        if (verifier == address(0) || verifier.code.length == 0) revert ZeroAddress();
         dagECGroth16Verifiers[circuitHash] = verifier;
         dagECGroth16Selectors[circuitHash] = _computeGroth16Selector(groth16InputCount);
         dagECGroth16InputCounts[circuitHash] = groth16InputCount;
@@ -1951,11 +1953,11 @@ contract RemainderVerifier is UUPSUpgradeable, Pausable, ReentrancyGuard {
     //    would produce a different session ID. Within the same block, overwriting is
     //    possible but only by the same sender.
     //
-    // 4. PROOF INTEGRITY: The Poseidon sponge state is persisted between batches. An
-    //    attacker who cannot call continue (due to auth) cannot corrupt the transcript.
-    //    The proof is re-decoded from calldata each batch, so the same proof must be
-    //    supplied consistently (the sponge state would diverge otherwise, failing
-    //    subsequent sumcheck verifications).
+    // 4. PROOF INTEGRITY: The session keeps the Poseidon sponge state between batches but
+    //    no hash of the proof, and each continue and finalize call decodes its own copy.
+    //    Values a call reads without absorbing them are therefore not tied to the proof the
+    //    session started with, so the session creator (see 2) can finalize a session with a
+    //    proof that verifyDAGProof rejects.
     //
     // ========================================================================
 
@@ -2027,25 +2029,32 @@ contract RemainderVerifier is UUPSUpgradeable, Pausable, ReentrancyGuard {
         PoseidonSponge.Sponge memory sponge =
             _setupTranscript(circuitHash, _decodeEmbeddedPublicInputs(proof[4:]), gkrProof);
         uint256 numComputeLayers = desc.numComputeLayers;
+        // Start reads only the output claim, but rejects a proof of the wrong shape before a session
+        // exists; continue and finalize re-decode the proof and check the count again
+        GKRDAGVerifier.checkLayerProofCount(gkrProof, numComputeLayers);
         totalBatches = DAGBatchVerifier.computeNumComputeBatches(numComputeLayers);
 
-        _squeezeAndStoreInitial(sessionId, circuitHash, totalBatches, numComputeLayers, gkrProof, sponge);
+        _squeezeAndStoreInitial(
+            sessionId, circuitHash, totalBatches, numComputeLayers, desc.numSumcheckRounds[0], gkrProof, sponge
+        );
     }
 
     /// @dev Squeeze output challenges, absorb output eval, and store initial session state.
+    /// @param numOutputVars Number of output challenges: layer 0's round count from the registered
+    ///        description, so the proof cannot choose it (each layer's count is checked in continue)
     function _squeezeAndStoreInitial(
         bytes32 sessionId,
         bytes32 circuitHash,
         uint256 totalBatches,
         uint256 numComputeLayers,
+        uint256 numOutputVars,
         GKRVerifier.GKRProof memory gkrProof,
         PoseidonSponge.Sponge memory sponge
     ) internal {
         uint256[] memory outputChallenges;
         {
-            uint256 numVars = gkrProof.layerProofs[0].sumcheckProof.messages.length;
-            outputChallenges = new uint256[](numVars);
-            for (uint256 i = 0; i < numVars; i++) {
+            outputChallenges = new uint256[](numOutputVars);
+            for (uint256 i = 0; i < numOutputVars; i++) {
                 outputChallenges[i] = PoseidonSponge.squeeze(sponge) % FR_MODULUS;
             }
         }
@@ -2113,6 +2122,13 @@ contract RemainderVerifier is UUPSUpgradeable, Pausable, ReentrancyGuard {
         if (proof.length < 4) revert InvalidProofLength();
         // forge-lint: disable-next-line(unsafe-typecast)
         if (bytes4(proof[:4]) != bytes4("REM1")) revert InvalidProofSelector();
+        // gensData is re-supplied on every call: check it against the registered hash, as start does
+        {
+            bytes32 gensHash = dagCircuits[session.circuitHash].gensHash;
+            if (gensHash != bytes32(0) && gensData.length > 0) {
+                if (keccak256(gensData) != gensHash) revert InvalidGenerators();
+            }
+        }
 
         uint256 endLayer = _executeContinueBatch(sessionId, session, proof, publicInputs, gensData);
 
@@ -2282,6 +2298,13 @@ contract RemainderVerifier is UUPSUpgradeable, Pausable, ReentrancyGuard {
         if (proof.length < 4) revert InvalidProofLength();
         // forge-lint: disable-next-line(unsafe-typecast)
         if (bytes4(proof[:4]) != bytes4("REM1")) revert InvalidProofSelector();
+        // gensData is re-supplied on every call: check it against the registered hash, as start does
+        {
+            bytes32 gensHash = dagCircuits[session.circuitHash].gensHash;
+            if (gensHash != bytes32(0) && gensData.length > 0) {
+                if (keccak256(gensData) != gensHash) revert InvalidGenerators();
+            }
+        }
 
         uint256 groupsDone;
         uint256 totalGroups;
@@ -2354,6 +2377,8 @@ contract RemainderVerifier is UUPSUpgradeable, Pausable, ReentrancyGuard {
                 GKRDAGVerifier.DAGInputLayerProof[] memory dagInputProofs,
                 GKRDAGVerifier.PublicValueClaim[] memory publicValueClaims
             ) = decodeProofForDAG(proof[4:], publicInputs);
+            // Finalize reads the layer proofs' commitments again from this re-supplied proof
+            GKRDAGVerifier.checkLayerProofCount(gkrProof, session.numComputeLayers);
             gkrProof.inputProofs = new HyraxVerifier.EvalProof[](dagInputProofs.length);
             for (uint256 i = 0; i < dagInputProofs.length; i++) {
                 gkrProof.inputProofs[i].commitmentRows = dagInputProofs[i].commitmentRows;

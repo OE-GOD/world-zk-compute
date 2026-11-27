@@ -142,3 +142,51 @@ class TestIntegration:
         """verify_bundle with minimal dict should raise VerifyError."""
         with pytest.raises(VerifyError):
             verify_bundle({"proof_hex": "0x00", "gens_hex": "0x00"})
+
+    def test_verify_file_fixture(self, fixture_path):
+        """The committed 88-layer XGBoost proof verifies."""
+        result = verify_file(str(fixture_path))
+        assert result == {"verified": True, "error": None}
+
+    def test_verify_bundle_fixture(self, fixture_bundle):
+        """verify_bundle accepts the same proof as a dict."""
+        assert verify_bundle(fixture_bundle)["verified"] is True
+
+    def test_verify_bundle_tampered_raises(self, fixture_bundle):
+        """A proof with one flipped byte is rejected with VerifyError."""
+        proof = bytearray.fromhex(fixture_bundle["proof_hex"][2:])
+        proof[len(proof) // 2] ^= 0xFF
+        tampered = dict(fixture_bundle, proof_hex="0x" + proof.hex())
+        with pytest.raises(VerifyError, match="verification failed"):
+            verify_bundle(tampered)
+
+    def test_verify_bundle_malformed_description_raises(self, fixture_bundle):
+        """A bundle without a usable circuit description is an error, not a crash."""
+        broken = dict(fixture_bundle, dag_circuit_description={})
+        with pytest.raises(VerifyError, match="dag_circuit_description"):
+            verify_bundle(broken)
+
+
+FIXTURE_PATH = (
+    Path(__file__).resolve().parents[4]
+    / "contracts"
+    / "test"
+    / "fixtures"
+    / "phase1a_dag_fixture.json"
+)
+
+
+@pytest.fixture
+def fixture_path():
+    if not FIXTURE_PATH.exists():
+        pytest.skip(f"fixture not found: {FIXTURE_PATH}")
+    return FIXTURE_PATH
+
+
+@pytest.fixture
+def fixture_bundle(fixture_path):
+    data = json.loads(fixture_path.read_text())
+    return {
+        key: data[key]
+        for key in ("proof_hex", "gens_hex", "dag_circuit_description")
+    }

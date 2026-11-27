@@ -50,7 +50,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [deploy]
-    if: ${{ always() && inputs.run_e2e }}
+    # Run after a successful deploy, or with no deploy at all; never after a failed one.
+    if: ${{ !cancelled() && inputs.run_e2e && (needs.deploy.result == 'success' || needs.deploy.result == 'skipped') }}
 
     steps:
       - name: Checkout
@@ -73,7 +74,9 @@ jobs:
           DEPLOYER_PRIVATE_KEY: ${{ secrets.DEPLOYER_PRIVATE_KEY }}
           ENCLAVE_PRIVATE_KEY: ${{ secrets.ENCLAVE_PRIVATE_KEY }}
           ALCHEMY_SEPOLIA_RPC_URL: ${{ secrets.ALCHEMY_SEPOLIA_RPC_URL }}
-          TEE_VERIFIER_ADDRESS: ${{ secrets.TEE_VERIFIER_ADDRESS }}
-          EXECUTION_ENGINE_ADDRESS: ${{ secrets.EXECUTION_ENGINE_ADDRESS }}
-          PROGRAM_REGISTRY_ADDRESS: ${{ secrets.PROGRAM_REGISTRY_ADDRESS }}
+          # sepolia-e2e.sh prefers these over deployments/11155111.json, so after a
+          # deploy leave them empty and test the contracts this run just deployed.
+          TEE_VERIFIER_ADDRESS: ${{ !inputs.deploy && secrets.TEE_VERIFIER_ADDRESS || '' }}
+          EXECUTION_ENGINE_ADDRESS: ${{ !inputs.deploy && secrets.EXECUTION_ENGINE_ADDRESS || '' }}
+          PROGRAM_REGISTRY_ADDRESS: ${{ !inputs.deploy && secrets.PROGRAM_REGISTRY_ADDRESS || '' }}
         run: bash scripts/sepolia-e2e.sh

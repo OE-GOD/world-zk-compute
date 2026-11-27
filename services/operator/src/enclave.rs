@@ -148,9 +148,20 @@ impl EnclaveClient {
     }
 
     /// Run inference on the given features.
-    pub async fn infer(&self, features: &[f64]) -> anyhow::Result<InferResponse> {
+    ///
+    /// `verifier_address` is the TEEMLVerifier contract the result will be submitted
+    /// to. The enclave binds its signature to that contract (EIP-712), which is the
+    /// only attestation format `TEEMLVerifier.submitResult` accepts.
+    pub async fn infer(
+        &self,
+        features: &[f64],
+        verifier_address: Option<&str>,
+    ) -> anyhow::Result<InferResponse> {
         let start = std::time::Instant::now();
-        let body = serde_json::json!({ "features": features });
+        let mut body = serde_json::json!({ "features": features });
+        if let Some(addr) = verifier_address {
+            body["verifier_address"] = serde_json::Value::String(addr.to_string());
+        }
         let resp = self
             .client
             .post(format!("{}/infer", self.base_url))

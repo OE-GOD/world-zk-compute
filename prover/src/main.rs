@@ -7,7 +7,6 @@
 //! 4. Submits proofs and collects rewards
 
 use alloy::{
-    network::EthereumWallet,
     primitives::{Address, B256, U256},
     providers::ProviderBuilder,
     signers::local::PrivateKeySigner,
@@ -45,6 +44,7 @@ mod prove_metrics;
 mod prover;
 mod queue;
 mod recursive_wrapper;
+mod redact;
 #[cfg(feature = "remainder")]
 mod remainder_backend;
 mod risc0_backend;
@@ -52,6 +52,8 @@ mod segment_prover;
 mod shutdown;
 #[cfg(feature = "sp1")]
 mod sp1_prover;
+#[cfg(test)]
+mod test_support;
 mod validation;
 mod xgboost_decomp;
 mod zkvm_backend;
@@ -95,7 +97,7 @@ PROVING MODES:
   - boundless-fallback: Try Boundless, fall back to local
   - boundless-gpu:      Try Boundless, fall back to GPU
 
-For more information: https://github.com/worldcoin/world-zk-compute
+For more information: https://github.com/OE-GOD/world-zk-compute
 "#)]
 struct Cli {
     #[command(subcommand)]
@@ -172,7 +174,7 @@ enum Commands {
         #[arg(long, env = "HEALTH_PORT", default_value = "8081")]
         health_port: u16,
 
-        /// Maximum job queue size
+        /// Maximum job queue size (at least 1)
         #[arg(long, env = "QUEUE_SIZE", default_value = "1000")]
         queue_size: usize,
 
@@ -255,8 +257,18 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    let cli = Cli::parse();
+    // The returned error is printed to stderr.
+    run_command(Cli::parse()).await.map_err(without_url_paths)
+}
 
+/// `e` with the URLs in what is printed for it (the error and its causes) cut
+/// to their origin: a failed RPC call names the RPC URL, whose path often
+/// holds an API key.
+fn without_url_paths(e: anyhow::Error) -> anyhow::Error {
+    anyhow::anyhow!("{}", redact::redact_urls(&format!("{e:?}")))
+}
+
+async fn run_command(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Commands::Run {
             rpc_url,
@@ -360,7 +372,7 @@ async fn run_prover(
     skip_profitability_check: bool,
 ) -> anyhow::Result<()> {
     // Parse proving mode
-    let mode = ProvingMode::from_str(&proving_mode);
+    let mode: ProvingMode = proving_mode.parse()?;
 
     // Detect GPU devices
     let gpu_manager = if max_gpu_concurrent > 0 {
@@ -396,12 +408,12 @@ async fn run_prover(
     info!("╚══════════════════════════════════════════════════════════════╝");
     info!("");
     info!("Configuration:");
-    info!("  RPC URL:        {}", rpc_url);
+    info!("  RPC URL:        {}", redact::url_origin(&rpc_url));
     info!(
         "  WS URL:         {}",
         effective_ws_url
             .as_deref()
-            .unwrap_or("disabled (polling only)")
+            .map_or("disabled (polling only)".to_string(), redact::url_origin)
     );
     info!("  Engine:         {}", engine_address);
     info!(
@@ -459,20 +471,7 @@ async fn run_prover(
     let min_tip_wei = U256::from((min_tip * 1e18) as u128);
 
     // Parse allowed image IDs
-    let allowed_images: Vec<B256> = if image_ids.is_empty() {
-        vec![] // Accept all
-    } else {
-        image_ids
-            .split(',')
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .map(|s| {
-                let bytes = hex::decode(s.trim_start_matches("0x"))
-                    .map_err(|e| anyhow::anyhow!("Invalid image ID hex '{}': {}", s, e))?;
-                Ok::<B256, anyhow::Error>(B256::from_slice(&bytes))
-            })
-            .collect::<Result<Vec<_>, _>>()?
-    };
+    let allowed_images = parse_image_ids(&image_ids)?;
 
     if allowed_images.is_empty() {
         info!("Accepting all program image IDs");
@@ -485,17 +484,12 @@ async fn run_prover(
     let wallet_address = signer.address();
     info!("Prover wallet: {}", wallet_address);
 
-    let wallet = EthereumWallet::from(signer.clone());
-    // Note: We remove NonceFiller and manage nonces ourselves for parallel safety
-    let provider = ProviderBuilder::new()
-        .disable_recommended_fillers()
-        .filler(alloy::providers::fillers::GasFiller)
-        .filler(alloy::providers::fillers::BlobGasFiller::default())
-        .filler(alloy::providers::fillers::ChainIdFiller::default())
-        .wallet(wallet)
-        .connect_http(rpc_url.parse()?);
-
-    let provider = Arc::new(provider);
+    let provider = Arc::new(monitor::signing_provider(
+        rpc_url.parse()?,
+        signer.clone(),
+        monitor::RPC_CONNECT_TIMEOUT,
+        monitor::RPC_REQUEST_TIMEOUT,
+    )?);
 
     // Parse engine address
     let engine: Address = engine_address.parse()?;
@@ -505,7 +499,7 @@ async fn run_prover(
         Arc::new(nonce::NonceManager::new(provider.clone(), signer.address()).await?);
     info!(
         "✓ Nonce manager initialized (current nonce: {})",
-        nonce_manager.current()
+        nonce_manager.current().await
     );
 
     // Parse registry address if provided
@@ -541,6 +535,7 @@ async fn run_prover(
         use_snark,
         max_gpu_concurrent,
         max_cpu_concurrent,
+        queue_size,
     )?;
     // Set signer for private input authentication
     processor.set_signer(Arc::new(signer.clone()));
@@ -628,12 +623,22 @@ async fn run_prover(
         state.update_gpu_health(gpu_health).await;
 
         let health_server = health::HealthServer::new(health_port, state.clone());
-        let _health_handle = health_server.start().await;
-        info!("✓ Health server: http://0.0.0.0:{}", health_port);
-        info!("  - GET /health  - liveness check");
-        info!("  - GET /metrics - Prometheus metrics");
-        info!("  - GET /status  - detailed status");
-        Some(state)
+        match health_server.start().await {
+            Ok(_health_handle) => {
+                info!("✓ Health server: http://0.0.0.0:{}", health_port);
+                info!("  - GET /health  - liveness check");
+                info!("  - GET /metrics - Prometheus metrics");
+                info!("  - GET /status  - detailed status");
+                Some(state)
+            }
+            Err(e) => {
+                error!(
+                    "✗ Health server not started: cannot listen on port {}: {}",
+                    health_port, e
+                );
+                None
+            }
+        }
     } else {
         None
     };
@@ -645,9 +650,8 @@ async fn run_prover(
     info!("");
 
     // Start background cache cleanup (every 5 minutes)
-    let proof_cache_for_cleanup = Arc::new(proof_cache::ProofCache::with_defaults());
     let _cache_cleanup_handle =
-        proof_cache_for_cleanup.start_cleanup_task(std::time::Duration::from_secs(300));
+        processor.start_proof_cache_cleanup(std::time::Duration::from_secs(300));
     info!("✓ Proof cache cleanup: every 5 minutes");
 
     // ════════════════════════════════════════════════════════════════════
@@ -669,30 +673,26 @@ async fn run_prover(
             break;
         }
 
-        match processor
+        let cycle_result = processor
             .check_and_process(&provider, &config, &nonce_manager)
-            .await
-        {
+            .await;
+        match &cycle_result {
             Ok(processed) => {
-                if processed > 0 {
+                if *processed > 0 {
                     info!("✓ Processed {} requests", processed);
-
-                    // Update health state
-                    if let Some(ref state) = health_state {
-                        state
-                            .update_active_proofs(metrics::metrics().snapshot().active_proofs)
-                            .await;
-                    }
                 }
             }
             Err(e) => {
-                error!("✗ Error processing requests: {:?}", e);
-
-                // Update health state with error
-                if let Some(ref state) = health_state {
-                    state.set_error(format!("{:?}", e)).await;
-                }
+                error!(
+                    "✗ Error processing requests: {}",
+                    redact::redact_urls(&format!("{:?}", e))
+                );
             }
+        }
+
+        // Update health state
+        if let Some(ref state) = health_state {
+            update_health_after_cycle(state, &cycle_result).await;
         }
 
         // Periodic metrics logging
@@ -731,16 +731,47 @@ async fn run_prover(
         }
     }
 
-    // Graceful shutdown: wait for in-flight work to complete
-    info!("Waiting for in-flight tasks to complete (30s grace period)...");
-    let shutdown_config = shutdown::ShutdownConfig::default();
-    shutdown::graceful_shutdown(&shutdown_controller, &shutdown_config, || {
-        Box::pin(async { Ok(()) })
-    })
-    .await?;
-
+    // A cycle waits for all of its jobs, so nothing is in flight here
     info!("Prover node shut down cleanly.");
     Ok(())
+}
+
+/// Parse a comma-separated list of 32-byte hex image IDs (empty = accept all)
+fn parse_image_ids(image_ids: &str) -> anyhow::Result<Vec<B256>> {
+    image_ids
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            let bytes = hex::decode(s.trim_start_matches("0x"))
+                .map_err(|e| anyhow::anyhow!("Invalid image ID hex '{}': {}", s, e))?;
+            B256::try_from(bytes.as_slice()).map_err(|_| {
+                anyhow::anyhow!("Image ID '{}' must be 32 bytes, got {}", s, bytes.len())
+            })
+        })
+        .collect()
+}
+
+/// Record the outcome of a poll cycle in the health state: a successful
+/// cycle puts the state back to running, a failed one stores the error. The
+/// state is served to anyone on `/status`, and the error names the RPC URL,
+/// whose path often holds an API key: URLs are cut to their origin.
+async fn update_health_after_cycle(state: &health::SharedState, result: &anyhow::Result<u64>) {
+    match result {
+        Ok(processed) => {
+            state.set_running(true).await;
+            if *processed > 0 {
+                state
+                    .update_active_proofs(metrics::metrics().snapshot().active_proofs)
+                    .await;
+            }
+        }
+        Err(e) => {
+            state
+                .set_error(redact::redact_urls(&format!("{:?}", e)))
+                .await
+        }
+    }
 }
 
 async fn check_status(
@@ -884,7 +915,11 @@ async fn list_pending(rpc_url: String, engine_address: String, limit: u64) -> an
             }
             Err(e) => {
                 let rid_u64: u64 = rid.try_into().unwrap_or(0);
-                println!("{:<6} (error: {})", rid_u64, e);
+                println!(
+                    "{:<6} (error: {})",
+                    rid_u64,
+                    redact::redact_urls(&e.to_string())
+                );
             }
         }
     }
@@ -929,14 +964,20 @@ fn handle_config(generate: bool, output: String, validate: Option<String>) -> an
                 Ok(()) => {
                     println!("✓ Configuration is valid: {}", path);
                     println!("\nSettings:");
-                    println!("  RPC URL:     {}", config.prover.rpc_url);
+                    println!(
+                        "  RPC URL:     {}",
+                        redact::url_origin(&config.prover.rpc_url)
+                    );
                     println!("  Chain ID:    {}", config.prover.chain_id);
                     println!("  Proving:     {}", config.proving.mode);
                     println!("  Concurrent:  {}", config.proving.max_concurrent);
                     println!("  API enabled: {}", config.api.enabled);
                 }
                 Err(e) => {
-                    println!("✗ Configuration validation failed: {}", e);
+                    println!(
+                        "✗ Configuration validation failed: {}",
+                        redact::redact_urls(&e.to_string())
+                    );
                     std::process::exit(1);
                 }
             },
@@ -1026,7 +1067,7 @@ fn show_info() {
         println!("  PRIVATE_KEY:    not set");
     }
     if let Ok(url) = std::env::var("RPC_URL") {
-        println!("  RPC_URL:        {}", mask_url(&url));
+        println!("  RPC_URL:        {}", redact::url_origin(&url));
     } else {
         println!("  RPC_URL:        not set");
     }
@@ -1037,43 +1078,60 @@ fn show_info() {
     }
 }
 
+/// Check each input given and print the result. An error (a non-zero exit)
+/// when an input is invalid, or when none is given, so that scripts can rely
+/// on the exit status.
 fn validate_inputs(
     address: Option<String>,
     image_id: Option<String>,
     url: Option<String>,
 ) -> anyhow::Result<()> {
     let validator = validation::Validator::new();
-    let mut any_validated = false;
+    let mut checked = 0;
+    let mut invalid = 0;
 
     if let Some(addr) = address {
-        any_validated = true;
+        checked += 1;
         match validator.validate_address(&addr) {
             Ok(normalized) => println!("✓ Address valid: {}", normalized),
-            Err(e) => println!("✗ Address invalid: {}", e),
+            Err(e) => {
+                invalid += 1;
+                println!("✗ Address invalid: {}", e);
+            }
         }
     }
 
     if let Some(id) = image_id {
-        any_validated = true;
+        checked += 1;
         match validator.validate_image_id(&id) {
             Ok(normalized) => println!("✓ Image ID valid: {}", normalized),
-            Err(e) => println!("✗ Image ID invalid: {}", e),
+            Err(e) => {
+                invalid += 1;
+                println!("✗ Image ID invalid: {}", e);
+            }
         }
     }
 
     if let Some(u) = url {
-        any_validated = true;
+        checked += 1;
         match validator.validate_url(&u) {
             Ok(validated) => println!("✓ URL valid: {}", validated),
-            Err(e) => println!("✗ URL invalid: {}", e),
+            Err(e) => {
+                invalid += 1;
+                println!("✗ URL invalid: {}", e);
+            }
         }
     }
 
-    if !any_validated {
+    if checked == 0 {
         println!("Usage:");
         println!("  world-zk-prover validate --address 0x...");
         println!("  world-zk-prover validate --image-id 0x...");
         println!("  world-zk-prover validate --url https://...");
+        anyhow::bail!("nothing to validate: give --address, --image-id or --url");
+    }
+    if invalid > 0 {
+        anyhow::bail!("{} of {} inputs are invalid", invalid, checked);
     }
 
     Ok(())
@@ -1083,16 +1141,6 @@ fn num_cpus() -> usize {
     std::thread::available_parallelism()
         .map(|p| p.get())
         .unwrap_or(1)
-}
-
-fn mask_url(url: &str) -> String {
-    // Mask API keys in URLs
-    if let Some(pos) = url.find("/v2/") {
-        let prefix = &url[..pos + 4];
-        format!("{}[MASKED]", prefix)
-    } else {
-        url.to_string()
-    }
 }
 
 #[cfg(test)]
@@ -1173,44 +1221,81 @@ mod tests {
         assert!(result.contains("UTC"));
     }
 
-    // ========== mask_url ==========
+    // ========== parse_image_ids ==========
 
     #[test]
-    fn test_mask_url_with_api_key() {
-        let url = "https://worldchain-mainnet.g.alchemy.com/v2/abc123secret";
-        let masked = mask_url(url);
-        assert_eq!(
-            masked,
-            "https://worldchain-mainnet.g.alchemy.com/v2/[MASKED]"
-        );
-        assert!(!masked.contains("abc123secret"));
+    fn test_parse_image_ids_empty_accepts_all() {
+        assert!(parse_image_ids("").unwrap().is_empty());
+        assert!(parse_image_ids(" , ").unwrap().is_empty());
     }
 
     #[test]
-    fn test_mask_url_without_v2() {
-        let url = "https://rpc.example.com/rpc";
-        let masked = mask_url(url);
-        assert_eq!(masked, url);
+    fn test_parse_image_ids_valid() {
+        let id = "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
+        let parsed = parse_image_ids(&format!("0x{id}, {id}")).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(hex::encode(parsed[0]), id);
+        assert_eq!(parsed[0], parsed[1]);
     }
 
     #[test]
-    fn test_mask_url_empty() {
-        assert_eq!(mask_url(""), "");
+    fn test_parse_image_ids_wrong_length_is_an_error() {
+        let err = parse_image_ids("0x1234").unwrap_err().to_string();
+        assert!(err.contains("must be 32 bytes, got 2"), "{err}");
+
+        // 33 bytes
+        let too_long = "00".repeat(33);
+        assert!(parse_image_ids(&too_long).is_err());
     }
 
     #[test]
-    fn test_mask_url_v2_at_end() {
-        let url = "https://example.com/v2/";
-        let masked = mask_url(url);
-        assert_eq!(masked, "https://example.com/v2/[MASKED]");
+    fn test_parse_image_ids_invalid_hex_is_an_error() {
+        assert!(parse_image_ids("0xzz").is_err());
     }
 
+    // ========== update_health_after_cycle ==========
+
     #[test]
-    fn test_mask_url_multiple_v2_masks_first() {
-        let url = "https://example.com/v2/key/v2/extra";
-        let masked = mask_url(url);
-        // Should mask from the first /v2/ onward
-        assert_eq!(masked, "https://example.com/v2/[MASKED]");
+    fn test_command_error_omits_url_paths() {
+        let cause =
+            anyhow::anyhow!("error sending request for url (http://127.0.0.1:1/v2/SECRETKEY)");
+        let printed = format!("{:?}", without_url_paths(cause.context("status failed")));
+        assert!(printed.starts_with("status failed"), "{printed}");
+        assert!(printed.contains("url (http://127.0.0.1:1)"), "{printed}");
+        assert!(!printed.contains("SECRETKEY"), "{printed}");
+    }
+
+    /// The stored error is served on `/status` without authentication.
+    #[tokio::test]
+    async fn test_health_error_omits_rpc_url_path() {
+        let state = health::SharedState::new("0x123".to_string(), "0x456".to_string());
+        let cause =
+            anyhow::anyhow!("error sending request for url (http://127.0.0.1:1/?apikey=SECRETKEY)");
+        update_health_after_cycle(&state, &Err(cause.context("poll failed"))).await;
+
+        let health::ProverState::Error(error) = state.get_status().await.state else {
+            panic!("no error stored");
+        };
+        assert!(error.contains("poll failed"), "{error}");
+        assert!(error.contains("url (http://127.0.0.1:1)"), "{error}");
+        assert!(!error.contains("SECRETKEY"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn test_successful_cycle_clears_health_error() {
+        let state = health::SharedState::new("0x123".to_string(), "0x456".to_string());
+        state.set_running(true).await;
+
+        update_health_after_cycle(&state, &Err(anyhow::anyhow!("rpc down"))).await;
+        assert!(matches!(
+            state.get_status().await.state,
+            health::ProverState::Error(_)
+        ));
+
+        update_health_after_cycle(&state, &Ok(0)).await;
+        let status = state.get_status().await;
+        assert!(status.running);
+        assert_eq!(status.state, health::ProverState::Running);
     }
 
     // ========== num_cpus ==========
@@ -1233,9 +1318,37 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_inputs_invalid_address() {
-        // Should not error (prints error message but returns Ok)
+    fn test_validate_inputs_invalid_address_is_an_error() {
         let result = validate_inputs(Some("not-an-address".to_string()), None, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_inputs_invalid_image_id_is_an_error() {
+        let result = validate_inputs(None, Some("zz".to_string()), None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_inputs_internal_url_is_an_error() {
+        let result = validate_inputs(None, None, Some("https://127.1/".to_string()));
+        assert!(result.is_err());
+    }
+
+    /// One invalid input among valid ones is enough for an error
+    #[test]
+    fn test_validate_inputs_one_invalid_among_valid_is_an_error() {
+        let result = validate_inputs(
+            Some("0x1234567890abcdef1234567890abcdef12345678".to_string()),
+            None,
+            Some("https://0x7f.0.0.1/".to_string()),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_inputs_valid_url() {
+        let result = validate_inputs(None, None, Some("https://example.com/input".to_string()));
         assert!(result.is_ok());
     }
 
@@ -1248,9 +1361,9 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_inputs_none_all() {
-        // No inputs provided -- just prints usage
+    fn test_validate_inputs_none_given_is_an_error() {
+        // Prints usage; nothing was checked, so there is no success to report
         let result = validate_inputs(None, None, None);
-        assert!(result.is_ok());
+        assert!(result.is_err());
     }
 }

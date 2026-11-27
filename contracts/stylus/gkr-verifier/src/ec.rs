@@ -21,27 +21,6 @@ impl G1Point {
     pub fn is_infinity(&self) -> bool {
         self.x.is_zero() && self.y.is_zero()
     }
-
-    /// Decode from 64 bytes (x: 32 BE bytes, y: 32 BE bytes)
-    pub fn from_be_bytes(data: &[u8]) -> Self {
-        verify!(data.len() >= 64);
-        let mut x_bytes = [0u8; 32];
-        let mut y_bytes = [0u8; 32];
-        x_bytes.copy_from_slice(&data[0..32]);
-        y_bytes.copy_from_slice(&data[32..64]);
-        G1Point {
-            x: U256::from_be_bytes(&x_bytes),
-            y: U256::from_be_bytes(&y_bytes),
-        }
-    }
-
-    /// Encode to 64 bytes (x: 32 BE bytes, y: 32 BE bytes)
-    pub fn to_be_bytes(&self) -> [u8; 64] {
-        let mut out = [0u8; 64];
-        out[0..32].copy_from_slice(&self.x.to_be_bytes());
-        out[32..64].copy_from_slice(&self.y.to_be_bytes());
-        out
-    }
 }
 
 /// Pedersen generator set
@@ -142,18 +121,6 @@ pub fn msm_with_truncated_gens(all_gens: &[G1Point], scalars: &[U256]) -> G1Poin
     multi_scalar_mul(&all_gens[..n], scalars)
 }
 
-/// Negate a G1 point (reflect over x-axis)
-pub fn negate(p: &G1Point) -> G1Point {
-    if p.is_infinity() {
-        return *p;
-    }
-    let fq_mod = U256(crate::field::FQ_MOD);
-    G1Point {
-        x: p.x,
-        y: fq_mod.sub_no_mod(&p.y),
-    }
-}
-
 /// Inner product <a, b> mod Fr
 pub fn inner_product(a: &[U256], b: &[U256]) -> Fr {
     verify!(a.len() == b.len());
@@ -197,10 +164,11 @@ fn call_precompile(addr: u64, input: &[u8], output_len: usize) -> Vec<u8> {
     //   1. The `address` is one of the three BN254/SHA-256 precompiles hard-coded
     //      into the EVM specification. These always exist and have deterministic
     //      behavior.
-    //   2. The `input` buffer is a properly-sized, correctly-encoded byte array
-    //      assembled by the calling function (ec_add, ec_mul, or sha256) from
-    //      validated G1 affine coordinates and/or scalars. The precompile will
-    //      return an error (caught below) if the encoding is malformed.
+    //   2. The `input` buffer is a properly-sized byte array assembled by the
+    //      calling function (ec_add, ec_mul, or sha256). The coordinates and
+    //      scalars in it are raw proof values that nothing before this call
+    //      checks; the precompile itself rejects a coordinate >= q or a point
+    //      off the curve, and that error is caught below.
     //   3. `RawCall::new_static()` ensures no state mutation, so calling this
     //      cannot corrupt contract storage or send value.
     //   4. `limit_return_data(0, output_len)` bounds the output read to the
@@ -437,15 +405,34 @@ impl JacPoint {
     }
 }
 
+/// Read one affine point the way precompiles 0x06 and 0x07 do (EIP-196):
+/// both coordinates must be below q, and the point must be (0, 0) or lie on
+/// y^2 = x^3 + 3. Without this the host build accepted points that the chain
+/// rejects, and the formulas below (written for this curve) gave results for
+/// points of other curves. BN254 G1 has cofactor 1, so no subgroup check.
+#[cfg(not(all(target_arch = "wasm32", feature = "stylus")))]
+fn read_point_native(bytes: &[u8]) -> (Fq, Fq) {
+    let x = U256::from_be_slice(&bytes[0..32]);
+    let y = U256::from_be_slice(&bytes[32..64]);
+    verify!(
+        !x.gte(&Fq::MODULUS) && !y.gte(&Fq::MODULUS),
+        "ec point: coordinate not below q"
+    );
+    let (x, y) = (Fq(x), Fq(y));
+    if !(x.0.is_zero() && y.0.is_zero()) {
+        let rhs = x.square().mul(&x).add(&Fq::from_u64(3));
+        verify!(y.square() == rhs, "ec point: not on curve");
+    }
+    (x, y)
+}
+
 #[cfg(not(all(target_arch = "wasm32", feature = "stylus")))]
 fn ec_add_native(input: &[u8]) -> Vec<u8> {
     use alloc::vec;
     verify!(input.len() >= 128, "ecadd: need 128 bytes");
 
-    let x1 = Fq::from_be_bytes(input[0..32].try_into().unwrap());
-    let y1 = Fq::from_be_bytes(input[32..64].try_into().unwrap());
-    let x2 = Fq::from_be_bytes(input[64..96].try_into().unwrap());
-    let y2 = Fq::from_be_bytes(input[96..128].try_into().unwrap());
+    let (x1, y1) = read_point_native(&input[0..64]);
+    let (x2, y2) = read_point_native(&input[64..128]);
 
     let p1 = JacPoint::from_affine(x1, y1);
     let result = p1.add_affine(x2, y2);
@@ -462,9 +449,8 @@ fn ec_mul_native(input: &[u8]) -> Vec<u8> {
     use alloc::vec;
     verify!(input.len() >= 96, "ecmul: need 96 bytes");
 
-    let px = Fq::from_be_bytes(input[0..32].try_into().unwrap());
-    let py = Fq::from_be_bytes(input[32..64].try_into().unwrap());
-    let scalar = U256::from_be_bytes(input[64..96].try_into().unwrap());
+    let (px, py) = read_point_native(&input[0..64]);
+    let scalar = U256::from_be_slice(&input[64..96]);
 
     if (px.0.is_zero() && py.0.is_zero()) || scalar.is_zero() {
         return vec![0u8; 64];
@@ -509,6 +495,74 @@ mod tests {
             x: U256::from_u64(1),
             y: U256::from_u64(2),
         }
+    }
+
+    /// -P for a point with reduced coordinates (test helper only).
+    fn negate(p: &G1Point) -> G1Point {
+        if p.is_infinity() {
+            return *p;
+        }
+        G1Point {
+            x: p.x,
+            y: Fq::new(p.y).neg().0,
+        }
+    }
+
+    /// q + k, a coordinate the precompiles refuse.
+    fn q_plus(k: u64) -> U256 {
+        let (v, _) = Fq::MODULUS.0[0].overflowing_add(k);
+        U256([v, Fq::MODULUS.0[1], Fq::MODULUS.0[2], Fq::MODULUS.0[3]])
+    }
+
+    #[test]
+    #[should_panic(expected = "ec point: not on curve")]
+    fn test_ec_add_rejects_point_off_curve() {
+        let off = G1Point {
+            x: U256::from_u64(5),
+            y: U256::from_u64(5),
+        };
+        let _ = ec_add(&off, &g1());
+    }
+
+    #[test]
+    #[should_panic(expected = "ec point: not on curve")]
+    fn test_ec_add_rejects_second_point_off_curve() {
+        let off = G1Point {
+            x: U256::from_u64(5),
+            y: U256::from_u64(5),
+        };
+        let _ = ec_add(&g1(), &off);
+    }
+
+    #[test]
+    #[should_panic(expected = "ec point: not on curve")]
+    fn test_ec_mul_rejects_point_off_curve() {
+        let off = G1Point {
+            x: U256::from_u64(5),
+            y: U256::from_u64(5),
+        };
+        let _ = ec_mul(&off, &U256::from_u64(3));
+    }
+
+    #[test]
+    #[should_panic(expected = "ec point: coordinate not below q")]
+    fn test_ec_mul_rejects_x_not_below_q() {
+        // q + 1 reduces to 1, so (q + 1, 2) is the generator once reduced.
+        let p = G1Point {
+            x: q_plus(1),
+            y: U256::from_u64(2),
+        };
+        let _ = ec_mul(&p, &U256::ONE);
+    }
+
+    #[test]
+    #[should_panic(expected = "ec point: coordinate not below q")]
+    fn test_ec_add_rejects_y_not_below_q() {
+        let p = G1Point {
+            x: U256::from_u64(1),
+            y: q_plus(2),
+        };
+        let _ = ec_add(&g1(), &p);
     }
 
     #[test]
@@ -613,14 +667,6 @@ mod tests {
         let r = multi_scalar_mul(&[g, g2], &[U256::from_u64(3), U256::from_u64(5)]);
         let expected = ec_mul(&g, &U256::from_u64(13));
         assert_eq!(r, expected);
-    }
-
-    #[test]
-    fn test_negate_double_negate() {
-        let g = g1();
-        let neg_g = negate(&g);
-        let neg_neg_g = negate(&neg_g);
-        assert_eq!(neg_neg_g, g);
     }
 
     #[test]

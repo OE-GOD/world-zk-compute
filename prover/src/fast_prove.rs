@@ -1,13 +1,7 @@
-//! Fast Proof Generation Optimizations
+//! Fast Proof Generation
 //!
-//! Techniques to minimize proof generation time:
-//!
-//! 1. **Preflight Execution** - Estimate cycles before proving
-//! 2. **Session Caching** - Reuse proving sessions
-//! 3. **Deferred Proving** - Execute first, prove later
-//! 4. **Segment Streaming** - Prove segments as they complete
-//! 5. **GPU Memory Pools** - Pre-allocate GPU memory
-//! 6. **Witness Precomputation** - Compute witnesses in parallel
+//! Runs a preflight execution to count cycles, picks a proving strategy
+//! (direct, segmented or continuation) from the result and proves with it.
 
 use alloy::primitives::B256;
 use anyhow::{anyhow, Result};
@@ -18,7 +12,6 @@ use tokio::sync::{RwLock, Semaphore};
 use tracing::{debug, info, warn};
 
 use crate::bonsai::ProvingMode;
-use crate::gpu_manager::GpuDeviceManager;
 use crate::multi_vm::MultiVmProver;
 use crate::prover::UnifiedProver;
 use crate::segment_prover::{
@@ -103,10 +96,8 @@ pub struct FastProver {
     session_pool: Arc<RwLock<SessionPool>>,
     /// Execution trace cache
     trace_cache: Arc<RwLock<HashMap<B256, ExecutionTrace>>>,
-    /// GPU memory semaphore (legacy, used when no GpuDeviceManager)
+    /// Limits the number of proofs running at once
     gpu_semaphore: Arc<Semaphore>,
-    /// Multi-GPU device manager for per-device job assignment
-    gpu_manager: Option<Arc<GpuDeviceManager>>,
     /// Proving mode (Local, Bonsai, or BonsaiWithFallback)
     proving_mode: ProvingMode,
     /// Enable SNARK (Groth16) proof generation
@@ -141,7 +132,6 @@ impl FastProver {
             session_pool: Arc::new(RwLock::new(SessionPool::new(4))),
             trace_cache: Arc::new(RwLock::new(HashMap::new())),
             gpu_semaphore: Arc::new(Semaphore::new(gpu_slots)),
-            gpu_manager: None,
             proving_mode,
             use_snark,
             multi_vm,
@@ -162,29 +152,6 @@ impl FastProver {
             session_pool: Arc::new(RwLock::new(SessionPool::new(4))),
             trace_cache: Arc::new(RwLock::new(HashMap::new())),
             gpu_semaphore: Arc::new(Semaphore::new(gpu_slots)),
-            gpu_manager: None,
-            proving_mode,
-            use_snark,
-            multi_vm,
-        }
-    }
-
-    /// Create a new fast prover with a multi-GPU device manager.
-    pub fn with_gpu_manager(
-        config: FastProveConfig,
-        proving_mode: ProvingMode,
-        use_snark: bool,
-        multi_vm: Arc<MultiVmProver>,
-        gpu_manager: Arc<GpuDeviceManager>,
-    ) -> Self {
-        let gpu_slots = if config.gpu_memory_pool { 4 } else { 1 };
-
-        Self {
-            config: config.clone(),
-            session_pool: Arc::new(RwLock::new(SessionPool::new(4))),
-            trace_cache: Arc::new(RwLock::new(HashMap::new())),
-            gpu_semaphore: Arc::new(Semaphore::new(gpu_slots)),
-            gpu_manager: Some(gpu_manager),
             proving_mode,
             use_snark,
             multi_vm,
@@ -335,13 +302,9 @@ impl FastProver {
             }
         }
 
-        // Step 3: Acquire GPU device (multi-GPU aware) or fall back to semaphore
-        let gpu_guard = if let Some(ref manager) = self.gpu_manager {
-            manager.acquire_device().await
-        } else {
-            None
-        };
-        let _gpu_permit = if gpu_guard.is_none() && self.config.gpu_memory_pool {
+        // Step 3: Limit concurrent proofs. A GPU device, if the job uses one,
+        // is already held by the caller.
+        let _gpu_permit = if self.config.gpu_memory_pool {
             Some(self.gpu_semaphore.acquire().await?)
         } else {
             None

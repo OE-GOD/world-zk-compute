@@ -7,6 +7,11 @@ import "../src/TimelockController.sol";
 import {UUPSUpgradeable} from "../src/Upgradeable.sol";
 import {DeployRemainderVerifierHelper} from "./helpers/DeployRemainderVerifier.sol";
 
+/// @dev Stands in for a deployed Groth16 verifier (the setters reject an address without code)
+contract MockGroth16Verifier {
+    fallback() external {}
+}
+
 contract RemainderVerifierTimelockTest is Test, DeployRemainderVerifierHelper {
     RemainderVerifier public verifier;
     TimelockController public timelockController;
@@ -57,9 +62,10 @@ contract RemainderVerifierTimelockTest is Test, DeployRemainderVerifierHelper {
     }
 
     function test_withoutTimelock_adminCanSetGroth16Verifier() public {
+        address groth16 = address(new MockGroth16Verifier());
         vm.prank(admin);
-        verifier.setGroth16Verifier(address(0x1234));
-        assertEq(verifier.groth16Verifier(), address(0x1234));
+        verifier.setGroth16Verifier(groth16);
+        assertEq(verifier.groth16Verifier(), groth16);
     }
 
     function test_withoutTimelock_nonAdminCannotRegisterCircuit() public {

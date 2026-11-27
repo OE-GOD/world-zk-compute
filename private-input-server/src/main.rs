@@ -12,7 +12,7 @@
 
 use alloy::primitives::Address;
 use clap::Parser;
-use private_input_server::{build_app, store, AppState};
+use private_input_server::{auth::url_origin, build_app, store, AppState};
 use std::sync::Arc;
 use tower_http::trace::TraceLayer;
 use tracing::{info, warn};
@@ -84,7 +84,7 @@ async fn main() -> anyhow::Result<()> {
     let addr = format!("{}:{}", args.host, args.port);
     info!("Starting Private Input Server on {}", addr);
     info!("Engine address: {}", engine_address);
-    info!("RPC URL: {}", args.rpc_url);
+    info!("RPC URL: {}", url_origin(&args.rpc_url));
     if args.skip_chain_verification {
         warn!("On-chain verification is DISABLED (testing mode)");
     }

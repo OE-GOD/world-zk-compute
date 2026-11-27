@@ -16,7 +16,9 @@ use crate::poseidon::PoseidonSponge;
 /// Set up the initial Fiat-Shamir transcript matching Remainder's ECTranscript protocol.
 ///
 /// # Arguments
-/// * `circuit_hash` - 32-byte SHA3-256 hash of the circuit description
+/// * `circuit_hash` - the 32-byte circuit hash from the proof header. It is
+///   absorbed as given; nothing here recomputes it or compares it with a
+///   registered circuit.
 /// * `pub_inputs` - Public input Fq values
 /// * `input_commit_coords` - Flattened EC commitment coordinates [x0, y0, x1, y1, ...]
 ///
@@ -47,7 +49,7 @@ pub fn setup_transcript(
 
     // 4. Absorb EC commitment points (pairs of coordinates)
     verify!(
-        input_commit_coords.len() % 2 == 0,
+        input_commit_coords.len().is_multiple_of(2),
         "input_commit_coords must have even length (x,y pairs)"
     );
     for pair in input_commit_coords.chunks(2) {

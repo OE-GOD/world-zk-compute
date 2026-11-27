@@ -235,7 +235,7 @@ impl PoseidonSponge {
             self.state[2] = self.state[2].add(&rc(&ROUND_CONSTANTS[round][2]));
 
             // --- S-box (x^5) ---
-            if round < FULL_FIRST || round >= FULL_LAST_START {
+            if !(FULL_FIRST..FULL_LAST_START).contains(&round) {
                 // Full round: apply S-box to all state elements.
                 self.state[0] = self.state[0].pow5();
                 self.state[1] = self.state[1].pow5();

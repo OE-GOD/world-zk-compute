@@ -76,7 +76,8 @@ operator:
     timeoutSeconds: 3
     failureThreshold: 3
   proofStorageSizeLimit: 2Gi
-  terminationGracePeriodSeconds: 60
+  # Longer than the operator's 60 s wait for running disputes at shutdown
+  terminationGracePeriodSeconds: 75
 
 # =============================================================================
 # Indexer
@@ -187,7 +188,7 @@ enclave:
     repository: world-zk-compute/enclave
     tag: "v1.0.0"
     pullPolicy: IfNotPresent
-  port: 8090
+  port: 8080
   env:
     MODEL_FORMAT: "xgboost"
     # -- Enable AWS Nitro attestation in production

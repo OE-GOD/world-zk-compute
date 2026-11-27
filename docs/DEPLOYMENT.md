@@ -51,20 +51,25 @@ cd contracts
 forge install
 
 # Deploy MockVerifier (for testing)
-forge create src/MockRiscZeroVerifier.sol:MockRiscZeroVerifier \
+forge create src/mocks/MockRiscZeroVerifier.sol:MockRiscZeroVerifier \
   --rpc-url $RPC_URL \
-  --private-key $PRIVATE_KEY
+  --private-key $PRIVATE_KEY \
+  --broadcast
 
-# Note the verifier address, then deploy ProgramRegistry
+# Note the verifier address, then deploy ProgramRegistry (constructor: admin)
 forge create src/ProgramRegistry.sol:ProgramRegistry \
   --rpc-url $RPC_URL \
-  --private-key $PRIVATE_KEY
+  --private-key $PRIVATE_KEY \
+  --broadcast \
+  --constructor-args $ADMIN_ADDRESS
 
 # Note the registry address, then deploy ExecutionEngine
+# (constructor: admin, registry, verifier, feeRecipient)
 forge create src/ExecutionEngine.sol:ExecutionEngine \
   --rpc-url $RPC_URL \
   --private-key $PRIVATE_KEY \
-  --constructor-args $REGISTRY_ADDRESS $VERIFIER_ADDRESS $FEE_RECIPIENT
+  --broadcast \
+  --constructor-args $ADMIN_ADDRESS $REGISTRY_ADDRESS $VERIFIER_ADDRESS $FEE_RECIPIENT
 ```
 
 ### 3. Verify Contracts (Optional)
@@ -123,7 +128,8 @@ cargo risczero build
 ```bash
 cast send $REGISTRY_ADDRESS \
   "registerProgram(bytes32,string,string,bytes32)" \
-  $IMAGE_ID "My Program" "https://example.com/my-program.elf" 0x0 \
+  $IMAGE_ID "My Program" "https://example.com/my-program.elf" \
+  0x0000000000000000000000000000000000000000000000000000000000000000 \
   --rpc-url $RPC_URL \
   --private-key $PRIVATE_KEY
 ```
@@ -171,15 +177,25 @@ cast send $ENGINE_ADDRESS \
 
 ## Sepolia Testnet (TEE Path)
 
-The TEE path deploys `TEEMLVerifier` and `ExecutionEngine` to Ethereum Sepolia.
+The TEE path deploys `ProgramRegistry`, `TEEMLVerifier` (implementation + `UUPSProxy`) and
+`ExecutionEngine` to Ethereum Sepolia.
 
-> **Note:** The `RemainderVerifier` contract exceeds the EIP-170 24KB code size limit
-> on Sepolia. Use Arbitrum Sepolia for full ZK verification deployment.
+> **Note:** The `RemainderVerifier` contract (136,142 bytes) exceeds the 24,576-byte contract
+> size limit on Sepolia. Arbitrum Sepolia, Arbitrum One, World Chain, World Chain Sepolia and
+> Ethereum mainnet enforce the same limit, so full ZK verification cannot be deployed on any of
+> them; only the TEE path (`TEEMLVerifier`) can (see `docs/CROSS_CHAIN.md` and
+> `deployments/chains.json`).
+>
+> `TEEMLVerifier` still needs a non-zero `REMAINDER_VERIFIER` address when it is initialized.
+> No RemainderVerifier can be deployed on Sepolia, so there is no working address to give it:
+> with an address that has no verifier code, `resolveDispute` settles every challenged result
+> for the challenger.
 
 ### Prerequisites
 
 - Alchemy or Infura API key for Sepolia RPC
-- Funded deployer wallet (~0.06 ETH on Sepolia)
+- Funded deployer wallet (~0.06 ETH on Sepolia for the deployment; the E2E run in step 3 also
+  sends the 0.1 ETH prover stake from this wallet, which `finalize` returns)
 - Etherscan API key (optional, for contract verification)
 - Foundry installed
 
@@ -191,13 +207,17 @@ cp .env.sepolia.example .env.sepolia
 #   ALCHEMY_SEPOLIA_RPC_URL=https://eth-sepolia.g.alchemy.com/v2/YOUR_KEY
 #   DEPLOYER_PRIVATE_KEY=0x...
 #   ENCLAVE_PRIVATE_KEY=0x...
-#   ETHERSCAN_API_KEY=...  (optional)
+#   REMAINDER_VERIFIER=0x...  (required by deploy-sepolia-tee.sh; TEEMLVerifier.initialize rejects address(0))
+#   REQUESTER_PRIVATE_KEY, OPERATOR_PRIVATE_KEY, PROVER_PRIVATE_KEY: set real keys or delete the placeholder lines
+#     (sepolia-e2e.sh uses REQUESTER_PRIVATE_KEY when it is set and stops with "Failed to decode private key" on the placeholder)
+#   ETHERSCAN_API_KEY=...  (optional; clear the placeholder if you have none, otherwise the script runs with --verify)
 ```
 
 ### 2. Deploy Contracts + Register Enclave
 
 ```bash
-source .env.sepolia
+# set -a exports the variables; a plain `source` leaves them invisible to the script
+set -a; source .env.sepolia; set +a
 ./scripts/deploy-sepolia-tee.sh
 ```
 
@@ -207,11 +227,15 @@ and optionally funds operator/requester wallets.
 ### 3. Run E2E Validation
 
 ```bash
-source .env.sepolia
+set -a; source .env.sepolia; set +a
 ./scripts/sepolia-e2e.sh
 ```
 
 ### 4. Run Services Against Sepolia
+
+`docker-compose.sepolia.yml` also needs `OPERATOR_PRIVATE_KEY`, `TEE_VERIFIER_ADDRESS`,
+`EXECUTION_ENGINE_ADDRESS` and `PROGRAM_REGISTRY_ADDRESS` in `.env.sepolia`; the three addresses
+are `.contracts.<Name>.address` in `deployments/11155111.json`.
 
 ```bash
 docker compose -f docker-compose.sepolia.yml --env-file .env.sepolia up -d
@@ -220,7 +244,7 @@ docker compose -f docker-compose.sepolia.yml --env-file .env.sepolia up -d
 ### 5. Check Wallet Balances
 
 ```bash
-source .env.sepolia
+set -a; source .env.sepolia; set +a
 ./scripts/check-sepolia-balances.sh
 ```
 

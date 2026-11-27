@@ -388,10 +388,13 @@ pub enum ProvingMode {
     BoundlessWithGpuFallback,
 }
 
-impl ProvingMode {
-    /// Parse from string
-    pub fn from_str(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
+impl std::str::FromStr for ProvingMode {
+    type Err = anyhow::Error;
+
+    /// Parse from string; an unknown mode is an error that lists the valid ones
+    fn from_str(s: &str) -> Result<Self> {
+        Ok(match s.to_lowercase().as_str() {
+            "local" => Self::Local,
             "gpu" | "local-gpu" | "local_gpu" => Self::LocalGpu,
             "gpu-fallback" | "gpu_fallback" => Self::GpuWithCpuFallback,
             "bonsai" => Self::Bonsai,
@@ -402,9 +405,28 @@ impl ProvingMode {
             "boundless-gpu" | "boundless_gpu" | "boundless-gpu-fallback" => {
                 Self::BoundlessWithGpuFallback
             }
-            _ => Self::Local,
-        }
+            _ => anyhow::bail!(
+                "Unknown proving mode '{}'. Valid modes: {}",
+                s,
+                Self::NAMES.join(", ")
+            ),
+        })
     }
+}
+
+impl ProvingMode {
+    /// Names of the modes, as given to `--proving-mode`
+    const NAMES: [&'static str; 9] = [
+        "local",
+        "gpu",
+        "gpu-fallback",
+        "bonsai",
+        "bonsai-fallback",
+        "bonsai-gpu",
+        "boundless",
+        "boundless-fallback",
+        "boundless-gpu",
+    ];
 
     /// Check if this mode uses GPU
     pub fn uses_gpu(&self) -> bool {
@@ -447,31 +469,41 @@ mod tests {
 
     #[test]
     fn test_proving_mode_parse() {
-        assert_eq!(ProvingMode::from_str("local"), ProvingMode::Local);
-        assert_eq!(ProvingMode::from_str("gpu"), ProvingMode::LocalGpu);
-        assert_eq!(ProvingMode::from_str("local-gpu"), ProvingMode::LocalGpu);
+        let parse = |s: &str| s.parse::<ProvingMode>().unwrap();
+
+        assert_eq!(parse("local"), ProvingMode::Local);
+        assert_eq!(parse("gpu"), ProvingMode::LocalGpu);
+        assert_eq!(parse("local-gpu"), ProvingMode::LocalGpu);
+        assert_eq!(parse("gpu-fallback"), ProvingMode::GpuWithCpuFallback);
+        assert_eq!(parse("bonsai"), ProvingMode::Bonsai);
+        assert_eq!(parse("bonsai-fallback"), ProvingMode::BonsaiWithFallback);
+        assert_eq!(parse("bonsai-gpu"), ProvingMode::BonsaiWithGpuFallback);
+        assert_eq!(parse("boundless"), ProvingMode::Boundless);
         assert_eq!(
-            ProvingMode::from_str("gpu-fallback"),
-            ProvingMode::GpuWithCpuFallback
-        );
-        assert_eq!(ProvingMode::from_str("bonsai"), ProvingMode::Bonsai);
-        assert_eq!(
-            ProvingMode::from_str("bonsai-fallback"),
-            ProvingMode::BonsaiWithFallback
-        );
-        assert_eq!(
-            ProvingMode::from_str("bonsai-gpu"),
-            ProvingMode::BonsaiWithGpuFallback
-        );
-        assert_eq!(ProvingMode::from_str("boundless"), ProvingMode::Boundless);
-        assert_eq!(
-            ProvingMode::from_str("boundless-fallback"),
+            parse("boundless-fallback"),
             ProvingMode::BoundlessWithFallback
         );
         assert_eq!(
-            ProvingMode::from_str("boundless-gpu"),
+            parse("boundless-gpu"),
             ProvingMode::BoundlessWithGpuFallback
         );
+    }
+
+    #[test]
+    fn test_unknown_proving_mode_is_an_error() {
+        for unknown in ["", "cpu", "gpu-falback", "hybrid"] {
+            let err = unknown
+                .parse::<ProvingMode>()
+                .expect_err("unknown proving mode accepted")
+                .to_string();
+            assert!(err.contains(&format!("'{unknown}'")), "{err}");
+            // Every mode that is listed is valid
+            let (_, listed) = err.split_once("Valid modes: ").unwrap();
+            assert_eq!(listed.split(", ").count(), 9, "{err}");
+            for name in listed.split(", ") {
+                assert!(name.parse::<ProvingMode>().is_ok(), "{name}");
+            }
+        }
     }
 
     #[test]

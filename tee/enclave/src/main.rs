@@ -4,6 +4,7 @@
 //! via HTTP, runs tree ensemble prediction (XGBoost or LightGBM), and returns an
 //! ECDSA-signed attestation compatible with TEEMLVerifier.sol.
 
+mod admin_auth;
 mod attestation;
 mod config;
 mod metrics;
@@ -25,6 +26,7 @@ use serde::{Deserialize, Serialize};
 
 use secrecy::ExposeSecret;
 
+use admin_auth::AdminKey;
 use attestation::Attestor;
 use config::Config;
 use metrics::{Metrics, MetricsSnapshot};
@@ -115,11 +117,13 @@ struct AppState {
     attestor: Attestor,
     nitro_attestor: std::sync::Mutex<NitroAttestor>,
     enclave_address: alloy_primitives::Address,
+    /// TEEMLVerifier contract this enclave signs for, if configured.
+    tee_verifier_address: Option<alloy_primitives::Address>,
     /// Metrics counters (lock-free atomics). Wrapped in `Arc` so the
     /// watchdog background task can hold a reference independently.
     metrics: Arc<Metrics>,
     /// Optional admin API key. If `None`, admin endpoints return 403.
-    admin_api_key: Option<String>,
+    admin_api_key: Option<AdminKey>,
     /// Rate limiter for POST /infer endpoint.
     rate_limiter: RateLimiter,
     /// Optional watchdog for background health monitoring.
@@ -144,6 +148,12 @@ struct InferRequest {
     /// enclave-wide CHAIN_ID env var (default: 1 for Ethereum mainnet).
     #[serde(default)]
     chain_id: Option<u64>,
+    /// Address of the TEEMLVerifier contract the result will be submitted to.
+    /// When given (or configured via TEE_VERIFIER_ADDRESS) the attestation is the
+    /// EIP-712 signature that `TEEMLVerifier.submitResult` recovers. If both are
+    /// set they must agree.
+    #[serde(default)]
+    verifier_address: Option<String>,
     /// Client-provided nonce for replay protection.
     /// When both nonce and timestamp are provided, the server validates
     /// uniqueness and freshness before processing.
@@ -479,15 +489,56 @@ async fn infer(
         }
     }
 
-    // Sign attestation (includes chain_id, nonce, and timestamp for replay protection)
-    let attestation = state
-        .attestor
-        .sign_attestation(model_hash, input_hash, &result_bytes)
-        .map_err(|e| {
-            let elapsed = start.elapsed();
-            state.metrics.record_error(elapsed);
-            (StatusCode::INTERNAL_SERVER_ERROR, e)
-        })?;
+    // Verifier contract the signature is bound to: configured (TEE_VERIFIER_ADDRESS)
+    // or supplied with the request. If both are present they must agree.
+    let verifier_address = match req.verifier_address.as_deref() {
+        None => state.tee_verifier_address,
+        Some(raw) => {
+            let requested: alloy_primitives::Address = raw.parse().map_err(|e| {
+                let elapsed = start.elapsed();
+                state.metrics.record_error(elapsed);
+                (
+                    StatusCode::BAD_REQUEST,
+                    format!("Invalid verifier_address '{}': {}", raw, e),
+                )
+            })?;
+            if let Some(configured) = state.tee_verifier_address {
+                if configured != requested {
+                    let elapsed = start.elapsed();
+                    state.metrics.record_error(elapsed);
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        format!(
+                            "Requested verifier_address {} does not match enclave's configured \
+                             TEE_VERIFIER_ADDRESS {}",
+                            requested, configured,
+                        ),
+                    ));
+                }
+            }
+            Some(requested)
+        }
+    };
+
+    // Sign the attestation. With a verifier address this is the EIP-712 signature that
+    // TEEMLVerifier.submitResult recovers. Without one it is the legacy EIP-191
+    // attestation over (hashes, chain_id, nonce, timestamp), which the contract does
+    // not accept.
+    let attestation = match verifier_address {
+        Some(verifier) => {
+            state
+                .attestor
+                .sign_eip712_attestation(model_hash, input_hash, &result_bytes, verifier)
+        }
+        None => state
+            .attestor
+            .sign_attestation(model_hash, input_hash, &result_bytes),
+    }
+    .map_err(|e| {
+        let elapsed = start.elapsed();
+        state.metrics.record_error(elapsed);
+        (StatusCode::INTERNAL_SERVER_ERROR, e)
+    })?;
 
     let elapsed = start.elapsed();
     state.metrics.record_inference(elapsed);
@@ -580,7 +631,7 @@ async fn reload_model(
         .and_then(|s| s.strip_prefix("Bearer "))
         .unwrap_or("");
 
-    if provided_key != expected_key {
+    if !expected_key.matches(provided_key) {
         tracing::warn!(
             target: "audit",
             event = "model_reload_auth_failed",
@@ -618,12 +669,17 @@ async fn reload_model(
 
     let new_model_hash = keccak256(&new_model_bytes);
 
-    let new_model = model::load_model_with_format(&req.model_path, format).map_err(|e| {
-        (
-            StatusCode::BAD_REQUEST,
-            format!("Failed to parse model '{}': {}", req.model_path, e),
-        )
-    })?;
+    // Parse the bytes that were just hashed, not a second read of the file: the
+    // attested hash must describe the model that is actually loaded.
+    let new_model = std::str::from_utf8(&new_model_bytes)
+        .map_err(|e| e.to_string())
+        .and_then(|text| model::parse_model_with_format(text, format))
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("Failed to parse model '{}': {}", req.model_path, e),
+            )
+        })?;
 
     let num_trees = new_model.trees.len();
     let num_features = new_model.num_features;
@@ -733,7 +789,7 @@ async fn load_model_handler(
         .and_then(|s| s.strip_prefix("Bearer "))
         .unwrap_or("");
 
-    if provided_key != expected_key {
+    if !expected_key.matches(provided_key) {
         tracing::warn!(
             target: "audit",
             event = "model_load_auth_failed",
@@ -815,7 +871,7 @@ async fn unload_model_handler(
         .and_then(|s| s.strip_prefix("Bearer "))
         .unwrap_or("");
 
-    if provided_key != expected_key {
+    if !expected_key.matches(provided_key) {
         tracing::warn!(
             target: "audit",
             event = "model_unload_auth_failed",
@@ -845,6 +901,27 @@ async fn unload_model_handler(
         success: true,
         model_id,
     }))
+}
+
+// ---------------------------------------------------------------------------
+// Router
+// ---------------------------------------------------------------------------
+
+/// Build the HTTP router (used by `main` and by the tests).
+fn build_router(state: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/health", get(health))
+        .route("/health/detailed", get(health_detailed))
+        .route("/info", get(info))
+        .route("/attestation", get(attestation))
+        .route("/infer", post(infer))
+        .route("/metrics", get(metrics_handler))
+        .route("/admin/reload-model", post(reload_model))
+        .route("/models", get(list_models))
+        .route("/models/load", post(load_model_handler))
+        .route("/models/:model_id", delete(unload_model_handler))
+        .layer(DefaultBodyLimit::max(10 * 1024 * 1024)) // 10 MB limit
+        .with_state(state)
 }
 
 // ---------------------------------------------------------------------------
@@ -896,7 +973,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Model SHA-256: {}", model_sha256);
 
     let model_hash = keccak256(&model_bytes);
-    let model = match model::load_model_with_format(&config.model_path, config.model_format) {
+    // Parse the bytes that were just hashed, not a second read of the file.
+    let parsed = std::str::from_utf8(&model_bytes)
+        .map_err(|e| e.to_string())
+        .and_then(|text| model::parse_model_with_format(text, config.model_format));
+    let model = match parsed {
         Ok(m) => m,
         Err(e) => {
             tracing::error!(
@@ -930,6 +1011,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Set chain ID from configuration for replay protection
     attestor.set_chain_id(config.chain_id);
     tracing::info!("Chain ID: {}", config.chain_id);
+    match config.tee_verifier_address {
+        Some(addr) => tracing::info!("TEEMLVerifier address: {} (EIP-712 attestations)", addr),
+        None => tracing::warn!(
+            "TEE_VERIFIER_ADDRESS not set: /infer signs for the contract only when the \
+             request carries verifier_address"
+        ),
+    }
 
     let enclave_address = attestor.address();
 
@@ -1013,8 +1101,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         attestor,
         nitro_attestor: std::sync::Mutex::new(nitro_attestor),
         enclave_address,
+        tee_verifier_address: config.tee_verifier_address,
         metrics,
-        admin_api_key: config.admin_api_key,
+        admin_api_key: config.admin_api_key.as_deref().map(AdminKey::new),
         rate_limiter: RateLimiter::new(config.max_requests_per_minute),
         watchdog,
         expected_model_hash: config.expected_model_hash,
@@ -1064,19 +1153,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    let app = Router::new()
-        .route("/health", get(health))
-        .route("/health/detailed", get(health_detailed))
-        .route("/info", get(info))
-        .route("/attestation", get(attestation))
-        .route("/infer", post(infer))
-        .route("/metrics", get(metrics_handler))
-        .route("/admin/reload-model", post(reload_model))
-        .route("/models", get(list_models))
-        .route("/models/load", post(load_model_handler))
-        .route("/models/{model_id}", delete(unload_model_handler))
-        .layer(DefaultBodyLimit::max(10 * 1024 * 1024)) // 10 MB limit
-        .with_state(state);
+    let app = build_router(state);
 
     let addr = format!("0.0.0.0:{}", config.port);
     tracing::info!("Listening on {}", addr);
@@ -1139,6 +1216,14 @@ mod tests {
 
     /// Build a test AppState with an optional admin API key.
     fn test_app_state_with_admin_key(admin_api_key: Option<String>) -> Arc<AppState> {
+        test_app_state_with(admin_api_key, None)
+    }
+
+    /// Build a test AppState with an optional admin API key and configured verifier address.
+    fn test_app_state_with(
+        admin_api_key: Option<String>,
+        tee_verifier_address: Option<alloy_primitives::Address>,
+    ) -> Arc<AppState> {
         let model_path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-model/model.json");
         let model_path_str = model_path.to_str().unwrap();
@@ -1166,8 +1251,9 @@ mod tests {
             attestor,
             nitro_attestor: std::sync::Mutex::new(nitro_attestor),
             enclave_address,
+            tee_verifier_address,
             metrics,
-            admin_api_key,
+            admin_api_key: admin_api_key.as_deref().map(AdminKey::new),
             rate_limiter: RateLimiter::new(120), // generous limit for tests
             watchdog,
             expected_model_hash: None,
@@ -1179,21 +1265,88 @@ mod tests {
         })
     }
 
-    /// Build a Router wired to the test AppState.
+    /// Build the production Router wired to the test AppState.
     fn test_app(state: Arc<AppState>) -> Router {
-        Router::new()
-            .route("/health", get(health))
-            .route("/health/detailed", get(health_detailed))
-            .route("/info", get(info))
-            .route("/attestation", get(attestation))
-            .route("/infer", post(infer))
-            .route("/metrics", get(metrics_handler))
-            .route("/admin/reload-model", post(reload_model))
-            .route("/models", get(list_models))
-            .route("/models/load", post(load_model_handler))
-            .route("/models/{model_id}", delete(unload_model_handler))
-            .layer(DefaultBodyLimit::max(10 * 1024 * 1024)) // 10 MB limit
-            .with_state(state)
+        build_router(state)
+    }
+
+    /// `DELETE /models/:model_id` must reach the unload handler. The route was
+    /// written with `{model_id}`, which axum 0.7 treats as a literal segment, so
+    /// every unload request got 404.
+    #[tokio::test]
+    async fn test_unload_model_route_matches_model_id() {
+        let state = test_app_state_with_admin_key(Some("admin-key".to_string()));
+        let model_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-model/model.json");
+        state
+            .model_registry
+            .load_model("extra", model_path.to_str().unwrap(), None)
+            .unwrap();
+
+        let delete_extra = |key: Option<&str>| {
+            let mut req = Request::builder().method("DELETE").uri("/models/extra");
+            if let Some(key) = key {
+                req = req.header("authorization", format!("Bearer {key}"));
+            }
+            req.body(Body::empty()).unwrap()
+        };
+
+        // Without the admin key the handler answers 401 (not the router's 404).
+        let resp = test_app(state.clone())
+            .oneshot(delete_extra(None))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert!(state.model_registry.get_model("extra").is_some());
+
+        let resp = test_app(state.clone())
+            .oneshot(delete_extra(Some("admin-key")))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(state.model_registry.get_model("extra").is_none());
+    }
+
+    /// Every admin handler takes the exact key only.
+    #[tokio::test]
+    async fn test_admin_handlers_reject_keys_close_to_the_admin_key() {
+        let state = test_app_state_with_admin_key(Some("admin-key".to_string()));
+
+        let request = |verb: &str, uri: &str, key: &str| {
+            let body = serde_json::json!({
+                "model_id": "none",
+                "model_path": "/nonexistent/model.json",
+            });
+            Request::builder()
+                .method(verb)
+                .uri(uri)
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {key}"))
+                .body(Body::from(body.to_string()))
+                .unwrap()
+        };
+
+        for (verb, uri) in [
+            ("POST", "/admin/reload-model"),
+            ("POST", "/models/load"),
+            ("DELETE", "/models/none"),
+        ] {
+            for key in ["", "admin-ke", "admin-key2", "admin-kez", "Admin-key"] {
+                let resp = test_app(state.clone())
+                    .oneshot(request(verb, uri, key))
+                    .await
+                    .unwrap();
+                assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "{uri} {key:?}");
+            }
+
+            // The right key gets past the check, to a model that does not exist.
+            let resp = test_app(state.clone())
+                .oneshot(request(verb, uri, "admin-key"))
+                .await
+                .unwrap();
+            assert_ne!(resp.status(), StatusCode::UNAUTHORIZED, "{uri}");
+            assert!(resp.status().is_client_error(), "{uri}: {}", resp.status());
+        }
     }
 
     #[tokio::test]
@@ -1939,5 +2092,132 @@ mod tests {
             "Expected 'Replay protection failed' in response body, got: {}",
             resp_str
         );
+    }
+
+    /// POST /infer and return (status, body).
+    async fn post_infer(state: Arc<AppState>, body: &str) -> (StatusCode, Vec<u8>) {
+        let req = Request::builder()
+            .method("POST")
+            .uri("/infer")
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let resp = test_app(state).oneshot(req).await.unwrap();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        (status, bytes.to_vec())
+    }
+
+    fn hex_b256(v: &serde_json::Value) -> alloy_primitives::B256 {
+        v.as_str().unwrap().parse().unwrap()
+    }
+
+    /// With a verifier address the attestation must be the EIP-712 signature that
+    /// TEEMLVerifier.submitResult recovers: digest = keccak256("\x19\x01" || domain || struct).
+    #[tokio::test]
+    async fn test_infer_with_verifier_address_signs_eip712() {
+        let state = test_app_state();
+        let verifier: alloy_primitives::Address = "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+            .parse()
+            .unwrap();
+        let body = format!(
+            r#"{{"features":[5.0,3.5,1.5,0.3],"verifier_address":"{}"}}"#,
+            verifier
+        );
+        let (status, bytes) = post_infer(state.clone(), &body).await;
+        assert_eq!(status, StatusCode::OK);
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+        let struct_hash = keccak256(Attestor::abi_encode_struct(
+            keccak256(b"TEEMLResult(bytes32 modelHash,bytes32 inputHash,bytes32 resultHash)"),
+            hex_b256(&json["model_hash"]),
+            hex_b256(&json["input_hash"]),
+            hex_b256(&json["result_hash"]),
+        ));
+        let domain = Attestor::compute_domain_separator(state.attestor.chain_id(), verifier);
+        let mut digest_input = Vec::new();
+        digest_input.extend_from_slice(b"\x19\x01");
+        digest_input.extend_from_slice(domain.as_slice());
+        digest_input.extend_from_slice(struct_hash.as_slice());
+        let digest = keccak256(&digest_input);
+
+        let sig_hex = json["attestation"].as_str().unwrap();
+        let sig_bytes = hex::decode(sig_hex.strip_prefix("0x").unwrap_or(sig_hex)).unwrap();
+        let sig = alloy_primitives::Signature::try_from(sig_bytes.as_slice()).unwrap();
+        let recovered = sig.recover_address_from_prehash(&digest).unwrap();
+        assert_eq!(recovered, state.enclave_address);
+    }
+
+    /// A configured TEE_VERIFIER_ADDRESS is used when the request does not name one.
+    #[tokio::test]
+    async fn test_infer_uses_configured_verifier_address() {
+        let verifier: alloy_primitives::Address = "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+            .parse()
+            .unwrap();
+        let configured = test_app_state_with(None, Some(verifier));
+        let per_request = test_app_state();
+
+        // Same enclave key is not shared between the two states, so compare each
+        // signature against its own signer instead of against each other.
+        for (state, body) in [
+            (configured, r#"{"features":[5.0,3.5,1.5,0.3]}"#.to_string()),
+            (
+                per_request,
+                format!(
+                    r#"{{"features":[5.0,3.5,1.5,0.3],"verifier_address":"{}"}}"#,
+                    verifier
+                ),
+            ),
+        ] {
+            let (status, bytes) = post_infer(state.clone(), &body).await;
+            assert_eq!(status, StatusCode::OK);
+            let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            let struct_hash = keccak256(Attestor::abi_encode_struct(
+                keccak256(b"TEEMLResult(bytes32 modelHash,bytes32 inputHash,bytes32 resultHash)"),
+                hex_b256(&json["model_hash"]),
+                hex_b256(&json["input_hash"]),
+                hex_b256(&json["result_hash"]),
+            ));
+            let domain = Attestor::compute_domain_separator(state.attestor.chain_id(), verifier);
+            let mut digest_input = Vec::new();
+            digest_input.extend_from_slice(b"\x19\x01");
+            digest_input.extend_from_slice(domain.as_slice());
+            digest_input.extend_from_slice(struct_hash.as_slice());
+            let sig_hex = json["attestation"].as_str().unwrap();
+            let sig_bytes = hex::decode(sig_hex.strip_prefix("0x").unwrap_or(sig_hex)).unwrap();
+            let sig = alloy_primitives::Signature::try_from(sig_bytes.as_slice()).unwrap();
+            let recovered = sig
+                .recover_address_from_prehash(&keccak256(&digest_input))
+                .unwrap();
+            assert_eq!(recovered, state.enclave_address);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_infer_rejects_verifier_address_mismatch() {
+        let configured: alloy_primitives::Address = "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+            .parse()
+            .unwrap();
+        let state = test_app_state_with(None, Some(configured));
+        let (status, bytes) = post_infer(
+            state,
+            r#"{"features":[5.0,3.5,1.5,0.3],"verifier_address":"0x70997970C51812dc3A010C7d01b50e0d17dc79C8"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(String::from_utf8_lossy(&bytes).contains("does not match"));
+    }
+
+    #[tokio::test]
+    async fn test_infer_rejects_invalid_verifier_address() {
+        let (status, bytes) = post_infer(
+            test_app_state(),
+            r#"{"features":[5.0,3.5,1.5,0.3],"verifier_address":"not-an-address"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(String::from_utf8_lossy(&bytes).contains("Invalid verifier_address"));
     }
 }

@@ -1,21 +1,19 @@
 """Tests for the batch_verifier module (no Anvil required)."""
 
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import MagicMock, patch, PropertyMock
 
 from worldzk.batch_verifier import (
     BatchSession,
-    BatchVerifier,
     BatchVerificationCancelledError,
+    BatchVerifier,
     ProgressEvent,
     ProgressTracker,
     StepResult,
     _ensure_hex,
     _to_bytes,
-    LAYERS_PER_BATCH,
-    GROUPS_PER_FINALIZE_BATCH,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -35,16 +33,16 @@ def _make_verifier(**kwargs):
     }
     defaults.update(kwargs)
 
-    with patch("worldzk.batch_verifier.Web3") as MockWeb3:
+    with patch("worldzk.batch_verifier.Web3") as mock_web3_cls:
         mock_w3 = MagicMock()
-        MockWeb3.return_value = mock_w3
-        MockWeb3.HTTPProvider.return_value = MagicMock()
-        MockWeb3.to_checksum_address.side_effect = lambda addr: addr
+        mock_web3_cls.return_value = mock_w3
+        mock_web3_cls.HTTPProvider.return_value = MagicMock()
+        mock_web3_cls.to_checksum_address.side_effect = lambda addr: addr
 
-        with patch("worldzk.batch_verifier.Account") as MockAccount:
+        with patch("worldzk.batch_verifier.Account") as mock_account_cls:
             mock_account = MagicMock()
             mock_account.address = "0xSIGNER"
-            MockAccount.from_key.return_value = mock_account
+            mock_account_cls.from_key.return_value = mock_account
 
             verifier = BatchVerifier(**defaults)
 
@@ -77,11 +75,11 @@ class TestConstruction:
 
     def test_no_private_key_read_only(self):
         """Omitting private_key is allowed for read-only usage."""
-        with patch("worldzk.batch_verifier.Web3") as MockWeb3:
+        with patch("worldzk.batch_verifier.Web3") as mock_web3_cls:
             mock_w3 = MagicMock()
-            MockWeb3.return_value = mock_w3
-            MockWeb3.HTTPProvider.return_value = MagicMock()
-            MockWeb3.to_checksum_address.side_effect = lambda addr: addr
+            mock_web3_cls.return_value = mock_w3
+            mock_web3_cls.HTTPProvider.return_value = MagicMock()
+            mock_web3_cls.to_checksum_address.side_effect = lambda addr: addr
 
             verifier = BatchVerifier(
                 contract_address=VALID_CONTRACT,
@@ -152,6 +150,79 @@ class TestABILoading:
         }
         assert "DAGBatchSessionStarted" in event_names
 
+    def test_default_abi_events_match_contract(self):
+        """Event inputs match RemainderVerifier.sol, so receipts can be decoded."""
+        from worldzk.abi import DAG_BATCH_VERIFIER_ABI
+
+        events = {
+            e["name"]: e for e in DAG_BATCH_VERIFIER_ABI if e["type"] == "event"
+        }
+
+        def signature(name):
+            return [(i["type"], i["indexed"]) for i in events[name]["inputs"]]
+
+        # event DAGBatchSessionStarted(bytes32 indexed sessionId,
+        #     bytes32 indexed circuitHash, uint256 totalBatches);
+        assert signature("DAGBatchSessionStarted") == [
+            ("bytes32", True), ("bytes32", True), ("uint256", False),
+        ]
+        # event DAGBatchCompleted(bytes32 indexed sessionId, uint256 batchIdx);
+        assert signature("DAGBatchCompleted") == [("bytes32", True), ("uint256", False)]
+        # event DAGBatchFinalized(bytes32 indexed sessionId, bytes32 indexed circuitHash);
+        assert signature("DAGBatchFinalized") == [("bytes32", True), ("bytes32", True)]
+        # web3 7.x raises KeyError when an event entry has no "anonymous" key.
+        assert all(e["anonymous"] is False for e in events.values())
+
+
+# ---------------------------------------------------------------------------
+# Sending transactions
+# ---------------------------------------------------------------------------
+
+
+class TestSendTransaction:
+    """Tests for gas estimation and revert handling in _send_transaction."""
+
+    @staticmethod
+    def _prepare(verifier, status=1):
+        verifier._w3.eth.wait_for_transaction_receipt.return_value = {
+            "status": status,
+            "transactionHash": bytes.fromhex("ab" * 32),
+            "gasUsed": 1,
+            "blockNumber": 1,
+        }
+        return MagicMock()
+
+    def test_estimate_is_not_capped_by_gas_limit(self):
+        """A step needing more than the configured limit still gets its estimate."""
+        verifier = _make_verifier(gas_limit=30_000_000)
+        fn = self._prepare(verifier)
+        fn.estimate_gas.return_value = 32_000_000
+
+        verifier._send_transaction(fn)
+
+        # The estimate call carries no "gas" field, so the node does not cap it.
+        fn.estimate_gas.assert_called_once_with({"from": "0xSIGNER"})
+        assert fn.build_transaction.call_args[0][0]["gas"] == int(32_000_000 * 1.1)
+
+    def test_falls_back_to_gas_limit_when_estimation_fails(self):
+        """The configured limit is used only when estimation fails."""
+        verifier = _make_verifier(gas_limit=30_000_000)
+        fn = self._prepare(verifier)
+        fn.estimate_gas.side_effect = ValueError("execution reverted")
+
+        verifier._send_transaction(fn)
+
+        assert fn.build_transaction.call_args[0][0]["gas"] == 30_000_000
+
+    def test_reverted_receipt_raises(self):
+        """A mined-but-reverted transaction is an error, not a completed step."""
+        verifier = _make_verifier()
+        fn = self._prepare(verifier, status=0)
+        fn.estimate_gas.return_value = 100_000
+
+        with pytest.raises(RuntimeError, match="Transaction reverted: 0x" + "ab" * 32):
+            verifier._send_transaction(fn)
+
 
 # ---------------------------------------------------------------------------
 # Session Management
@@ -221,11 +292,11 @@ class TestRequireSigner:
 
     def test_start_requires_signer(self):
         """start_verification raises without private_key."""
-        with patch("worldzk.batch_verifier.Web3") as MockWeb3:
+        with patch("worldzk.batch_verifier.Web3") as mock_web3_cls:
             mock_w3 = MagicMock()
-            MockWeb3.return_value = mock_w3
-            MockWeb3.HTTPProvider.return_value = MagicMock()
-            MockWeb3.to_checksum_address.side_effect = lambda addr: addr
+            mock_web3_cls.return_value = mock_w3
+            mock_web3_cls.HTTPProvider.return_value = MagicMock()
+            mock_web3_cls.to_checksum_address.side_effect = lambda addr: addr
 
             verifier = BatchVerifier(
                 contract_address=VALID_CONTRACT,
@@ -241,11 +312,11 @@ class TestRequireSigner:
 
     def test_cleanup_requires_signer(self):
         """cleanup_session raises without private_key."""
-        with patch("worldzk.batch_verifier.Web3") as MockWeb3:
+        with patch("worldzk.batch_verifier.Web3") as mock_web3_cls:
             mock_w3 = MagicMock()
-            MockWeb3.return_value = mock_w3
-            MockWeb3.HTTPProvider.return_value = MagicMock()
-            MockWeb3.to_checksum_address.side_effect = lambda addr: addr
+            mock_web3_cls.return_value = mock_w3
+            mock_web3_cls.HTTPProvider.return_value = MagicMock()
+            mock_web3_cls.to_checksum_address.side_effect = lambda addr: addr
 
             verifier = BatchVerifier(
                 contract_address=VALID_CONTRACT,

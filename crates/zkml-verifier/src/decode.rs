@@ -5,7 +5,7 @@
 /// Variable-length sections are length-prefixed: a U256 count followed by that many items.
 use crate::ec::{G1Point, PODPProof, PedersenGens, ProofOfProduct};
 use crate::error::{Result, VerifyError};
-use crate::field::U256;
+use crate::field::{Fq, U256};
 use crate::gkr::{CommittedLayerProof, DAGInputLayerProof, GKRProof, PublicValueClaim};
 use crate::sumcheck::CommittedSumcheckProof;
 
@@ -13,7 +13,20 @@ use crate::sumcheck::CommittedSumcheckProof;
 /// Prevents OOM from malicious inputs with absurdly large counts.
 /// A proof for an 88-layer XGBoost circuit is ~475KB; 100_000 elements
 /// would require ~3.2MB of 32-byte fields, which is a generous bound.
+///
+/// The limit covers every count word of the proof and the generator count,
+/// and is enforced by the checked (`try_*`) decoders. All entry points that
+/// return an error instead of panicking decode with them (`verify`,
+/// `verify_raw`, `verify_hybrid`, the C FFI functions and the wasm binding),
+/// so all of them apply the same limit. The circuit description is decoded
+/// in `lib.rs` and is not subject to it.
 const MAX_ARRAY_LEN: usize = 100_000;
+
+/// Whether both coordinates of an encoded point are below the base field
+/// modulus q, the only encodings the EVM precompiles accept.
+fn coordinates_canonical(x: &U256, y: &U256) -> bool {
+    !x.gte(&Fq::MODULUS) && !y.gte(&Fq::MODULUS)
+}
 
 // ============================================================
 // ProofDecoder
@@ -44,6 +57,12 @@ impl<'a> ProofDecoder<'a> {
         self.offset = offset;
     }
 
+    /// Number of bytes left between the current offset and the end of the data.
+    #[inline]
+    pub fn remaining(&self) -> usize {
+        self.data.len().saturating_sub(self.offset)
+    }
+
     // --------------------------------------------------------
     // Primitive readers
     // --------------------------------------------------------
@@ -67,9 +86,14 @@ impl<'a> ProofDecoder<'a> {
     }
 
     /// Read a G1 affine point (two consecutive U256 values: x, y). Advances offset by 64.
+    /// Panics on a coordinate that is not below q (see `try_read_g1`).
     fn read_g1(&mut self) -> G1Point {
         let x = self.read_u256();
         let y = self.read_u256();
+        assert!(
+            coordinates_canonical(&x, &y),
+            "read_g1: point coordinate not below the field modulus"
+        );
         G1Point { x, y }
     }
 
@@ -107,9 +131,20 @@ impl<'a> ProofDecoder<'a> {
     }
 
     /// Read a G1 point safely.
+    ///
+    /// A coordinate must be below q. The EVM precompiles reject any other
+    /// value, so the on-chain verifier reverts on it, and accepting it here
+    /// would give one proof several encodings (x and x + q stand for the
+    /// same point once reduced).
     fn try_read_g1(&mut self) -> Result<G1Point> {
+        let start = self.offset;
         let x = self.try_read_u256()?;
         let y = self.try_read_u256()?;
+        if !coordinates_canonical(&x, &y) {
+            return Err(VerifyError::DecodeError(format!(
+                "point at offset {start}: coordinate not below the field modulus"
+            )));
+        }
         Ok(G1Point { x, y })
     }
 
@@ -893,6 +928,55 @@ mod tests {
         assert_eq!(gens.message_gens.len(), 0);
         assert!(gens.scalar_gen.is_infinity());
         assert!(gens.blinding_gen.is_infinity());
+    }
+
+    /// Generators with one scalar generator whose coordinate is `coord`.
+    fn gens_with_scalar_gen_y(coord: U256) -> Vec<u8> {
+        let mut buf = Vec::new();
+        push_usize(&mut buf, 1);
+        push_g1(&mut buf, &sample_point(10));
+        push_g1(
+            &mut buf,
+            &G1Point {
+                x: U256::from_u64(1),
+                y: coord,
+            },
+        );
+        push_g1(&mut buf, &sample_point(30));
+        buf
+    }
+
+    #[test]
+    fn test_try_read_g1_accepts_coordinate_just_below_modulus() {
+        let below = Fq::MODULUS.sub_no_mod(&U256::ONE);
+        let gens = ProofDecoder::try_decode_pedersen_gens(&gens_with_scalar_gen_y(below))
+            .expect("q - 1 is canonical");
+        assert_eq!(gens.scalar_gen.y, below);
+    }
+
+    #[test]
+    fn test_try_read_g1_rejects_coordinate_not_below_modulus() {
+        let q_plus_2 = U256([
+            Fq::MODULUS.0[0] + 2,
+            Fq::MODULUS.0[1],
+            Fq::MODULUS.0[2],
+            Fq::MODULUS.0[3],
+        ]);
+        for coord in [Fq::MODULUS, q_plus_2, U256([u64::MAX; 4])] {
+            let err = ProofDecoder::try_decode_pedersen_gens(&gens_with_scalar_gen_y(coord))
+                .err()
+                .expect("coordinate >= q");
+            assert!(
+                matches!(&err, VerifyError::DecodeError(m) if m.contains("not below the field modulus")),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "read_g1: point coordinate not below the field modulus")]
+    fn test_read_g1_panics_on_coordinate_not_below_modulus() {
+        ProofDecoder::decode_pedersen_gens(&gens_with_scalar_gen_y(Fq::MODULUS));
     }
 
     #[test]

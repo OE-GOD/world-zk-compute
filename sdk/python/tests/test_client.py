@@ -5,25 +5,24 @@ These tests use ``respx`` to mock httpx requests so no real indexer is needed.
 
 from __future__ import annotations
 
-import pytest
 import httpx
+import pytest
 import respx
 
-from worldzk.client import (
-    Client,
-    AsyncClient,
+from worldzk.errors import ApiError
+from worldzk.indexer import (
     DEFAULT_BASE_URL,
-    DEFAULT_TIMEOUT,
     DEFAULT_MAX_RETRIES,
+    DEFAULT_TIMEOUT,
 )
+from worldzk.indexer import AsyncIndexerClient as AsyncClient
+from worldzk.indexer import IndexerClient as Client
 from worldzk.models import (
     IndexerHealthResponse,
     IndexerStatsResponse,
     ResultRow,
     ResultStatus,
 )
-from worldzk.errors import ApiError
-
 
 # ---------------------------------------------------------------------------
 # Fixtures: sample JSON responses matching the indexer OpenAPI spec
@@ -589,7 +588,8 @@ class TestImports:
     """Verify that the public API is importable from worldzk."""
 
     def test_client_importable(self):
-        from worldzk import Client, AsyncClient
+        from worldzk import AsyncIndexerClient as AsyncClient
+        from worldzk import IndexerClient as Client
         assert Client is not None
         assert AsyncClient is not None
 
@@ -605,6 +605,6 @@ class TestImports:
 
     def test_backward_compat_aliases(self):
         """HealthResponse and StatsResponse aliases in client module."""
-        from worldzk.client import HealthResponse, StatsResponse
+        from worldzk.indexer import HealthResponse, StatsResponse
         assert HealthResponse is IndexerHealthResponse
         assert StatsResponse is IndexerStatsResponse

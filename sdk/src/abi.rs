@@ -38,7 +38,7 @@ sol! {
         event CircuitRegistered(bytes32 indexed circuitHash, string name);
         event CircuitDeactivated(bytes32 indexed circuitHash);
         event ProofVerified(bytes32 indexed circuitHash, bool valid);
-        event AdminTransferred(address indexed oldAdmin, address indexed newAdmin);
+        event AdminChanged(address previousAdmin, address newAdmin);
         event DAGBatchSessionStarted(bytes32 indexed sessionId, bytes32 indexed circuitHash, uint256 totalBatches);
         event DAGBatchCompleted(bytes32 indexed sessionId, uint256 batchIdx);
         event DAGBatchFinalized(bytes32 indexed sessionId, bytes32 indexed circuitHash);
@@ -64,20 +64,21 @@ sol! {
         ) external;
 
         // --- Single-TX Verification ---
+        // Not `view` on-chain (nonReentrant); the SDK runs them with eth_call.
 
         function verifyDAGProof(
             bytes calldata proof,
             bytes32 circuitHash,
             bytes calldata publicInputs,
             bytes calldata gensData
-        ) external view returns (bool valid);
+        ) external returns (bool valid);
 
         function verifyDAGProofStylus(
             bytes calldata proof,
             bytes32 circuitHash,
             bytes calldata publicInputs,
             bytes calldata gensData
-        ) external view returns (bool valid);
+        ) external returns (bool valid);
 
         function verifyDAGWithGroth16(
             bytes calldata innerProof,
@@ -86,7 +87,7 @@ sol! {
             bytes calldata gensData,
             uint256[8] calldata groth16Proof,
             uint256[] calldata groth16Outputs
-        ) external view;
+        ) external;
 
         // --- Batch Verification ---
 
@@ -195,6 +196,7 @@ sol! {
         function proverStake() external view returns (uint256);
         function disputeResolved(bytes32 resultId) external view returns (bool);
         function disputeProverWon(bytes32 resultId) external view returns (bool);
+        function useStylusVerifier() external view returns (bool);
     }
 }
 

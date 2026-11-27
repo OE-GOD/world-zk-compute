@@ -43,10 +43,22 @@ cargo build --release
 
 ## Run
 
+The script needs a mode; with neither flag it prints its usage and exits 1.
+
 ```bash
 cd examples/rule-engine-sp1
-cargo run --release --bin script
+# Execute the guest on the sample input (no proof); prints cycles and results
+cargo run --release --bin rule-engine-sp1-script -- --execute
+# Generate a compressed STARK proof and verify it locally
+cargo run --release --bin rule-engine-sp1-script -- --prove
+# Same, with an uncompressed core proof (faster, larger)
+cargo run --release --bin rule-engine-sp1-script -- --prove --core
 ```
+
+`--prove` verifies the proof against the verifying key, which also checks
+that the public values bundled with the proof are the ones the guest
+committed; the script does not read those values or compare them with
+expected results.
 
 ## Input Format
 

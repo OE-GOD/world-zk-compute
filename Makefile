@@ -16,7 +16,7 @@
         sepolia-e2e check-sepolia-balances test-sepolia-sdk \
         bench clean verify snapshot snapshot-check snapshot-update gas-report help \
         smoke-test audit docs check preflight sepolia-status \
-        test-docker-demo
+        test-docker-demo demo-bank demo-bank-down
 
 # ── Setup ───────────────────────────────────────────────────────────────────
 
@@ -36,14 +36,8 @@ test-fast: ## Run all tests except slow suites (xgboost-remainder)
 test-contracts: ## Run Solidity tests
 	cd contracts && forge test -vv
 
-test-rust: ## Run all Rust tests (sdk, operator, enclave, admin-cli, indexer, watcher, events)
-	cargo test --manifest-path sdk/Cargo.toml
-	cargo test --manifest-path services/operator/Cargo.toml
-	cargo test --manifest-path tee/enclave/Cargo.toml
-	cargo test --manifest-path services/admin-cli/Cargo.toml
-	cargo test --manifest-path services/indexer/Cargo.toml
-	cargo test --manifest-path crates/watcher/Cargo.toml
-	cargo test --manifest-path crates/events/Cargo.toml
+test-rust: ## Run the tests of every workspace crate (same command as CI)
+	cargo test --workspace
 
 test-operator: ## Run operator service tests
 	cargo test --manifest-path services/operator/Cargo.toml
@@ -76,7 +70,7 @@ test-xgboost: ## Run XGBoost remainder tests (slow)
 	cargo test --manifest-path examples/xgboost-remainder/Cargo.toml
 
 test-stylus: ## Run Stylus GKR verifier tests (native target)
-	cd contracts/stylus/gkr-verifier && cargo test --target $$(rustc -vV | awk '/^host:/{print $$2}')
+	cd contracts/stylus/gkr-verifier && cargo test --no-default-features --target $$(rustc -vV | awk '/^host:/{print $$2}')
 
 # ── DEV ────────────────────────────────────────────────────────────────────
 dev-web: ## Serve development for web
@@ -91,18 +85,13 @@ build: build-contracts build-rust build-wasm ## Build everything
 build-contracts: ## Compile Solidity contracts
 	cd contracts && forge build
 
-build-rust: ## Build all Rust crates
-	cargo build --manifest-path sdk/Cargo.toml
-	cargo build --manifest-path services/operator/Cargo.toml
-	cargo build --manifest-path tee/enclave/Cargo.toml
-	cargo build --manifest-path services/admin-cli/Cargo.toml
-	cargo build --manifest-path services/indexer/Cargo.toml
-	cargo build --manifest-path crates/watcher/Cargo.toml
-	cargo build --manifest-path crates/events/Cargo.toml
+build-rust: ## Build every workspace crate and the xgboost-remainder example
+	cargo build --workspace
 	cargo build --manifest-path examples/xgboost-remainder/Cargo.toml
 
 build-wasm: ## Build web wasm verifier
 	wasm-pack build --target web crates/zkml-verifier -- --features wasm
+	rm -rf web/pkg
 	cp -r crates/zkml-verifier/pkg web/pkg
 
 # ── Format ───────────────────────────────────────────────────────────────────
@@ -112,14 +101,8 @@ fmt: fmt-sol fmt-rust ## Format all code
 fmt-sol: ## Format Solidity files
 	cd contracts && forge fmt
 
-fmt-rust: ## Format Rust files
-	cargo fmt --manifest-path sdk/Cargo.toml
-	cargo fmt --manifest-path services/operator/Cargo.toml
-	cargo fmt --manifest-path tee/enclave/Cargo.toml
-	cargo fmt --manifest-path services/admin-cli/Cargo.toml
-	cargo fmt --manifest-path services/indexer/Cargo.toml
-	cargo fmt --manifest-path crates/watcher/Cargo.toml
-	cargo fmt --manifest-path crates/events/Cargo.toml
+fmt-rust: ## Format every workspace crate and the xgboost-remainder example
+	cargo fmt --all
 	cargo fmt --manifest-path examples/xgboost-remainder/Cargo.toml
 
 # ── Lint ─────────────────────────────────────────────────────────────────────
@@ -129,19 +112,13 @@ lint: lint-sol lint-rust ## Run all linters
 lint-sol: ## Check Solidity formatting
 	cd contracts && forge fmt --check
 
-lint-rust: ## Run Rust clippy on all crates
-	cargo clippy --manifest-path sdk/Cargo.toml -- -D warnings
-	cargo clippy --manifest-path services/operator/Cargo.toml -- -D warnings
-	cargo clippy --manifest-path tee/enclave/Cargo.toml -- -D warnings
-	cargo clippy --manifest-path services/admin-cli/Cargo.toml -- -D warnings
-	cargo clippy --manifest-path services/indexer/Cargo.toml -- -D warnings
-	cargo clippy --manifest-path crates/watcher/Cargo.toml -- -D warnings
-	cargo clippy --manifest-path crates/events/Cargo.toml -- -D warnings
+lint-rust: ## Run clippy on every workspace crate (same command as the CI gate)
+	cargo clippy --workspace --all-targets -- -D warnings
 
 # ── Deploy ───────────────────────────────────────────────────────────────────
 
-deploy-local: ## Deploy to local Anvil (start Anvil first)
-	bash scripts/deploy.sh --chain local --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+deploy-local: ## Deploy to local Anvil (start it first: anvil --disable-code-size-limit --gas-limit 500000000)
+	bash scripts/deploy.sh --chain local --with-remainder --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 
 deploy-mocks: ## Deploy mock contracts to local Anvil for SDK testing
 	cd contracts && forge script script/DeployMocks.s.sol:DeployMocks --rpc-url http://localhost:8545 --broadcast -vvv
@@ -229,11 +206,12 @@ gas-report: ## Print gas report for all tests
 
 # ── Verification ─────────────────────────────────────────────────────────────
 
-verify: ## Run post-deployment health check
-	@echo "Usage: make verify RPC_URL=<url> CONTRACT=<address>"
-	@echo "Example: make verify RPC_URL=http://127.0.0.1:8545 CONTRACT=0x..."
-	@if [ -n "$(RPC_URL)" ] && [ -n "$(CONTRACT)" ]; then \
-		bash scripts/verify-deployment.sh "$(RPC_URL)" "$(CONTRACT)"; \
+verify: ## Run post-deployment health check (RPC_URL=<url> [CONTRACT=<TEEMLVerifier address>])
+	@if [ -z "$(RPC_URL)" ]; then \
+		echo "Usage: make verify RPC_URL=<url> [CONTRACT=<TEEMLVerifier address>]"; \
+		echo "Example: make verify RPC_URL=http://127.0.0.1:8545 CONTRACT=0x..."; \
+	else \
+		TEE_VERIFIER_ADDR="$(CONTRACT)" bash scripts/verify-deployment.sh --rpc-url "$(RPC_URL)"; \
 	fi
 
 # ── Smoke Test ──────────────────────────────────────────────────────────────
@@ -261,14 +239,8 @@ docs: ## Generate API documentation for all SDKs
 
 clean: ## Clean all build artifacts
 	cd contracts && forge clean
-	cargo clean --manifest-path sdk/Cargo.toml 2>/dev/null || true
-	cargo clean --manifest-path services/operator/Cargo.toml 2>/dev/null || true
-	cargo clean --manifest-path tee/enclave/Cargo.toml 2>/dev/null || true
-	cargo clean --manifest-path services/admin-cli/Cargo.toml 2>/dev/null || true
-	cargo clean --manifest-path services/indexer/Cargo.toml 2>/dev/null || true
-	cargo clean --manifest-path crates/watcher/Cargo.toml 2>/dev/null || true
-	cargo clean --manifest-path crates/events/Cargo.toml 2>/dev/null || true
-	cargo clean --manifest-path examples/xgboost-remainder/Cargo.toml 2>/dev/null || true
+	cargo clean
+	cargo clean --manifest-path examples/xgboost-remainder/Cargo.toml
 
 # ── Bank Demo ────────────────────────────────────────────────────────────────
 

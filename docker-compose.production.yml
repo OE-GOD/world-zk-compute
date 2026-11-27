@@ -113,6 +113,8 @@ services:
     build:
       context: .
       dockerfile: services/operator/Dockerfile
+    # Longer than the operator's 60 s wait for running disputes at shutdown
+    stop_grace_period: 75s
     depends_on:
       enclave:
         condition: service_healthy
@@ -128,6 +130,9 @@ services:
       MODEL_PATH: /app/model/model.json
       PROOFS_DIR: /app/proofs
       PRECOMPUTE_BIN: /usr/local/bin/precompute_proof
+      # Health/metrics server binds 127.0.0.1 by default; the published port
+      # (and Prometheus) can only reach it on 0.0.0.0.
+      METRICS_BIND_ADDR: "0.0.0.0"
       TEE_VERIFIER_ADDRESS: "${TEE_VERIFIER_ADDRESS:?Set TEE_VERIFIER_ADDRESS in .env.production}"
       EXECUTION_ENGINE_ADDRESS: "${EXECUTION_ENGINE_ADDRESS:-}"
       PROGRAM_REGISTRY_ADDRESS: "${PROGRAM_REGISTRY_ADDRESS:-}"
@@ -224,7 +229,7 @@ services:
       CONTRACT_ADDRESS: "${TEE_VERIFIER_ADDRESS:?Set TEE_VERIFIER_ADDRESS in .env.production}"
       PORT: "8081"
       DB_PATH: /data/indexer.db
-      POLL_INTERVAL: "${INDEXER_POLL_INTERVAL:-12}"
+      POLL_INTERVAL_SECS: "${INDEXER_POLL_INTERVAL:-12}"
       RATE_LIMIT_PER_IP: "${INDEXER_RATE_LIMIT:-100}"
       RUST_LOG: "${RUST_LOG:-info}"
     healthcheck:
@@ -270,7 +275,7 @@ services:
       RPC_URL: "${RPC_URL:?Set RPC_URL in .env.production}"
       ENGINE_ADDRESS: "${EXECUTION_ENGINE_ADDRESS:-0x0000000000000000000000000000000000000000}"
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:3001/health || exit 1"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3001/health')"]
       interval: 15s
       timeout: 3s
       retries: 5

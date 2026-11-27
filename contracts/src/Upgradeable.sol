@@ -89,6 +89,8 @@ abstract contract UUPSUpgradeable {
     error NotAdmin();
     error NotTimelocked();
     error InvalidImplementation();
+    error UpgradeToNonUUPS(address newImplementation);
+    error UUPSUnauthorizedCallContext();
     error AlreadyInitialized();
     error NotInitializing();
     error UpgradeCallFailed();
@@ -97,6 +99,11 @@ abstract contract UUPSUpgradeable {
     // ========================================================================
     // STATE
     // ========================================================================
+
+    /// @dev The implementation's own address. An immutable lives in the code, not in storage, so through
+    ///      a proxy it still holds the implementation's address while address(this) is the proxy's:
+    ///      proxiableUUID() compares the two to tell a direct call from a delegatecall.
+    address private immutable __self = address(this);
 
     /// @dev Initialization state
     uint8 internal _initialized;
@@ -179,9 +186,16 @@ abstract contract UUPSUpgradeable {
     function _authorizeUpgrade(address newImplementation) internal virtual;
 
     /// @notice Internal upgrade function
+    /// @dev The new implementation must have code and must be UUPS: its proxiableUUID() has to return
+    ///      the ERC-1967 implementation slot (ERC-1822). A proxy whose implementation has the guard in
+    ///      proxiableUUID() reverts there, so its address is refused too. A proxy on an older
+    ///      implementation, or on another UUPS base without that guard, answers through delegatecall
+    ///      and is accepted, and the upgrade bricks this proxy. RUNBOOK Step 3 checks the target first:
+    ///      its implementation slot (a proxy such as UUPSProxy), its address against the one from Step 2.
     function _upgradeToAndCall(address newImplementation, bytes memory data) internal {
         // Validate new implementation
         if (newImplementation.code.length == 0) revert InvalidImplementation();
+        if (!_isUUPS(newImplementation)) revert UpgradeToNonUUPS(newImplementation);
 
         // Store new implementation
         StorageSlot.getAddressSlot(StorageSlot.IMPLEMENTATION_SLOT).value = newImplementation;
@@ -201,6 +215,15 @@ abstract contract UUPSUpgradeable {
                 }
             }
         }
+    }
+
+    /// @notice Whether a contract's proxiableUUID() returns the ERC-1967 implementation slot
+    /// @dev A low-level call, so that a revert or a short return value gives false.
+    function _isUUPS(address newImplementation) internal view returns (bool) {
+        (bool success, bytes memory returndata) =
+            newImplementation.staticcall(abi.encodeCall(UUPSUpgradeable(newImplementation).proxiableUUID, ()));
+        return
+            success && returndata.length >= 32 && abi.decode(returndata, (bytes32)) == StorageSlot.IMPLEMENTATION_SLOT;
     }
 
     // ========================================================================
@@ -248,8 +271,14 @@ abstract contract UUPSUpgradeable {
         return StorageSlot.getAddressSlot(StorageSlot.IMPLEMENTATION_SLOT).value;
     }
 
-    /// @notice Get proxy version
-    function proxiableUUID() external pure returns (bytes32) {
+    /// @notice ERC-1822 identifier: the storage slot that holds the implementation address
+    /// @dev Answers only a direct call on the implementation. Through a proxy it reverts, so that
+    ///      _isUUPS refuses the address of a proxy that runs this code (another one or this one):
+    ///      upgrading to a proxy would make every call on this proxy delegate to proxy code and the
+    ///      proxy could never be upgraded again. A proxy on an implementation without this guard
+    ///      still answers, see _upgradeToAndCall.
+    function proxiableUUID() external view returns (bytes32) {
+        if (address(this) != __self) revert UUPSUnauthorizedCallContext();
         return StorageSlot.IMPLEMENTATION_SLOT;
     }
 }

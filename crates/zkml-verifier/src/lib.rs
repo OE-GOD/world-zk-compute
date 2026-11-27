@@ -19,6 +19,8 @@ pub mod bundle;
 pub mod decode;
 pub mod ec;
 pub mod error;
+// C-ABI entry points for native callers; the wasm build exports `wasm.rs` instead.
+#[cfg(not(target_arch = "wasm32"))]
 pub mod ffi;
 pub mod field;
 pub mod gkr;
@@ -38,7 +40,7 @@ pub use types::ProofMetadata;
 // Imports
 use crate::decode::ProofDecoder;
 use crate::field::{Fq, U256};
-use crate::gkr::DAGCircuitDescription;
+use crate::gkr::{DAGCircuitDescription, GKRProof};
 
 fn decode_circuit_description(data: &[u8]) -> DAGCircuitDescription {
     let mut dec = ProofDecoder::new(data);
@@ -111,6 +113,12 @@ fn read_u256_array(dec: &mut ProofDecoder) -> Vec<U256> {
 }
 
 /// Verify a DAG GKR proof end-to-end.
+///
+/// For trusted input only. This function panics when a check fails or the
+/// input is malformed, and it reads the input with the unchecked decoders: a
+/// hostile length field can make it allocate without bound or abort the
+/// process. For input that is not trusted use [`verify`] or [`verify_raw`],
+/// which return an error instead.
 pub fn verify_dag_proof_inner(
     proof_data: &[u8],
     _public_inputs: &[u8],
@@ -156,6 +164,10 @@ pub fn verify_dag_proof_inner(
 }
 
 /// Hybrid DAG GKR verification.
+///
+/// For trusted input only, for the same reasons as
+/// [`verify_dag_proof_inner`]. For input that is not trusted use
+/// [`verify_hybrid`].
 pub fn verify_dag_proof_hybrid_inner(
     proof_data: &[u8],
     _public_inputs: &[u8],
@@ -243,8 +255,22 @@ fn try_read_usize_from(dec: &mut ProofDecoder) -> Result<usize> {
     Ok(v.0[0] as usize)
 }
 
-fn try_read_u8_array(dec: &mut ProofDecoder) -> Result<Vec<u8>> {
+/// Read an array length and check that the remaining input can hold that many
+/// 32-byte words, so a hostile length cannot size an allocation.
+fn try_read_array_len(dec: &mut ProofDecoder) -> Result<usize> {
     let len = try_read_usize_from(dec)?;
+    if len > dec.remaining() / 32 {
+        return Err(VerifyError::DecodeError(format!(
+            "array length {} exceeds remaining input ({} bytes)",
+            len,
+            dec.remaining()
+        )));
+    }
+    Ok(len)
+}
+
+fn try_read_u8_array(dec: &mut ProofDecoder) -> Result<Vec<u8>> {
+    let len = try_read_array_len(dec)?;
     let mut result = Vec::with_capacity(len);
     for _ in 0..len {
         result.push(dec.try_read_u256()?.0[0] as u8);
@@ -253,7 +279,7 @@ fn try_read_u8_array(dec: &mut ProofDecoder) -> Result<Vec<u8>> {
 }
 
 fn try_read_usize_array(dec: &mut ProofDecoder) -> Result<Vec<usize>> {
-    let len = try_read_usize_from(dec)?;
+    let len = try_read_array_len(dec)?;
     let mut result = Vec::with_capacity(len);
     for _ in 0..len {
         result.push(try_read_usize_from(dec)?);
@@ -262,7 +288,7 @@ fn try_read_usize_array(dec: &mut ProofDecoder) -> Result<Vec<usize>> {
 }
 
 fn try_read_u64_array(dec: &mut ProofDecoder) -> Result<Vec<u64>> {
-    let len = try_read_usize_from(dec)?;
+    let len = try_read_array_len(dec)?;
     let mut result = Vec::with_capacity(len);
     for _ in 0..len {
         result.push(dec.try_read_u256()?.0[0]);
@@ -271,7 +297,7 @@ fn try_read_u64_array(dec: &mut ProofDecoder) -> Result<Vec<u64>> {
 }
 
 fn try_read_bool_array(dec: &mut ProofDecoder) -> Result<Vec<bool>> {
-    let len = try_read_usize_from(dec)?;
+    let len = try_read_array_len(dec)?;
     let mut result = Vec::with_capacity(len);
     for _ in 0..len {
         result.push(!dec.try_read_u256()?.is_zero());
@@ -280,7 +306,7 @@ fn try_read_bool_array(dec: &mut ProofDecoder) -> Result<Vec<bool>> {
 }
 
 fn try_read_u256_array(dec: &mut ProofDecoder) -> Result<Vec<U256>> {
-    let len = try_read_usize_from(dec)?;
+    let len = try_read_array_len(dec)?;
     let mut result = Vec::with_capacity(len);
     for _ in 0..len {
         result.push(dec.try_read_u256()?);
@@ -320,11 +346,31 @@ fn try_decode_circuit_description(data: &[u8]) -> Result<DAGCircuitDescription> 
     })
 }
 
-/// Verify a DAG GKR proof end-to-end, returning Result instead of panicking.
+/// Reject a proof whose shape does not match the circuit description (see
+/// [`gkr::check_proof_shape`]) before any allocation is sized from the
+/// description, which comes from the same untrusted bundle as the proof.
+fn check_layer_counts(proof: &GKRProof, desc: &DAGCircuitDescription) -> Result<()> {
+    gkr::check_proof_shape(proof, desc).map_err(VerifyError::VerificationFailed)
+}
+
+/// Turn a caught panic payload into a `VerificationFailed` error.
+fn panic_to_error(payload: Box<dyn std::any::Any + Send>) -> VerifyError {
+    let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+        s.to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown verification panic".to_string()
+    };
+    VerifyError::VerificationFailed(msg)
+}
+
+/// Verify a DAG GKR proof end-to-end, returning Result.
 ///
-/// This is the safe version of `verify_dag_proof_inner` that propagates all
-/// errors through Result instead of using assert/panic. It is suitable for
-/// use in contexts where panic=abort (e.g., fuzz testing, WASM).
+/// Decoding and the shape checks return Err. The compute and input layer
+/// checks still panic when they fail, and the panic is caught here with
+/// catch_unwind, so under panic=abort (wasm32-unknown-unknown, or a build with
+/// -Cpanic=abort) a failed layer check aborts instead of returning Err.
 fn try_verify_dag_proof_inner(
     proof_data: &[u8],
     _public_inputs: &[u8],
@@ -357,6 +403,7 @@ fn try_verify_dag_proof_inner(
     let embedded_fqs: Vec<Fq> = embedded_pub_inputs.iter().map(|u| Fq(*u)).collect();
     let gens = ProofDecoder::try_decode_pedersen_gens(gens_data)?;
     let desc = try_decode_circuit_description(circuit_desc_data)?;
+    check_layer_counts(&gkr_proof, &desc)?;
 
     let mut input_commit_coords: Vec<U256> = Vec::new();
     for dag_proof in &dag_input_proofs {
@@ -385,19 +432,7 @@ fn try_verify_dag_proof_inner(
         true
     }));
 
-    match result {
-        Ok(v) => Ok(v),
-        Err(e) => {
-            let msg = if let Some(s) = e.downcast_ref::<&str>() {
-                s.to_string()
-            } else if let Some(s) = e.downcast_ref::<String>() {
-                s.clone()
-            } else {
-                "unknown verification panic".to_string()
-            };
-            Err(VerifyError::VerificationFailed(msg))
-        }
-    }
+    result.map_err(panic_to_error)
 }
 
 /// Verify a GKR DAG proof from raw byte slices.
@@ -430,9 +465,9 @@ pub fn verify_raw(
     let mut circuit_hash = [0u8; 32];
     circuit_hash.copy_from_slice(&proof_data[4..36]);
 
-    // Use the safe (non-panicking) decode + verify path.
-    // This properly returns Err on malformed input without relying on
-    // catch_unwind (which doesn't work under panic=abort).
+    // Malformed input returns Err. A failed layer check is caught with
+    // catch_unwind inside try_verify_dag_proof_inner, so under panic=abort it
+    // aborts instead.
     match try_verify_dag_proof_inner(proof_data, &[], generators, circuit_desc) {
         Ok(true) => Ok(VerificationResult {
             circuit_hash,
@@ -462,9 +497,11 @@ pub fn verify(bundle: &ProofBundle) -> Result<VerificationResult> {
     let public_inputs = bundle.public_inputs_data()?;
     let gens_data = bundle.gens_data()?;
     let circuit_desc_data =
-        test_utils::encode_circuit_desc_from_json(&bundle.dag_circuit_description);
+        test_utils::try_encode_circuit_desc_from_json(&bundle.dag_circuit_description)?;
 
-    // Use the safe (non-panicking) decode + verify path.
+    // Malformed input returns Err. A failed layer check is caught with
+    // catch_unwind inside try_verify_dag_proof_inner, so under panic=abort it
+    // aborts instead.
     match try_verify_dag_proof_inner(&proof_data, &public_inputs, &gens_data, &circuit_desc_data) {
         Ok(true) => Ok(VerificationResult {
             circuit_hash,
@@ -479,6 +516,11 @@ pub fn verify(bundle: &ProofBundle) -> Result<VerificationResult> {
 }
 
 /// Verify a proof bundle in hybrid mode.
+///
+/// The proof and the generators are decoded with the same checked decoders
+/// as in [`verify`] and [`verify_raw`], so every entry point rejects the same
+/// encodings. In particular, an array of more than 100,000 elements in the
+/// proof or in the generators is a decode error here too.
 pub fn verify_hybrid(bundle: &ProofBundle) -> Result<HybridVerificationResult> {
     let proof_data = bundle.proof_data()?;
     if proof_data.len() < 36 {
@@ -492,17 +534,22 @@ pub fn verify_hybrid(bundle: &ProofBundle) -> Result<HybridVerificationResult> {
     let _public_inputs = bundle.public_inputs_data()?;
     let gens_data = bundle.gens_data()?;
     let circuit_desc_data =
-        test_utils::encode_circuit_desc_from_json(&bundle.dag_circuit_description);
+        test_utils::try_encode_circuit_desc_from_json(&bundle.dag_circuit_description)?;
+
+    let proof_bytes = &proof_data[4..];
+    let mut ch = [0u8; 32];
+    ch.copy_from_slice(&proof_bytes[0..32]);
+    let mut decoder = ProofDecoder::new(proof_bytes);
+    let (gkr_proof, embedded_pub_inputs, dag_input_proofs, public_value_claims) =
+        decoder.try_decode_proof_for_dag()?;
+    let embedded_fqs: Vec<Fq> = embedded_pub_inputs.iter().map(|u| Fq(*u)).collect();
+    let gens = ProofDecoder::try_decode_pedersen_gens(&gens_data)?;
+    let desc = try_decode_circuit_description(&circuit_desc_data)?;
+    check_layer_counts(&gkr_proof, &desc)?;
+
+    // The transcript replay still uses assert/indexing internally, so it is
+    // wrapped in catch_unwind like the full verifier.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let proof_bytes = &proof_data[4..];
-        let mut ch = [0u8; 32];
-        ch.copy_from_slice(&proof_bytes[0..32]);
-        let mut decoder = ProofDecoder::new(proof_bytes);
-        let (gkr_proof, embedded_pub_inputs, dag_input_proofs, public_value_claims) =
-            decoder.decode_proof_for_dag();
-        let embedded_fqs: Vec<Fq> = embedded_pub_inputs.iter().map(|u| Fq(*u)).collect();
-        let gens = ProofDecoder::decode_pedersen_gens(&gens_data);
-        let desc = decode_circuit_description(&circuit_desc_data);
         let mut icc: Vec<U256> = Vec::new();
         for dp in &dag_input_proofs {
             for row in &dp.commitment_rows {
@@ -526,25 +573,16 @@ pub fn verify_hybrid(bundle: &ProofBundle) -> Result<HybridVerificationResult> {
         let digest_fq = sponge.squeeze();
         let mut td = [0u8; 32];
         td.copy_from_slice(&digest_fq.0.to_be_bytes());
-        (ch, td, compute_fr, input_fr)
+        (td, compute_fr, input_fr)
     }));
     match result {
-        Ok((ch, td, compute_fr, input_fr)) => Ok(HybridVerificationResult {
+        Ok((td, compute_fr, input_fr)) => Ok(HybridVerificationResult {
             circuit_hash: ch,
             transcript_digest: td,
             compute_fr,
             input_fr,
         }),
-        Err(e) => {
-            let msg = if let Some(s) = e.downcast_ref::<&str>() {
-                s.to_string()
-            } else if let Some(s) = e.downcast_ref::<String>() {
-                s.clone()
-            } else {
-                "unknown verification panic".to_string()
-            };
-            Err(VerifyError::VerificationFailed(msg))
-        }
+        Err(e) => Err(panic_to_error(e)),
     }
 }
 
@@ -693,8 +731,53 @@ mod tests {
         let _ = verify_dag_proof_hybrid_inner(&[0u8; 3], &[], &[], &[]);
     }
 
+    /// The fixture proof, its generators and its circuit description (JSON).
+    fn fixture_parts() -> (Vec<u8>, Vec<u8>, serde_json::Value) {
+        let fixture_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../contracts/test/fixtures/phase1a_dag_fixture.json"
+        );
+        let fixture: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(fixture_path).unwrap()).unwrap();
+        let hex_field = |key: &str| hex::decode(&fixture[key].as_str().unwrap()[2..]).unwrap();
+        (
+            hex_field("proof_hex"),
+            hex_field("gens_hex"),
+            fixture["dag_circuit_description"].clone(),
+        )
+    }
+
+    /// The trusted entry point checks the proof shape too (in
+    /// `gkr::verify_compute_layers`): zero compute layers is not a pass.
     #[test]
-    #[ignore]
+    #[should_panic(expected = "declares 0 compute layers but the proof has 88")]
+    fn test_verify_dag_proof_inner_rejects_zero_compute_layers() {
+        let (proof_data, gens_data, mut desc) = fixture_parts();
+        desc["numComputeLayers"] = serde_json::json!(0);
+        verify_dag_proof_inner(
+            &proof_data,
+            &[],
+            &gens_data,
+            &encode_circuit_desc_from_json(&desc),
+        );
+    }
+
+    /// The same check in the trusted hybrid entry point.
+    #[test]
+    #[should_panic(expected = "layer 0: circuit description declares 0 sumcheck rounds")]
+    fn test_verify_dag_proof_hybrid_inner_rejects_round_count_mismatch() {
+        let (proof_data, gens_data, mut desc) = fixture_parts();
+        desc["numSumcheckRounds"][0] = serde_json::json!(0);
+        verify_dag_proof_hybrid_inner(
+            &proof_data,
+            &[],
+            &gens_data,
+            &encode_circuit_desc_from_json(&desc),
+        );
+    }
+
+    #[test]
+    #[ignore = "full verification: ~2 s in release, about a minute in debug"]
     fn test_verify_dag_proof_e2e() {
         let fixture_path = concat!(
             env!("CARGO_MANIFEST_DIR"),

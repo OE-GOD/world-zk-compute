@@ -16,7 +16,7 @@
 
 [Unit]
 Description=World ZK Compute Operator
-Documentation=https://github.com/worldcoin/world-zk-compute
+Documentation=https://github.com/OE-GOD/world-zk-compute
 After=network-online.target
 Wants=network-online.target
 

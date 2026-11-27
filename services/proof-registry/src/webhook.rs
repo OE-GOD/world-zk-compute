@@ -51,6 +51,12 @@ pub struct WebhookStore {
     client: reqwest::Client,
 }
 
+impl Default for WebhookStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WebhookStore {
     pub fn new() -> Self {
         Self {

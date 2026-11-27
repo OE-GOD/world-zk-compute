@@ -35,13 +35,13 @@ from __future__ import annotations
 import enum
 import logging
 import threading
-import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Sequence, Type, Union
-
-logger = logging.getLogger(__name__)
+from typing import Any, Callable, Union
 
 from web3 import Web3
+
+logger = logging.getLogger(__name__)
 
 
 class TEEEventType(enum.Enum):
@@ -60,7 +60,7 @@ class TEEEventType(enum.Enum):
 # These MUST match the events declared in ITEEMLVerifier.sol.
 # ---------------------------------------------------------------------------
 
-_EVENT_SIGNATURES: Dict[str, str] = {
+_EVENT_SIGNATURES: dict[str, str] = {
     "ResultSubmitted": "ResultSubmitted(bytes32,bytes32,bytes32,address)",
     "ResultChallenged": "ResultChallenged(bytes32,address)",
     "ResultFinalized": "ResultFinalized(bytes32)",
@@ -77,7 +77,7 @@ def _compute_topic_hash(signature: str) -> bytes:
 
 
 # Pre-computed topic hash -> event name mapping.
-_TOPIC_TO_NAME: Dict[bytes, str] = {
+_TOPIC_TO_NAME: dict[bytes, str] = {
     _compute_topic_hash(sig): name for name, sig in _EVENT_SIGNATURES.items()
 }
 
@@ -184,7 +184,7 @@ TEEEvent = Union[
 ]
 
 # Map from event name to its dataclass type.
-EVENT_TYPES: Dict[str, Type[TEEEvent]] = {
+EVENT_TYPES: dict[str, type[TEEEvent]] = {
     "ResultSubmitted": ResultSubmitted,
     "ResultChallenged": ResultChallenged,
     "ResultFinalized": ResultFinalized,
@@ -195,7 +195,7 @@ EVENT_TYPES: Dict[str, Type[TEEEvent]] = {
 }
 
 # All recognized event names.
-ALL_EVENT_NAMES: List[str] = list(EVENT_TYPES.keys())
+ALL_EVENT_NAMES: list[str] = list(EVENT_TYPES.keys())
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +227,7 @@ def _address_from_data(data: bytes, offset: int = 0) -> str:
     return Web3.to_checksum_address(data[offset + 12 : offset + 32])
 
 
-def parse_log(log: Dict[str, Any]) -> Optional[TEEEvent]:
+def parse_log(log: dict[str, Any]) -> TEEEvent | None:
     """Parse a raw ``eth_getLogs`` entry into a typed :class:`TEEEvent`.
 
     Returns ``None`` if the log does not match any known event.
@@ -354,7 +354,7 @@ class TEEEventWatcher:
         self,
         contract_address: str,
         rpc_url: str,
-        abi: Optional[List[Dict[str, Any]]] = None,
+        abi: list[dict[str, Any]] | None = None,
     ) -> None:
         """Create a new TEEEventWatcher.
 
@@ -369,7 +369,7 @@ class TEEEventWatcher:
         self._rpc_url = rpc_url
 
         # Background watcher state
-        self._watch_thread: Optional[threading.Thread] = None
+        self._watch_thread: threading.Thread | None = None
         self._stop_event = threading.Event()
 
     # -- Properties ---------------------------------------------------------
@@ -398,8 +398,8 @@ class TEEEventWatcher:
     def poll_events(
         self,
         from_block: int,
-        to_block: Union[int, str] = "latest",
-        event_types: Optional[Sequence[str]] = None,
+        to_block: int | str = "latest",
+        event_types: Sequence[str] | None = None,
     ) -> tuple:
         """Poll for events in a block range.
 
@@ -432,7 +432,7 @@ class TEEEventWatcher:
         if from_block > resolved_to_block:
             return ([], from_block)
 
-        filter_params: Dict[str, Any] = {
+        filter_params: dict[str, Any] = {
             "fromBlock": from_block,
             "toBlock": resolved_to_block,
             "address": self._contract_address,
@@ -442,7 +442,7 @@ class TEEEventWatcher:
 
         logs = self._w3.eth.get_logs(filter_params)
 
-        events: List[TEEEvent] = []
+        events: list[TEEEvent] = []
         for log_entry in logs:
             parsed = parse_log(log_entry)
             if parsed is not None:
@@ -460,8 +460,8 @@ class TEEEventWatcher:
         self,
         callback: Callable[[TEEEvent], None],
         poll_interval: float = 2.0,
-        from_block: Union[int, str] = "latest",
-        event_types: Optional[Sequence[str]] = None,
+        from_block: int | str = "latest",
+        event_types: Sequence[str] | None = None,
     ) -> None:
         """Start a background thread that continuously polls for events.
 
@@ -529,8 +529,8 @@ class TEEEventWatcher:
 
     @staticmethod
     def _build_topic0_filter(
-        event_types: Optional[Sequence[str]],
-    ) -> Optional[Any]:
+        event_types: Sequence[str] | None,
+    ) -> Any | None:
         """Build a topic0 filter value for ``eth_getLogs``.
 
         If *event_types* is ``None`` or empty, returns ``None`` (no filter).

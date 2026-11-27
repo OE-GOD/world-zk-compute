@@ -20,6 +20,10 @@ pub struct Config {
     /// Chain ID for replay protection in attestation signing.
     /// Default: 1 (Ethereum mainnet). Can be overridden per-request.
     pub chain_id: u64,
+    /// Address of the TEEMLVerifier contract that checks this enclave's results
+    /// (`TEE_VERIFIER_ADDRESS`). When known -- from this setting or from the request --
+    /// `/infer` signs the EIP-712 digest that `TEEMLVerifier.submitResult` recovers.
+    pub tee_verifier_address: Option<alloy_primitives::Address>,
     /// Optional admin API key for protected endpoints (e.g. model hot-reload).
     /// If not set, admin endpoints return 403.
     pub admin_api_key: Option<String>,
@@ -74,6 +78,19 @@ impl Config {
             .and_then(|s| s.parse().ok())
             .unwrap_or(1u64);
 
+        // A malformed address must not silently fall back to the legacy signature,
+        // which the contract rejects: fail at startup instead.
+        let tee_verifier_address = std::env::var("TEE_VERIFIER_ADDRESS").ok().and_then(|s| {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.parse().unwrap_or_else(|e| {
+                    panic!("Invalid TEE_VERIFIER_ADDRESS '{}': {}", trimmed, e)
+                }))
+            }
+        });
+
         let admin_api_key = std::env::var("ADMIN_API_KEY").ok().and_then(|s| {
             let trimmed = s.trim().to_string();
             if trimmed.is_empty() {
@@ -108,6 +125,7 @@ impl Config {
             private_key,
             nitro_enabled,
             chain_id,
+            tee_verifier_address,
             admin_api_key,
             max_requests_per_minute,
             watchdog_enabled,
@@ -157,6 +175,7 @@ mod tests {
         std::env::remove_var("ENCLAVE_PRIVATE_KEY");
         std::env::remove_var("NITRO_ENABLED");
         std::env::remove_var("CHAIN_ID");
+        std::env::remove_var("TEE_VERIFIER_ADDRESS");
         std::env::remove_var("ADMIN_API_KEY");
         std::env::remove_var("MAX_REQUESTS_PER_MINUTE");
         std::env::remove_var("WATCHDOG_ENABLED");
@@ -169,6 +188,7 @@ mod tests {
         assert!(config.private_key.is_none());
         assert!(!config.nitro_enabled);
         assert_eq!(config.chain_id, 1); // default is Ethereum mainnet
+        assert!(config.tee_verifier_address.is_none());
         assert!(config.admin_api_key.is_none());
         assert_eq!(config.max_requests_per_minute, 120);
         assert!(config.watchdog_enabled); // default is true
@@ -182,6 +202,25 @@ mod tests {
         let config = Config::from_env();
         assert_eq!(config.chain_id, 11155111); // Sepolia
         std::env::remove_var("CHAIN_ID");
+    }
+
+    #[test]
+    #[serial]
+    fn test_tee_verifier_address_from_env() {
+        std::env::set_var(
+            "TEE_VERIFIER_ADDRESS",
+            "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+        );
+        let config = Config::from_env();
+        assert_eq!(
+            config.tee_verifier_address,
+            Some(
+                "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+                    .parse()
+                    .unwrap()
+            )
+        );
+        std::env::remove_var("TEE_VERIFIER_ADDRESS");
     }
 
     #[test]

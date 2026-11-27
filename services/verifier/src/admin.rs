@@ -13,7 +13,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::tenant::TenantStore;
+use crate::tenant::{TenantStore, MAX_TENANT_NAME_CHARS};
 
 // -- Admin auth state --
 
@@ -158,6 +158,14 @@ pub async fn create_tenant(
             StatusCode::BAD_REQUEST,
             Json(AdminError {
                 error: "name is required".into(),
+            }),
+        ));
+    }
+    if req.name.chars().count() > MAX_TENANT_NAME_CHARS {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(AdminError {
+                error: format!("name must be at most {MAX_TENANT_NAME_CHARS} characters"),
             }),
         ));
     }

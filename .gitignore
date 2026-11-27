@@ -63,6 +63,9 @@ cache/
 # Forge broadcast artifacts
 contracts/broadcast/
 
+# Local-chain output of scripts/deploy.sh (addresses are only valid for that Anvil run)
+deployments/31337.json
+
 # Gnark/Groth16 build artifacts
 *.bin
 !programs/*.bin
@@ -100,6 +103,8 @@ contracts/stylus/gkr-verifier/calldata.hex
 # Secrets and credentials
 *.key
 *.pem
+# proof-registry writes its receipt signing key here when run from the repo
+registry_signing_key.hex
 *.p12
 *.pfx
 

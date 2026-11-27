@@ -86,7 +86,16 @@ async fn upload_input(
     }
 
     let size = body.len();
-    let digest = state.store.put(request_id, body.to_vec());
+    // A failed write must not be answered with a digest: the uploader would
+    // take the input as stored, and it would be gone after a restart.
+    let digest = state.store.put(request_id, body.to_vec()).map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Failed to store input".to_string(),
+            }),
+        )
+    })?;
 
     info!(
         "Input uploaded: request_id={}, size={}, digest={}",

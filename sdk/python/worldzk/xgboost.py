@@ -21,10 +21,9 @@ import json
 import math
 import struct
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .errors import WorldZKError
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Errors
@@ -83,7 +82,7 @@ def _write_byte_array_32(data: bytes) -> bytes:
     return result
 
 
-def _write_vec_f64(values: List[float]) -> bytes:
+def _write_vec_f64(values: list[float]) -> bytes:
     """Vec<f64> -> ONE u32 word for length, then each f64 as TWO u32 words."""
     result = _write_u32(len(values))
     for v in values:
@@ -112,7 +111,7 @@ class TreeNode:
     right_child: int
     value: float
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "is_leaf": self.is_leaf,
             "feature_idx": self.feature_idx,
@@ -130,9 +129,9 @@ class Tree:
     Mirrors the Rust struct: Tree { nodes: Vec<TreeNode> }
     """
 
-    nodes: List[TreeNode] = field(default_factory=list)
+    nodes: list[TreeNode] = field(default_factory=list)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {"nodes": [n.to_dict() for n in self.nodes]}
 
 
@@ -148,10 +147,10 @@ class XGBoostModel:
     num_features: int
     num_classes: int
     base_score: float
-    trees: List[Tree] = field(default_factory=list)
+    trees: list[Tree] = field(default_factory=list)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "XGBoostModel":
+    def from_dict(cls, data: dict[str, Any]) -> "XGBoostModel":
         """Parse an XGBoost JSON model (from model.save_model('model.json')).
 
         Navigates learner.gradient_booster.model.trees, detects leaves via
@@ -203,7 +202,7 @@ class XGBoostModel:
             trees=trees,
         )
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "num_features": self.num_features,
             "num_classes": self.num_classes,
@@ -243,7 +242,7 @@ class XGBoostModel:
 
 
 def _parse_xgboost_tree(
-    raw: Dict[str, Any], tree_idx: int, num_features: int
+    raw: dict[str, Any], tree_idx: int, num_features: int
 ) -> Tree:
     """Parse a single tree from XGBoost JSON format."""
     left_children = raw["left_children"]
@@ -291,9 +290,9 @@ class Sample:
     """
 
     id: bytes  # exactly 32 bytes
-    features: List[float] = field(default_factory=list)
+    features: list[float] = field(default_factory=list)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id.hex(),
             "features": list(self.features),
@@ -324,21 +323,21 @@ class XGBoostConverter:
             model: A parsed XGBoostModel instance.
         """
         self._model = model
-        self._samples: List[Sample] = []
+        self._samples: list[Sample] = []
         self._threshold: float = 0.5
 
     @classmethod
     def from_model_file(cls, path: str) -> "XGBoostConverter":
         """Load an XGBoost model from a JSON file (model.save_model('model.json'))."""
         try:
-            with open(path, "r") as f:
+            with open(path) as f:
                 data = json.load(f)
         except (OSError, json.JSONDecodeError) as e:
             raise ModelParseError(f"Failed to read model file: {e}")
         return cls.from_dict(data)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "XGBoostConverter":
+    def from_dict(cls, data: dict[str, Any]) -> "XGBoostConverter":
         """Create from a parsed XGBoost JSON dict."""
         model = XGBoostModel.from_dict(data)
         return cls(model)
@@ -353,7 +352,7 @@ class XGBoostConverter:
         return self._model
 
     @property
-    def samples(self) -> List[Sample]:
+    def samples(self) -> list[Sample]:
         return list(self._samples)
 
     @property
@@ -367,7 +366,7 @@ class XGBoostConverter:
         self._threshold = threshold
         return self
 
-    def add_sample(self, id: bytes, features: List[float]) -> "XGBoostConverter":
+    def add_sample(self, id: bytes, features: list[float]) -> "XGBoostConverter":
         """Add a single sample. Returns self for chaining.
 
         Args:
@@ -382,7 +381,7 @@ class XGBoostConverter:
         self,
         path: str,
         id_column: str,
-        feature_columns: List[str],
+        feature_columns: list[str],
     ) -> "XGBoostConverter":
         """Add samples from a CSV file. Returns self for chaining.
 
@@ -396,7 +395,7 @@ class XGBoostConverter:
             - Non-hex strings are SHA-256 hashed to produce 32 bytes.
         """
         try:
-            with open(path, "r", newline="") as f:
+            with open(path, newline="") as f:
                 reader = csv.DictReader(f)
                 for row_num, row in enumerate(reader, start=1):
                     if id_column not in row:
@@ -479,7 +478,7 @@ class XGBoostConverter:
         raw = self.serialize()
         return "0x" + hashlib.sha256(raw).hexdigest()
 
-    def _validate_sample(self, id: bytes, features: List[float]) -> None:
+    def _validate_sample(self, id: bytes, features: list[float]) -> None:
         """Validate a single sample's id and features."""
         if not isinstance(id, (bytes, bytearray)):
             raise InputValidationError(

@@ -4,8 +4,6 @@ import json
 import os
 import tempfile
 
-import pytest
-
 from worldzk.hash_utils import (
     _keccak256,
     _serialize_f64_list,

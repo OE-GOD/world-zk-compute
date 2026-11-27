@@ -3,12 +3,9 @@
 import csv
 import hashlib
 import json
-import math
 import os
-import struct
 import sys
 import tempfile
-from typing import List
 
 import pytest
 
@@ -22,13 +19,11 @@ from worldzk.lightgbm import (
 from worldzk.xgboost import (
     InputValidationError,
     ModelParseError,
-    Sample,
     Tree,
     TreeNode,
     XGBoostConverter,
     XGBoostModel,
 )
-
 
 # =============================================================================
 # Inline sample LightGBM models
@@ -808,7 +803,7 @@ class TestDeepTree:
 # =============================================================================
 
 
-def _traverse_tree(tree: Tree, features: List[float]) -> float:
+def _traverse_tree(tree: Tree, features: list[float]) -> float:
     """Simulate tree inference by traversing from root to leaf."""
     node = tree.nodes[0]
     while node.is_leaf == 0:

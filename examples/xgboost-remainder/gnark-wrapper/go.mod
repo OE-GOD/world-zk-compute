@@ -1,4 +1,4 @@
-module github.com/worldcoin/world-zk-compute/examples/xgboost-remainder/gnark-wrapper
+module github.com/OE-GOD/world-zk-compute/examples/xgboost-remainder/gnark-wrapper
 
 go 1.23
 

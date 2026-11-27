@@ -25,7 +25,7 @@ use admin::{admin_auth_middleware, AdminAuthState};
 use auth::{auth_middleware, AuthState};
 use config::ServiceConfig;
 use rate_limit::{rate_limit_middleware, RateLimitState};
-use tenant::TenantStore;
+use tenant::{TenantStore, MAX_TENANT_NAME_CHARS};
 
 // -- Shared state for warm circuits --
 
@@ -104,6 +104,7 @@ async fn landing_page() -> axum::response::Html<&'static str> {
 }
 
 async fn health(State(store): State<CircuitStore>) -> Json<HealthResponse> {
+    drop_expired(&store).await;
     let count = store.read().await.len();
     Json(HealthResponse {
         status: "ok",
@@ -131,22 +132,24 @@ async fn verify_proof(
 ///
 /// Clients can POST a gzip-compressed bundle with `Content-Type: application/octet-stream`
 /// or plain JSON with `Content-Type: application/json`. The handler auto-detects format.
+/// A gzip body that decompresses to more than
+/// [`zkml_verifier::bundle::MAX_DECOMPRESSED_BUNDLE_BYTES`] is rejected.
 async fn verify_proof_bytes(
     body: Bytes,
 ) -> Result<Json<VerifyResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let bundle = ProofBundle::from_bytes(&body)
-        .map_err(|e| err(StatusCode::BAD_REQUEST, format!("parse bundle: {e}")))?;
-
-    let result = tokio::task::spawn_blocking(move || verify(&bundle))
-        .await
-        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let result = tokio::task::spawn_blocking(move || {
+        let bundle = ProofBundle::from_bytes(&body).map_err(|e| format!("parse bundle: {e}"))?;
+        verify(&bundle).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     match result {
         Ok(r) => Ok(Json(VerifyResponse {
             verified: r.verified,
             circuit_hash: format!("0x{}", hex::encode(r.circuit_hash)),
         })),
-        Err(e) => Err(err(StatusCode::BAD_REQUEST, e.to_string())),
+        Err(e) => Err(err(StatusCode::BAD_REQUEST, e)),
     }
 }
 
@@ -192,8 +195,20 @@ async fn register_circuit(
 }
 
 async fn list_circuits(State(store): State<CircuitStore>) -> Json<CircuitListResponse> {
+    drop_expired(&store).await;
     let keys: Vec<String> = store.read().await.keys().cloned().collect();
     Json(CircuitListResponse { circuits: keys })
+}
+
+/// Remove every registration that is past the TTL (nothing expires when the TTL is 0).
+async fn drop_expired(store: &CircuitStore) {
+    let ttl = circuit_ttl();
+    if ttl > 0 {
+        store
+            .write()
+            .await
+            .retain(|_, config| config.registered_at.elapsed().as_secs() <= ttl);
+    }
 }
 
 /// Look up a circuit config, checking TTL expiry.
@@ -257,12 +272,7 @@ async fn warm_verify_hybrid(
     Path(circuit_id): Path<String>,
     Json(req): Json<WarmVerifyRequest>,
 ) -> Result<Json<HybridResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let config = get_circuit(&store, &circuit_id).await.map_err(|_| {
-        err(
-            StatusCode::NOT_FOUND,
-            format!("circuit '{circuit_id}' not registered or expired"),
-        )
-    })?;
+    let config = get_circuit(&store, &circuit_id).await?;
 
     let bundle = ProofBundle {
         proof_hex: req.proof_hex,
@@ -392,6 +402,12 @@ async fn onboard(
     if req.name.trim().is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "name is required".into()));
     }
+    if req.name.chars().count() > MAX_TENANT_NAME_CHARS {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            format!("name must be at most {MAX_TENANT_NAME_CHARS} characters"),
+        ));
+    }
     if req.email.trim().is_empty() || !req.email.contains('@') {
         return Err(err(
             StatusCode::BAD_REQUEST,
@@ -415,7 +431,7 @@ async fn onboard(
         tenant_id: tenant.id.clone(),
         api_key: tenant.api_key.clone(),
         quickstart: format!(
-            "curl -X POST {url}/verify \\\n  -H 'Authorization: Bearer {key}' \\\n  -H 'Content-Type: application/json' \\\n  -d @proof_bundle.json",
+            "curl -X POST {url}/verify \\\n  -H 'X-API-Key: {key}' \\\n  -H 'Content-Type: application/json' \\\n  -d @proof_bundle.json",
             url = "https://api.worldzk.io",
             key = tenant.api_key,
         ),
@@ -540,15 +556,17 @@ fn err(code: StatusCode, msg: String) -> (StatusCode, Json<ErrorResponse>) {
 
 #[cfg(test)]
 fn build_app() -> Router {
-    build_app_with_config(ServiceConfig::from_env())
+    build_app_with_config(ServiceConfig::from_vars(|_| None).unwrap()).unwrap()
 }
 
-fn build_app_with_config(config: ServiceConfig) -> Router {
+/// Build the router. Fails if a tenant file is configured and exists but
+/// cannot be loaded.
+fn build_app_with_config(config: ServiceConfig) -> Result<Router, String> {
     let circuit_store: CircuitStore = Arc::new(RwLock::new(HashMap::new()));
 
     // Initialize tenant store (file-backed or in-memory).
     let tenant_store = Arc::new(if config.tenant_persistence_enabled() {
-        TenantStore::load(&config.tenant_file)
+        TenantStore::load(&config.tenant_file)?
     } else {
         TenantStore::new()
     });
@@ -606,12 +624,12 @@ fn build_app_with_config(config: ServiceConfig) -> Router {
         .route("/docs", get(swagger_ui))
         .with_state(circuit_store);
 
-    Router::new()
+    Ok(Router::new()
         .merge(public_router)
         .merge(onboard_router)
         .merge(protected)
         .merge(admin_router)
-        .layer(CorsLayer::permissive())
+        .layer(CorsLayer::permissive()))
 }
 
 /// Initialise the `tracing_subscriber` with structured JSON output.
@@ -640,7 +658,10 @@ fn init_tracing() {
 async fn main() {
     init_tracing();
 
-    let config = ServiceConfig::from_env();
+    let config = ServiceConfig::from_env().unwrap_or_else(|e| {
+        tracing::error!("Configuration error: {e}");
+        std::process::exit(1);
+    });
     let _ = CIRCUIT_TTL.set(config.circuit_ttl_secs);
     let tls_config = tls::TlsConfig::from_env().unwrap_or_else(|e| {
         tracing::error!("TLS configuration error: {e}");
@@ -671,7 +692,10 @@ async fn main() {
         "Default rate limit configured"
     );
 
-    let app = build_app_with_config(config);
+    let app = build_app_with_config(config).unwrap_or_else(|e| {
+        tracing::error!("Tenant store error: {e}");
+        std::process::exit(1);
+    });
 
     if let Some(tls) = tls_config {
         let mtls_enabled = tls.is_mtls();
@@ -1012,6 +1036,95 @@ mod tests {
         );
     }
 
+    // -- Raw body tests --
+
+    async fn post_raw(app: Router, body: Vec<u8>) -> (StatusCode, String) {
+        let req = Request::post("/verify/raw").body(Body::from(body)).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        (status, json["error"].as_str().unwrap().to_string())
+    }
+
+    #[tokio::test]
+    async fn test_verify_raw_reports_parse_and_verification_errors() {
+        let (status, error) = post_raw(build_app(), b"not json".to_vec()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            error.starts_with("parse bundle: bundle parse error: "),
+            "{error}"
+        );
+
+        let bundle = ProofBundle::from_json(
+            r#"{"proof_hex":"0xdead","gens_hex":"0x00","dag_circuit_description":{}}"#,
+        )
+        .unwrap();
+        for body in [
+            bundle.to_json_pretty().unwrap().into_bytes(),
+            bundle.to_compressed_json().unwrap(),
+        ] {
+            let (status, error) = post_raw(build_app(), body).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert_eq!(error, "invalid proof: proof too short");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_verify_raw_rejects_gzip_over_the_size_limit() {
+        let limit = zkml_verifier::bundle::MAX_DECOMPRESSED_BUNDLE_BYTES;
+        let bundle = ProofBundle {
+            proof_hex: "0".repeat(limit),
+            public_inputs_hex: String::new(),
+            gens_hex: String::new(),
+            dag_circuit_description: serde_json::json!({}),
+            model_hash: None,
+            timestamp: None,
+            prover_version: None,
+            circuit_hash: None,
+        };
+        let body = bundle.to_compressed_json().unwrap();
+        assert!(body.len() < 100_000, "compressed to {} bytes", body.len());
+
+        let (status, error) = post_raw(build_app(), body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            error,
+            format!(
+                "parse bundle: bundle parse error: gzip decompress: \
+                 decompressed bundle exceeds {limit} bytes"
+            )
+        );
+    }
+
+    /// The runtime's only blocking thread is held, so a request whose body is
+    /// parsed on that thread cannot finish until it is released.
+    #[test]
+    fn test_verify_raw_parses_on_the_blocking_pool() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let (release, held) = std::sync::mpsc::channel::<()>();
+            let holder = tokio::task::spawn_blocking(move || held.recv());
+
+            let request = tokio::spawn(post_raw(build_app(), b"not json".to_vec()));
+            for _ in 0..1000 {
+                tokio::task::yield_now().await;
+            }
+            let finished_early = request.is_finished();
+
+            release.send(()).unwrap();
+            holder.await.unwrap().unwrap();
+            let (status, _) = request.await.unwrap();
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert!(!finished_early, "the body was parsed on the async thread");
+        });
+    }
+
     // -- Auth middleware tests --
 
     fn build_app_with_auth(keys: Vec<&str>) -> Router {
@@ -1023,6 +1136,7 @@ mod tests {
             admin_key: String::new(),
             tenant_file: String::new(),
         })
+        .unwrap()
     }
 
     #[tokio::test]
@@ -1154,7 +1268,8 @@ mod tests {
             circuit_ttl_secs: 0,
             admin_key: String::new(),
             tenant_file: String::new(),
-        });
+        })
+        .unwrap();
         let bundle = serde_json::json!({
             "proof_hex": "0xdead",
             "gens_hex": "0xbeef",
@@ -1204,7 +1319,8 @@ mod tests {
             circuit_ttl_secs: 0,
             admin_key: String::new(),
             tenant_file: String::new(),
-        });
+        })
+        .unwrap();
         let bundle = serde_json::json!({
             "proof_hex": "0xdead",
             "gens_hex": "0xbeef",
@@ -1230,7 +1346,8 @@ mod tests {
             circuit_ttl_secs: 0,
             admin_key: String::new(),
             tenant_file: String::new(),
-        });
+        })
+        .unwrap();
         let bundle = serde_json::json!({
             "proof_hex": "0xdead",
             "gens_hex": "0xbeef",
@@ -1276,7 +1393,8 @@ mod tests {
             circuit_ttl_secs: 0,
             admin_key: String::new(),
             tenant_file: String::new(),
-        });
+        })
+        .unwrap();
 
         // Health should work unlimited times regardless of rate limit
         for _ in 0..5 {
@@ -1297,6 +1415,7 @@ mod tests {
             admin_key: admin_key.to_string(),
             tenant_file: String::new(),
         })
+        .unwrap()
     }
 
     #[tokio::test]
@@ -1596,6 +1715,45 @@ mod tests {
         assert_eq!(json["total_requests"], 1);
     }
 
+    /// The quickstart returned by `/onboard` must name the header this service
+    /// checks: it used to print `Authorization: Bearer <key>`, which is rejected
+    /// with "Missing X-API-Key header".
+    #[tokio::test]
+    async fn test_onboard_quickstart_header_authenticates() {
+        let app = build_app_with_admin("admin-secret");
+
+        let body = serde_json::json!({ "name": "Onboarded", "email": "dev@example.com" });
+        let req = Request::post("/onboard")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+        // Take the auth header exactly as the quickstart prints it.
+        let quickstart = json["quickstart"].as_str().unwrap();
+        let header_line = quickstart
+            .lines()
+            .find(|line| line.contains(json["api_key"].as_str().unwrap()))
+            .expect("quickstart shows the API key");
+        let header = header_line
+            .split('\'')
+            .nth(1)
+            .expect("header is single-quoted");
+        let (name, value) = header.split_once(": ").unwrap();
+
+        let req = Request::get("/circuits")
+            .header(name, value)
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
     #[tokio::test]
     async fn test_revoked_tenant_key_rejected() {
         let app = build_app_with_admin("admin-secret");
@@ -1653,7 +1811,8 @@ mod tests {
             circuit_ttl_secs: 0,
             admin_key: "admin-secret".to_string(),
             tenant_file: String::new(),
-        });
+        })
+        .unwrap();
 
         // Create tenant with very low rate limit
         let body = serde_json::json!({
@@ -1739,5 +1898,161 @@ mod tests {
         assert_eq!(json["verified_b"], false);
         assert!(json["error_a"].is_string());
         assert!(json["error_b"].is_string());
+    }
+
+    // -- Tenant file tests --
+
+    #[test]
+    fn test_corrupt_tenant_file_stops_startup() {
+        let dir =
+            std::env::temp_dir().join(format!("verifier-main-corrupt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file_path = dir.join("tenants.json");
+        let truncated = r#"{"tenants":[{"id":"acme","name":"Acme Corp""#;
+        std::fs::write(&file_path, truncated).unwrap();
+
+        let result = build_app_with_config(ServiceConfig {
+            api_keys: vec![],
+            rate_limit_rpm: 100,
+            port: 3000,
+            circuit_ttl_secs: 0,
+            admin_key: String::new(),
+            tenant_file: file_path.to_str().unwrap().to_string(),
+        });
+        let err = match result {
+            Ok(_) => panic!("the app must not be built on a tenant file that failed to load"),
+            Err(e) => e,
+        };
+        assert!(err.contains("failed to parse"), "unexpected error: {err}");
+        assert_eq!(std::fs::read_to_string(&file_path).unwrap(), truncated);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -- Input bound tests --
+
+    #[tokio::test]
+    async fn test_overlong_api_key_rejected_like_unknown_key() {
+        async fn get_circuits(app: &Router, key: &str) -> (StatusCode, Bytes) {
+            let req = Request::get("/circuits")
+                .header("x-api-key", key)
+                .body(Body::empty())
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            let status = resp.status();
+            let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            (status, body)
+        }
+        let longest = "k".repeat(auth::MAX_API_KEY_LEN);
+        let overlong = "k".repeat(auth::MAX_API_KEY_LEN + 1);
+
+        // Keys configured: an unknown key is refused whatever its length.
+        let keyed = build_app_with_auth(vec!["valid-key"]);
+        let unknown = get_circuits(&keyed, "wrong-key").await;
+        assert_eq!(unknown.0, StatusCode::UNAUTHORIZED);
+        assert_eq!(get_circuits(&keyed, &overlong).await, unknown);
+
+        // Open access: keys are not checked, but an over-long one gets the
+        // same answer as an unknown key.
+        let open = build_app_with_auth(vec![]);
+        assert_eq!(get_circuits(&open, &longest).await.0, StatusCode::OK);
+        assert_eq!(get_circuits(&open, &overlong).await, unknown);
+    }
+
+    #[tokio::test]
+    async fn test_onboard_rejects_overlong_name() {
+        let app = build_app_with_admin("admin-secret");
+        // The bound counts characters, not bytes.
+        for (chars, expected) in [
+            (MAX_TENANT_NAME_CHARS, StatusCode::OK),
+            (MAX_TENANT_NAME_CHARS + 1, StatusCode::BAD_REQUEST),
+        ] {
+            let body = serde_json::json!({ "name": "é".repeat(chars), "email": "dev@example.com" });
+            let req = Request::post("/onboard")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), expected, "name of {chars} characters");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_admin_create_rejects_overlong_name() {
+        let app = build_app_with_admin("admin-secret");
+        for (chars, expected) in [
+            (MAX_TENANT_NAME_CHARS, StatusCode::CREATED),
+            (MAX_TENANT_NAME_CHARS + 1, StatusCode::BAD_REQUEST),
+        ] {
+            let body = serde_json::json!({ "name": "é".repeat(chars) });
+            let req = Request::post("/admin/tenants")
+                .header("content-type", "application/json")
+                .header("x-admin-key", "admin-secret")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), expected, "name of {chars} characters");
+        }
+    }
+
+    // -- Circuit TTL tests --
+
+    /// TTL the tests below run under. `CIRCUIT_TTL` is process-wide, so it is
+    /// long enough that no circuit registered by another test expires.
+    const TEST_TTL_SECS: u64 = 60;
+
+    /// A store with one circuit registered longer ago than the TTL ("old")
+    /// and one registered now ("fresh").
+    fn store_with_expired_circuit() -> CircuitStore {
+        assert_eq!(*CIRCUIT_TTL.get_or_init(|| TEST_TTL_SECS), TEST_TTL_SECS);
+        let registered = |secs_ago| CircuitConfig {
+            gens_hex: "0x00".into(),
+            dag_circuit_description: serde_json::json!({}),
+            registered_at: std::time::Instant::now() - std::time::Duration::from_secs(secs_ago),
+        };
+        Arc::new(RwLock::new(HashMap::from([
+            ("old".to_string(), registered(TEST_TTL_SECS + 2)),
+            ("fresh".to_string(), registered(0)),
+        ])))
+    }
+
+    #[tokio::test]
+    async fn test_expired_circuit_is_gone_on_both_verify_routes() {
+        let request = || {
+            Json(WarmVerifyRequest {
+                proof_hex: "0xdead".into(),
+                public_inputs_hex: String::new(),
+            })
+        };
+
+        let store = store_with_expired_circuit();
+        let (status, Json(plain)) = warm_verify(State(store), Path("old".into()), request())
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(status, StatusCode::GONE);
+
+        let store = store_with_expired_circuit();
+        let (status, Json(hybrid)) =
+            warm_verify_hybrid(State(store), Path("old".into()), request())
+                .await
+                .err()
+                .unwrap();
+        assert_eq!(status, StatusCode::GONE);
+        assert_eq!(hybrid.error, plain.error);
+    }
+
+    #[tokio::test]
+    async fn test_expired_circuits_are_not_listed_or_counted() {
+        let store = store_with_expired_circuit();
+        let Json(list) = list_circuits(State(store.clone())).await;
+        assert_eq!(list.circuits, ["fresh"]);
+        assert_eq!(store.read().await.len(), 1);
+
+        let store = store_with_expired_circuit();
+        let Json(response) = health(State(store)).await;
+        assert_eq!(response.circuits_loaded, 1);
     }
 }

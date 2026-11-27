@@ -5,56 +5,55 @@
 //! when transactions are sent faster than they're confirmed.
 //!
 //! This module provides a `NonceManager` that:
-//! - Tracks nonces locally with atomic operations
-//! - Increments nonce for each outgoing transaction
-//! - Syncs with the chain on initialization and errors
-//! - Thread-safe for concurrent access
+//! - Sends transactions one at a time (estimate, sign and broadcast happen
+//!   under a lock; receipts are awaited outside of it)
+//! - Uses up a nonce only for a transaction the node accepted
+//! - Re-reads the next nonce from the chain (pending count) on initialization
+//!   and after a failed send
 //!
 //! ## Usage
 //!
 //! ```rust
 //! let nonce_manager = NonceManager::new(provider, address).await?;
 //!
-//! // Get next nonce (atomically increments)
-//! let nonce = nonce_manager.next_nonce().await?;
+//! // Send with the next nonce
+//! let pending_tx = nonce_manager
+//!     .send(|nonce| async move { call.nonce(nonce).send().await })
+//!     .await?;
 //!
-//! // On transaction failure, reset to chain state
-//! nonce_manager.sync_from_chain().await?;
+//! // When a sent transaction may have been dropped, re-read the next nonce
+//! nonce_manager.sync_from_chain().await;
 //! ```
 
+use crate::redact;
 use alloy::primitives::Address;
 use alloy::providers::Provider;
 use anyhow::Result;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::future::Future;
 use std::sync::Arc;
-use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use tokio::sync::Mutex;
+use tracing::{info, warn};
 
-/// Thread-safe nonce manager for parallel transaction submission
+/// Nonce manager for parallel transaction submission
 ///
-/// Maintains a local nonce counter that is atomically incremented
-/// for each transaction, avoiding conflicts when multiple transactions
-/// are sent concurrently.
+/// Holds the nonce of the next transaction. Sends take turns, so that a nonce
+/// is either used by a transaction the node accepted or given to the next send.
 pub struct NonceManager<P> {
     /// The provider for chain queries
     provider: Arc<P>,
     /// The address we're managing nonces for
     address: Address,
-    /// Current nonce (local tracking)
-    current_nonce: AtomicU64,
-    /// Lock for sync operations (prevents concurrent syncs)
-    sync_lock: RwLock<()>,
-    /// Number of pending transactions (for monitoring)
-    pending_count: AtomicU64,
+    /// Nonce of the next transaction; locked while a transaction is sent
+    next_nonce: Mutex<u64>,
 }
 
 impl<P> NonceManager<P>
 where
     P: Provider + Clone + 'static,
 {
-    /// Create a new nonce manager, syncing initial nonce from chain
+    /// Create a new nonce manager, reading the initial nonce from the chain
     pub async fn new(provider: Arc<P>, address: Address) -> Result<Self> {
-        let nonce = provider.get_transaction_count(address).await?;
+        let nonce = provider.get_transaction_count(address).pending().await?;
 
         info!(
             "NonceManager initialized for {} with nonce {}",
@@ -64,159 +63,181 @@ where
         Ok(Self {
             provider,
             address,
-            current_nonce: AtomicU64::new(nonce),
-            sync_lock: RwLock::new(()),
-            pending_count: AtomicU64::new(0),
+            next_nonce: Mutex::new(nonce),
         })
     }
 
-    /// Get the next nonce and atomically increment the counter
+    /// Send a transaction with the next nonce
     ///
-    /// This is the primary method for getting nonces. It's lock-free
-    /// and safe to call from multiple tasks concurrently.
-    pub fn next_nonce(&self) -> u64 {
-        let nonce = self.current_nonce.fetch_add(1, Ordering::SeqCst);
-        self.pending_count.fetch_add(1, Ordering::Relaxed);
-        debug!(
-            "Allocated nonce {} (pending: {})",
-            nonce,
-            self.pending_count.load(Ordering::Relaxed)
-        );
-        nonce
-    }
+    /// `send` is called with the nonce and must return once the node has
+    /// accepted or refused the transaction, without waiting for the receipt.
+    /// Other sends wait meanwhile. On success the nonce is used up; on an
+    /// error the next nonce is re-read from the chain.
+    pub async fn send<T, E, F, Fut>(&self, send: F) -> Result<T, E>
+    where
+        F: FnOnce(u64) -> Fut,
+        Fut: Future<Output = Result<T, E>>,
+    {
+        let mut next_nonce = self.next_nonce.lock().await;
 
-    /// Mark a transaction as completed (success or confirmed failure)
-    ///
-    /// Call this after a transaction is confirmed (success or revert)
-    /// to track pending transaction count.
-    pub fn transaction_completed(&self) {
-        self.pending_count.fetch_sub(1, Ordering::Relaxed);
-    }
-
-    /// Get current nonce without incrementing
-    pub fn current(&self) -> u64 {
-        self.current_nonce.load(Ordering::SeqCst)
-    }
-
-    /// Get number of pending transactions
-    pub fn pending(&self) -> u64 {
-        self.pending_count.load(Ordering::Relaxed)
-    }
-
-    /// Sync nonce from chain state
-    ///
-    /// Use this to recover from errors or if transactions were sent
-    /// outside this manager. This acquires a lock to prevent concurrent syncs.
-    pub async fn sync_from_chain(&self) -> Result<u64> {
-        // Acquire lock to prevent concurrent syncs
-        let _lock = self.sync_lock.write().await;
-
-        let chain_nonce = self.provider.get_transaction_count(self.address).await?;
-        let old_nonce = self.current_nonce.swap(chain_nonce, Ordering::SeqCst);
-
-        if chain_nonce != old_nonce {
-            info!(
-                "Nonce synced from chain: {} -> {} (diff: {})",
-                old_nonce,
-                chain_nonce,
-                chain_nonce as i64 - old_nonce as i64
-            );
+        let result = send(*next_nonce).await;
+        match result {
+            Ok(_) => *next_nonce += 1,
+            Err(_) => self.read_pending_count(&mut next_nonce).await,
         }
 
-        // Reset pending count since we synced
-        self.pending_count.store(0, Ordering::Relaxed);
-
-        Ok(chain_nonce)
+        result
     }
 
-    /// Handle a nonce-related transaction error
-    ///
-    /// Analyzes the error and takes appropriate action:
-    /// - "nonce too low": syncs from chain (transaction was already mined or replaced)
-    /// - "nonce too high": decrements local nonce (we got ahead somehow)
-    /// - "replacement transaction underpriced": nonce collision, sync from chain
-    pub async fn handle_nonce_error(&self, error: &str, used_nonce: u64) -> Result<()> {
-        let error_lower = error.to_lowercase();
+    /// Get the nonce of the next transaction
+    pub async fn current(&self) -> u64 {
+        *self.next_nonce.lock().await
+    }
 
-        if error_lower.contains("nonce too low") {
-            info!("Nonce too low error - syncing from chain");
-            self.sync_from_chain().await?;
-        } else if error_lower.contains("nonce too high") {
-            // This shouldn't happen normally, but handle it
-            warn!("Nonce too high - this is unexpected");
-            self.sync_from_chain().await?;
-        } else if error_lower.contains("replacement transaction underpriced")
-            || error_lower.contains("already known")
+    /// Re-read the next nonce from the chain
+    ///
+    /// Use this when a transaction that was sent may have been dropped.
+    pub async fn sync_from_chain(&self) {
+        let mut next_nonce = self.next_nonce.lock().await;
+        self.read_pending_count(&mut next_nonce).await;
+    }
+
+    /// Set the next nonce to the pending transaction count. If that cannot be
+    /// read, the nonce stays as it is.
+    async fn read_pending_count(&self, next_nonce: &mut u64) {
+        match self
+            .provider
+            .get_transaction_count(self.address)
+            .pending()
+            .await
         {
-            // Transaction with same nonce already pending
-            info!("Transaction replacement issue - syncing from chain");
-            self.sync_from_chain().await?;
-        } else {
-            // For other errors, just mark the nonce as potentially available
-            // by not doing anything (the transaction didn't use the nonce)
-            debug!(
-                "Non-nonce error for nonce {}, no action needed: {}",
-                used_nonce, error
-            );
+            Ok(chain_nonce) => {
+                if chain_nonce != *next_nonce {
+                    info!("Nonce synced from chain: {} -> {}", next_nonce, chain_nonce);
+                }
+                *next_nonce = chain_nonce;
+            }
+            Err(e) => warn!(
+                "Failed to read nonce from chain, keeping {}: {}",
+                next_nonce,
+                redact::redact_urls(&e.to_string())
+            ),
         }
-
-        self.transaction_completed();
-        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::test_support::{MockChain, MockNode};
 
-    #[test]
-    fn test_nonce_increment() {
-        // Create a mock manager without provider
-        let nonce = AtomicU64::new(5);
+    #[tokio::test]
+    async fn test_starts_from_pending_count() {
+        let node = MockNode::start(MockChain {
+            mined_count: 3,
+            pending_count: 5,
+            ..Default::default()
+        })
+        .await;
 
-        // Simulate next_nonce behavior
-        let n1 = nonce.fetch_add(1, Ordering::SeqCst);
-        let n2 = nonce.fetch_add(1, Ordering::SeqCst);
-        let n3 = nonce.fetch_add(1, Ordering::SeqCst);
-
-        assert_eq!(n1, 5);
-        assert_eq!(n2, 6);
-        assert_eq!(n3, 7);
-        assert_eq!(nonce.load(Ordering::SeqCst), 8);
+        assert_eq!(node.nonce_manager.current().await, 5);
     }
 
-    #[test]
-    fn test_concurrent_nonce_allocation() {
-        use std::thread;
+    #[tokio::test]
+    async fn test_accepted_send_uses_up_the_nonce() {
+        let node = MockNode::start(MockChain::default()).await;
 
-        let nonce = Arc::new(AtomicU64::new(0));
-        let mut handles = vec![];
+        for expected in 0..3 {
+            let nonce = node
+                .nonce_manager
+                .send(|nonce| async move { Ok::<_, ()>(nonce) })
+                .await;
+            assert_eq!(nonce, Ok(expected));
+        }
+        assert_eq!(node.nonce_manager.current().await, 3);
+    }
 
-        // Spawn 10 threads each getting 100 nonces
-        for _ in 0..10 {
-            let nonce = nonce.clone();
-            handles.push(thread::spawn(move || {
-                let mut nonces = vec![];
-                for _ in 0..100 {
-                    nonces.push(nonce.fetch_add(1, Ordering::SeqCst));
-                }
-                nonces
-            }));
+    #[tokio::test]
+    async fn test_failed_send_rereads_pending_count() {
+        let node = MockNode::start(MockChain::default()).await;
+
+        // Nothing was broadcast: the nonce is free again
+        let result = node
+            .nonce_manager
+            .send(|nonce| async move { Err::<(), _>(nonce) })
+            .await;
+        assert_eq!(result, Err(0));
+        assert_eq!(node.nonce_manager.current().await, 0);
+
+        // Transactions of the same account are in flight: their nonces are not
+        node.chain().pending_count = 4;
+        let result = node
+            .nonce_manager
+            .send(|nonce| async move { Err::<(), _>(nonce) })
+            .await;
+        assert_eq!(result, Err(0));
+        assert_eq!(node.nonce_manager.current().await, 4);
+    }
+
+    #[tokio::test]
+    async fn test_nonce_is_kept_when_the_chain_cannot_be_read() {
+        let node = MockNode::start(MockChain {
+            pending_count: 5,
+            ..Default::default()
+        })
+        .await;
+        node.chain().fail_transaction_count = true;
+
+        let result = node
+            .nonce_manager
+            .send(|nonce| async move { Err::<(), _>(nonce) })
+            .await;
+        assert_eq!(result, Err(5));
+        assert_eq!(node.nonce_manager.current().await, 5);
+
+        node.nonce_manager.sync_from_chain().await;
+        assert_eq!(node.nonce_manager.current().await, 5);
+    }
+
+    #[tokio::test]
+    async fn test_sync_from_chain_frees_nonces_of_dropped_transactions() {
+        let node = MockNode::start(MockChain::default()).await;
+        for _ in 0..2 {
+            node.nonce_manager
+                .send(|_| async { Ok::<_, ()>(()) })
+                .await
+                .unwrap();
         }
 
-        // Collect all nonces
-        let mut all_nonces: Vec<u64> = handles
-            .into_iter()
-            .flat_map(|h| h.join().unwrap())
+        // The chain knows only one of the two
+        node.chain().pending_count = 1;
+        node.nonce_manager.sync_from_chain().await;
+        assert_eq!(node.nonce_manager.current().await, 1);
+    }
+
+    /// Sends do not overlap: each one is finished before the next one gets
+    /// its nonce.
+    #[tokio::test]
+    async fn test_concurrent_sends_take_turns() {
+        let node = MockNode::start(MockChain::default()).await;
+        let events = std::sync::Mutex::new(Vec::new());
+
+        let sends = (0..10).map(|_| {
+            node.nonce_manager.send(|nonce| {
+                let events = &events;
+                async move {
+                    events.lock().unwrap().push(("start", nonce));
+                    // Let the other sends run
+                    tokio::task::yield_now().await;
+                    events.lock().unwrap().push(("end", nonce));
+                    Ok::<_, ()>(())
+                }
+            })
+        });
+        futures::future::join_all(sends).await;
+
+        let expected: Vec<_> = (0..10)
+            .flat_map(|nonce| [("start", nonce), ("end", nonce)])
             .collect();
-
-        // Should have 1000 unique nonces
-        all_nonces.sort();
-        all_nonces.dedup();
-        assert_eq!(all_nonces.len(), 1000);
-
-        // Should be 0..999
-        assert_eq!(all_nonces.first(), Some(&0));
-        assert_eq!(all_nonces.last(), Some(&999));
+        assert_eq!(*events.lock().unwrap(), expected);
     }
 }

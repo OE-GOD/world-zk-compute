@@ -28,12 +28,27 @@ struct BenchConfig {
     records: usize,
     /// Number of chunks for decomposition
     chunks: usize,
-    /// Whether to generate SNARK proofs
-    use_snark: bool,
     /// Skip monolithic test (faster iteration)
     wrapper_only: bool,
     /// Only run decomposed + union (skip wrapper tests 3,4,5)
     union_only: bool,
+}
+
+impl BenchConfig {
+    /// Every chunk needs at least one record.
+    fn validate(&self) -> Result<()> {
+        if self.chunks == 0 {
+            return Err(anyhow!("--chunks must be at least 1"));
+        }
+        if self.chunks > self.records {
+            return Err(anyhow!(
+                "--chunks ({}) must not exceed --records ({})",
+                self.chunks,
+                self.records
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl Default for BenchConfig {
@@ -41,7 +56,6 @@ impl Default for BenchConfig {
         Self {
             records: 6,
             chunks: 2,
-            use_snark: false,
             wrapper_only: false,
             union_only: false,
         }
@@ -655,10 +669,6 @@ fn main() -> Result<()> {
                 config.chunks = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(2);
                 i += 2;
             }
-            "--snark" => {
-                config.use_snark = true;
-                i += 1;
-            }
             "--wrapper-only" => {
                 config.wrapper_only = true;
                 i += 1;
@@ -675,7 +685,6 @@ fn main() -> Result<()> {
                 println!("  -k, --chunks <K>    Number of chunks [default: 2]");
                 println!("  --wrapper-only      Skip monolithic test");
                 println!("  --union-only        Only run decomposed + union (skip wrapper tests)");
-                println!("  --snark             Use Groth16 SNARK proofs");
                 return Ok(());
             }
             _ => {
@@ -683,6 +692,7 @@ fn main() -> Result<()> {
             }
         }
     }
+    config.validate()?;
 
     // ── Load ELFs ────────────────────────────────────────────────────────
     let rule_engine_image_id = "f85c194e1a8e2c2e38746c6d81c7ac9ddf25848a8dfc049db7f4725b3ab56e33";
@@ -714,7 +724,6 @@ fn main() -> Result<()> {
     println!("Configuration:");
     println!("  Records:        {}", config.records);
     println!("  Chunks:         {}", config.chunks);
-    println!("  SNARK:          {}", config.use_snark);
     println!("  Union-only:     {}", config.union_only);
     println!("  Rule-engine:    0x{}...", &rule_engine_image_id[..16]);
     println!(
@@ -990,11 +999,49 @@ fn main() -> Result<()> {
     println!("    Monolithic:        Full trust (single proof covers everything)");
     println!("    Decomposed only:   TRUST GAP - journals merged outside zkVM");
     if composite_wrapped_time.is_some() {
-        println!("    Decomposed+Wrap:   Full trust (wrapper verifies all sub-proofs inside zkVM)");
+        println!(
+            "    Decomposed+Wrap:   Sub-proofs verified inside zkVM; merged journal is host-supplied, unchecked"
+        );
     }
     println!(
         "    Host-side Union:   Proves all sub-computations valid, but journal merge unproven"
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_config_is_valid() {
+        assert!(BenchConfig::default().validate().is_ok());
+    }
+
+    #[test]
+    fn test_zero_chunks_is_rejected() {
+        let config = BenchConfig {
+            chunks: 0,
+            ..BenchConfig::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_more_chunks_than_records_is_rejected() {
+        let config = BenchConfig {
+            records: 2,
+            chunks: 3,
+            ..BenchConfig::default()
+        };
+        assert!(config.validate().is_err());
+
+        let config = BenchConfig {
+            records: 3,
+            chunks: 3,
+            ..BenchConfig::default()
+        };
+        assert!(config.validate().is_ok());
+    }
 }

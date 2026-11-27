@@ -19,7 +19,7 @@
 #   bash scripts/deploy-sepolia.sh --verify-only --deployment-file deployments/anvil-local.json
 #
 # Local Anvil note:
-#   RemainderVerifier has ~129KB bytecode (exceeds EIP-3860 initcode limit) and
+#   RemainderVerifier has 136 KB of bytecode (exceeds EIP-3860 initcode limit) and
 #   DAG registration needs ~78M gas (exceeds default 30M block gas limit).
 #   Start Anvil with:
 #     anvil --gas-limit 500000000 --code-size-limit 200000

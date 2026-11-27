@@ -42,7 +42,7 @@ OPTIONS:
 
 IMAGES:
   world-zk-enclave:latest              TEE enclave service
-  world-zk-warm-prover:latest          Warm prover (risc0 ZK)
+  world-zk-warm-prover:latest          Warm prover (xgboost-remainder)
   world-zk-operator:latest             Operator service
   world-zk-private-input-server:latest Private input server
 
@@ -125,8 +125,8 @@ OVERALL_START=$(date +%s)
 
 IMAGES=(
     "world-zk-enclave|${ROOT_DIR}/tee/Dockerfile|${ROOT_DIR}/tee"
-    "world-zk-warm-prover|${ROOT_DIR}/prover/Dockerfile|${ROOT_DIR}/prover"
-    "world-zk-operator|${ROOT_DIR}/services/operator/Dockerfile|${ROOT_DIR}/services/operator"
+    "world-zk-warm-prover|${ROOT_DIR}/examples/xgboost-remainder/Dockerfile|${ROOT_DIR}/examples/xgboost-remainder"
+    "world-zk-operator|${ROOT_DIR}/services/operator/Dockerfile|${ROOT_DIR}"
     "world-zk-private-input-server|${ROOT_DIR}/private-input-server/Dockerfile|${ROOT_DIR}/private-input-server"
 )
 

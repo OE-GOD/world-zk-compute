@@ -5,6 +5,7 @@ import "forge-std/Test.sol";
 import "../src/Upgradeable.sol";
 import "../src/TimelockController.sol";
 import "../src/mocks/MockRiscZeroVerifier.sol";
+import {PreGuardUUPSUpgradeable} from "./helpers/PreGuardUpgradeable.sol";
 
 /// @dev V2 implementation for testing upgrades — adds a new storage variable
 contract UpgradeableExecutionEngineV2 is UUPSUpgradeable {
@@ -84,6 +85,51 @@ contract MinimalImplV2 is UUPSUpgradeable {
     function _authorizeUpgrade(address) internal override {}
 }
 
+/// @dev MinimalImpl on the base from before the upgrade check, as every proxy deployed before it runs
+contract PreGuardMinimalImpl is PreGuardUUPSUpgradeable {
+    uint256 public value;
+
+    function initialize(address _admin) external initializer {
+        _setAdmin(_admin);
+        value = 42;
+    }
+
+    function setValue(uint256 _value) external {
+        value = _value;
+    }
+
+    function _authorizeUpgrade(address) internal override {}
+}
+
+/// @dev Not UUPS: has code but no proxiableUUID()
+contract NonUUPSImpl {
+    uint256 public value;
+}
+
+/// @dev Not UUPS: proxiableUUID() returns another value than the ERC-1967 implementation slot
+contract WrongUUIDImpl {
+    function proxiableUUID() external pure returns (bytes32) {
+        return keccak256("PROXIABLE");
+    }
+}
+
+/// @dev Not UUPS: every call succeeds without return data
+contract EmptyReturnImpl {
+    fallback() external payable {}
+}
+
+/// @dev Not UUPS: every call reverts with exactly 32 bytes equal to the ERC-1967 implementation slot,
+///      the value a UUPS implementation returns
+contract RevertsWithSlotImpl {
+    fallback() external payable {
+        bytes32 slot = StorageSlot.IMPLEMENTATION_SLOT;
+        assembly {
+            mstore(0, slot)
+            revert(0, 32)
+        }
+    }
+}
+
 contract UpgradeableTest is Test {
     // Re-declare events for expectEmit
     event Upgraded(address indexed implementation);
@@ -151,7 +197,12 @@ contract UpgradeableTest is Test {
     }
 
     function test_proxiableUUID() public view {
-        assertEq(engine.proxiableUUID(), 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc);
+        assertEq(impl.proxiableUUID(), 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc);
+    }
+
+    function test_proxiableUUIDRevertsThroughProxy() public {
+        vm.expectRevert(UUPSUpgradeable.UUPSUnauthorizedCallContext.selector);
+        engine.proxiableUUID();
     }
 
     // ========================================================================
@@ -276,6 +327,160 @@ contract UpgradeableTest is Test {
     function test_cannotUpgradeToEOA() public {
         vm.expectRevert(UUPSUpgradeable.InvalidImplementation.selector);
         engine.upgradeTo(user1);
+    }
+
+    function test_cannotUpgradeToNonUUPS() public {
+        _assertUpgradeRefused(address(new NonUUPSImpl()));
+    }
+
+    function test_cannotUpgradeToWrongUUID() public {
+        _assertUpgradeRefused(address(new WrongUUIDImpl()));
+    }
+
+    function test_cannotUpgradeToEmptyReturnData() public {
+        _assertUpgradeRefused(address(new EmptyReturnImpl()));
+    }
+
+    function test_cannotUpgradeToRevertWithSlot() public {
+        RevertsWithSlotImpl bad = new RevertsWithSlotImpl();
+        (bool success, bytes memory returndata) = address(bad).staticcall(abi.encodeWithSignature("proxiableUUID()"));
+        assertFalse(success);
+        assertEq(returndata, abi.encode(StorageSlot.IMPLEMENTATION_SLOT));
+
+        _assertUpgradeRefused(address(bad));
+    }
+
+    function test_cannotUpgradeToAnotherProxy() public {
+        UpgradeableExecutionEngine otherImpl = new UpgradeableExecutionEngine();
+        UUPSProxy other = new UUPSProxy(
+            address(otherImpl),
+            abi.encodeCall(
+                UpgradeableExecutionEngine.initialize, (registry, address(mockVerifier), feeRecipient, admin)
+            )
+        );
+
+        // Refused because the other proxy runs an implementation with the guard in proxiableUUID();
+        // one on an older implementation is accepted (test_knownGap_upgradeToProxyOnPreGuardImplementationIsAccepted)
+        _assertUpgradeRefused(address(other));
+
+        // The other proxy is untouched
+        assertEq(UpgradeableExecutionEngine(payable(address(other))).implementation(), address(otherImpl));
+    }
+
+    function test_cannotUpgradeToItself() public {
+        _assertUpgradeRefused(address(proxy));
+    }
+
+    function test_upgradeToPreGuardImplementationIsAccepted() public {
+        // A rollback (RUNBOOK section 6, after Step 6; UPGRADE_GUIDE Section 5) goes back to the implementation recorded
+        // before the upgrade, which for every proxy deployed so far is built from the pre-guard base
+        MinimalImpl minImpl = new MinimalImpl();
+        MinimalImpl min =
+            MinimalImpl(address(new UUPSProxy(address(minImpl), abi.encodeCall(MinimalImpl.initialize, (admin)))));
+        PreGuardMinimalImpl oldImpl = new PreGuardMinimalImpl();
+
+        min.upgradeTo(address(oldImpl));
+        assertEq(min.implementation(), address(oldImpl));
+        assertEq(min.value(), 42);
+
+        // From the old implementation forward again, then back with upgradeToAndCall and a call
+        min.upgradeTo(address(minImpl));
+        assertEq(min.implementation(), address(minImpl));
+        min.upgradeToAndCall(address(oldImpl), abi.encodeCall(PreGuardMinimalImpl.setValue, (7)));
+        assertEq(min.implementation(), address(oldImpl));
+        assertEq(min.value(), 7);
+    }
+
+    /// @dev Known gap: the guard in proxiableUUID() only refuses a proxy whose implementation has it.
+    ///      A proxy on an older implementation (or on another UUPS base without the guard) answers
+    ///      proxiableUUID() through delegatecall, so the check accepts its address and the upgrade
+    ///      bricks this proxy. RUNBOOK section 6 Step 3 catches it: the storage check of the target's
+    ///      implementation slot for a UUPSProxy, the check of its address against Step 2 in every case.
+    function test_knownGap_upgradeToProxyOnPreGuardImplementationIsAccepted() public {
+        MinimalImpl minImpl = new MinimalImpl();
+        MinimalImpl min =
+            MinimalImpl(address(new UUPSProxy(address(minImpl), abi.encodeCall(MinimalImpl.initialize, (admin)))));
+        PreGuardMinimalImpl oldImpl = new PreGuardMinimalImpl();
+        address oldProxy =
+            address(new UUPSProxy(address(oldImpl), abi.encodeCall(PreGuardMinimalImpl.initialize, (admin))));
+
+        // What RUNBOOK Step 3 reads: the slot value from proxiableUUID(), and an implementation in the slot
+        assertEq(PreGuardMinimalImpl(oldProxy).proxiableUUID(), StorageSlot.IMPLEMENTATION_SLOT);
+        assertEq(address(uint160(uint256(vm.load(oldProxy, StorageSlot.IMPLEMENTATION_SLOT)))), address(oldImpl));
+
+        min.upgradeTo(oldProxy);
+        assertEq(address(uint160(uint256(vm.load(address(min), StorageSlot.IMPLEMENTATION_SLOT)))), oldProxy);
+
+        // Each call now runs proxy code in this proxy's storage, which delegates to the same address
+        // again until the gas runs out, upgradeTo included
+        (bool ok,) = address(min).call{gas: 1_000_000}(abi.encodeWithSignature("value()"));
+        assertFalse(ok);
+        (ok,) = address(min).call{gas: 1_000_000}(abi.encodeCall(UUPSUpgradeable.upgradeTo, (address(minImpl))));
+        assertFalse(ok);
+    }
+
+    function test_noCodeErrorComesBeforeUUPSCheck() public {
+        // UpgradeableExecutionEngine checks the code in _authorizeUpgrade, MinimalImpl only in the base
+        MinimalImpl minImpl = new MinimalImpl();
+        MinimalImpl min =
+            MinimalImpl(address(new UUPSProxy(address(minImpl), abi.encodeCall(MinimalImpl.initialize, (admin)))));
+
+        vm.expectRevert(UUPSUpgradeable.InvalidImplementation.selector);
+        min.upgradeTo(user1);
+        vm.expectRevert(UUPSUpgradeable.InvalidImplementation.selector);
+        min.upgradeToAndCall(user1, abi.encodeCall(MinimalImpl.setValue, (7)));
+
+        assertEq(min.implementation(), address(minImpl));
+        min.setValue(7);
+        assertEq(min.value(), 7);
+    }
+
+    function test_adminCheckComesBeforeUUPSCheck() public {
+        NonUUPSImpl bad = new NonUUPSImpl();
+
+        vm.startPrank(user1);
+        vm.expectRevert(UUPSUpgradeable.NotAdmin.selector);
+        engine.upgradeTo(address(bad));
+        vm.expectRevert(UUPSUpgradeable.NotAdmin.selector);
+        engine.upgradeToAndCall(address(bad), "");
+        vm.stopPrank();
+    }
+
+    function test_timelockCheckComesBeforeUUPSCheck() public {
+        NonUUPSImpl bad = new NonUUPSImpl();
+        engine.setTimelock(user2);
+
+        vm.expectRevert(UUPSUpgradeable.NotTimelocked.selector);
+        engine.upgradeTo(address(bad));
+        vm.expectRevert(UUPSUpgradeable.NotTimelocked.selector);
+        engine.upgradeToAndCall(address(bad), "");
+
+        // The timelock itself passes that check and is stopped by the UUPS check
+        vm.prank(user2);
+        vm.expectRevert(abi.encodeWithSelector(UUPSUpgradeable.UpgradeToNonUUPS.selector, address(bad)));
+        engine.upgradeTo(address(bad));
+    }
+
+    /// @dev Both upgrade functions refuse `bad`, and the proxy keeps its implementation and still works
+    function _assertUpgradeRefused(address bad) internal {
+        bytes memory expected = abi.encodeWithSelector(UUPSUpgradeable.UpgradeToNonUUPS.selector, bad);
+
+        vm.expectRevert(expected);
+        engine.upgradeTo(bad);
+        vm.expectRevert(expected);
+        engine.upgradeToAndCall(bad, "");
+        vm.expectRevert(expected);
+        engine.upgradeToAndCall(bad, abi.encodeWithSignature("value()"));
+
+        assertEq(engine.implementation(), address(impl));
+        assertEq(engine.admin(), admin);
+        engine.setProtocolFee(300);
+        assertEq(engine.protocolFeeBps(), 300);
+
+        UpgradeableExecutionEngineV2 implV2 = new UpgradeableExecutionEngineV2();
+        engine.upgradeTo(address(implV2));
+        assertEq(engine.implementation(), address(implV2));
+        assertEq(engine.protocolFeeBps(), 300);
     }
 
     // ========================================================================
@@ -1200,6 +1405,21 @@ contract TimelockControllerTest is Test {
         timelockCtl.execute(id);
 
         assertEq(engine.implementation(), address(implV2));
+    }
+
+    function test_e2eUpgradeToNonUUPSViaTimelockReverts() public {
+        address implBefore = engine.implementation();
+        NonUUPSImpl bad = new NonUUPSImpl();
+
+        bytes32 id = keccak256("upgrade-to-non-uups");
+        bytes memory data = abi.encodeCall(UUPSUpgradeable.upgradeTo, (address(bad)));
+        timelockCtl.schedule(id, address(engine), data, MIN_DELAY);
+
+        vm.warp(block.timestamp + MIN_DELAY);
+        vm.expectRevert(abi.encodeWithSelector(UUPSUpgradeable.UpgradeToNonUUPS.selector, address(bad)));
+        timelockCtl.execute(id);
+
+        assertEq(engine.implementation(), implBefore);
     }
 
     function test_e2eCancelPreventExecution() public {

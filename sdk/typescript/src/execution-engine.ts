@@ -7,10 +7,10 @@
 import type {
   PublicClient,
   WalletClient,
-  GetContractReturnType,
 } from 'viem';
-import { getContract, parseEther } from 'viem';
+import { parseEther } from 'viem';
 import { executionEngineAbi } from './abi';
+import { waitForSuccess } from './transactions';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -79,6 +79,10 @@ export interface OnChainProverStats {
  * `PublicClient`. Write operations (submitRequest, claimJob, submitResult,
  * disputeResult) additionally require a `WalletClient`.
  *
+ * Write methods wait for the receipt and resolve to the transaction hash only
+ * when the transaction succeeded; a mined but reverted transaction rejects
+ * with an `ApiError` whose code is `WZK-4002` (TransactionReverted).
+ *
  * @example
  * ```ts
  * import { createPublicClient, createWalletClient, http } from 'viem';
@@ -95,7 +99,8 @@ export interface OnChainProverStats {
  *
  * const engine = new ExecutionEngineClient(publicClient, walletClient, '0x...');
  *
- * const requestId = await engine.submitRequest({
+ * // Returns the transaction hash; the new request ID is `getNextRequestId() - 1n`
+ * const txHash = await engine.submitRequest({
  *   imageId: '0x1234...',
  *   inputDigest: '0xabcd...',
  *   tipEther: '0.001',
@@ -107,9 +112,6 @@ export class ExecutionEngineClient {
   private readonly walletClient: WalletClient | undefined;
   private readonly contractAddress: Hex;
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private readonly readContract: GetContractReturnType<typeof executionEngineAbi, any, Hex>;
-
   constructor(
     publicClient: PublicClient,
     walletClient: WalletClient | undefined,
@@ -118,12 +120,6 @@ export class ExecutionEngineClient {
     this.publicClient = publicClient;
     this.walletClient = walletClient;
     this.contractAddress = contractAddress;
-
-    this.readContract = getContract({
-      address: contractAddress,
-      abi: executionEngineAbi,
-      client: publicClient,
-    });
   }
 
   // -----------------------------------------------------------------------
@@ -139,13 +135,9 @@ export class ExecutionEngineClient {
    * @returns The transaction hash
    */
   async submitRequest(options: SubmitRequestOptions): Promise<Hex> {
-    const wallet = this.requireWallet();
-
-    const hash = await wallet.writeContract({
-      address: this.contractAddress,
-      abi: executionEngineAbi,
-      functionName: 'requestExecution',
-      args: [
+    return this.send(
+      'requestExecution',
+      [
         options.imageId,
         options.inputDigest,
         options.inputUrl ?? '',
@@ -153,12 +145,8 @@ export class ExecutionEngineClient {
         options.expirationSeconds ?? 0n,
         options.inputType ?? 0,
       ],
-      value: parseEther(options.tipEther),
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any);
-
-    await this.publicClient.waitForTransactionReceipt({ hash });
-    return hash;
+      parseEther(options.tipEther),
+    );
   }
 
   /**
@@ -170,18 +158,7 @@ export class ExecutionEngineClient {
    * @returns The transaction hash
    */
   async claimJob(requestId: bigint): Promise<Hex> {
-    const wallet = this.requireWallet();
-
-    const hash = await wallet.writeContract({
-      address: this.contractAddress,
-      abi: executionEngineAbi,
-      functionName: 'claimExecution',
-      args: [requestId],
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any);
-
-    await this.publicClient.waitForTransactionReceipt({ hash });
-    return hash;
+    return this.send('claimExecution', [requestId]);
   }
 
   /**
@@ -197,18 +174,7 @@ export class ExecutionEngineClient {
    * @returns The transaction hash
    */
   async submitResult(requestId: bigint, seal: Hex, journal: Hex): Promise<Hex> {
-    const wallet = this.requireWallet();
-
-    const hash = await wallet.writeContract({
-      address: this.contractAddress,
-      abi: executionEngineAbi,
-      functionName: 'submitProof',
-      args: [requestId, seal, journal],
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any);
-
-    await this.publicClient.waitForTransactionReceipt({ hash });
-    return hash;
+    return this.send('submitProof', [requestId, seal, journal]);
   }
 
   /**
@@ -220,18 +186,7 @@ export class ExecutionEngineClient {
    * @returns The transaction hash
    */
   async cancelRequest(requestId: bigint): Promise<Hex> {
-    const wallet = this.requireWallet();
-
-    const hash = await wallet.writeContract({
-      address: this.contractAddress,
-      abi: executionEngineAbi,
-      functionName: 'cancelExecution',
-      args: [requestId],
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any);
-
-    await this.publicClient.waitForTransactionReceipt({ hash });
-    return hash;
+    return this.send('cancelExecution', [requestId]);
   }
 
   /**
@@ -459,7 +414,6 @@ export class ExecutionEngineClient {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any);
 
-    await this.publicClient.waitForTransactionReceipt({ hash });
-    return hash;
+    return waitForSuccess(this.publicClient, hash, functionName);
   }
 }

@@ -4,11 +4,15 @@ Python wrapper for the ZKML proof verifier. Verifies GKR+Hyrax zero-knowledge pr
 
 ## Installation
 
+The package is not published on PyPI. Install it from a checkout of the repository:
+
 ```bash
-pip install zkml-verifier
+pip install ./crates/zkml-verifier/python
 ```
 
-**Prerequisites**: Rust toolchain (install via [rustup.rs](https://rustup.rs/)) is required for building from source.
+This runs `cargo build --release` for the Rust library and bundles the shared library into the package.
+
+**Prerequisites**: Rust toolchain (install via [rustup.rs](https://rustup.rs/)).
 
 ## Quick Start
 
@@ -51,13 +55,22 @@ Return the native library version string.
 
 ### Return Value
 
-All verify functions return a dict:
+All verify functions return a dict when the proof verifies:
 ```python
-{"verified": True, "error": None}   # success
-{"verified": False, "error": None}  # verification failed (proof invalid)
+{"verified": True, "error": None}
 ```
 
-On fatal errors (malformed input, missing fields), a `VerifyError` exception is raised.
+A rejected proof raises `VerifyError`, as does malformed input (missing fields, bad hex, a truncated proof):
+```python
+from zkml_verifier import VerifyError, verify_file
+
+try:
+    verify_file("proof_bundle.json")
+except VerifyError as e:
+    print("rejected:", e)   # e.g. "verify error: verification failed: sumcheck failed"
+```
+
+`verify_file` raises `FileNotFoundError` if the path does not exist.
 
 ## Development
 
@@ -69,7 +82,8 @@ cargo build --release -p zkml-verifier
 cd crates/zkml-verifier/python
 pip install -e .
 
-# Run tests
+# Run tests (the fixture tests need the release build: about 2 s each, minutes with a debug build)
+pip install pytest
 pytest tests/
 ```
 
@@ -77,7 +91,7 @@ pytest tests/
 
 - `ZKML_LIB_DIR` -- Directory containing the compiled shared library
 - `ZKML_SKIP_BUILD` -- Skip Rust compilation during pip install (use pre-built library)
-- `CARGO_TARGET_DIR` -- Override Cargo target directory
+- `CARGO_TARGET_DIR` -- Cargo target directory to build into (pip install) and to search for the library (when the library is first loaded, before the bundled copy)
 
 ## License
 

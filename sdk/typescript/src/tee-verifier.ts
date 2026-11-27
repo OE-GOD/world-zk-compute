@@ -11,6 +11,7 @@ import {
 } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { teeMLVerifierAbi } from './tee-verifier-abi';
+import { waitForSuccess } from './transactions';
 
 type Hex = `0x${string}`;
 
@@ -189,8 +190,9 @@ export class TEEVerifier {
       functionName,
       args,
       ...(value !== undefined ? { value } : {}),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any);
-    await this.publicClient.waitForTransactionReceipt({ hash });
-    return hash;
+    // A reverted transaction is still mined, so the receipt status decides.
+    return waitForSuccess(this.publicClient, hash, functionName);
   }
 }

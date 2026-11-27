@@ -285,12 +285,18 @@ contract RemainderVerifierUpgradeableTest is Test, DeployRemainderVerifierHelper
         impl.initialize(address(0xDEAD));
     }
 
-    /// @notice Verify proxiableUUID returns the correct slot
+    /// @notice Verify proxiableUUID returns the correct slot on the implementation
     function test_proxiableUUID() public view {
         assertEq(
-            verifier.proxiableUUID(),
+            RemainderVerifier(payable(verifier.implementation())).proxiableUUID(),
             StorageSlot.IMPLEMENTATION_SLOT,
             "proxiableUUID should return EIP-1967 implementation slot"
         );
+    }
+
+    /// @notice Through the proxy proxiableUUID reverts, so the upgrade check refuses a proxy on this implementation
+    function test_proxiableUUIDRevertsThroughProxy() public {
+        vm.expectRevert(UUPSUpgradeable.UUPSUnauthorizedCallContext.selector);
+        verifier.proxiableUUID();
     }
 }

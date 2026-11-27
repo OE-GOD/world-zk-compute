@@ -6,12 +6,23 @@ import "../src/tee/TEEMLVerifier.sol";
 import {UUPSProxy, UUPSUpgradeable, StorageSlot} from "../src/Upgradeable.sol";
 import {DeployTEEMLVerifierHelper} from "./helpers/DeployTEEMLVerifier.sol";
 
+/// @dev Has code but no proxiableUUID()
+contract TEENonUUPSImpl {}
+
+/// @dev proxiableUUID() returns another value than the ERC-1967 implementation slot
+contract TEEWrongUUIDImpl {
+    function proxiableUUID() external pure returns (bytes32) {
+        return keccak256("PROXIABLE");
+    }
+}
+
 /// @title TEEMLVerifierProxyTest
 /// @notice Tests for UUPS proxy deployment, initialization, upgrade, and access control
 contract TEEMLVerifierProxyTest is Test, DeployTEEMLVerifierHelper {
     event Upgraded(address indexed implementation);
 
     TEEMLVerifier implementation;
+    UUPSProxy proxy;
     TEEMLVerifier verifier; // proxy cast as verifier
     address admin = address(0xAD);
     address user = address(0xBEEF);
@@ -19,8 +30,7 @@ contract TEEMLVerifierProxyTest is Test, DeployTEEMLVerifierHelper {
 
     function setUp() public {
         implementation = new TEEMLVerifier();
-        UUPSProxy proxy =
-            new UUPSProxy(address(implementation), abi.encodeCall(TEEMLVerifier.initialize, (admin, remainderAddr)));
+        proxy = new UUPSProxy(address(implementation), abi.encodeCall(TEEMLVerifier.initialize, (admin, remainderAddr)));
         verifier = TEEMLVerifier(payable(address(proxy)));
     }
 
@@ -36,8 +46,13 @@ contract TEEMLVerifierProxyTest is Test, DeployTEEMLVerifierHelper {
         assertEq(verifier.implementation(), address(implementation));
     }
 
-    function test_proxy_proxiableUUID() public view {
-        assertEq(verifier.proxiableUUID(), StorageSlot.IMPLEMENTATION_SLOT);
+    function test_proxiableUUID_answers_on_the_implementation() public view {
+        assertEq(implementation.proxiableUUID(), StorageSlot.IMPLEMENTATION_SLOT);
+    }
+
+    function test_proxiableUUID_reverts_through_the_proxy() public {
+        vm.expectRevert(UUPSUpgradeable.UUPSUnauthorizedCallContext.selector);
+        verifier.proxiableUUID();
     }
 
     function test_initialize_cannot_be_called_twice() public {
@@ -81,6 +96,51 @@ contract TEEMLVerifierProxyTest is Test, DeployTEEMLVerifierHelper {
         vm.prank(admin);
         vm.expectRevert(UUPSUpgradeable.InvalidImplementation.selector);
         verifier.upgradeTo(address(0xDEAD));
+        assertEq(verifier.implementation(), address(implementation));
+    }
+
+    function test_upgrade_reverts_for_non_uups_contract() public {
+        _assertUpgradeRefused(address(new TEENonUUPSImpl()));
+    }
+
+    function test_upgrade_reverts_for_wrong_uuid() public {
+        _assertUpgradeRefused(address(new TEEWrongUUIDImpl()));
+    }
+
+    function test_upgrade_reverts_for_another_proxy() public {
+        TEEMLVerifier otherImpl = new TEEMLVerifier();
+        UUPSProxy other =
+            new UUPSProxy(address(otherImpl), abi.encodeCall(TEEMLVerifier.initialize, (admin, remainderAddr)));
+
+        _assertUpgradeRefused(address(other));
+        assertEq(TEEMLVerifier(payable(address(other))).implementation(), address(otherImpl));
+    }
+
+    function test_upgrade_reverts_for_the_proxy_itself() public {
+        _assertUpgradeRefused(address(proxy));
+    }
+
+    function _assertUpgradeRefused(address bad) internal {
+        bytes memory expected = abi.encodeWithSelector(UUPSUpgradeable.UpgradeToNonUUPS.selector, bad);
+
+        vm.startPrank(admin);
+        vm.expectRevert(expected);
+        verifier.upgradeTo(bad);
+        vm.expectRevert(expected);
+        verifier.upgradeToAndCall(bad, "");
+        vm.expectRevert(expected);
+        verifier.upgradeToAndCall(bad, abi.encodeCall(UUPSUpgradeable.admin, ()));
+
+        // The proxy still works and can still be upgraded
+        assertEq(verifier.implementation(), address(implementation));
+        assertEq(verifier.admin(), admin);
+        verifier.pause();
+        assertTrue(verifier.paused());
+
+        TEEMLVerifier newImpl = new TEEMLVerifier();
+        verifier.upgradeTo(address(newImpl));
+        assertEq(verifier.implementation(), address(newImpl));
+        vm.stopPrank();
     }
 
     function test_upgradeToAndCall() public {

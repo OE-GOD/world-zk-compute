@@ -24,23 +24,23 @@ type ECWitnessJSON struct {
 	CircuitHash      [2]string `json:"circuitHash"`
 	ECOperations     []ECOp    `json:"ecOperations"`
 	Stats            struct {
-		TotalEcMul    int `json:"totalEcMul"`
-		TotalEcAdd    int `json:"totalEcAdd"`
-		TotalMsm      int `json:"totalMsm"`
+		TotalEcMul     int `json:"totalEcMul"`
+		TotalEcAdd     int `json:"totalEcAdd"`
+		TotalMsm       int `json:"totalMsm"`
 		TotalMsmPoints int `json:"totalMsmPoints"`
 	} `json:"stats"`
 }
 
 // ECOp is a single EC operation from the witness.
 type ECOp struct {
-	Type    string          `json:"type"`
-	Point   *ECPointJSON    `json:"point,omitempty"`   // for mul
-	Scalar  string          `json:"scalar,omitempty"`  // for mul
-	Result  *ECPointJSON    `json:"result"`
-	Point1  *ECPointJSON    `json:"point1,omitempty"`  // for add
-	Point2  *ECPointJSON    `json:"point2,omitempty"`  // for add
-	Points  []ECPointJSON   `json:"points,omitempty"`  // for msm
-	Scalars []string        `json:"scalars,omitempty"` // for msm
+	Type    string        `json:"type"`
+	Point   *ECPointJSON  `json:"point,omitempty"`  // for mul
+	Scalar  string        `json:"scalar,omitempty"` // for mul
+	Result  *ECPointJSON  `json:"result"`
+	Point1  *ECPointJSON  `json:"point1,omitempty"`  // for add
+	Point2  *ECPointJSON  `json:"point2,omitempty"`  // for add
+	Points  []ECPointJSON `json:"points,omitempty"`  // for msm
+	Scalars []string      `json:"scalars,omitempty"` // for msm
 }
 
 // ECPointJSON represents a BN254 G1 point in JSON.
@@ -64,74 +64,91 @@ type flatAddOp struct {
 }
 
 // decomposeECOps flattens all EC operations (including MSMs) into mul and add lists.
-func decomposeECOps(ops []ECOp) ([]flatMulOp, []flatAddOp) {
+// An MSM's terms and partial sums are recomputed natively, so the circuit would
+// accept them whatever result the witness claimed; the claimed result is
+// therefore compared with the recomputed sum here, and a mismatch is an error.
+func decomposeECOps(ops []ECOp) ([]flatMulOp, []flatAddOp, error) {
 	var muls []flatMulOp
 	var adds []flatAddOp
+	p := &bigIntParser{}
 
-	for _, op := range ops {
+	for opIdx, op := range ops {
 		switch op.Type {
 		case "mul":
 			muls = append(muls, flatMulOp{
-				basePoint: parseECPoint(op.Point),
-				scalar:    parseBigInt(op.Scalar),
-				result:    parseECPoint(op.Result),
+				basePoint: parseECPoint(p, op.Point),
+				scalar:    p.parse(op.Scalar),
+				result:    parseECPoint(p, op.Result),
 			})
 		case "add":
 			adds = append(adds, flatAddOp{
-				p1:     parseECPoint(op.Point1),
-				p2:     parseECPoint(op.Point2),
-				result: parseECPoint(op.Result),
+				p1:     parseECPoint(p, op.Point1),
+				p2:     parseECPoint(p, op.Point2),
+				result: parseECPoint(p, op.Result),
 			})
 		case "msm":
 			// Decompose MSM into individual mul + sequential add:
 			// result = s0*P0 + s1*P1 + ... + sN*PN
 			// = mul(s0,P0) then add(partial, mul(si,Pi)) for i>0
 			n := len(op.Points)
-			if n == 0 {
-				continue
+			if len(op.Scalars) != n {
+				return nil, nil, fmt.Errorf("EC operation %d (msm): %d points but %d scalars", opIdx, n, len(op.Scalars))
+			}
+			if op.Result == nil {
+				return nil, nil, fmt.Errorf("EC operation %d (msm): no result", opIdx)
 			}
 
 			// Compute intermediate results for verification
 			// Each s_i * P_i is an ec_mul
 			partialPoints := make([]bn254.G1Affine, n)
 			for i := 0; i < n; i++ {
-				pt := parseNativeG1(op.Points[i])
-				sc := parseBigInt(op.Scalars[i])
+				pt := parseNativeG1(p, op.Points[i])
+				sc := p.parse(op.Scalars[i])
 				var res bn254.G1Affine
 				res.ScalarMultiplication(&pt, sc)
 				partialPoints[i] = res
 
 				muls = append(muls, flatMulOp{
-					basePoint: parseECPoint(&op.Points[i]),
+					basePoint: parseECPoint(p, &op.Points[i]),
 					scalar:    sc,
 					result:    nativeToG1Point(res),
 				})
 			}
 
-			// Sequential additions: acc = partial[0]; acc += partial[i] for i>0
-			if n > 1 {
-				acc := partialPoints[0]
-				for i := 1; i < n; i++ {
-					var sum bn254.G1Affine
-					sum.Add(&acc, &partialPoints[i])
-					adds = append(adds, flatAddOp{
-						p1:     nativeToG1Point(acc),
-						p2:     nativeToG1Point(partialPoints[i]),
-						result: nativeToG1Point(sum),
-					})
-					acc = sum
-				}
+			// Sequential additions: acc = partial[0]; acc += partial[i] for i>0.
+			// The empty sum is the point at infinity, (0, 0) in affine form.
+			var acc bn254.G1Affine
+			if n > 0 {
+				acc = partialPoints[0]
+			}
+			for i := 1; i < n; i++ {
+				var sum bn254.G1Affine
+				sum.Add(&acc, &partialPoints[i])
+				adds = append(adds, flatAddOp{
+					p1:     nativeToG1Point(acc),
+					p2:     nativeToG1Point(partialPoints[i]),
+					result: nativeToG1Point(sum),
+				})
+				acc = sum
+			}
+
+			claimed := parseNativeG1(p, *op.Result)
+			if p.err == nil && !acc.Equal(&claimed) {
+				return nil, nil, fmt.Errorf("EC operation %d (msm): the claimed result is not the sum of its %d terms", opIdx, n)
 			}
 		}
 	}
 
-	return muls, adds
+	if p.err != nil {
+		return nil, nil, p.err
+	}
+	return muls, adds, nil
 }
 
 // parseECPoint converts a JSON point to gnark G1Point assignment.
-func parseECPoint(p *ECPointJSON) G1Point {
-	x := parseBigInt(p.X)
-	y := parseBigInt(p.Y)
+func parseECPoint(p *bigIntParser, pt *ECPointJSON) G1Point {
+	x := p.parse(pt.X)
+	y := p.parse(pt.Y)
 	return G1Point{
 		X: emulated.ValueOf[emulated.BN254Fp](x),
 		Y: emulated.ValueOf[emulated.BN254Fp](y),
@@ -139,13 +156,11 @@ func parseECPoint(p *ECPointJSON) G1Point {
 }
 
 // parseNativeG1 converts a JSON point to a native bn254.G1Affine.
-func parseNativeG1(p ECPointJSON) bn254.G1Affine {
-	var pt bn254.G1Affine
-	xBig := parseBigInt(p.X)
-	yBig := parseBigInt(p.Y)
-	pt.X.SetBigInt(xBig)
-	pt.Y.SetBigInt(yBig)
-	return pt
+func parseNativeG1(p *bigIntParser, pt ECPointJSON) bn254.G1Affine {
+	var g bn254.G1Affine
+	g.X.SetBigInt(p.parse(pt.X))
+	g.Y.SetBigInt(p.parse(pt.Y))
+	return g
 }
 
 // nativeToG1Point converts a native bn254.G1Affine to gnark G1Point assignment.
@@ -161,12 +176,13 @@ func nativeToG1Point(p bn254.G1Affine) G1Point {
 
 // buildECAssignment creates a circuit assignment from decomposed EC operations.
 // The batch challenge is computed in-circuit via MiMC hash — no external input needed.
-func buildECAssignment(config ECCircuitConfig, muls []flatMulOp, adds []flatAddOp, w *ECWitnessJSON) *ECBatchCircuit {
+func buildECAssignment(config ECCircuitConfig, muls []flatMulOp, adds []flatAddOp, w *ECWitnessJSON) (*ECBatchCircuit, error) {
 	assignment := AllocateECCircuit(config)
+	p := &bigIntParser{}
 
-	assignment.TranscriptDigest = parseBigInt(w.TranscriptDigest)
-	assignment.CircuitHashLo = parseBigInt(w.CircuitHash[0])
-	assignment.CircuitHashHi = parseBigInt(w.CircuitHash[1])
+	assignment.TranscriptDigest = p.parse(w.TranscriptDigest)
+	assignment.CircuitHashLo = p.parse(w.CircuitHash[0])
+	assignment.CircuitHashHi = p.parse(w.CircuitHash[1])
 
 	for i := 0; i < config.NumMulOps; i++ {
 		assignment.MulBasePoints[i] = muls[i].basePoint
@@ -180,7 +196,7 @@ func buildECAssignment(config ECCircuitConfig, muls []flatMulOp, adds []flatAddO
 		assignment.AddResults[j] = adds[j].result
 	}
 
-	return assignment
+	return assignment, p.err
 }
 
 // ecFpToHex converts a bn254 base field element to a 0x-prefixed hex string.
@@ -208,7 +224,11 @@ func cmdECProveJSON() {
 		w.Stats.TotalEcMul, w.Stats.TotalEcAdd, w.Stats.TotalMsm, w.Stats.TotalMsmPoints)
 
 	// Decompose all operations (MSMs become mul+add)
-	muls, adds := decomposeECOps(w.ECOperations)
+	muls, adds, err := decomposeECOps(w.ECOperations)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error in EC witness: %v\n", err)
+		os.Exit(1)
+	}
 	fmt.Fprintf(os.Stderr, "After MSM decomposition: %d mul, %d add\n", len(muls), len(adds))
 
 	config := ECCircuitConfig{
@@ -216,7 +236,11 @@ func cmdECProveJSON() {
 		NumAddOps: len(adds),
 	}
 
-	assignment := buildECAssignment(config, muls, adds, &w)
+	assignment, err := buildECAssignment(config, muls, adds, &w)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error in EC witness: %v\n", err)
+		os.Exit(1)
+	}
 
 	// Redirect stdout to stderr during gnark compilation
 	origStdout := os.Stdout
@@ -303,8 +327,8 @@ func cmdECProveJSON() {
 		"proof":         proofPoints,
 		"public_inputs": pubInputs,
 		"stats": map[string]interface{}{
-			"num_mul_ops":    config.NumMulOps,
-			"num_add_ops":    config.NumAddOps,
+			"num_mul_ops":      config.NumMulOps,
+			"num_add_ops":      config.NumAddOps,
 			"r1cs_constraints": ccs.GetNbConstraints(),
 		},
 	}
@@ -350,23 +374,28 @@ func cmdECChunkedProveJSON() {
 	config := ChunkedECConfig{NumMulOps: numMul, NumAddOps: numAdd}
 	assignment := AllocateChunkedECCircuit(config)
 
-	assignment.TranscriptDigest = parseBigInt(w.TranscriptDigest)
-	assignment.CircuitHashLo = parseBigInt(w.CircuitHash[0])
-	assignment.CircuitHashHi = parseBigInt(w.CircuitHash[1])
-	assignment.OpsDigest = parseBigInt(w.OpsDigest)
+	p := &bigIntParser{}
+	assignment.TranscriptDigest = p.parse(w.TranscriptDigest)
+	assignment.CircuitHashLo = p.parse(w.CircuitHash[0])
+	assignment.CircuitHashHi = p.parse(w.CircuitHash[1])
+	assignment.OpsDigest = p.parse(w.OpsDigest)
 	assignment.ChunkIndex = big.NewInt(int64(w.ChunkIndex))
 	assignment.TotalChunks = big.NewInt(int64(w.TotalChunks))
 
 	for i, op := range w.MulOps {
-		assignment.MulBasePoints[i] = parseECPoint(op.Point)
-		assignment.MulScalars[i] = parseBigInt(op.Scalar)
-		assignment.MulResults[i] = parseECPoint(op.Result)
+		assignment.MulBasePoints[i] = parseECPoint(p, op.Point)
+		assignment.MulScalars[i] = p.parse(op.Scalar)
+		assignment.MulResults[i] = parseECPoint(p, op.Result)
 	}
 
 	for j, op := range w.AddOps {
-		assignment.AddP1s[j] = parseECPoint(op.Point1)
-		assignment.AddP2s[j] = parseECPoint(op.Point2)
-		assignment.AddResults[j] = parseECPoint(op.Result)
+		assignment.AddP1s[j] = parseECPoint(p, op.Point1)
+		assignment.AddP2s[j] = parseECPoint(p, op.Point2)
+		assignment.AddResults[j] = parseECPoint(p, op.Result)
+	}
+	if p.err != nil {
+		fmt.Fprintf(os.Stderr, "error in chunked EC witness: %v\n", p.err)
+		os.Exit(1)
 	}
 
 	// Redirect stdout to stderr during gnark compilation
@@ -492,7 +521,11 @@ func cmdECInfo() {
 	fmt.Fprintf(os.Stderr, "  ec_add:  %d\n", w.Stats.TotalEcAdd)
 	fmt.Fprintf(os.Stderr, "  msm:     %d (%d total points)\n", w.Stats.TotalMsm, w.Stats.TotalMsmPoints)
 
-	muls, adds := decomposeECOps(w.ECOperations)
+	muls, adds, err := decomposeECOps(w.ECOperations)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error in EC witness: %v\n", err)
+		os.Exit(1)
+	}
 	fmt.Fprintf(os.Stderr, "\nAfter MSM decomposition:\n")
 	fmt.Fprintf(os.Stderr, "  flat mul ops: %d\n", len(muls))
 	fmt.Fprintf(os.Stderr, "  flat add ops: %d\n", len(adds))

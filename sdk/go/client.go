@@ -1,4 +1,6 @@
-// Package worldzk provides a Go client for the World ZK Compute API gateway.
+// Package worldzk provides a Go client for the World ZK Compute API gateway
+// (services/gateway), which forwards to the proof generator, the proof
+// registry and the verifier.
 //
 // Usage:
 //
@@ -6,8 +8,23 @@
 //	health, err := client.Health()
 //	model, err := client.UploadModel(modelJSON, "my-model", "xgboost")
 //	result, err := client.Prove(model.ModelID, []float64{1.0, 2.0, 3.0})
-//	verification, err := client.Verify(result.ProofID)
-//	receipt, err := client.GetReceipt(result.ProofID)
+//
+//	// RegistryProofID is empty when the generator could not store the proof
+//	// in the proof registry.
+//	if result.RegistryProofID != "" {
+//		verification, err := client.Verify(result.RegistryProofID)
+//		receipt, err := client.GetReceipt(result.RegistryProofID)
+//	}
+//
+//	// Proofs that are already in the registry.
+//	proofs, err := client.ListProofs("", 10)
+//	if len(proofs) > 0 {
+//		verification, err := client.Verify(proofs[0].ProofID)
+//	}
+//
+// Verify and GetReceipt take a proof registry ID: an entry of ListProofs, or
+// ProveResponse.RegistryProofID when the generator stored the proof.
+// ProveResponse.ProofID is the generator's own ID and is unknown to the registry.
 package worldzk
 
 import (
@@ -16,6 +33,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -51,17 +70,28 @@ func (c *Client) Health() (*HealthResponse, error) {
 	return &resp, nil
 }
 
+// DefaultModelName is the name UploadModel sends when it is given an empty one.
+const DefaultModelName = "model"
+
 // UploadModel uploads an ML model for proof generation.
 //
-// modelJSON is the raw JSON content of the model file.
-// name is an optional human-readable name (pass "" to omit).
-// format is an optional format hint such as "xgboost" (pass "" to omit).
+// modelJSON is the raw JSON content of the model file. It is sent as a JSON
+// object, which is what the proof generator parses; invalid JSON is rejected
+// here, before any request is made.
+// name is a human-readable name. The service requires one, so an empty name is
+// sent as DefaultModelName.
+// format is an optional format hint such as "xgboost" (pass "" to let the
+// service detect it).
 func (c *Client) UploadModel(modelJSON string, name string, format string) (*ModelResponse, error) {
-	body := map[string]interface{}{
-		"model_json": modelJSON,
+	if !json.Valid([]byte(modelJSON)) {
+		return nil, fmt.Errorf("worldzk: model is not valid JSON")
 	}
-	if name != "" {
-		body["name"] = name
+	if name == "" {
+		name = DefaultModelName
+	}
+	body := map[string]interface{}{
+		"model_json": json.RawMessage(modelJSON),
+		"name":       name,
 	}
 	if format != "" {
 		body["format"] = format
@@ -76,6 +106,11 @@ func (c *Client) UploadModel(modelJSON string, name string, format string) (*Mod
 
 // Prove generates a proof for the given model and input features.
 func (c *Client) Prove(modelID string, features []float64) (*ProveResponse, error) {
+	// A nil slice is encoded as JSON null, which the service cannot parse. An
+	// empty array gets its "must not be empty" answer instead.
+	if features == nil {
+		features = []float64{}
+	}
 	body := map[string]interface{}{
 		"model_id": modelID,
 		"features": features,
@@ -88,45 +123,47 @@ func (c *Client) Prove(modelID string, features []float64) (*ProveResponse, erro
 	return &resp, nil
 }
 
-// Verify verifies a stored proof by its ID.
+// Verify verifies a stored proof by its proof registry ID.
 func (c *Client) Verify(proofID string) (*VerifyResponse, error) {
 	var resp VerifyResponse
-	if err := c.doJSON("POST", fmt.Sprintf("/proofs/%s/verify", proofID), map[string]interface{}{}, &resp); err != nil {
+	if err := c.doJSON("POST", fmt.Sprintf("/proofs/%s/verify", url.PathEscape(proofID)), map[string]interface{}{}, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
 }
 
-// GetReceipt retrieves the verification receipt for a proof.
+// GetReceipt retrieves the latest verification receipt for a proof. The
+// registry answers 404 until the proof has been verified once.
 func (c *Client) GetReceipt(proofID string) (*ReceiptResponse, error) {
 	var resp ReceiptResponse
-	if err := c.doJSON("GET", fmt.Sprintf("/proofs/%s/receipt", proofID), nil, &resp); err != nil {
+	if err := c.doJSON("GET", fmt.Sprintf("/proofs/%s/receipt", url.PathEscape(proofID)), nil, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
 }
 
-// ListProofs lists proofs, optionally filtered by model ID or hash.
+// ListProofs lists stored proofs, optionally filtered by model hash (the
+// registry matches the model_hash a proof was stored with).
 // Pass an empty string for model to list all proofs.
 // Pass 0 for limit to use the server default.
 func (c *Client) ListProofs(model string, limit int) ([]ProofSummary, error) {
-	var parts []string
+	query := url.Values{}
 	if limit > 0 {
-		parts = append(parts, fmt.Sprintf("limit=%d", limit))
+		query.Set("limit", strconv.Itoa(limit))
 	}
 	if model != "" {
-		parts = append(parts, fmt.Sprintf("model=%s", model))
+		query.Set("model", model)
 	}
 	path := "/proofs"
-	if len(parts) > 0 {
-		path += "?" + strings.Join(parts, "&")
+	if len(query) > 0 {
+		path += "?" + query.Encode()
 	}
 
-	var resp []ProofSummary
+	var resp proofListResponse
 	if err := c.doJSON("GET", path, nil, &resp); err != nil {
 		return nil, err
 	}
-	return resp, nil
+	return resp.Proofs, nil
 }
 
 // Stats returns proof registry statistics.

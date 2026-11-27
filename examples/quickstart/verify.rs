@@ -13,7 +13,7 @@
 //! Add to Cargo.toml:
 //!
 //!   [dependencies]
-//!   zkml-verifier = "0.1"
+//!   zkml-verifier = { path = "/path/to/world-zk-compute/crates/zkml-verifier" }
 //!   hex = "0.4"
 //!
 //! Then copy the main() function below into src/main.rs.

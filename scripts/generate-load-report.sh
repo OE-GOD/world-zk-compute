@@ -47,7 +47,7 @@ for result_file in "$RESULTS_DIR"/*.txt "$RESULTS_DIR"/*.log "$RESULTS_DIR"/*.js
 ### $NAME
 
 \`\`\`
-$(cat "$result_file" 2>/dev/null | head -50)
+$(head -50 "$result_file" 2>/dev/null)
 \`\`\`
 
 EOF

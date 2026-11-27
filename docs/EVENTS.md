@@ -76,24 +76,30 @@ List indexed results with optional filters.
 | `status` | string | Filter by status: `submitted`, `challenged`, `finalized`, `resolved` |
 | `submitter` | string | Filter by submitter address (hex, e.g. `0xabc...`) |
 | `model_hash` | string | Filter by model hash |
-| `limit` | integer | Max results to return (1-1000, default 50) |
+| `limit` | integer | Max results to return (1-1000, default 100) |
 
-**Response:** `200 OK` with JSON array of result objects:
+**Response:** `200 OK` with a JSON object whose `data` array holds the result objects:
 
 ```json
-[
-  {
-    "id": "0x...",
-    "model_hash": "0x...",
-    "input_hash": "0x...",
-    "output": "",
-    "submitter": "0x...",
-    "status": "submitted",
-    "block_number": 12345,
-    "timestamp": 0,
-    "challenger": null
-  }
-]
+{
+  "data": [
+    {
+      "id": "0x...",
+      "model_hash": "0x...",
+      "input_hash": "0x...",
+      "output": "",
+      "submitter": "0x...",
+      "status": "submitted",
+      "block_number": 12345,
+      "timestamp": 0,
+      "challenger": null
+    }
+  ],
+  "total": 1,
+  "limit": 100,
+  "offset": 0,
+  "has_more": false
+}
 ```
 
 Results are ordered by `block_number` descending (newest first).

@@ -70,25 +70,32 @@ async function anvilIncreaseTime(rpcUrl: string, seconds: number) {
 }
 
 /**
- * Sign TEE attestation matching the contract verification logic:
- *   message = keccak256(encodePacked(modelHash, inputHash, keccak256(result)))
- *   then EIP-191 personal sign
+ * Sign TEE attestation matching the contract verification logic (EIP-712):
+ *   TEEMLResult(bytes32 modelHash, bytes32 inputHash, bytes32 resultHash)
+ *   with resultHash = keccak256(result), under the domain
+ *   { name: "TEEMLVerifier", version: "1", chainId, verifyingContract }
  */
 async function signAttestation(
   modelHash: Hex,
   inputHash: Hex,
   resultData: Hex,
   enclaveKey: Hex,
+  chainId: number,
+  verifyingContract: Hex,
 ): Promise<Hex> {
-  const resultHash = keccak256(resultData);
-  const packed = encodePacked(
-    ['bytes32', 'bytes32', 'bytes32'],
-    [modelHash, inputHash, resultHash],
-  );
-  const messageHash = keccak256(packed);
-
   const account = privateKeyToAccount(enclaveKey);
-  return account.signMessage({ message: { raw: messageHash } });
+  return account.signTypedData({
+    domain: { name: 'TEEMLVerifier', version: '1', chainId, verifyingContract },
+    types: {
+      TEEMLResult: [
+        { name: 'modelHash', type: 'bytes32' },
+        { name: 'inputHash', type: 'bytes32' },
+        { name: 'resultHash', type: 'bytes32' },
+      ],
+    },
+    primaryType: 'TEEMLResult',
+    message: { modelHash, inputHash, resultHash: keccak256(resultData) },
+  });
 }
 
 // ── Main ────────────────────────────────────────────────────────────────────
@@ -199,6 +206,8 @@ async function main() {
     inputHash,
     resultData,
     ENCLAVE_KEY,
+    chain.id,
+    contractAddress,
   );
   ok(`attestation signed (${attestation.length} chars)`);
 

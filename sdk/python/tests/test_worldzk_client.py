@@ -9,15 +9,14 @@ import io
 import json
 import os
 import tempfile
-from typing import Any, Dict
+from typing import Any
 from unittest import mock
 from urllib.error import HTTPError, URLError
 
 import pytest
 
-from worldzk.client import WorldZK
+from worldzk.client import Client, WorldZK
 from worldzk.models import GatewayHealth, ProofResult, Receipt, VerificationResult
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -35,7 +34,7 @@ def _mock_response(data: Any, status: int = 200) -> mock.MagicMock:
     return resp
 
 
-def _http_error(code: int, body: Dict[str, Any]) -> HTTPError:
+def _http_error(code: int, body: dict[str, Any]) -> HTTPError:
     """Build an HTTPError with a JSON body."""
     data = json.dumps(body).encode("utf-8")
     err = HTTPError(
@@ -159,7 +158,11 @@ class TestWorldZKUploadModel:
             assert req.full_url == "http://localhost:8080/models"
             assert req.get_method() == "POST"
             body = json.loads(req.data)
-            assert "model_json" in body
+            # proof-generator wants the model as a JSON object (not a string)
+            # and rejects a request without a name
+            assert body["model_json"] == {"trees": [1, 2, 3]}
+            assert body["name"] == os.path.splitext(os.path.basename(tmp_path))[0]
+            assert "format" not in body
         finally:
             os.unlink(tmp_path)
 
@@ -201,16 +204,19 @@ class TestWorldZKListModels:
 
     @mock.patch("worldzk.client.urlopen")
     def test_list_models(self, mock_urlopen):
-        mock_urlopen.return_value = _mock_response([
-            {"model_id": "m-1", "name": "model-a"},
-            {"model_id": "m-2", "name": "model-b"},
-        ])
+        # proof-generator answers GET /models with {"models": [...]}
+        mock_urlopen.return_value = _mock_response({
+            "models": [
+                {"id": "m-1", "name": "model-a"},
+                {"id": "m-2", "name": "model-b"},
+            ],
+        })
 
         zk = WorldZK()
         models = zk.list_models()
 
         assert len(models) == 2
-        assert models[0]["model_id"] == "m-1"
+        assert models[0]["id"] == "m-1"
 
     @mock.patch("worldzk.client.urlopen")
     def test_get_model(self, mock_urlopen):
@@ -282,6 +288,26 @@ class TestWorldZKProve:
         assert result.model_hash == ""
         assert result.circuit_hash == ""
         assert result.output == ""
+        assert result.mock is False
+        assert result.registry_proof_id is None
+
+    @mock.patch("worldzk.client.urlopen")
+    def test_prove_reports_mock_and_registry_id(self, mock_urlopen):
+        mock_urlopen.return_value = _mock_response({
+            "proof_id": "p-3",
+            "model_hash": "0xaa",
+            "circuit_hash": "0xbb",
+            "output": "approved",
+            "mock": True,
+            "prove_time_ms": 0,
+            "registry_proof_id": "r-9",
+        })
+
+        zk = WorldZK()
+        result = zk.prove("m-1", [1.0])
+
+        assert result.mock is True
+        assert result.registry_proof_id == "r-9"
 
 
 # ---------------------------------------------------------------------------
@@ -400,21 +426,23 @@ class TestWorldZKListProofs:
 
     @mock.patch("worldzk.client.urlopen")
     def test_list_proofs_default(self, mock_urlopen):
-        mock_urlopen.return_value = _mock_response([
-            {"proof_id": "p-1"},
-            {"proof_id": "p-2"},
-        ])
+        # proof-registry answers GET /proofs with {"proofs": [...], "count": n}
+        mock_urlopen.return_value = _mock_response({
+            "proofs": [{"id": "p-1"}, {"id": "p-2"}],
+            "count": 2,
+        })
 
         zk = WorldZK()
         proofs = zk.list_proofs()
 
         assert len(proofs) == 2
+        assert proofs[0]["id"] == "p-1"
         req = mock_urlopen.call_args[0][0]
         assert "limit=50" in req.full_url
 
     @mock.patch("worldzk.client.urlopen")
     def test_list_proofs_with_model_filter(self, mock_urlopen):
-        mock_urlopen.return_value = _mock_response([])
+        mock_urlopen.return_value = _mock_response({"proofs": [], "count": 0})
 
         zk = WorldZK()
         zk.list_proofs(model="m-1", limit=10)
@@ -425,7 +453,7 @@ class TestWorldZKListProofs:
 
     @mock.patch("worldzk.client.urlopen")
     def test_list_proofs_empty(self, mock_urlopen):
-        mock_urlopen.return_value = _mock_response([])
+        mock_urlopen.return_value = _mock_response({"proofs": [], "count": 0})
 
         zk = WorldZK()
         proofs = zk.list_proofs()
@@ -443,19 +471,21 @@ class TestWorldZKTransparency:
 
     @mock.patch("worldzk.client.urlopen")
     def test_transparency_root(self, mock_urlopen):
+        # proof-registry serves GET /transparency/root -> {"root", "tree_size"};
+        # it has no /proofs/transparency/root
         mock_urlopen.return_value = _mock_response({
-            "root": "0xdeadbeef",
-            "total_proofs": 42,
+            "root": "deadbeef",
+            "tree_size": 42,
         })
 
         zk = WorldZK()
         result = zk.transparency_root()
 
-        assert result["root"] == "0xdeadbeef"
-        assert result["total_proofs"] == 42
+        assert result["root"] == "deadbeef"
+        assert result["tree_size"] == 42
 
         req = mock_urlopen.call_args[0][0]
-        assert req.full_url == "http://localhost:8080/proofs/transparency/root"
+        assert req.full_url == "http://localhost:8080/transparency/root"
 
 
 # ---------------------------------------------------------------------------
@@ -492,15 +522,13 @@ class TestWorldZKCircuits:
 
     @mock.patch("worldzk.client.urlopen")
     def test_list_circuits(self, mock_urlopen):
-        mock_urlopen.return_value = _mock_response([
-            {"circuit_hash": "0xabc", "name": "xgboost-remainder"},
-        ])
+        # the verifier answers GET /circuits with {"circuits": [<circuit id>, ...]}
+        mock_urlopen.return_value = _mock_response({"circuits": ["xgboost-remainder"]})
 
         zk = WorldZK()
         circuits = zk.list_circuits()
 
-        assert len(circuits) == 1
-        assert circuits[0]["circuit_hash"] == "0xabc"
+        assert circuits == ["xgboost-remainder"]
 
         req = mock_urlopen.call_args[0][0]
         assert req.full_url == "http://localhost:8080/circuits"
@@ -670,6 +698,51 @@ class TestWorldZKCustomURL:
 
 
 # ---------------------------------------------------------------------------
+# Client (direct-service client): search
+# ---------------------------------------------------------------------------
+
+
+class TestClientSearch:
+    """Tests for Client.search() against the registry's query parameters."""
+
+    @mock.patch("worldzk.client.urlopen")
+    def test_search_sends_model_filter(self, mock_urlopen):
+        mock_urlopen.return_value = _mock_response({"proofs": [], "count": 0})
+
+        client = Client(registry_url="http://registry:3001")
+        client.search(model_hash="0xaa", limit=7)
+
+        # the registry reads ``model``; it ignores ``model_hash``
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url == "http://registry:3001/proofs?limit=7&model=0xaa"
+
+    @mock.patch("worldzk.client.urlopen")
+    def test_search_filters_circuit_hash_locally(self, mock_urlopen):
+        mock_urlopen.return_value = _mock_response({
+            "proofs": [
+                {"id": "p-1", "circuit_hash": "0xc1"},
+                {"id": "p-2", "circuit_hash": "0xc2"},
+            ],
+            "count": 2,
+        })
+
+        client = Client(registry_url="http://registry:3001")
+        result = client.search(circuit_hash="0xc2")
+
+        assert result == {"proofs": [{"id": "p-2", "circuit_hash": "0xc2"}], "count": 1}
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url == "http://registry:3001/proofs?limit=50"
+
+    @mock.patch("worldzk.client.urlopen")
+    def test_search_without_filters_returns_envelope(self, mock_urlopen):
+        mock_urlopen.return_value = _mock_response({"proofs": [{"id": "p-1"}], "count": 1})
+
+        result = Client().search()
+
+        assert result == {"proofs": [{"id": "p-1"}], "count": 1}
+
+
+# ---------------------------------------------------------------------------
 # Import / export tests
 # ---------------------------------------------------------------------------
 
@@ -678,9 +751,9 @@ class TestWorldZKImports:
     """Verify that WorldZK is importable from the top-level package."""
 
     def test_worldzk_importable(self):
-        from worldzk import WorldZK as WZK
+        from worldzk import WorldZK as PackageWorldZK
 
-        assert WZK is not None
+        assert PackageWorldZK is not None
 
     def test_models_importable(self):
         from worldzk import (

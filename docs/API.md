@@ -90,9 +90,12 @@ JSON format of the same metrics (backward compatibility).
   "total_challenges": 5,
   "total_disputes_resolved": 3,
   "total_disputes_failed": 1,
+  "stylus_disputes_resolved": 0,
+  "solidity_disputes_resolved": 3,
   "total_finalizations": 8,
   "total_errors": 2,
-  "active_disputes": 0
+  "active_disputes": 0,
+  "webhook_failures": 0
 }
 ```
 
@@ -141,13 +144,14 @@ watchdog is disabled, computes a one-shot health evaluation.
 ```json
 {
   "status": "healthy",
+  "error_rate": 0.013,
+  "avg_latency_ms": 12.5,
   "uptime_secs": 7200,
+  "total_rate_limited": 0,
   "total_inferences": 150,
   "total_errors": 2,
-  "error_rate_pct": 1.3,
-  "avg_latency_ms": 12.5,
-  "degraded": false,
-  "degraded_reason": null
+  "memory_rss_bytes": 0,
+  "checks": { "error_rate": "ok", "latency": "ok" }
 }
 ```
 
@@ -198,8 +202,9 @@ attestation document. In dev mode, returns a mock attestation.
 ```json
 {
   "document": "...",
-  "pcrs": { ... },
-  "timestamp": 1710000000
+  "enclave_address": "0x15d34AAf54267DB7D7c367839AAf71A00a2C6A65",
+  "is_nitro": false,
+  "pcr0": "000000..."
 }
 ```
 
@@ -213,15 +218,17 @@ curl "http://localhost:8080/attestation?nonce=deadbeef"
 
 ### POST /infer
 
-Run ML inference on the provided feature vector. Requires an `Authorization`
-header when `API_KEY` is configured on the enclave. The enclave signs the result
+Run ML inference on the provided feature vector. The enclave signs the result
 with its ECDSA key, producing an attestation compatible with `TEEMLVerifier.sol`.
+
+This endpoint has no authentication. The enclave reads no API key for it, so
+anyone who can reach the port receives signed results; keep the port private or
+put an authenticating proxy in front of it. Only the rate limiter applies.
 
 **Headers**
 
 | Name          | Value            | Required                   |
 |---------------|------------------|----------------------------|
-| Authorization | Bearer {api_key} | Yes (when API_KEY is set)  |
 | Content-Type  | application/json | Yes                        |
 
 **Request body**
@@ -239,6 +246,7 @@ with its ECDSA key, producing an attestation compatible with `TEEMLVerifier.sol`
 |-----------|----------|----------|--------------------------------------------------|
 | features  | float[]  | Yes      | Input feature vector                             |
 | chain_id  | integer  | No       | Override enclave-wide CHAIN_ID (default: 1)      |
+| verifier_address | string | No  | TEEMLVerifier address; when set (or `TEE_VERIFIER_ADDRESS` is configured) the attestation is the EIP-712 signature `submitResult` recovers |
 | nonce     | string   | No       | Client nonce for replay protection               |
 | timestamp | integer  | No       | Unix timestamp (seconds) for replay protection   |
 
@@ -262,8 +270,8 @@ with its ECDSA key, producing an attestation compatible with `TEEMLVerifier.sol`
 
 | Status | Condition                    |
 |--------|------------------------------|
-| 401    | Missing or invalid API key   |
-| 429    | Rate limited (see `Retry-After` header) |
+| 400    | Wrong number of features, or the `nonce`/`timestamp` pair fails replay protection (plain-text body) |
+| 429    | Rate limited (see `retry_after_secs` in the JSON body) |
 | 500    | Model inference error        |
 
 **Example**
@@ -271,7 +279,6 @@ with its ECDSA key, producing an attestation compatible with `TEEMLVerifier.sol`
 ```bash
 curl -X POST http://localhost:8080/infer \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer my-api-key" \
   -d '{"features": [5.1, 3.5, 1.4, 0.2]}'
 ```
 
@@ -311,7 +318,8 @@ curl http://localhost:8080/metrics | jq .
 ### POST /admin/reload-model
 
 Hot-reload the primary model from a new file path. Requires the admin API key
-(`ADMIN_API_KEY` env var). The old model continues serving until the new one is
+(`ADMIN_API_KEY` env var) as `Authorization: Bearer <key>`; returns `403` when
+`ADMIN_API_KEY` is not set. The old model continues serving until the new one is
 fully loaded and validated.
 
 **Request body**
@@ -345,6 +353,7 @@ fully loaded and validated.
 ```bash
 curl -X POST http://localhost:8080/admin/reload-model \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_API_KEY" \
   -d '{"model_path": "/models/new-model.json"}'
 ```
 
@@ -361,12 +370,12 @@ List all models loaded in the multi-model registry.
   "models": [
     {
       "model_id": "iris-v1",
-      "model_hash": "0x...",
+      "model_hash": "abc123...",
       "size_bytes": 24576
     }
   ],
   "count": 1,
-  "max_models": 10
+  "max_models": 5
 }
 ```
 
@@ -380,7 +389,8 @@ curl http://localhost:8080/models | jq .
 
 ### POST /models/load
 
-Load a new model into the multi-model registry.
+Load a new model into the multi-model registry. Requires
+`Authorization: Bearer <ADMIN_API_KEY>`.
 
 **Request body**
 
@@ -404,7 +414,7 @@ Load a new model into the multi-model registry.
 {
   "success": true,
   "model_id": "fraud-detector-v2",
-  "model_hash": "0x...",
+  "model_hash": "abc123def456...",
   "size_bytes": 51200
 }
 ```
@@ -414,6 +424,7 @@ Load a new model into the multi-model registry.
 ```bash
 curl -X POST http://localhost:8080/models/load \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ADMIN_API_KEY" \
   -d '{"model_id": "my-model", "model_path": "/models/model.json"}'
 ```
 
@@ -421,7 +432,8 @@ curl -X POST http://localhost:8080/models/load \
 
 ### DELETE /models/{model_id}
 
-Unload a model from the multi-model registry.
+Unload a model from the multi-model registry. Requires
+`Authorization: Bearer <ADMIN_API_KEY>`.
 
 **Response** `200 OK`
 
@@ -435,7 +447,8 @@ Unload a model from the multi-model registry.
 **Example**
 
 ```bash
-curl -X DELETE http://localhost:8080/models/fraud-detector-v2
+curl -X DELETE http://localhost:8080/models/fraud-detector-v2 \
+  -H "Authorization: Bearer $ADMIN_API_KEY"
 ```
 
 ---
@@ -480,11 +493,12 @@ retrieval key.
 }
 ```
 
-**Response** `200 OK`
+**Response** `201 Created`
 
 ```json
 {
-  "hash": "e3b0c44298fc1c149afbf4c8996fb924..."
+  "hash": "e3b0c44298fc1c149afbf4c8996fb924...",
+  "size": 29
 }
 ```
 
@@ -514,29 +528,29 @@ curl http://localhost:3001/inputs/e3b0c44298fc1c149afbf4c8996fb924...
 
 ---
 
-## Warm Prover (default port 3000)
+## risc0 Prover Health Server (default port 8081)
 
-The warm prover keeps a pre-warmed risc0 prover instance for faster proving.
-It exposes a health/metrics/status HTTP interface on a configurable port
-(default 3000).
+The risc0 prover (`world-zk-prover run`) exposes a health/metrics/status HTTP
+interface on a configurable port (`--health-port` / `HEALTH_PORT`, default 8081;
+the Docker image sets 9090).
 
 ### GET /health
 
-Basic liveness check for the prover.
+Basic liveness check for the prover. Returns `503` with
+`{"status":"unhealthy"}` when the prover loop is not running.
 
 **Response** `200 OK`
 
 ```json
 {
-  "status": "ok",
-  "name": "World ZK Prover"
+  "status": "healthy"
 }
 ```
 
 **Example**
 
 ```bash
-curl http://localhost:3000/health
+curl http://localhost:8081/health
 ```
 
 ---
@@ -545,35 +559,46 @@ curl http://localhost:3000/health
 
 Prometheus-style metrics for the prover (proofs completed, latency, etc.).
 
-**Response** `200 OK` (`Content-Type: text/plain`)
+**Response** `200 OK` (`Content-Type: text/plain; version=0.0.4`)
 
 **Example**
 
 ```bash
-curl http://localhost:3000/metrics
+curl http://localhost:8081/metrics
 ```
 
 ---
 
 ### GET /status
 
-Detailed prover status including active proofs, concurrency, and GPU state.
+Detailed prover status (`prover`) plus a JSON summary of the proving metrics
+(`metrics`).
 
 **Response** `200 OK`
 
 ```json
 {
-  "status": "idle",
-  "active_proofs": 0,
-  "max_concurrency": 4,
-  "gpu_available": false
+  "prover": { "running": true, "state": "Running", "queue_size": 0, "active_proofs": 0, "...": "..." },
+  "metrics": {
+    "proofs_generated": 0,
+    "proofs_failed": 0,
+    "success_rate": "0.0%",
+    "throughput": "0.0 proofs/hour",
+    "avg_proof_time_ms": 0,
+    "p99_proof_time_ms": 0,
+    "total_cycles": 0,
+    "uptime_secs": 3600,
+    "gpu_device_count": 0,
+    "gpu_jobs_completed": 0,
+    "gpu_jobs_in_progress": 0
+  }
 }
 ```
 
 **Example**
 
 ```bash
-curl http://localhost:3000/status | jq .
+curl http://localhost:8081/status | jq .
 ```
 
 ---
@@ -615,7 +640,9 @@ starting up.
 
 ```json
 {
-  "ready": true
+  "ready": true,
+  "checks": { "db": "ok", "indexing": "ok" },
+  "last_indexed_block": 19542100
 }
 ```
 
@@ -731,23 +758,26 @@ curl http://localhost:8081/api/v1/stats | jq .
 
 ---
 
-### POST /admin/reset
+### POST /api/v1/admin/reset
 
-Clear all indexed data and re-sync from the starting block. Requires the
-`X-Admin-Key` header.
+Reset the storage lock-poisoned flag so `/health` stops reporting `degraded`.
+The route is registered only when the `ADMIN_API_KEY` env var is set, and
+requires that key in the `X-Admin-Key` header (plus `Authorization: Bearer`
+when `API_KEY` is set).
 
 **Response** `200 OK`
 
 ```json
 {
-  "status": "reset"
+  "status": "ok",
+  "message": "Lock state reset"
 }
 ```
 
 **Example**
 
 ```bash
-curl -X POST http://localhost:8081/admin/reset \
+curl -X POST http://localhost:8081/api/v1/admin/reset \
   -H "X-Admin-Key: my-admin-key"
 ```
 
@@ -770,16 +800,20 @@ websocat ws://localhost:8081/ws/events
 
 ### Authentication
 
-The TEE enclave supports API key authentication via the `Authorization: Bearer <key>`
-header. Set the `API_KEY` environment variable on the enclave to enable it.
+The TEE enclave has no API key for `POST /infer` or for its read-only endpoints
+(`/health`, `/info`, `/attestation`, `/metrics`, `GET /models`); it does not read
+an `API_KEY` variable.
 
-Admin endpoints (e.g., `/admin/reload-model`) require the `ADMIN_API_KEY` env var.
+The endpoints that change the loaded models (`POST /admin/reload-model`,
+`POST /models/load`, `DELETE /models/{model_id}`) require
+`Authorization: Bearer <ADMIN_API_KEY>` and return `403` when `ADMIN_API_KEY` is
+not set.
 
 ### Rate Limiting
 
 The enclave applies a sliding-window rate limiter to `POST /infer`. When rate
-limited, the server returns `429 Too Many Requests` with a `Retry-After` header
-indicating seconds to wait.
+limited, the server returns `429 Too Many Requests` with a JSON body whose
+`retry_after_secs` field gives the seconds to wait.
 
 ### Versioned API
 

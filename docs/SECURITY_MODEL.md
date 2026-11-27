@@ -9,7 +9,7 @@
 
 ## 1. System Overview
 
-World ZK Compute provides verifiable ML inference for on-chain applications. An ML model (currently XGBoost tree ensembles) runs inside a Trusted Execution Environment (AWS Nitro enclave). The enclave signs each inference result with ECDSA. The signed result is submitted on-chain via the `TEEMLVerifier` contract, which accepts it after a challenge window. If any party disputes the result, the dispute is resolved by a cryptographic proof (GKR+Hyrax zero-knowledge proof verified on-chain via `RemainderVerifier`). This two-tier design provides low-cost happy-path verification (~3K gas) with a mathematically sound fallback (~3-6M gas hybrid, ~254M gas direct) that does not depend on hardware trust.
+World ZK Compute provides verifiable ML inference for on-chain applications. An ML model (currently XGBoost tree ensembles) runs inside a Trusted Execution Environment (AWS Nitro enclave). The enclave signs each inference result with ECDSA. The signed result is submitted on-chain via the `TEEMLVerifier` contract, which accepts it after a challenge window. If any party disputes the result, the dispute is resolved by a cryptographic proof (GKR+Hyrax zero-knowledge proof verified on-chain via `RemainderVerifier`). This two-tier design provides low-cost happy-path verification (about 304K gas measured: `submitResult` 249,780 + `finalize` 53,888) with a mathematically sound fallback (~3-6M gas hybrid; about 198M gas direct, `eth_estimateGas` for the phase1a fixture on Anvil) that does not depend on hardware trust.
 
 ---
 
@@ -111,12 +111,12 @@ See `docs/FRONT_RUNNING.md` for detailed per-function analysis.
 
 **Defenses (implemented):**
 - EIP-712 domain separator includes `chainId` and `verifyingContract` address, binding attestations to a specific chain and contract.
-- The enclave includes a monotonic nonce and Unix timestamp in the signed payload.
+- The enclave returns a monotonic nonce and Unix timestamp with each attestation. They are part of the signed payload only in its legacy EIP-191 attestation, not in the EIP-712 attestation that `TEEMLVerifier` accepts.
 - Nitro attestation freshness is validated with a configurable window (default 5-10 minutes).
 - The operator computes a chain-bound nonce `keccak256(chainId || blockNumber || enclaveAddress)` for attestation requests.
 - Enclave-side replay protection validates nonce uniqueness and timestamp freshness per request.
 
-**Known gap:** The current `TEEMLVerifier.submitResult()` uses EIP-712 structured signing with `(modelHash, inputHash, resultHash)` as the typed data, which includes `chainId` via the domain separator. However, the enclave attestation module signs an extended payload that also includes `chainId`, `nonce`, and `timestamp` fields. The on-chain recovery currently verifies against the EIP-712 struct hash. If the on-chain verification is updated to include the extended fields, cross-chain replay would be fully prevented at the contract level.
+**Known gap:** The current `TEEMLVerifier.submitResult()` uses EIP-712 structured signing with `(modelHash, inputHash, resultHash)` as the typed data, which includes `chainId` and the contract address via the domain separator, so a signature made for one chain or one verifier address does not verify on another. The extended payload that also includes `chainId`, `nonce`, and `timestamp` fields is the enclave's legacy EIP-191 attestation, which the contract does not accept. The on-chain recovery verifies against the EIP-712 struct hash, which has no `nonce` or `timestamp`: the same attestation is accepted again on the same contract in a later block or from another submitter. Checking `nonce` and `timestamp` on-chain would require adding them to the signed struct.
 
 ### 3.6 Reentrancy
 
@@ -129,7 +129,7 @@ See `docs/FRONT_RUNNING.md` for detailed per-function analysis.
 **Attack vector:** Contract owner key is stolen. Attacker can register rogue enclaves, swap the `RemainderVerifier` to one that always returns true, change stake amounts (capped at 100 ETH), or pause the contract.
 
 **Defenses:**
-- `Ownable2Step` requires the new owner to explicitly accept, preventing accidental transfers.
+- Admin transfer on `TEEMLVerifier` and `RemainderVerifier` is one-step: `changeAdmin(address)` takes effect immediately. Neither contract uses `Ownable2Step`, so there is no acceptance step.
 - `Pausable` provides emergency stop but does not enable fund extraction.
 - Stake and bond amounts are capped at 100 ETH per the setter functions.
 - `RemainderVerifier` uses UUPS proxy with admin-only upgrade authorization.
@@ -196,7 +196,7 @@ The direct GKR+Hyrax verification path requires NO trusted setup. All commitment
 
 ### 6.1 Single Admin Key
 
-The `TEEMLVerifier` uses `Ownable2Step` with a single owner address. The `RemainderVerifier` uses a UUPS proxy with a single admin. Until a multisig with timelock is deployed, a compromised admin key grants full control over enclave registration, verifier swapping, and contract pausing.
+The `TEEMLVerifier` and the `RemainderVerifier` each use a UUPS proxy with a single admin. Until a multisig with timelock is deployed, a compromised admin key grants full control over enclave registration, verifier swapping, and contract pausing.
 
 **Severity:** High
 **Status:** Documented; multisig deployment recommended before mainnet.
@@ -210,7 +210,7 @@ The contract and prover code have not undergone a formal third-party security au
 
 ### 6.3 Gas Costs Limit On-Chain Verification
 
-Direct GKR+Hyrax verification costs ~254M gas, exceeding Ethereum L1's 30M block gas limit. On L1, the batch verifier (15 transactions) or hybrid Stylus+Groth16 path (~3-6M gas) must be used. On L2s like Arbitrum (with higher gas limits), direct verification is feasible in a single transaction.
+Direct GKR+Hyrax verification costs about 198M gas for the phase1a fixture (`eth_estimateGas` on Anvil), exceeding Ethereum L1's 30M block gas limit. The batch verifier splits it into 15 transactions (plus an optional cleanup), but its largest step measures 31.7M gas, also above 30M; the hybrid Stylus+Groth16 path is quoted at ~3-6M gas. `RemainderVerifier` is 136,142 bytes of runtime bytecode, over the 24,576-byte contract size limit of Ethereum mainnet and Sepolia, Arbitrum One and Arbitrum Sepolia, World Chain and World Chain Sepolia, so it cannot be deployed on any of them; `TEEMLVerifier` alone can.
 
 **Implication:** On-chain dispute resolution is expensive. The economic security model requires that the prover stake (0.1 ETH) exceeds the ZK proof generation cost for disputes to be economically rational.
 
@@ -230,7 +230,7 @@ The direct GKR+Hyrax path and the Stylus WASM verifier path do NOT use Groth16 a
 
 ### 6.7 EIP-712 Attestation Field Mismatch
 
-The enclave signs an extended payload including `chainId`, `nonce`, and `timestamp`, but the contract's `submitResult()` recovers the signer using only the EIP-712 struct hash of `(modelHash, inputHash, resultHash)` with the domain separator providing chain binding. The additional fields signed by the enclave are not verified on-chain. See Section 3.5 for details.
+The enclave's legacy EIP-191 attestation signs an extended payload including `chainId`, `nonce`, and `timestamp`, but the contract's `submitResult()` accepts only the EIP-712 attestation: it recovers the signer using the EIP-712 struct hash of `(modelHash, inputHash, resultHash)` with the domain separator providing chain and contract binding. `nonce` and `timestamp` are not part of that signature and are not verified on-chain. See Section 3.5 for details.
 
 ---
 
@@ -238,18 +238,18 @@ The enclave signs an extended payload including `chainId`, `nonce`, and `timesta
 
 | Feature | Contract | Implementation |
 |---|---|---|
-| Access control | TEEMLVerifier | `Ownable2Step` (OpenZeppelin) |
+| Access control | TEEMLVerifier | UUPS proxy with `onlyAdmin` modifier |
 | Access control | RemainderVerifier | UUPS proxy with `onlyAdmin` modifier |
 | Reentrancy protection | Both | `ReentrancyGuard` (OpenZeppelin) on all ETH-transferring functions |
 | Emergency pause | Both | `Pausable` (OpenZeppelin); `pause()` / `unpause()` by admin |
 | Replay protection | TEEMLVerifier | EIP-712 domain separator with `chainId` + `verifyingContract` |
 | Stake caps | TEEMLVerifier | `setChallengeBondAmount` / `setProverStake` capped at 100 ETH |
 | Window bounds | TEEMLVerifier | Challenge window: 10min-7days; Dispute window: 1hr-30days |
-| Upgradeability | RemainderVerifier | UUPS proxy (ERC-1967 storage slots); `_authorizeUpgrade` checks code exists |
+| Upgradeability | RemainderVerifier | UUPS proxy (ERC-1967 storage slots); `_authorizeUpgrade` checks code exists; the base requires the new implementation's `proxiableUUID()` to be the ERC-1967 implementation slot, which also refuses the address of a proxy whose implementation has this check (its `proxiableUUID()` reverts) but not of a proxy on an older implementation, which answers through `delegatecall` (RUNBOOK section 6, step 3, checks the target's implementation slot and its address for it); it does not check that the new implementation has the upgrade functions or a compatible storage layout |
 | Circuit validation | RemainderVerifier | Registered circuits with description hash, generator hash, active flag |
 | Batch session auth | DAGBatchVerifier | `msg.sender` check on every continue/finalize call |
 | Custom errors | Both | Gas-efficient custom errors (no string reverts) |
-| Storage packing | TEEMLVerifier | `PackedEnclaveInfo` (2 slots), `PackedMLResult` (~10 slots) |
+| Storage packing | TEEMLVerifier | `PackedEnclaveInfo` (2 slots), `PackedMLResult` (9 slots plus the `result` data) |
 
 ---
 
@@ -257,8 +257,8 @@ The enclave signs an extended payload including `chainId`, `nonce`, and `timesta
 
 | Path | Gas Cost | Trust Assumptions | Single Tx? | Production Status |
 |---|---|---|---|---|
-| TEE happy path | ~3K | TEE hardware + admin | Yes | Active |
-| Direct GKR+Hyrax (Solidity) | ~254M | Math only | No (15 txs on L1) | E2E tested |
+| TEE happy path | ~304K (`submitResult` 249,780 + `finalize` 53,888) | TEE hardware + admin | No (submit + finalize) | Active |
+| Direct GKR+Hyrax (Solidity) | ~198M (phase1a fixture) | Math only | Yes, on a local chain only (see 6.3) | E2E tested |
 | Hybrid Stylus+Groth16 | ~3-6M | Math + Groth16 setup | Yes | E2E tested |
-| DAG Batch (multi-tx) | ~17-28M/tx | Math only | No (15 txs) | E2E tested |
+| DAG Batch (multi-tx) | 8.6-31.7M/tx (measured) | Math only | No (15 txs + optional cleanup) | E2E tested |
 | Stylus WASM (direct) | ~5-25M | Math only | Yes (Arbitrum) | E2E tested |

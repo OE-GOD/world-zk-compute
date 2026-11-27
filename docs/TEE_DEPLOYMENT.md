@@ -7,9 +7,9 @@ This guide covers building, deploying, and operating the World ZK Compute TEE en
 The TEE enclave runs ML inference (XGBoost/LightGBM) inside an isolated AWS Nitro Enclave. It produces ECDSA-signed attestations that can be verified on-chain by the `TEEMLVerifier` contract.
 
 ```
-                  vsock proxy
+                  vsock bridge (not in this repository)
   Client --> EC2 Parent Host ----------> Nitro Enclave
-               (port 5000)                tee-enclave
+               (port 5000)                tee-enclave (HTTP over TCP)
                                           - ML inference
                                           - ECDSA signing
                                           - Nitro attestation
@@ -17,9 +17,9 @@ The TEE enclave runs ML inference (XGBoost/LightGBM) inside an isolated AWS Nitr
 
 **Key properties:**
 - The enclave has no persistent storage, no network access, and no interactive shell
-- Communication happens exclusively via vsock (virtual socket)
+- A Nitro enclave's only channel to the outside is vsock (virtual socket). The `tee-enclave` binary does not speak vsock: it only opens a TCP listener (`0.0.0.0:$PORT`), and neither Nitro Dockerfile nor the build scripts add a vsock listener or a TCP-to-vsock bridge (see Step 2)
 - The enclave's code is measured at boot; the PCR0 hash uniquely identifies the image
-- The PCR0 is registered on-chain so verifiers can confirm attestation provenance
+- The first 32 bytes of the PCR0 are recorded on-chain as the image hash of the enclave's signing address; the contract stores this value and does not check it (see "Registering PCR0 On-Chain")
 
 ## Prerequisites
 
@@ -65,7 +65,7 @@ sudo usermod -aG ne $USER
 
 ### Option A: From the enclave crate (minimal)
 
-Builds only the `tee-enclave` crate. Model must be supplied at runtime.
+Builds only the `tee-enclave` crate. The image contains no model file (`tee/enclave/Dockerfile.nitro` copies only the binary), and `tee-enclave` exits at startup when `MODEL_PATH` (`/app/model/model.json`) does not exist, so a model has to be added to the image before the EIF is built; `build-eif.sh` has no step for that.
 
 ```bash
 cd tee/enclave
@@ -74,7 +74,7 @@ cd tee/enclave
 
 ### Option B: From the top-level tee directory (includes test model)
 
-Builds the enclave with the test model baked in (useful for testing).
+Builds the enclave with the test model baked in (useful for testing). `build-enclave.sh` builds `tee/Dockerfile` (the dev image: no `--features nitro`, `NITRO_ENABLED` not set, port 8080), not `tee/Dockerfile.nitro`, so the enclave in this EIF returns mock attestation documents (`is_nitro: false`).
 
 ```bash
 cd tee/scripts
@@ -86,6 +86,8 @@ Both produce:
 - `enclave-measurements.json` -- PCR0, PCR1, PCR2 values
 
 ### Build Output
+
+From `build-eif.sh` (Option A); `build-enclave.sh --nitro` prints the same three PCR values after `Nitro EIF built:`.
 
 ```
 === Build Complete ===
@@ -125,17 +127,12 @@ The command returns the Enclave ID:
 
 ### Step 2: Set Up the vsock Proxy
 
-The enclave listens on port 5000 inside the vsock. You need a proxy on the parent instance to forward TCP traffic:
+`tee-enclave` serves HTTP on a TCP port inside the enclave: `0.0.0.0:5000` in the Option A image, `0.0.0.0:8080` in the Option B image. It does not listen on vsock, and neither image contains a TCP-to-vsock bridge. To reach it from the parent instance you need two pieces that this repository does not provide:
 
-```bash
-# Install vsock-proxy if not present
-sudo yum install -y aws-nitro-enclaves-cli
+- inside the enclave image, a bridge from a vsock port to that TCP port;
+- on the parent instance, a forwarder from a local TCP port to the enclave's vsock CID and port (`socat` or a custom proxy).
 
-# Forward TCP port 5000 on localhost to vsock CID 16, port 5000
-vsock-proxy 5000 --local-port 5000 --remote-cid 16 --remote-port 5000 &
-```
-
-Alternatively, use `socat` or a custom proxy.
+This guide gives no command for either piece, because none is included in the repository. The steps below assume a forwarder on the parent instance is listening on `localhost:5000`.
 
 ### Step 3: Verify the Enclave is Running
 
@@ -143,7 +140,7 @@ Alternatively, use `socat` or a custom proxy.
 # Check enclave status
 nitro-cli describe-enclaves
 
-# Health check (via the vsock proxy)
+# Health check (via the forwarder from Step 2)
 curl -s http://localhost:5000/health | jq .
 
 # Get enclave info
@@ -170,13 +167,16 @@ Expected response:
   "input_hash": "0x...",
   "result_hash": "0x...",
   "attestation": "0x...",
-  "enclave_address": "0x..."
+  "enclave_address": "0x...",
+  "chain_id": 1,
+  "nonce": 0,
+  "timestamp": 1795502593
 }
 ```
 
 ## Registering PCR0 On-Chain
 
-The on-chain `TEEMLVerifier` contract must know the expected PCR0 so it can verify that attestations came from a legitimate enclave build.
+`TEEMLVerifier.registerEnclave(address, bytes32)` (admin only) records the enclave's signing address together with an image hash, the first 32 bytes of PCR0. The contract only stores that hash: no check in the contract uses it (it is only returned by the `enclaves(address)` view), and the contract never sees an attestation document. What it checks, in `submitResult`, is that the result carries an EIP-712 signature (`TEEMLResult(bytes32 modelHash,bytes32 inputHash,bytes32 resultHash)`, domain name `TEEMLVerifier`, version `1`, with the chain ID and the contract address) from an address that is registered and active. A signature made for another chain or another verifier address does not verify. Whoever registers the enclave is trusted to have checked the attestation document and the PCR0 off-chain.
 
 ### Using the Registration Script
 
@@ -192,7 +192,7 @@ tee/scripts/register-enclave.sh \
 
 This script:
 1. Fetches the `/attestation` endpoint from the running enclave
-2. Validates that the returned PCR0 matches `--expected-pcr0`
+2. Compares the `pcr0` field of that JSON response with `--expected-pcr0` (it does not verify the attestation document's signature or certificate chain)
 3. Calls `TEEMLVerifier.registerEnclave(address, bytes32)` on-chain
 
 ### Manual Registration
@@ -224,15 +224,17 @@ The enclave reads all configuration from environment variables. These are set in
 |---|---|---|
 | `MODEL_PATH` | `/app/model/model.json` | Path to the XGBoost/LightGBM model file |
 | `MODEL_FORMAT` | `auto` | Model format: `auto`, `xgboost`, or `lightgbm` |
-| `PORT` | `8080` (dev) / `5000` (Nitro) | HTTP listen port |
-| `NITRO_ENABLED` | `false` (dev) / `true` (Nitro) | Enable real NSM attestation |
+| `PORT` | `8080`; `tee/enclave/Dockerfile.nitro` (Option A) sets `5000` | HTTP listen port (TCP, all interfaces) |
+| `NITRO_ENABLED` | `false`; both `Dockerfile.nitro` files set `true` | Enable real NSM attestation |
 | `CHAIN_ID` | `1` | Chain ID for replay protection |
+| `TEE_VERIFIER_ADDRESS` | (none) | TEEMLVerifier address; when set (or sent as `verifier_address` in the request) `/infer` returns the EIP-712 signature that `submitResult` recovers |
 | `ENCLAVE_PRIVATE_KEY` | (random) | Hex-encoded secp256k1 key; omit for auto-generation |
 | `ADMIN_API_KEY` | (none) | API key for admin endpoints; unset = disabled |
 | `MAX_REQUESTS_PER_MINUTE` | `120` | Rate limit for `/infer` endpoint |
 | `WATCHDOG_ENABLED` | `true` | Background health monitor |
+| `MAX_MODELS` | `5` | Capacity of the multi-model registry (`/models`) |
 | `EXPECTED_MODEL_HASH` | (none) | SHA-256 hex hash; rejects mismatched models |
-| `RUST_LOG` | `info` | Log level (`debug`, `info`, `warn`, `error`) |
+| `LOG_LEVEL` | `info` | Log level (`trace`, `debug`, `info`, `warn`, `error`, `off`). The enclave does not read `RUST_LOG` |
 
 ## API Endpoints
 
@@ -240,14 +242,14 @@ The enclave reads all configuration from environment variables. These are set in
 |---|---|---|
 | GET | `/health` | Basic health check |
 | GET | `/health/detailed` | Detailed health with watchdog status |
-| GET | `/info` | Enclave info (address, model hash, features) |
-| GET | `/attestation` | Nitro attestation document (CBOR COSE_Sign1) |
+| GET | `/info` | Enclave info (address, model hash) |
+| GET | `/attestation` | JSON with the attestation document (base64 CBOR COSE_Sign1 in `document`), `enclave_address`, `is_nitro` and `pcr0` |
 | POST | `/infer` | Run inference, return signed result |
-| GET | `/metrics` | Request counters and latency stats |
+| GET | `/metrics` | Request counters and latency stats (JSON, not Prometheus format) |
 | POST | `/admin/reload-model` | Hot-reload model (requires `ADMIN_API_KEY`) |
 | GET | `/models` | List loaded models |
-| POST | `/models/load` | Load a new model |
-| DELETE | `/models/{model_id}` | Unload a model |
+| POST | `/models/load` | Load a new model (requires `ADMIN_API_KEY`) |
+| DELETE | `/models/{model_id}` | Unload a model (requires `ADMIN_API_KEY`) |
 
 ## Monitoring and Troubleshooting
 
@@ -277,7 +279,7 @@ nitro-cli console --enclave-id <ENCLAVE_ID>
 - Verify the allocator service is running: `systemctl status nitro-enclaves-allocator`
 
 **Health check fails:**
-- Verify the vsock proxy is running and forwarding to the correct CID/port
+- Verify the vsock bridge and forwarder from Step 2 are running and forwarding to the correct CID/port
 - Check that the enclave has enough memory (512 MB minimum recommended)
 - Check the model file is accessible inside the enclave
 
@@ -300,18 +302,21 @@ nitro-cli console --enclave-id <ENCLAVE_ID>
 The enclave includes a built-in watchdog that monitors:
 - Inference latency trends
 - Error rates
-- Memory pressure (via request timing)
+- Resident memory (read from `/proc/self/status` on Linux; `memory_rss_bytes` is 0 on other platforms)
 
 Access detailed health via `GET /health/detailed`:
 
 ```json
 {
   "status": "healthy",
-  "uptime_secs": 3600,
-  "total_requests": 1234,
-  "error_count": 2,
+  "error_rate": 0.0016,
   "avg_latency_ms": 5.2,
-  "watchdog": { "status": "ok", "last_check": "2025-01-01T12:00:00Z" }
+  "uptime_secs": 3600,
+  "total_rate_limited": 0,
+  "total_inferences": 1234,
+  "total_errors": 2,
+  "memory_rss_bytes": 52428800,
+  "checks": { "error_rate": "ok", "latency": "ok" }
 }
 ```
 
@@ -346,7 +351,7 @@ For local testing without Nitro hardware:
 cd tee/
 docker compose up
 
-# Or run the test script
+# Or, from the repository root, run the test script
 tee/scripts/test-local.sh
 ```
 

@@ -428,20 +428,24 @@ if [ -n "$STYLUS_GAS" ]; then
     echo "  Stylus (full, with EC):    ${STYLUS_M}M gas"
 fi
 echo ""
-echo "  --- Expected (Full Pipeline) ---"
-echo "  Stylus hybrid (Fr only):     ~2-5M gas"
+echo "  --- Estimate (not measured) ---"
 if [ "$NUM_CHUNKS" -gt 0 ]; then
     echo "  Groth16 (${NUM_CHUNKS} chunks):       ~$(echo "scale=1; $NUM_CHUNKS * 230 / 1000" | bc)M gas"
-    ESTIMATED_TOTAL=$(echo "scale=1; 3 + $NUM_CHUNKS * 0.23" | bc)
-    echo "  Estimated total:             ~${ESTIMATED_TOTAL}M gas"
 else
     echo "  Groth16 (N chunks):          ~N*230K gas"
 fi
-echo "  vs Solidity direct:          ~254M gas (15 batch txs)"
+echo ""
+echo "  --- Measured reference ---"
+echo "  vs Solidity direct:          ~198M gas in 1 tx, or ~336M gas in 16 batch txs"
 echo ""
 
+# StylusHybridE2E.s.sol checks the single-proof hybrid path, not the chunked one,
+# and this script sets neither EC_GROTH16_VERIFIER nor EC_GROTH16_PROOF_FILE.
 if echo "$FORGE_OUTPUT" | grep -q "HYBRID E2E PASSED"; then
     echo "=== CHUNKED HYBRID E2E PASSED ==="
+elif echo "$FORGE_OUTPUT" | grep -q "HYBRID E2E SKIPPED"; then
+    echo "=== CHUNKED HYBRID E2E SKIPPED: the hybrid step did not run ==="
+    exit 1
 else
     echo "=== CHUNKED HYBRID E2E FAILED ==="
     exit 1

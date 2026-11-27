@@ -7,7 +7,8 @@ Usage (gateway client)::
     zk = WorldZK("http://localhost:8080", api_key="my-key")
     model = zk.upload_model("model.json")
     result = zk.prove(model["model_id"], [1.0, 2.0, 3.0])
-    receipt = zk.verify(result["proof_id"])
+    if result.registry_proof_id:  # set when the generator stored the proof
+        verification = zk.verify(result.registry_proof_id)
 
 Usage (direct-service client, legacy)::
 
@@ -20,12 +21,12 @@ Usage (direct-service client, legacy)::
 """
 
 import json
-from typing import Any, Dict, List, Optional
-from urllib.request import Request, urlopen
+import os
+from typing import Any, Optional
 from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from .models import GatewayHealth, ProofResult, Receipt, VerificationResult
-
 
 # ---------------------------------------------------------------------------
 # WorldZK — gateway-facing client
@@ -74,7 +75,7 @@ class WorldZK:
         path: str,
         name: Optional[str] = None,
         format: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Upload an ML model file for proof generation.
 
         Parameters
@@ -82,29 +83,33 @@ class WorldZK:
         path:
             Path to a model JSON file on disk.
         name:
-            Human-readable model name (optional).
+            Human-readable model name. The service requires one; defaults
+            to the file name without its extension.
         format:
-            Model format hint, e.g. ``"xgboost"`` (optional).
+            Model format hint, e.g. ``"xgboost"`` (optional; the service
+            detects the format when omitted).
 
         Returns
         -------
         dict
-            Gateway response with at least ``model_id`` and ``model_hash``.
+            ``model_id``, ``model_hash``, ``circuit_hash``, ``format`` and
+            ``active``.
         """
         with open(path) as f:
-            model_json = f.read()
-        payload: Dict[str, Any] = {"model_json": model_json}
-        if name:
-            payload["name"] = name
+            model_json = json.load(f)
+        payload: dict[str, Any] = {
+            "name": name or os.path.splitext(os.path.basename(path))[0],
+            "model_json": model_json,
+        }
         if format:
             payload["format"] = format
         return self._post("/models", payload)
 
-    def list_models(self) -> List[Dict[str, Any]]:
-        """List all uploaded models."""
-        return self._get("/models")
+    def list_models(self) -> list[dict[str, Any]]:
+        """List all uploaded models (each has ``id``, ``name``, ``model_hash``, ...)."""
+        return _unwrap(self._get("/models"), "models")
 
-    def get_model(self, model_id: str) -> Dict[str, Any]:
+    def get_model(self, model_id: str) -> dict[str, Any]:
         """Retrieve a model by its ID."""
         return self._get(f"/models/{model_id}")
 
@@ -113,7 +118,7 @@ class WorldZK:
     def prove(
         self,
         model_id: str,
-        features: List[float],
+        features: list[float],
     ) -> ProofResult:
         """Generate a proof for model inference.
 
@@ -127,8 +132,11 @@ class WorldZK:
         Returns
         -------
         ProofResult
-            Contains ``proof_id``, ``model_hash``, ``circuit_hash``, and
-            ``output``.
+            Contains ``proof_id``, ``model_hash``, ``circuit_hash``,
+            ``output``, ``mock`` and ``registry_proof_id``. ``proof_id`` is
+            the generator's own identifier; :meth:`verify` and
+            :meth:`get_receipt` take ``registry_proof_id``, which is ``None``
+            when the generator did not store the proof in the registry.
         """
         resp = self._post("/prove", {
             "model_id": model_id,
@@ -139,6 +147,8 @@ class WorldZK:
             model_hash=resp.get("model_hash", ""),
             circuit_hash=resp.get("circuit_hash", ""),
             output=resp.get("output", ""),
+            mock=resp.get("mock", False),
+            registry_proof_id=resp.get("registry_proof_id"),
         )
 
     # -- Verify ---------------------------------------------------------
@@ -149,7 +159,7 @@ class WorldZK:
         Parameters
         ----------
         proof_id:
-            Identifier of the proof to verify.
+            Registry identifier of the proof to verify.
 
         Returns
         -------
@@ -168,7 +178,7 @@ class WorldZK:
         Parameters
         ----------
         proof_id:
-            Identifier of the proof whose receipt to retrieve.
+            Registry identifier of the proof whose receipt to retrieve.
 
         Returns
         -------
@@ -191,13 +201,13 @@ class WorldZK:
         self,
         model: Optional[str] = None,
         limit: int = 50,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """List proofs, optionally filtered by model.
 
         Parameters
         ----------
         model:
-            Filter by model ID or model hash (optional).
+            Filter by exact model hash (optional).
         limit:
             Maximum number of results (default 50).
         """
@@ -205,31 +215,35 @@ class WorldZK:
         if model:
             params.append(f"model={model}")
         query = "&".join(params)
-        return self._get(f"/proofs?{query}")
+        return _unwrap(self._get(f"/proofs?{query}"), "proofs")
 
     # -- Transparency ---------------------------------------------------
 
-    def transparency_root(self) -> Dict[str, Any]:
+    def transparency_root(self) -> dict[str, Any]:
         """Get the current transparency log Merkle root.
+
+        The proof registry serves this at ``/transparency/root``. The gateway
+        does not forward that path today (it answers 404), so this call only
+        works when ``url`` points at the proof registry itself.
 
         Returns
         -------
         dict
-            Contains ``root`` hash and ``total_proofs`` count.
+            Contains ``root`` hash and ``tree_size``.
         """
-        return self._get("/proofs/transparency/root")
+        return self._get("/transparency/root")
 
     # -- Stats ----------------------------------------------------------
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         """Get proof registry statistics."""
         return self._get("/stats")
 
     # -- Circuits -------------------------------------------------------
 
-    def list_circuits(self) -> List[Dict[str, Any]]:
-        """List registered verification circuits."""
-        return self._get("/circuits")
+    def list_circuits(self) -> list[str]:
+        """List the IDs of the circuits registered with the verifier."""
+        return _unwrap(self._get("/circuits"), "circuits")
 
     # -- Health ---------------------------------------------------------
 
@@ -249,7 +263,7 @@ class WorldZK:
             total_count=resp.get("total_count", 0),
         )
 
-    def health_service(self, service: str) -> Dict[str, Any]:
+    def health_service(self, service: str) -> dict[str, Any]:
         """Check health of a specific backend service.
 
         Parameters
@@ -261,7 +275,7 @@ class WorldZK:
 
     # -- HTTP helpers ---------------------------------------------------
 
-    def _headers(self) -> Dict[str, str]:
+    def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -289,6 +303,13 @@ class WorldZK:
             raise ConnectionError(f"Cannot connect to {url}: {e}") from e
 
 
+def _unwrap(resp: Any, key: str) -> Any:
+    """Return the list inside a ``{key: [...]}`` response envelope."""
+    if isinstance(resp, dict):
+        return resp.get(key, [])
+    return resp
+
+
 # ---------------------------------------------------------------------------
 # Client — direct-service client (legacy, pre-gateway)
 # ---------------------------------------------------------------------------
@@ -313,23 +334,23 @@ class Client:
         self.generator_url = generator_url.rstrip("/")
         self.timeout = timeout
 
-    def verify(self, bundle: Dict[str, Any]) -> Dict[str, Any]:
+    def verify(self, bundle: dict[str, Any]) -> dict[str, Any]:
         """Verify a proof bundle via the verifier API."""
         return self._post(f"{self.verifier_url}/verify", bundle)
 
-    def verify_hybrid(self, bundle: Dict[str, Any]) -> Dict[str, Any]:
+    def verify_hybrid(self, bundle: dict[str, Any]) -> dict[str, Any]:
         """Hybrid verification (transcript only, no EC checks)."""
         return self._post(f"{self.verifier_url}/verify/hybrid", bundle)
 
-    def verify_batch(self, bundles: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def verify_batch(self, bundles: list[dict[str, Any]]) -> dict[str, Any]:
         """Batch verify multiple proof bundles."""
         return self._post(f"{self.verifier_url}/verify/batch", {"bundles": bundles})
 
-    def submit(self, bundle: Dict[str, Any]) -> Dict[str, Any]:
+    def submit(self, bundle: dict[str, Any]) -> dict[str, Any]:
         """Submit a proof bundle to the registry."""
         return self._post(f"{self.registry_url}/proofs", bundle)
 
-    def get_proof(self, proof_id: str) -> Dict[str, Any]:
+    def get_proof(self, proof_id: str) -> dict[str, Any]:
         """Retrieve a proof from the registry by ID."""
         return self._get(f"{self.registry_url}/proofs/{proof_id}")
 
@@ -338,24 +359,31 @@ class Client:
         circuit_hash: Optional[str] = None,
         model_hash: Optional[str] = None,
         limit: int = 50,
-    ) -> Dict[str, Any]:
-        """Search proofs in the registry."""
-        params = [f"limit={limit}"]
-        if circuit_hash:
-            params.append(f"circuit_hash={circuit_hash}")
-        if model_hash:
-            params.append(f"model_hash={model_hash}")
-        query = "&".join(params)
-        return self._get(f"{self.registry_url}/proofs?{query}")
+    ) -> dict[str, Any]:
+        """Search proofs in the registry.
 
-    def prove(self, model_id: str, features: List[float]) -> Dict[str, Any]:
+        Returns ``{"proofs": [...], "count": n}``. The registry filters by
+        exact ``model_hash``. It has no circuit filter, so ``circuit_hash``
+        is applied here to the (at most ``limit``) proofs it returned.
+        """
+        params = [f"limit={limit}"]
+        if model_hash:
+            params.append(f"model={model_hash}")
+        query = "&".join(params)
+        resp = self._get(f"{self.registry_url}/proofs?{query}")
+        if circuit_hash:
+            proofs = [p for p in resp.get("proofs", []) if p.get("circuit_hash") == circuit_hash]
+            resp = {**resp, "proofs": proofs, "count": len(proofs)}
+        return resp
+
+    def prove(self, model_id: str, features: list[float]) -> dict[str, Any]:
         """Generate a proof via the proof generator service."""
         return self._post(
             f"{self.generator_url}/prove",
             {"model_id": model_id, "features": features},
         )
 
-    def health(self) -> Dict[str, Dict[str, Any]]:
+    def health(self) -> dict[str, dict[str, Any]]:
         """Check health of all services."""
         result = {}
         for name, url in [
@@ -370,7 +398,7 @@ class Client:
                 result[name] = {"healthy": False, "error": str(e)}
         return result
 
-    def _post(self, url: str, data: Any) -> Dict[str, Any]:
+    def _post(self, url: str, data: Any) -> dict[str, Any]:
         body = json.dumps(data).encode("utf-8")
         req = Request(url, data=body, headers={"Content-Type": "application/json"})
         try:
@@ -382,7 +410,7 @@ class Client:
         except URLError as e:
             raise ConnectionError(f"Cannot connect to {url}: {e}") from e
 
-    def _get(self, url: str) -> Dict[str, Any]:
+    def _get(self, url: str) -> dict[str, Any]:
         req = Request(url)
         try:
             with urlopen(req, timeout=self.timeout) as resp:

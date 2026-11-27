@@ -38,6 +38,12 @@ pub struct MockExecutionEngine {
     prover_balance: Arc<RwLock<u64>>,
 }
 
+impl Default for MockExecutionEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MockExecutionEngine {
     pub fn new() -> Self {
         Self {
@@ -147,6 +153,12 @@ pub struct MockProver {
     pub proof_time: Duration,
     /// Should fail proving?
     pub should_fail: bool,
+}
+
+impl Default for MockProver {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MockProver {
@@ -373,8 +385,10 @@ mod tests {
     async fn test_proof_cache_simulation() {
         use std::collections::HashMap;
 
+        type ProofCache = HashMap<([u8; 32], [u8; 32]), (Vec<u8>, Vec<u8>)>;
+
         let engine = Arc::new(MockExecutionEngine::new());
-        let mut cache: HashMap<([u8; 32], [u8; 32]), (Vec<u8>, Vec<u8>)> = HashMap::new();
+        let mut cache: ProofCache = HashMap::new();
 
         let image_id = [1u8; 32];
         let input_hash = [2u8; 32];
@@ -450,5 +464,361 @@ mod tests {
         assert_eq!(jobs_processed, 5);
         assert_eq!(total_earnings, 1500); // 100+200+300+400+500
         assert_eq!(engine.get_prover_balance().await, 1500);
+    }
+}
+
+// ============================================================================
+// Output of the binary
+// ============================================================================
+
+/// What the binary prints for a failed command has no path of the RPC URL in
+/// it: the path can hold the provider's API key.
+#[test]
+fn test_printed_error_of_a_failed_command_omits_the_rpc_url_path() {
+    // Port 1 on localhost refuses the connection.
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_world-zk-prover"))
+        .env_clear()
+        .args(["status", "--rpc-url", "http://127.0.0.1:1/v2/SECRETKEY"])
+        .args([
+            "--engine-address",
+            "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+        ])
+        .args(["--request-id", "1"])
+        .current_dir(std::env::temp_dir())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(stderr.contains("url (http://127.0.0.1:1)"), "{stderr}");
+    assert!(!stderr.contains("SECRETKEY"), "{stderr}");
+}
+
+/// `config --validate` says what is wrong with a file that does not parse, and
+/// where, but not what stands there: it can be the RPC URL or the private key.
+#[test]
+fn test_config_parse_error_does_not_quote_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("bad.toml");
+    for line in [
+        r#"rpc_url = "https://rpc.example.com/v2/SECRET"#,
+        r#"rpc_url = "https://rpc.example.com/v2/"SECRET""#,
+        r#"rpc_url = https:/rpc.example.com/v2/SECRET"#,
+        r#"rpc_url = ["SECRET"]"#,
+        r#"private_key = "0xSECRET"#,
+        r#"private_key = 12345678"#,
+        r#"chain_id = "SECRET""#,
+    ] {
+        std::fs::write(&config, format!("[prover]\n{line}\n")).unwrap();
+
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_world-zk-prover"))
+            .env_clear()
+            .args(["config", "--validate"])
+            .arg(&config)
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(!output.status.success(), "{line}");
+        assert!(stdout.contains("at line 2, column"), "{line}: {stdout}");
+        assert!(!stdout.contains("SECRET"), "{line}: {stdout}");
+        assert!(!stdout.contains("12345678"), "{line}: {stdout}");
+    }
+}
+
+/// `validate` exits non-zero for a URL whose host the `url` crate (reqwest's
+/// parser) reads as an internal address, and zero for a public one.
+#[test]
+fn test_validate_exit_status_follows_the_url_check() {
+    let validate = |url: &str| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_world-zk-prover"))
+            .env_clear()
+            .args(["validate", "--url", url])
+            .current_dir(std::env::temp_dir())
+            .output()
+            .unwrap()
+    };
+
+    for url in [
+        "https://2130706433/",
+        "https://127.1/",
+        "https://0x7f.0.0.1/",
+        "https://localhost./",
+        "https:/127.0.0.1/x",
+        "https://169.254.169.254\\@example.com/",
+        "https://①②⑦.⓪.⓪.①/",
+        "https://0177.0.0.1/",
+        "https:\\\\127.0.0.1\\x",
+    ] {
+        let output = validate(url);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(!output.status.success(), "{url}: {stdout}");
+        assert!(stdout.contains("✗ URL invalid"), "{url}: {stdout}");
+    }
+
+    let output = validate("https://example.com/input");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+/// An unknown proving mode is an error at start-up, not CPU proving.
+#[test]
+fn test_unknown_proving_mode_is_an_error_at_start_up() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = run_command(dir.path(), "http://127.0.0.1:1", "cpu", 0)
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(stderr.contains("Unknown proving mode 'cpu'"), "{stderr}");
+    for mode in ["local", "gpu-fallback", "bonsai-gpu", "boundless"] {
+        assert!(stderr.contains(mode), "{mode}: {stderr}");
+    }
+}
+
+/// The `run` command with a throwaway key, in a directory of its own
+fn run_command(
+    dir: &std::path::Path,
+    rpc_url: &str,
+    proving_mode: &str,
+    health_port: u16,
+) -> std::process::Command {
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_world-zk-prover"));
+    command
+        .env_clear()
+        .env("RUST_LOG", "info")
+        .args(["run", "--ws-url", "none", "--rpc-url", rpc_url])
+        .args(["--private-key", &format!("0x{}", "11".repeat(32))])
+        .args([
+            "--engine-address",
+            "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+        ])
+        .args(["--proving-mode", proving_mode])
+        .args(["--health-port", &health_port.to_string()])
+        .current_dir(dir);
+    command
+}
+
+#[cfg(unix)]
+mod running_prover {
+    use super::run_command;
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::process::{Child, ExitStatus, Stdio};
+    use std::sync::mpsc::{channel, Receiver, Sender};
+    use std::time::{Duration, Instant};
+
+    /// How long to wait for a line or for the end of the process
+    const WAIT: Duration = Duration::from_secs(60);
+
+    /// Serve JSON-RPC on a free loopback port: an account without
+    /// transactions and an engine without pending requests. With
+    /// `answer_calls` false, contract calls are never answered; the receiver
+    /// is told of each.
+    fn serve_rpc(answer_calls: bool) -> (String, Receiver<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (unanswered, receiver) = channel();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let unanswered = unanswered.clone();
+                std::thread::spawn(move || serve_connection(stream, answer_calls, unanswered));
+            }
+        });
+        (url, receiver)
+    }
+
+    fn serve_connection(
+        stream: TcpStream,
+        answer_calls: bool,
+        unanswered: Sender<()>,
+    ) -> Option<()> {
+        let mut reader = BufReader::new(stream.try_clone().ok()?);
+        let mut writer = stream;
+        loop {
+            let mut content_length = 0;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).ok()? == 0 {
+                    return None;
+                }
+                if line.trim().is_empty() {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':') {
+                    if name.eq_ignore_ascii_case("content-length") {
+                        content_length = value.trim().parse().ok()?;
+                    }
+                }
+            }
+            let mut body = vec![0; content_length];
+            reader.read_exact(&mut body).ok()?;
+
+            let call: serde_json::Value = serde_json::from_slice(&body).ok()?;
+            let result = match call["method"].as_str()? {
+                "eth_getTransactionCount" => "0x0".to_string(),
+                "eth_call" if answer_calls => {
+                    // An empty array
+                    format!("0x{:064x}{:064x}", 32, 0)
+                }
+                "eth_call" => {
+                    // The client sends nothing else on this connection
+                    unanswered.send(()).ok()?;
+                    continue;
+                }
+                _ => "0x1".to_string(),
+            };
+            let body = serde_json::json!({ "jsonrpc": "2.0", "id": call["id"], "result": result })
+                .to_string();
+            write!(
+                writer,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .ok()?;
+        }
+    }
+
+    /// A running prover; killed when it goes out of scope
+    struct Prover {
+        child: Child,
+        lines: Receiver<String>,
+        log: String,
+        _dir: tempfile::TempDir,
+    }
+
+    impl Prover {
+        fn start(rpc_url: &str, health_port: u16) -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let mut child = run_command(dir.path(), rpc_url, "local", health_port)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+
+            let stdout = BufReader::new(child.stdout.take().unwrap());
+            let (sender, lines) = channel();
+            std::thread::spawn(move || {
+                for line in stdout.lines().map_while(Result::ok) {
+                    if sender.send(line).is_err() {
+                        break;
+                    }
+                }
+            });
+
+            Self {
+                child,
+                lines,
+                log: String::new(),
+                _dir: dir,
+            }
+        }
+
+        /// Read the log up to a line with `text` in it
+        fn wait_for_line(&mut self, text: &str) {
+            let end = Instant::now() + WAIT;
+            while let Ok(line) = self
+                .lines
+                .recv_timeout(end.saturating_duration_since(Instant::now()))
+            {
+                self.log.push_str(&line);
+                self.log.push('\n');
+                if line.contains(text) {
+                    return;
+                }
+            }
+            panic!("no line with {text:?}:\n{}", self.log);
+        }
+
+        fn signal(&self, name: &str) {
+            let status = std::process::Command::new("kill")
+                .args([name, &self.child.id().to_string()])
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+
+        /// Wait for the end of the process for at most `limit`
+        fn wait_for_exit(&mut self, limit: Duration) -> ExitStatus {
+            let end = Instant::now() + limit;
+            while Instant::now() < end {
+                if let Some(status) = self.child.try_wait().unwrap() {
+                    self.log.extend(self.lines.iter().map(|line| line + "\n"));
+                    return status;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            panic!("still running after {limit:?}:\n{}", self.log);
+        }
+    }
+
+    impl Drop for Prover {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+
+    /// An idle prover has nothing in flight to wait for.
+    #[test]
+    fn test_idle_prover_stops_without_a_grace_period() {
+        let mut prover = Prover::start(&serve_rpc(true).0, 0);
+        prover.wait_for_line("No pending requests");
+
+        prover.signal("-TERM");
+        let status = prover.wait_for_exit(Duration::from_secs(20));
+
+        assert!(status.success(), "{}", prover.log);
+        assert!(prover.log.contains("shut down cleanly"), "{}", prover.log);
+        assert!(!prover.log.contains("tate saved"), "{}", prover.log);
+        assert!(!prover.log.contains("timeout"), "{}", prover.log);
+    }
+
+    /// While a cycle runs, the first signal waits for its end and a second
+    /// one exits at once.
+    #[test]
+    fn test_second_signal_exits_at_once() {
+        for (first, second, exit_code) in [("-TERM", "-TERM", 143), ("-TERM", "-INT", 130)] {
+            let (rpc_url, unanswered) = serve_rpc(false);
+            let mut prover = Prover::start(&rpc_url, 0);
+            prover.wait_for_line("Signal handlers installed");
+            unanswered.recv_timeout(WAIT).expect("no cycle started");
+
+            prover.signal(first);
+            prover.wait_for_line("Shutdown initiated");
+            prover.signal(second);
+            let status = prover.wait_for_exit(Duration::from_secs(20));
+
+            assert_eq!(status.code(), Some(exit_code), "{}", prover.log);
+        }
+    }
+
+    /// The prover works without its health server, and does not claim that
+    /// it is running.
+    #[test]
+    fn test_taken_health_port_is_logged_and_the_prover_goes_on() {
+        let taken = TcpListener::bind("0.0.0.0:0").unwrap();
+        let port = taken.local_addr().unwrap().port();
+
+        let mut prover = Prover::start(&serve_rpc(true).0, port);
+        prover.wait_for_line("No pending requests");
+
+        assert!(
+            prover.log.contains("Health server not started"),
+            "{}",
+            prover.log
+        );
+        assert!(
+            !prover.log.contains("Health server: http"),
+            "{}",
+            prover.log
+        );
+        assert!(!prover.log.contains("listening on"), "{}", prover.log);
     }
 }

@@ -5,19 +5,30 @@ import "forge-std/Test.sol";
 import "../src/remainder/RemainderVerifier.sol";
 import {UUPSProxy, UUPSUpgradeable, StorageSlot} from "../src/Upgradeable.sol";
 
+/// @dev Has code but no proxiableUUID()
+contract RemainderNonUUPSImpl {}
+
+/// @dev proxiableUUID() returns another value than the ERC-1967 implementation slot
+contract RemainderWrongUUIDImpl {
+    function proxiableUUID() external pure returns (bytes32) {
+        return keccak256("PROXIABLE");
+    }
+}
+
 /// @title RemainderVerifierProxyTest
 /// @notice Tests for UUPS proxy deployment, initialization, upgrade, and access control
 contract RemainderVerifierProxyTest is Test {
     event Upgraded(address indexed implementation);
 
     RemainderVerifier implementation;
+    UUPSProxy proxy;
     RemainderVerifier verifier; // proxy cast as verifier
     address admin = address(0xAD);
     address user = address(0xBEEF);
 
     function setUp() public {
         implementation = new RemainderVerifier();
-        UUPSProxy proxy = new UUPSProxy(address(implementation), abi.encodeCall(RemainderVerifier.initialize, (admin)));
+        proxy = new UUPSProxy(address(implementation), abi.encodeCall(RemainderVerifier.initialize, (admin)));
         verifier = RemainderVerifier(payable(address(proxy)));
     }
 
@@ -33,8 +44,13 @@ contract RemainderVerifierProxyTest is Test {
         assertEq(verifier.implementation(), address(implementation));
     }
 
-    function test_proxy_proxiableUUID() public view {
-        assertEq(verifier.proxiableUUID(), StorageSlot.IMPLEMENTATION_SLOT);
+    function test_proxiableUUID_answers_on_the_implementation() public view {
+        assertEq(implementation.proxiableUUID(), StorageSlot.IMPLEMENTATION_SLOT);
+    }
+
+    function test_proxiableUUID_reverts_through_the_proxy() public {
+        vm.expectRevert(UUPSUpgradeable.UUPSUnauthorizedCallContext.selector);
+        verifier.proxiableUUID();
     }
 
     function test_initialize_cannot_be_called_twice() public {
@@ -67,6 +83,50 @@ contract RemainderVerifierProxyTest is Test {
         vm.prank(admin);
         vm.expectRevert(UUPSUpgradeable.InvalidImplementation.selector);
         verifier.upgradeTo(address(0xDEAD));
+        assertEq(verifier.implementation(), address(implementation));
+    }
+
+    function test_upgrade_reverts_for_non_uups_contract() public {
+        _assertUpgradeRefused(address(new RemainderNonUUPSImpl()));
+    }
+
+    function test_upgrade_reverts_for_wrong_uuid() public {
+        _assertUpgradeRefused(address(new RemainderWrongUUIDImpl()));
+    }
+
+    function test_upgrade_reverts_for_another_proxy() public {
+        RemainderVerifier otherImpl = new RemainderVerifier();
+        UUPSProxy other = new UUPSProxy(address(otherImpl), abi.encodeCall(RemainderVerifier.initialize, (admin)));
+
+        _assertUpgradeRefused(address(other));
+        assertEq(RemainderVerifier(payable(address(other))).implementation(), address(otherImpl));
+    }
+
+    function test_upgrade_reverts_for_the_proxy_itself() public {
+        _assertUpgradeRefused(address(proxy));
+    }
+
+    function _assertUpgradeRefused(address bad) internal {
+        bytes memory expected = abi.encodeWithSelector(UUPSUpgradeable.UpgradeToNonUUPS.selector, bad);
+
+        vm.startPrank(admin);
+        vm.expectRevert(expected);
+        verifier.upgradeTo(bad);
+        vm.expectRevert(expected);
+        verifier.upgradeToAndCall(bad, "");
+        vm.expectRevert(expected);
+        verifier.upgradeToAndCall(bad, abi.encodeCall(UUPSUpgradeable.admin, ()));
+
+        // The proxy still works and can still be upgraded
+        assertEq(verifier.implementation(), address(implementation));
+        assertEq(verifier.admin(), admin);
+        verifier.pause();
+        assertTrue(verifier.paused());
+
+        RemainderVerifier newImpl = new RemainderVerifier();
+        verifier.upgradeTo(address(newImpl));
+        assertEq(verifier.implementation(), address(newImpl));
+        vm.stopPrank();
     }
 
     function test_upgradeToAndCall() public {

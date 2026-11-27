@@ -4,6 +4,7 @@ import {
   ExecutionEngineClient,
   OnChainRequestStatus,
 } from '../execution-engine';
+import { ApiError } from '../errors';
 
 // ---------------------------------------------------------------------------
 // ABI validation tests
@@ -372,6 +373,91 @@ describe('ExecutionEngineClient', () => {
     await expect(client.cancelRequest(1n)).rejects.toThrow(
       'walletClient is required',
     );
+  });
+
+  // A mined transaction that reverted still yields a receipt; only its
+  // status says the call failed. Every write method must look at it.
+  const clientWithReceipt = (status: 'success' | 'reverted') =>
+    new ExecutionEngineClient(
+      {
+        waitForTransactionReceipt: async () => ({ status, blockNumber: 7n }),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any,
+      {
+        writeContract: async () => '0xdead',
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any,
+      '0x1234567890abcdef1234567890abcdef12345678',
+    );
+
+  const writes: [string, (c: ExecutionEngineClient) => Promise<unknown>][] = [
+    [
+      'requestExecution',
+      (c) =>
+        c.submitRequest({
+          imageId: '0x0000000000000000000000000000000000000000000000000000000000000001',
+          inputDigest: '0x0000000000000000000000000000000000000000000000000000000000000002',
+          tipEther: '0.001',
+        }),
+    ],
+    ['claimExecution', (c) => c.claimJob(1n)],
+    ['submitProof', (c) => c.submitResult(1n, '0xdead', '0xbeef')],
+    ['cancelExecution', (c) => c.cancelRequest(1n)],
+    ['claimExecution', (c) => c.disputeResult(1n)],
+    ['pause', (c) => c.pause()],
+  ];
+
+  it('rejects every write whose transaction was mined but reverted', async () => {
+    for (const [functionName, write] of writes) {
+      const err = await write(clientWithReceipt('reverted')).catch((e: unknown) => e);
+      expect(err, functionName).toBeInstanceOf(ApiError);
+      expect((err as ApiError).code).toBe('WZK-4002');
+      expect((err as ApiError).details).toMatchObject({
+        transactionHash: '0xdead',
+        functionName,
+      });
+    }
+  });
+
+  it('returns the hash of a write whose transaction succeeded', async () => {
+    for (const [, write] of writes) {
+      await expect(write(clientWithReceipt('success'))).resolves.toBe('0xdead');
+    }
+  });
+
+  it('sends the submitRequest tip as msg.value', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let sent: any;
+    const client = new ExecutionEngineClient(
+      {
+        waitForTransactionReceipt: async () => ({ status: 'success', blockNumber: 7n }),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any,
+      {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        writeContract: async (req: any) => {
+          sent = req;
+          return '0xdead';
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any,
+      '0x1234567890abcdef1234567890abcdef12345678',
+    );
+    await client.submitRequest({
+      imageId: '0x0000000000000000000000000000000000000000000000000000000000000001',
+      inputDigest: '0x0000000000000000000000000000000000000000000000000000000000000002',
+      tipEther: '0.001',
+    });
+    expect(sent.functionName).toBe('requestExecution');
+    expect(sent.value).toBe(1_000_000_000_000_000n);
+    expect(sent.args).toEqual([
+      '0x0000000000000000000000000000000000000000000000000000000000000001',
+      '0x0000000000000000000000000000000000000000000000000000000000000002',
+      '',
+      '0x0000000000000000000000000000000000000000',
+      0n,
+      0,
+    ]);
   });
 });
 

@@ -28,8 +28,8 @@ impl<'a> ProofDecoder<'a> {
     }
 
     /// Current byte offset into the data slice.
-    #[inline]
-    pub fn offset(&self) -> usize {
+    #[cfg(test)]
+    fn offset(&self) -> usize {
         self.offset
     }
 
@@ -68,16 +68,49 @@ impl<'a> ProofDecoder<'a> {
         G1Point { x, y }
     }
 
-    /// Read a U256 and interpret it as a `usize` length/count field.
-    /// Only the lowest 64 bits are used; panics if the value exceeds usize::MAX.
-    fn read_usize(&mut self) -> usize {
+    /// Read a U256 that must fit in 64 bits. The upper limbs must be zero:
+    /// dropping them would let 2^64 + e be read as e, while Solidity reads the
+    /// full value, so the two verifiers would see different numbers.
+    pub(crate) fn read_u64(&mut self) -> u64 {
         let v = self.read_u256();
-        // For length fields the value is always small; only limb 0 is nonzero.
         verify!(
             v.0[1] == 0 && v.0[2] == 0 && v.0[3] == 0,
-            "read_usize: value too large for usize"
+            "value does not fit in 64 bits"
         );
-        v.0[0] as usize
+        v.0[0]
+    }
+
+    /// Read a U256 and interpret it as a `usize` length/count field.
+    /// `usize` is 32 bits on wasm32, so the value is converted with a check
+    /// instead of a cast that would read 2^32 + k as k.
+    pub(crate) fn read_usize(&mut self) -> usize {
+        let n = usize::try_from(self.read_u64());
+        verify!(n.is_ok(), "value too large for usize");
+        n.unwrap_or(0)
+    }
+
+    /// Move past `count` items of `item_size` bytes each. The length is computed
+    /// with checked arithmetic and must stay inside the data: overflow checks
+    /// are off in the wasm32 release build, so an unchecked `count * item_size`
+    /// could wrap and move the offset backwards onto bytes already read.
+    fn skip(&mut self, count: usize, item_size: usize) {
+        let end = count
+            .checked_mul(item_size)
+            .and_then(|len| self.offset.checked_add(len));
+        verify!(
+            matches!(end, Some(e) if e <= self.data.len()),
+            "skip: out of bounds"
+        );
+        self.offset = end.unwrap_or(0);
+    }
+
+    /// Require that every byte has been read, so that appending bytes to a
+    /// blob does not give a second encoding of the same data.
+    pub(crate) fn finish(&self) {
+        verify!(
+            self.offset == self.data.len(),
+            "trailing bytes after encoded data"
+        );
     }
 
     // --------------------------------------------------------
@@ -142,7 +175,7 @@ impl<'a> ProofDecoder<'a> {
     ///   PODP
     ///   numCommits(u256) | commitments[numCommits](G1 each)
     ///   numPops(u256) | pops[numPops](ProofOfProduct each)
-    ///   hasAgg(u256) | if 1: numCoeffs(u256) skip coeffs*64, numOpenings(u256) skip openings*128, numEq(u256) skip eq*96
+    ///   hasAgg(u256, 0 or 1) | if 1: numCoeffs(u256) skip coeffs*64, numOpenings(u256) skip openings*128, numEq(u256) skip eq*96
     fn decode_committed_layer_proof(&mut self) -> CommittedLayerProof {
         // Sumcheck proof: sum (G1)
         let sum = self.read_g1();
@@ -179,18 +212,20 @@ impl<'a> ProofDecoder<'a> {
 
         // Claim aggregation (optional) -- skip if present
         let has_agg = self.read_usize();
+        // hasAgg is a flag: any other value was read as "no aggregation".
+        verify!(has_agg <= 1, "hasAgg must be 0 or 1");
         if has_agg == 1 {
             // Skip coefficients: numCoeffs * 64 bytes (each is a G1 point)
             let num_coeffs = self.read_usize();
-            self.offset += num_coeffs * 64;
+            self.skip(num_coeffs, 64);
 
             // Skip openings: numOpenings * (64 + 64) bytes
             let num_openings = self.read_usize();
-            self.offset += num_openings * 128;
+            self.skip(num_openings, 128);
 
             // Skip equality proofs: numEq * (64 + 32) bytes
             let num_eq = self.read_usize();
-            self.offset += num_eq * 96;
+            self.skip(num_eq, 96);
         }
 
         CommittedLayerProof {
@@ -243,7 +278,7 @@ impl<'a> ProofDecoder<'a> {
 
             // Skip point coordinates (not needed; resolved from circuit topology)
             let num_point = self.read_usize();
-            self.offset += num_point * 32;
+            self.skip(num_point, 32);
 
             claims.push(PublicValueClaim {
                 value,
@@ -258,11 +293,9 @@ impl<'a> ProofDecoder<'a> {
     ///
     /// Layout: value(32) | blinding(32) | commitment(64) | numPoint(u256) | point[numPoint](32 each)
     fn skip_claim(&mut self) {
-        self.offset += 32; // value
-        self.offset += 32; // blinding
-        self.offset += 64; // commitment (G1)
+        self.skip(1, 32 + 32 + 64); // value | blinding | commitment (G1)
         let num_point = self.read_usize();
-        self.offset += num_point * 32;
+        self.skip(num_point, 32);
     }
 
     // --------------------------------------------------------
@@ -276,13 +309,13 @@ impl<'a> ProofDecoder<'a> {
     /// After this call, `self.offset` points to the DAG input proofs section.
     fn decode_proof_common(&mut self, gkr_proof: &mut GKRProof) -> usize {
         // 1. Skip circuit hash (32 bytes)
-        self.offset += 32;
+        self.skip(1, 32);
 
-        // 2. Skip public inputs section (decoded separately via decode_embedded_public_inputs)
+        // 2. Skip public inputs section (decoded separately via extract_embedded_public_inputs)
         let num_pub_input_sections = self.read_usize();
         for _ in 0..num_pub_input_sections {
             let cnt = self.read_usize();
-            self.offset += cnt * 32;
+            self.skip(cnt, 32);
         }
 
         // 3. Decode output claim commitments (G1 points)
@@ -358,6 +391,7 @@ impl<'a> ProofDecoder<'a> {
         for _ in 0..num_input_proofs {
             dag_input_proofs.push(self.decode_dag_input_layer_proof());
         }
+        self.finish();
 
         (gkr_proof, embedded, dag_input_proofs, public_value_claims)
     }
@@ -368,16 +402,11 @@ impl<'a> ProofDecoder<'a> {
     ///   numSections(u256), per section: count(u256) + count*32 bytes of Fr values.
     ///
     /// Uses a two-pass approach: first count total elements, then extract.
-    pub fn decode_embedded_public_inputs(data: &[u8]) -> Vec<U256> {
-        Self::extract_embedded_public_inputs(data)
-    }
-
-    /// Internal helper for embedded public input extraction.
     fn extract_embedded_public_inputs(data: &[u8]) -> Vec<U256> {
         let mut dec = ProofDecoder::new(data);
 
         // Skip circuit hash (32 bytes)
-        dec.offset += 32;
+        dec.skip(1, 32);
 
         // Read number of sections
         let num_sections = dec.read_usize();
@@ -387,7 +416,8 @@ impl<'a> ProofDecoder<'a> {
         let mut total_elements: usize = 0;
         for _ in 0..num_sections {
             let cnt = dec.read_usize();
-            dec.offset += cnt * 32;
+            dec.skip(cnt, 32);
+            // Cannot overflow: each count was just checked against the data length.
             total_elements += cnt;
         }
 
@@ -426,6 +456,7 @@ impl<'a> ProofDecoder<'a> {
 
         let scalar_gen = dec.read_g1();
         let blinding_gen = dec.read_g1();
+        dec.finish();
 
         PedersenGens {
             message_gens,
@@ -600,7 +631,7 @@ mod tests {
         push_u256(&mut buf, U256::from_u64(400));
         push_u256(&mut buf, U256::from_u64(500));
 
-        let result = ProofDecoder::decode_embedded_public_inputs(&buf);
+        let result = ProofDecoder::extract_embedded_public_inputs(&buf);
         assert_eq!(result.len(), 5);
         assert_eq!(result[0], U256::from_u64(100));
         assert_eq!(result[1], U256::from_u64(200));
@@ -825,13 +856,106 @@ mod tests {
         assert_eq!(dec.offset(), buf.len());
     }
 
+    /// A layer proof up to (not including) the hasAgg word: no messages,
+    /// an empty PODP, no commitments, no PoPs.
+    fn layer_proof_prefix() -> Vec<u8> {
+        let mut buf = Vec::new();
+        push_g1(&mut buf, &sample_point(1)); // sum
+        push_usize(&mut buf, 0); // messages
+        push_g1(&mut buf, &sample_point(2)); // commitD
+        push_g1(&mut buf, &sample_point(3)); // commitDDotA
+        push_usize(&mut buf, 0); // numZ
+        push_u256(&mut buf, U256::from_u64(4)); // zDelta
+        push_u256(&mut buf, U256::from_u64(5)); // zBeta
+        push_usize(&mut buf, 0); // commitments
+        push_usize(&mut buf, 0); // pops
+        buf
+    }
+
+    #[test]
+    #[should_panic(expected = "hasAgg must be 0 or 1")]
+    fn test_has_agg_other_than_zero_or_one_is_rejected() {
+        let mut buf = layer_proof_prefix();
+        push_usize(&mut buf, 2);
+        let mut dec = ProofDecoder::new(&buf);
+        dec.decode_committed_layer_proof();
+    }
+
+    #[test]
+    #[should_panic(expected = "skip: out of bounds")]
+    fn test_skip_count_that_overflows_is_rejected() {
+        // numCoeffs * 64 overflows usize; it must not wrap to a small skip.
+        let mut buf = layer_proof_prefix();
+        push_usize(&mut buf, 1); // hasAgg
+        push_u256(&mut buf, U256::from_u64(u64::MAX >> 5)); // numCoeffs
+        push_usize(&mut buf, 0);
+        push_usize(&mut buf, 0);
+        let mut dec = ProofDecoder::new(&buf);
+        dec.decode_committed_layer_proof();
+    }
+
+    #[test]
+    #[should_panic(expected = "skip: out of bounds")]
+    fn test_skip_past_end_of_data_is_rejected() {
+        // The last section claims one equality proof (96 bytes) that is not there.
+        let mut buf = layer_proof_prefix();
+        push_usize(&mut buf, 1); // hasAgg
+        push_usize(&mut buf, 0); // numCoeffs
+        push_usize(&mut buf, 0); // numOpenings
+        push_usize(&mut buf, 1); // numEq
+        let mut dec = ProofDecoder::new(&buf);
+        dec.decode_committed_layer_proof();
+    }
+
+    #[test]
+    #[should_panic(expected = "skip: out of bounds")]
+    fn test_public_input_count_past_end_is_rejected() {
+        let mut buf = Vec::new();
+        push_u256(&mut buf, U256::from_u64(0xABCD)); // circuit hash
+        push_usize(&mut buf, 1); // 1 section
+        push_u256(&mut buf, U256::from_u64(1 << 59)); // count * 32 wraps a 64-bit usize to 0
+        let _ = ProofDecoder::extract_embedded_public_inputs(&buf);
+    }
+
+    #[test]
+    #[should_panic(expected = "value does not fit in 64 bits")]
+    fn test_count_above_64_bits_is_rejected() {
+        // Counts were always checked this way; the array readers that used
+        // to cut entries down are tested next to them in lib.rs.
+        let mut buf = Vec::new();
+        push_u256(&mut buf, U256([7, 1, 0, 0])); // 2^64 + 7
+        let mut dec = ProofDecoder::new(&buf);
+        dec.read_usize();
+    }
+
+    #[test]
+    #[should_panic(expected = "trailing bytes after encoded data")]
+    fn test_proof_with_trailing_bytes_is_rejected() {
+        let mut data = build_minimal_dag_proof();
+        data.extend_from_slice(&[0u8; 32]);
+        let mut dec = ProofDecoder::new(&data);
+        let _ = dec.decode_proof_for_dag();
+    }
+
+    #[test]
+    #[should_panic(expected = "trailing bytes after encoded data")]
+    fn test_gens_with_trailing_bytes_are_rejected() {
+        let mut buf = Vec::new();
+        push_usize(&mut buf, 1);
+        push_g1(&mut buf, &sample_point(10));
+        push_g1(&mut buf, &sample_point(20));
+        push_g1(&mut buf, &sample_point(30));
+        buf.push(0);
+        let _ = ProofDecoder::decode_pedersen_gens(&buf);
+    }
+
     #[test]
     fn test_decode_embedded_no_sections() {
         let mut buf = Vec::new();
         push_u256(&mut buf, U256::from_u64(0xBEEF)); // circuit hash
         push_usize(&mut buf, 0); // 0 sections
 
-        let result = ProofDecoder::decode_embedded_public_inputs(&buf);
+        let result = ProofDecoder::extract_embedded_public_inputs(&buf);
         assert_eq!(result.len(), 0);
     }
 }

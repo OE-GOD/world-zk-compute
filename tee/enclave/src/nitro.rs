@@ -383,6 +383,7 @@ impl NitroAttestor {
     ) -> Result<AttestationDocument, String> {
         use aws_nitro_enclaves_nsm_api::api::{Request, Response};
         use aws_nitro_enclaves_nsm_api::driver;
+        use serde_bytes::ByteBuf;
 
         // 1. Open NSM device
         let nsm_fd = driver::nsm_init();
@@ -392,9 +393,9 @@ impl NitroAttestor {
 
         // 2. Build attestation request
         let request = Request::Attestation {
-            public_key: Some(enclave_address.as_slice().to_vec()),
-            user_data: Some(user_data.as_slice().to_vec()),
-            nonce: nonce.map(|n| n.to_vec()),
+            public_key: Some(ByteBuf::from(enclave_address.as_slice().to_vec())),
+            user_data: Some(ByteBuf::from(user_data.as_slice().to_vec())),
+            nonce: nonce.map(|n| ByteBuf::from(n.to_vec())),
         };
 
         // 3. Send request to NSM
@@ -555,23 +556,21 @@ mod tests {
         Ok(())
     }
 
+    // With nitro_enabled=true but no nitro feature, construction should fail
+    #[cfg(not(feature = "nitro"))]
     #[test]
     fn test_nitro_enabled_without_feature_fails() -> Result<(), Box<dyn std::error::Error>> {
         let addr = address!("f39Fd6e51aad88F6F4ce6aB8827279cffFb92266");
         let model_hash = B256::ZERO;
 
-        // With nitro_enabled=true but no nitro feature, should fail
-        #[cfg(not(feature = "nitro"))]
-        {
-            let result = NitroAttestor::new(true, addr, model_hash);
-            assert!(result.is_err());
-            let err_msg = result.err().ok_or("expected an error but got Ok")?;
-            assert!(
-                err_msg.contains("not compiled with 'nitro' feature"),
-                "unexpected error message: {}",
-                err_msg
-            );
-        }
+        let result = NitroAttestor::new(true, addr, model_hash);
+        assert!(result.is_err());
+        let err_msg = result.err().ok_or("expected an error but got Ok")?;
+        assert!(
+            err_msg.contains("not compiled with 'nitro' feature"),
+            "unexpected error message: {}",
+            err_msg
+        );
         Ok(())
     }
 

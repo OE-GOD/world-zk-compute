@@ -14,16 +14,18 @@ library HybridStylusGroth16Verifier {
     // ERRORS
     // ========================================================================
 
-    /// @notice Stylus verifier call reverted or ran out of gas
+    /// @notice Stylus verifier call failed without return data (revert data, if any, is passed on
+    ///         unchanged)
     error StylusVerificationFailed();
 
-    /// @notice Groth16 verifier call reverted or ran out of gas
+    /// @notice Groth16 verifier call failed without return data (revert data, if any, is passed on
+    ///         unchanged), or the verifier address has no code
     error Groth16VerificationFailed();
 
-    /// @notice A specific chunk's Groth16 verification failed
+    /// @notice The proof of chunk `chunkIndex` does not have 8 words
     error ChunkVerificationFailed(uint256 chunkIndex);
 
-    /// @notice Invalid chunk count (zero or mismatch with proof array)
+    /// @notice Invalid chunk count (zero or mismatch with proof array), or a registered input count other than 0 or 6
     error InvalidChunkCount();
 
     // ========================================================================
@@ -155,6 +157,8 @@ library HybridStylusGroth16Verifier {
             }
         }
 
+        // A call to an address without code succeeds and returns nothing, like an accepted proof
+        if (verifier.code.length == 0) revert Groth16VerificationFailed();
         (bool success, bytes memory returnData) = verifier.staticcall(data);
         if (!success) {
             if (returnData.length > 0) {
@@ -171,7 +175,9 @@ library HybridStylusGroth16Verifier {
     // ========================================================================
 
     /// @dev Build public inputs for a single chunk in multi-chunk verification.
-    ///      Layout: [transcriptDigest, circuitHashLo, circuitHashHi, chunkIndex, totalChunks, opsDigest]
+    ///      Layout: [transcriptDigest, circuitHashLo, circuitHashHi, opsDigest, chunkIndex, totalChunks]
+    ///      (the order in which ChunkedECBatchCircuit declares its public inputs).
+    ///      Reverts with InvalidChunkCount unless expectedCount is 0 or 6.
     function buildChunkedGroth16Inputs(
         bytes32 transcriptDigest,
         bytes32 circuitHash,
@@ -180,23 +186,18 @@ library HybridStylusGroth16Verifier {
         uint256 opsDigest,
         uint256 expectedCount
     ) internal pure returns (uint256[] memory inputs) {
-        // Base inputs = 6 (digest + circuitHash lo/hi + chunkIndex + totalChunks + opsDigest)
-        uint256 totalInputs = 6;
-        if (expectedCount > 0 && expectedCount != totalInputs) {
-            totalInputs = expectedCount;
-        }
+        // 6 inputs (digest + circuitHash lo/hi + opsDigest + chunkIndex + totalChunks)
+        if (expectedCount != 0 && expectedCount != 6) revert InvalidChunkCount();
 
-        inputs = new uint256[](totalInputs);
+        inputs = new uint256[](6);
 
         inputs[0] = uint256(transcriptDigest) % FR_MODULUS;
         (uint256 lo, uint256 hi) = _hashToFqPair(circuitHash);
         inputs[1] = lo;
         inputs[2] = hi;
-        inputs[3] = chunkIndex;
-        inputs[4] = totalChunks;
-        if (totalInputs > 5) {
-            inputs[5] = opsDigest;
-        }
+        inputs[3] = opsDigest;
+        inputs[4] = chunkIndex;
+        inputs[5] = totalChunks;
     }
 
     /// @dev Call the Groth16 verifier with a memory proof array (for chunked verification
@@ -225,6 +226,8 @@ library HybridStylusGroth16Verifier {
             }
         }
 
+        // A call to an address without code succeeds and returns nothing, like an accepted proof
+        if (verifier.code.length == 0) revert Groth16VerificationFailed();
         (bool success, bytes memory returnData) = verifier.staticcall(data);
         if (!success) {
             if (returnData.length > 0) {
@@ -274,58 +277,6 @@ library HybridStylusGroth16Verifier {
 
             callGroth16VerifierMem(ecVerifier, sel, proofMem, inputs);
         }
-    }
-
-    // ========================================================================
-    // FULL HYBRID CHUNKED VERIFICATION
-    // ========================================================================
-
-    /// @notice Verify a DAG proof using Stylus WASM + multiple Groth16 chunk proofs
-    /// @dev Each chunk proves a subset of EC operations. All chunks share transcriptDigest binding.
-    ///      Step 1: Call the Stylus verifier in hybrid mode (transcript replay + Fr arithmetic).
-    ///      Step 2: Verify each chunk's Groth16 proof against per-chunk public inputs.
-    /// @param stylusVerifier Address of Stylus WASM verifier
-    /// @param ecGroth16Verifier Address of chunked EC Groth16 verifier (same contract for all chunks)
-    /// @param ecGroth16InputCount Number of public inputs per chunk
-    /// @param proof GKR proof data
-    /// @param circuitHash Circuit hash
-    /// @param publicInputs Public inputs for Stylus call
-    /// @param gensData Generator data for Stylus call
-    /// @param circuitDescData Circuit description for Stylus call
-    /// @param ecGroth16Proofs Array of Groth16 proofs, one per chunk (each 8 uint256)
-    /// @return verified Whether all verifications passed
-    function verifyHybridChunked(
-        address stylusVerifier,
-        address ecGroth16Verifier,
-        uint256 ecGroth16InputCount,
-        bytes calldata proof,
-        bytes32 circuitHash,
-        bytes calldata publicInputs,
-        bytes calldata gensData,
-        bytes memory circuitDescData,
-        uint256[][] memory ecGroth16Proofs
-    ) internal view returns (bool verified) {
-        // Step 1: Call Stylus hybrid (same as verifyHybrid)
-        (bool stylusSuccess, bytes32 transcriptDigest, bytes memory frOutputs) =
-            callStylusHybrid(stylusVerifier, proof, publicInputs, gensData, circuitDescData);
-        if (!stylusSuccess) return false;
-
-        // Step 2: Compute opsDigest from frOutputs for chunk binding
-        uint256 opsDigest = uint256(keccak256(frOutputs)) % FR_MODULUS;
-
-        // Step 3: Verify each chunk's Groth16 proof
-        uint256 totalChunks = ecGroth16Proofs.length;
-        verifyAllChunks(
-            ecGroth16Verifier,
-            ecGroth16InputCount,
-            transcriptDigest,
-            circuitHash,
-            ecGroth16Proofs,
-            totalChunks,
-            opsDigest
-        );
-
-        return true;
     }
 
     // ========================================================================

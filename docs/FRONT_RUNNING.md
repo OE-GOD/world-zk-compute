@@ -7,7 +7,7 @@
 
 ## Operations and Risk Assessment
 
-### HIGH RISK: `claimExecution()` (ExecutionEngine, line 312)
+### HIGH RISK: `claimExecution()` (ExecutionEngine, line 380)
 
 **Vulnerability:** A prover broadcasts a `claimExecution(requestId)` transaction. An MEV bot sees it in the mempool, front-runs it, and claims the request first. The original prover's transaction reverts (request is no longer Pending). The bot earns the tip by submitting a proof.
 
@@ -20,33 +20,33 @@
 2. **Private mempool / Flashbots Protect.** Provers submit claims via Flashbots Protect or a private RPC. This hides the transaction from the public mempool. No contract changes needed. Works on Ethereum L1 and some L2s.
 3. **Reputation-gated claiming.** Require `ProverReputation.isGoodStanding(msg.sender)` in `claimExecution()`. Raises the bar for MEV bots (they must maintain reputation). Already partially supported via the `reputation` field but not enforced.
 
-### LOW RISK: `submitProof()` (ExecutionEngine, line 341)
+### LOW RISK: `submitProof()` (ExecutionEngine, line 433)
 
 **Vulnerability:** A bot observes a `submitProof()` transaction, extracts the proof from calldata, and front-runs with the same proof.
 
-**Current mitigations:** Strong. Line 349 enforces `req.claimedBy != msg.sender` -- only the address that claimed the request can submit the proof. Front-running `submitProof()` with a different sender always reverts.
+**Current mitigations:** Strong. Line 441 enforces `req.claimedBy != msg.sender` -- only the address that claimed the request can submit the proof. Front-running `submitProof()` with a different sender always reverts.
 
 **Impact:** None under current design. The claim-then-prove two-step binds proof submission to a specific prover address.
 
-### LOW RISK: `challenge()` (TEEMLVerifier, line 243)
+### LOW RISK: `challenge()` (TEEMLVerifier, line 321)
 
 **Vulnerability:** A watcher broadcasts `challenge(resultId)`. An MEV bot front-runs to become the challenger, capturing the potential bond + stake payout (0.2 ETH).
 
-**Current mitigations:** Partial. The front-runner must post `challengeBondAmount` (0.1 ETH) and takes on the risk of losing it if the prover produces a valid ZK proof. The 1-hour `CHALLENGE_WINDOW` means there is no urgency advantage -- multiple parties have ample time to challenge.
+**Current mitigations:** Partial. The front-runner must post `challengeBondAmount` (0.1 ETH) and takes on the risk of losing it if the prover produces a valid ZK proof. The 1-hour `challengeWindow` means there is no urgency advantage -- multiple parties have ample time to challenge.
 
 **Impact:** Low. The front-runner assumes the same economic risk as the original challenger. If the result is genuinely incorrect, the front-runner wins 0.2 ETH but also performed a useful service (challenging a bad result). If the result is correct, the front-runner loses 0.1 ETH.
 
 **Recommendation:** Accept the risk. Front-running challenges is economically neutral to the protocol since the bad result still gets challenged. If desired, a commit-reveal challenge scheme could be added, but it would delay challenges and reduce the effective challenge window.
 
-### NO RISK: `resolveDispute()` / `resolveDisputeByTimeout()` (TEEMLVerifier, lines 264, 293)
+### NO RISK: `resolveDispute()` / `resolveDisputeByTimeout()` (TEEMLVerifier, lines 346, 469)
 
 **Current mitigations:** Strong. Payouts go to `r.submitter` or `r.challenger` (fixed at submission/challenge time). Front-running these calls cannot redirect funds. Anyone can call `resolveDispute()` and the payout destination is the same regardless of `msg.sender`.
 
-### NO RISK: `submitResult()` (TEEMLVerifier, line 200)
+### NO RISK: `submitResult()` (TEEMLVerifier, line 275)
 
-**Current mitigations:** Strong. The `resultId` is derived from `keccak256(msg.sender, modelHash, inputHash, block.number)`. A front-runner using a different `msg.sender` would produce a different `resultId`. The attestation signature is bound to the specific `(modelHash, inputHash, resultHash)` tuple, and the enclave key cannot be reused by a different submitter.
+**Current mitigations:** Strong. The `resultId` is derived from `keccak256(msg.sender, modelHash, inputHash, block.number)`. A front-runner using a different `msg.sender` would produce a different `resultId`. The attestation signature is bound to the specific `(modelHash, inputHash, resultHash)` tuple, but not to the submitter: the same attestation is also accepted from a different `msg.sender`, under a different `resultId` and with that sender's own stake.
 
-### LOW RISK: `finalize()` (TEEMLVerifier, line 322)
+### LOW RISK: `finalize()` (TEEMLVerifier, line 499)
 
 **Vulnerability:** An MEV bot front-runs a `finalize()` call. Since `finalize()` returns the prover stake to `r.submitter` (not `msg.sender`), the front-runner gains nothing except wasting gas.
 

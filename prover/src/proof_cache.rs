@@ -18,8 +18,9 @@
 //! - `use_snark`: Whether a Groth16 SNARK proof is needed (for on-chain verification)
 //!
 //! Since zkVM execution is deterministic, same program + same input = same output.
-//! STARK and Groth16 proofs are cached separately to prevent stale STARK proofs
-//! from being submitted to the real on-chain verifier.
+//! `use_snark` is the flag the job was run with, so jobs with and without it
+//! do not share entries. The cached bytes are not inspected: an entry holds
+//! whatever the prover returned for that key.
 
 use alloy::primitives::B256;
 use serde::{Deserialize, Serialize};
@@ -409,6 +410,14 @@ impl ProofCache {
             info!("Cleaned up {} expired proof cache entries", removed);
         }
         removed
+    }
+}
+
+#[cfg(test)]
+impl ProofCache {
+    /// Number of entries held in memory
+    pub(crate) async fn memory_len(&self) -> usize {
+        self.memory.read().await.len()
     }
 }
 

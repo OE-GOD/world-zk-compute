@@ -12,57 +12,53 @@ Operator Health  (:9090/health)  --------+
 
 The **operator service** exposes Prometheus-format metrics at `/metrics` and health checks at `/health` and `/ready`. Prometheus scrapes these endpoints on a 15-second interval and stores the time-series data. Grafana queries Prometheus to render dashboards.
 
-The **verifier service** does not currently expose a `/metrics` endpoint; it only provides a `/health` endpoint returning circuit registration status.
+The **verifier service** does not currently expose a `/metrics` endpoint; it only provides a `/health` endpoint returning `status` and the number of loaded circuits (`circuits_loaded`).
 
 ## Prerequisites
 
 - Docker and Docker Compose (recommended) or standalone binaries
-- The operator service running and accessible on port 9090
+- The operator service running and accessible on port 9090 (it binds `127.0.0.1` unless `METRICS_BIND_ADDR` is set; use `METRICS_BIND_ADDR=0.0.0.0` when Prometheus runs in a container or on another host)
 - Network access from Prometheus to the operator, and from Grafana to Prometheus
 
 ## Quick Start with Docker Compose
 
-Create a `docker-compose.monitoring.yml` in the repository root:
+The repository root already contains a `docker-compose.monitoring.yml`; do not create or overwrite it. It is a different stack from the manual setup below: it uses the files under `monitoring/` (not `deploy/prometheus.yml` and `deploy/grafana-dashboard.json`), names the operator scrape job `operator` (not `worldzk-operator`), and publishes Grafana on port 3001. Its two services (excerpt):
 
 ```yaml
-version: "3.8"
-
 services:
   prometheus:
-    image: prom/prometheus:v2.51.0
+    image: prom/prometheus:v2.53.0
     ports:
       - "9091:9090"
     volumes:
-      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus_data:/prometheus
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerting-rules.yml:/etc/prometheus/alerting-rules.yml:ro
+      - prometheus-data:/prometheus
     command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.retention.time=30d"
-    restart: unless-stopped
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=7d'
 
   grafana:
-    image: grafana/grafana:10.4.0
+    image: grafana/grafana:11.1.0
     ports:
-      - "3000:3000"
-    environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=worldzk
+      - "3001:3000"
     volumes:
-      - grafana_data:/var/lib/grafana
-    depends_on:
-      - prometheus
-    restart: unless-stopped
-
-volumes:
-  prometheus_data:
-  grafana_data:
+      - ./monitoring/grafana-operator.json:/var/lib/grafana/dashboards/operator.json:ro
+      - ./monitoring/grafana-enclave.json:/var/lib/grafana/dashboards/enclave.json:ro
+      - ./monitoring/grafana-sepolia.json:/var/lib/grafana/dashboards/sepolia.json:ro
+      - ./monitoring/grafana-indexer.json:/var/lib/grafana/dashboards/indexer.json:ro
+      - grafana-data:/var/lib/grafana
 ```
 
-Start the monitoring stack:
+It layers on top of a base compose file, whose `operator` service Prometheus scrapes at `operator:9090`. Start the two together:
 
 ```bash
-docker compose -f docker-compose.monitoring.yml up -d
+docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
 ```
+
+As shipped, this command cannot start every service: `private-input-server` in `docker-compose.yml` (`3001:3001`) and `grafana` in `docker-compose.monitoring.yml` (`3001:3000`) publish the same host port 3001, so one of the two fails to start until one mapping is changed. This was checked with `docker compose ... config`, which lists both mappings; the stack was not started.
+
+Once that conflict is resolved, Prometheus is at http://localhost:9091 and Grafana at http://localhost:3001 (admin / `$GRAFANA_PASSWORD`, default `admin`). `monitoring/prometheus.yml` also defines `enclave`, `warm-prover` and `indexer` jobs, but only the operator and the risc0 prover export Prometheus-format metrics (the enclave's `/metrics` is JSON), so those three jobs deliver no metrics.
 
 ## Manual Setup
 
@@ -161,7 +157,7 @@ The operator exposes metrics in Prometheus text exposition format at `GET /metri
 | `operator_disputes_resolved` | Total disputes resolved successfully |
 | `operator_disputes_failed` | Total disputes that failed (proof rejected or timeout) |
 | `operator_stylus_disputes_resolved` | Disputes resolved via Stylus WASM path (<30M gas) |
-| `operator_solidity_disputes_resolved` | Disputes resolved via Solidity path (>200M gas) |
+| `operator_solidity_disputes_resolved` | Disputes resolved via Solidity path (about 198M gas in one transaction) |
 | `operator_errors_total` | Total errors encountered across all operations |
 | `operator_finalizations_total` | Total result finalizations processed |
 | `webhook_failures_total` | Total webhook notification delivery failures |
@@ -178,8 +174,8 @@ The operator exposes metrics in Prometheus text exposition format at `GET /metri
 
 | Endpoint | Description |
 |---|---|
-| `GET /health` | Returns `{"status":"ok"}` (200) or `{"status":"shutting_down"}` (503) |
-| `GET /ready` | Returns 200 only if `last_block_polled > 0` and not shutting down |
+| `GET /health` | Returns `{"status":"ok","uptime_secs":…,"last_block_polled":…}` (200); `status` is `shutting_down` (503) during shutdown |
+| `GET /ready` | Returns 200 once this process has polled the chain successfully and while it is not shutting down (a block restored from the state file does not count) |
 | `GET /metrics` | Prometheus text format |
 | `GET /metrics/json` | JSON format (backward compatibility) |
 
@@ -212,7 +208,7 @@ The imported dashboard includes these panels organized into rows:
 - **Blockchain Polling Progress** -- Last block polled and block progress rate
 
 ### Gas Costs and Verification Path (Row 6)
-- **Verification Path Distribution** -- Gauge showing Stylus/Solidity/Hybrid split
+- **Verification Path Distribution** -- Gauge showing Stylus/Solidity split, plus a "Hybrid/Unknown" series computed as resolved disputes minus the other two (the operator exports no hybrid metric)
 - **Gas Cost Indicator by Path (Rate)** -- Per-minute rates by verification path
 
 ### Operational Summary (Row 7)
@@ -231,11 +227,11 @@ These are the most important metrics for day-to-day operations:
 
 4. **`up{job="worldzk-operator"}`** -- Basic availability. If 0, the operator process is down.
 
-5. **`operator_stylus_disputes_resolved` vs `operator_solidity_disputes_resolved`** -- Indicates which on-chain verifier is being used. Stylus disputes cost ~3-6M gas; Solidity disputes cost ~200-250M gas.
+5. **`operator_stylus_disputes_resolved` vs `operator_solidity_disputes_resolved`** -- Indicates which on-chain verifier is being used. Stylus disputes cost ~3-6M gas; a Solidity dispute verified in one transaction is estimated at about 198M gas (`eth_estimateGas` for the test fixture on Anvil: 198,259,338).
 
 ## Alerting Rules
 
-Add these rules to a Prometheus alerting rules file (e.g., `deploy/alert-rules.yml`) and reference it from `prometheus.yml`:
+Add these rules to a Prometheus alerting rules file (e.g., `deploy/alert-rules.yml`) and reference it from `prometheus.yml`. They are a proposal, not a file in the repository: `deploy/alert-rules.yml` does not exist and `deploy/prometheus.yml` has no `rule_files` entry. The rules that do ship are in `monitoring/alerting-rules.yml` (loaded by `docker-compose.monitoring.yml`): they use the job name `operator` and these alert names (`OperatorDown`, `HighDisputeRate`, `ProofSubmissionFailed`, `DisputeResolutionFailed`, `WebhookFailures`, `LowUptime`), plus four enclave alerts (the enclave's `/metrics` is JSON, not Prometheus format).
 
 ```yaml
 # In prometheus.yml, add:

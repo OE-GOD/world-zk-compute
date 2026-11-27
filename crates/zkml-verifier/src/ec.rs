@@ -74,14 +74,10 @@ pub struct ProofOfProduct {
 // ============================================================
 
 /// EC point addition using precompile at address 0x06.
+///
+/// Panics, as the precompile fails, unless both points are valid (see
+/// `read_point`); an infinity operand does not skip the check of the other.
 pub fn ec_add(p1: &G1Point, p2: &G1Point) -> G1Point {
-    if p1.is_infinity() {
-        return *p2;
-    }
-    if p2.is_infinity() {
-        return *p1;
-    }
-
     let mut input = [0u8; 128];
     input[0..32].copy_from_slice(&p1.x.to_be_bytes());
     input[32..64].copy_from_slice(&p1.y.to_be_bytes());
@@ -96,11 +92,10 @@ pub fn ec_add(p1: &G1Point, p2: &G1Point) -> G1Point {
 }
 
 /// EC scalar multiplication using precompile at address 0x07.
+///
+/// Panics, as the precompile fails, unless the point is valid (see
+/// `read_point`), also when the scalar is zero.
 pub fn ec_mul(p: &G1Point, s: &U256) -> G1Point {
-    if p.is_infinity() || s.is_zero() {
-        return G1Point::INFINITY;
-    }
-
     let mut input = [0u8; 96];
     input[0..32].copy_from_slice(&p.x.to_be_bytes());
     input[32..64].copy_from_slice(&p.y.to_be_bytes());
@@ -277,29 +272,60 @@ impl JacPoint {
     }
 }
 
+/// Read a 64-byte affine point the way precompiles 0x06 and 0x07 do. Both
+/// coordinates must be below q, and the point must be (0, 0), which encodes
+/// the point at infinity, or lie on y^2 = x^3 + 3. The precompiles fail on anything else,
+/// so this panics: the addition formulas below hold for any curve
+/// y^2 = x^3 + b, and an unreduced coordinate would be read modulo q, so
+/// without these checks the verifier would accept inputs the chain rejects.
+/// The BN254 G1 cofactor is 1, so a point on the curve is in the group.
+fn read_point(bytes: &[u8]) -> (Fq, Fq) {
+    let x = U256::from_be_slice(&bytes[0..32]);
+    let y = U256::from_be_slice(&bytes[32..64]);
+    assert!(
+        !x.gte(&Fq::MODULUS) && !y.gte(&Fq::MODULUS),
+        "ec: point coordinate not below the field modulus"
+    );
+    let (x, y) = (Fq(x), Fq(y));
+    if !(x.0.is_zero() && y.0.is_zero()) {
+        let rhs = x.square().mul(&x).add(&Fq::from_u64(3));
+        assert!(y.square() == rhs, "ec: point not on the curve");
+    }
+    (x, y)
+}
+
+fn encode_affine(x: &Fq, y: &Fq) -> Vec<u8> {
+    let mut out = vec![0u8; 64];
+    out[0..32].copy_from_slice(&x.0.to_be_bytes());
+    out[32..64].copy_from_slice(&y.0.to_be_bytes());
+    out
+}
+
 fn ec_add_native(input: &[u8]) -> Vec<u8> {
     assert!(input.len() >= 128, "ecadd: need 128 bytes");
 
-    let x1 = Fq::from_be_bytes(input[0..32].try_into().unwrap());
-    let y1 = Fq::from_be_bytes(input[32..64].try_into().unwrap());
-    let x2 = Fq::from_be_bytes(input[64..96].try_into().unwrap());
-    let y2 = Fq::from_be_bytes(input[96..128].try_into().unwrap());
+    let (x1, y1) = read_point(&input[0..64]);
+    let (x2, y2) = read_point(&input[64..128]);
+
+    // Adding the point at infinity returns the other point as it is, without
+    // the inversion of the general path.
+    if x1.0.is_zero() && y1.0.is_zero() {
+        return encode_affine(&x2, &y2);
+    }
+    if x2.0.is_zero() && y2.0.is_zero() {
+        return encode_affine(&x1, &y1);
+    }
 
     let p1 = JacPoint::from_affine(x1, y1);
     let result = p1.add_affine(x2, y2);
     let (rx, ry) = result.to_affine();
-
-    let mut out = vec![0u8; 64];
-    out[0..32].copy_from_slice(&rx.0.to_be_bytes());
-    out[32..64].copy_from_slice(&ry.0.to_be_bytes());
-    out
+    encode_affine(&rx, &ry)
 }
 
 fn ec_mul_native(input: &[u8]) -> Vec<u8> {
     assert!(input.len() >= 96, "ecmul: need 96 bytes");
 
-    let px = Fq::from_be_bytes(input[0..32].try_into().unwrap());
-    let py = Fq::from_be_bytes(input[32..64].try_into().unwrap());
+    let (px, py) = read_point(&input[0..64]);
     let scalar = U256::from_be_bytes(input[64..96].try_into().unwrap());
 
     if (px.0.is_zero() && py.0.is_zero()) || scalar.is_zero() {
@@ -328,10 +354,7 @@ fn ec_mul_native(input: &[u8]) -> Vec<u8> {
     }
 
     let (rx, ry) = acc.to_affine();
-    let mut out = vec![0u8; 64];
-    out[0..32].copy_from_slice(&rx.0.to_be_bytes());
-    out[32..64].copy_from_slice(&ry.0.to_be_bytes());
-    out
+    encode_affine(&rx, &ry)
 }
 
 #[cfg(test)]
@@ -452,6 +475,63 @@ mod tests {
         let neg_g = negate(&g);
         let neg_neg_g = negate(&neg_g);
         assert_eq!(neg_neg_g, g);
+    }
+
+    /// (5, 5) is not on y^2 = x^3 + 3 (25 != 128): the precompiles reject it.
+    fn off_curve() -> G1Point {
+        G1Point {
+            x: U256::from_u64(5),
+            y: U256::from_u64(5),
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "ec: point not on the curve")]
+    fn test_ec_add_rejects_point_off_curve() {
+        ec_add(&off_curve(), &g1());
+    }
+
+    #[test]
+    #[should_panic(expected = "ec: point not on the curve")]
+    fn test_ec_add_checks_point_added_to_infinity() {
+        ec_add(&G1Point::INFINITY, &off_curve());
+    }
+
+    #[test]
+    #[should_panic(expected = "ec: point not on the curve")]
+    fn test_ec_mul_rejects_point_off_curve() {
+        ec_mul(&off_curve(), &U256::from_u64(3));
+    }
+
+    #[test]
+    #[should_panic(expected = "ec: point not on the curve")]
+    fn test_ec_mul_by_zero_checks_point() {
+        ec_mul(&off_curve(), &U256::ZERO);
+    }
+
+    /// (q + 1, 2) is the generator with x not reduced; read modulo q it would
+    /// pass the curve check, so only the range check rejects it.
+    #[test]
+    #[should_panic(expected = "ec: point coordinate not below the field modulus")]
+    fn test_ec_mul_rejects_coordinate_not_below_modulus() {
+        let x = U256([FQ_MOD[0] + 1, FQ_MOD[1], FQ_MOD[2], FQ_MOD[3]]);
+        ec_mul(
+            &G1Point {
+                x,
+                y: U256::from_u64(2),
+            },
+            &U256::ONE,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "ec: point coordinate not below the field modulus")]
+    fn test_ec_add_rejects_coordinate_equal_to_modulus() {
+        let p = G1Point {
+            x: U256::ZERO,
+            y: U256(FQ_MOD),
+        };
+        ec_add(&g1(), &p);
     }
 
     #[test]

@@ -76,6 +76,27 @@ contract MockECGroth16Verifier {
     }
 }
 
+/// @dev Chunk verifier that accepts only public inputs laid out as the gnark ChunkedECBatchCircuit
+///      declares them: [transcriptDigest, circuitHashLo, circuitHashHi, opsDigest, chunkIndex, totalChunks]
+contract ChunkInputOrderVerifier {
+    uint256 immutable opsDigest;
+    uint256 immutable totalChunks;
+
+    constructor(uint256 _opsDigest, uint256 _totalChunks) {
+        opsDigest = _opsDigest;
+        totalChunks = _totalChunks;
+    }
+
+    fallback(bytes calldata data) external returns (bytes memory) {
+        // selector(4) + proof(8 words) + inputs(6 words)
+        uint256[6] memory inputs = abi.decode(data[4 + 8 * 32:], (uint256[6]));
+        require(inputs[3] == opsDigest, "opsDigest is not input 3");
+        require(inputs[4] < totalChunks, "chunkIndex is not input 4");
+        require(inputs[5] == totalChunks, "totalChunks is not input 5");
+        return "";
+    }
+}
+
 /// @dev Mock RemainderVerifier for TEEMLVerifier hybrid routing tests
 contract MockHybridRemainderVerifier {
     bool public nextResult;
@@ -448,6 +469,16 @@ contract HybridStylusGroth16VerifierTest is Test {
         );
     }
 
+    function test_verifyHybrid_revertsGroth16VerifierWithoutCode() public {
+        mockStylus.setResult(true, bytes32(uint256(1)), "");
+
+        uint256[8] memory ecProof;
+        vm.expectRevert(HybridStylusGroth16Verifier.Groth16VerificationFailed.selector);
+        harness.verifyHybridTwoStep(
+            address(mockStylus), address(0xBEEF), 3, hex"1234", bytes32(0), hex"", hex"", "", ecProof
+        );
+    }
+
     // ---- buildChunkedGroth16Inputs tests ----
 
     function test_buildChunkedGroth16Inputs_basicLayout() public view {
@@ -456,24 +487,30 @@ contract HybridStylusGroth16VerifierTest is Test {
 
         uint256[] memory inputs = harness.buildChunkedGroth16Inputs(digest, cHash, 2, 5, 999, 0);
 
+        // Same order as the public inputs of the gnark ChunkedECBatchCircuit
         assertEq(inputs.length, 6);
         assertEq(inputs[0], uint256(digest) % FR_MODULUS);
         // inputs[1] and [2] are circuitHash lo/hi
-        assertEq(inputs[3], 2); // chunkIndex
-        assertEq(inputs[4], 5); // totalChunks
-        assertEq(inputs[5], 999); // opsDigest
+        assertEq(inputs[3], 999); // opsDigest
+        assertEq(inputs[4], 2); // chunkIndex
+        assertEq(inputs[5], 5); // totalChunks
     }
 
-    function test_buildChunkedGroth16Inputs_expectedCountPads() public view {
-        uint256[] memory inputs = harness.buildChunkedGroth16Inputs(bytes32(uint256(1)), bytes32(0), 0, 3, 42, 10);
+    function test_buildChunkedGroth16Inputs_expectedCountSix() public view {
+        uint256[] memory inputs = harness.buildChunkedGroth16Inputs(bytes32(uint256(1)), bytes32(0), 0, 3, 42, 6);
 
-        assertEq(inputs.length, 10);
-        assertEq(inputs[3], 0); // chunkIndex
-        assertEq(inputs[4], 3); // totalChunks
-        assertEq(inputs[5], 42); // opsDigest
-        // Remaining slots are zero-padded
-        assertEq(inputs[6], 0);
-        assertEq(inputs[9], 0);
+        assertEq(inputs.length, 6);
+        assertEq(inputs[3], 42); // opsDigest
+        assertEq(inputs[4], 0); // chunkIndex
+        assertEq(inputs[5], 3); // totalChunks
+    }
+
+    function test_buildChunkedGroth16Inputs_revertsOnOtherExpectedCount() public {
+        uint256[5] memory counts = [uint256(1), 3, 5, 7, 10];
+        for (uint256 i = 0; i < counts.length; i++) {
+            vm.expectRevert(HybridStylusGroth16Verifier.InvalidChunkCount.selector);
+            harness.buildChunkedGroth16Inputs(bytes32(uint256(1)), bytes32(0), 0, 3, 42, counts[i]);
+        }
     }
 
     function test_buildChunkedGroth16Inputs_digestReducedModFr() public view {
@@ -500,6 +537,17 @@ contract HybridStylusGroth16VerifierTest is Test {
         }
 
         harness.verifyAllChunks(address(mockGroth16), 6, bytes32(uint256(1)), bytes32(uint256(2)), chunks, 3, 42);
+    }
+
+    function test_verifyAllChunks_inputsInCircuitOrder() public {
+        ChunkInputOrderVerifier orderVerifier = new ChunkInputOrderVerifier(42, 3);
+
+        uint256[][] memory chunks = new uint256[][](3);
+        for (uint256 i = 0; i < 3; i++) {
+            chunks[i] = new uint256[](8);
+        }
+
+        harness.verifyAllChunks(address(orderVerifier), 6, bytes32(uint256(1)), bytes32(uint256(2)), chunks, 3, 42);
     }
 
     function test_verifyAllChunks_revertsZeroChunks() public {
@@ -536,7 +584,15 @@ contract HybridStylusGroth16VerifierTest is Test {
         harness.verifyAllChunks(address(mockGroth16), 6, bytes32(0), bytes32(0), chunks, 1, 0);
     }
 
-    // ---- verifyHybridChunked end-to-end tests ----
+    function test_verifyAllChunks_revertsVerifierWithoutCode() public {
+        uint256[][] memory chunks = new uint256[][](1);
+        chunks[0] = new uint256[](8);
+
+        vm.expectRevert(HybridStylusGroth16Verifier.Groth16VerificationFailed.selector);
+        harness.verifyAllChunks(address(0xBEEF), 6, bytes32(uint256(1)), bytes32(uint256(2)), chunks, 1, 42);
+    }
+
+    // ---- chunked hybrid (harness two-step) end-to-end tests ----
 
     function test_verifyHybridChunked_fullSuccess() public {
         bytes32 digest = bytes32(uint256(0xBEEF));
@@ -872,7 +928,7 @@ contract RemainderVerifierHybridTest is Test, DeployRemainderVerifierHelper {
     // ---- setDAGECGroth16Verifier tests ----
 
     function test_setDAGECGroth16Verifier_success() public {
-        address ecVerifier = address(0xBEEF);
+        address ecVerifier = address(new MockECGroth16Verifier());
 
         vm.expectEmit(true, true, false, true);
         emit DAGECGroth16VerifierUpdated(circuitHash, ecVerifier, 100);
@@ -901,6 +957,11 @@ contract RemainderVerifierHybridTest is Test, DeployRemainderVerifierHelper {
         verifier.setDAGECGroth16Verifier(circuitHash, address(0), 100);
     }
 
+    function test_setDAGECGroth16Verifier_revertsAddressWithoutCode() public {
+        vm.expectRevert(RemainderVerifier.ZeroAddress.selector);
+        verifier.setDAGECGroth16Verifier(circuitHash, address(0xBEEF), 100);
+    }
+
     // ---- verifyDAGProofStylusGroth16 validation tests ----
 
     function test_verifyDAGProofStylusGroth16_revertsUnregisteredCircuit() public {
@@ -913,7 +974,7 @@ contract RemainderVerifierHybridTest is Test, DeployRemainderVerifierHelper {
     function test_verifyDAGProofStylusGroth16_revertsInvalidSelector() public {
         // Set up Stylus verifier so we get past that check
         verifier.setDAGStylusVerifier(circuitHash, address(0xBEEF));
-        verifier.setDAGECGroth16Verifier(circuitHash, address(0xBEEF), 3);
+        verifier.setDAGECGroth16Verifier(circuitHash, address(new MockECGroth16Verifier()), 3);
 
         uint256[8] memory ecProof;
         // "XXXX" instead of "REM1"
@@ -941,7 +1002,7 @@ contract RemainderVerifierHybridTest is Test, DeployRemainderVerifierHelper {
 
     function test_verifyDAGProofStylusGroth16Chunked_revertsInvalidSelector() public {
         verifier.setDAGStylusVerifier(circuitHash, address(0xBEEF));
-        verifier.setDAGECGroth16Verifier(circuitHash, address(0xBEEF), 6);
+        verifier.setDAGECGroth16Verifier(circuitHash, address(new MockECGroth16Verifier()), 6);
 
         uint256[][] memory chunks = new uint256[][](1);
         chunks[0] = new uint256[](8);
@@ -1001,7 +1062,7 @@ contract ChunkedHybridGasProfileTest is Test, DeployRemainderVerifierHelper {
 
         // Wire Stylus + EC Groth16 verifiers
         verifier.setDAGStylusVerifier(circuitHash, address(mockStylus));
-        verifier.setDAGECGroth16Verifier(circuitHash, address(mockGroth16), 5);
+        verifier.setDAGECGroth16Verifier(circuitHash, address(mockGroth16), 6);
 
         // Configure mock Stylus to return success
         mockStylus.setResult(true, DUMMY_DIGEST, DUMMY_FR_OUTPUTS);
@@ -1090,7 +1151,7 @@ contract ChunkedHybridVerificationTest is Test, DeployRemainderVerifierHelper {
 
         // Wire verifiers
         verifier.setDAGStylusVerifier(circuitHash, address(mockStylus));
-        verifier.setDAGECGroth16Verifier(circuitHash, address(mockGroth16), 5);
+        verifier.setDAGECGroth16Verifier(circuitHash, address(mockGroth16), 6);
 
         // Configure mock Stylus to succeed
         mockStylus.setResult(true, DUMMY_DIGEST, hex"");
@@ -1132,6 +1193,13 @@ contract ChunkedHybridVerificationTest is Test, DeployRemainderVerifierHelper {
         // 2 proofs but totalChunks = 3
         vm.expectRevert(HybridStylusGroth16Verifier.InvalidChunkCount.selector);
         verifier.verifyDAGProofStylusGroth16Chunked(DUMMY_PROOF, circuitHash, hex"", hex"", _makeChunks(2), 3, 0);
+    }
+
+    function test_chunked_registered_input_count_not_six_reverts() public {
+        // The chunked EC circuit has exactly 6 public inputs
+        verifier.setDAGECGroth16Verifier(circuitHash, address(mockGroth16), 5);
+        vm.expectRevert(HybridStylusGroth16Verifier.InvalidChunkCount.selector);
+        verifier.verifyDAGProofStylusGroth16Chunked(DUMMY_PROOF, circuitHash, hex"", hex"", _makeChunks(1), 1, 0);
     }
 
     function test_chunked_wrong_proof_size_reverts() public {

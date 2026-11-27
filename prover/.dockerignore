@@ -26,9 +26,6 @@ docs/
 test_data/
 *.test
 
-# Benchmarks (not needed in runtime container)
-benches/
-
 # Local data
 data/
 

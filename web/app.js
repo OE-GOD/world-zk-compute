@@ -9,6 +9,7 @@
 let wasmReady = false;
 let wasmModule = null;   // { verify_proof_json, version }
 let currentBundle = null; // raw JSON string of the loaded proof bundle
+let verificationPending = false; // a click is waiting for its deferred step
 
 // ============================================================
 // DOM references
@@ -130,17 +131,14 @@ function displayBundle(bundle) {
     els.bundleStatusText.textContent = 'Loaded';
     els.bundleStatusText.style.color = 'var(--success)';
 
-    // Circuit hash from the bundle metadata or proof header
-    if (bundle.circuit_hash) {
-        els.bundleCircuitHash.textContent = bundle.circuit_hash;
-    } else {
-        // Extract from proof_hex: bytes 4..36 (after REM1 selector)
-        const stripped = bundle.proof_hex.startsWith('0x')
-            ? bundle.proof_hex.slice(2)
-            : bundle.proof_hex;
-        const hashHex = stripped.slice(8, 8 + 64); // 4 bytes selector = 8 hex chars
-        els.bundleCircuitHash.textContent = '0x' + hashHex;
-    }
+    // Circuit hash from the proof header: bytes 4..36 (after the REM1 selector).
+    // The optional `circuit_hash` metadata field is not shown because the
+    // verifier never reads it, so it can differ from the proof.
+    const proofHex = bundle.proof_hex.startsWith('0x')
+        ? bundle.proof_hex.slice(2)
+        : bundle.proof_hex;
+    const hashHex = proofHex.slice(8, 8 + 64); // 4 bytes selector = 8 hex chars
+    els.bundleCircuitHash.textContent = hashHex.length === 64 ? '0x' + hashHex : '--';
 
     els.bundleProofSize.textContent = formatBytes(hexByteLength(bundle.proof_hex));
     els.bundleGensSize.textContent = formatBytes(hexByteLength(bundle.gens_hex));
@@ -156,8 +154,24 @@ function displayBundle(bundle) {
     els.rawProofHex.textContent = stripped.slice(0, 256) + '...';
     els.rawCircuitDesc.textContent = JSON.stringify(desc, null, 2).slice(0, 2000);
 
-    // Enable verify button
-    els.verifyBtn.disabled = false;
+    // Enable verify button, unless a verification is still pending: its
+    // deferred step re-enables the button when it has run.
+    els.verifyBtn.disabled = verificationPending;
+    els.verifyResult.classList.add('hidden');
+}
+
+// Show a load error and drop any previously loaded bundle, so the page never
+// shows an old result (or verifies an old bundle) next to the error.
+function showBundleError(message) {
+    currentBundle = null;
+    els.bundleStatusText.textContent = message;
+    els.bundleStatusText.style.color = 'var(--error)';
+    for (const el of [els.bundleCircuitHash, els.bundleProofSize, els.bundleGensSize,
+                      els.bundleLayers, els.bundleInputs, els.rawProofHex, els.rawCircuitDesc]) {
+        el.textContent = '--';
+    }
+    els.bundleStatus.classList.remove('hidden');
+    els.verifyBtn.disabled = true;
     els.verifyResult.classList.add('hidden');
 }
 
@@ -170,18 +184,19 @@ async function loadSampleBundle() {
         const resp = await fetch('sample_proof.json');
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         const text = await resp.text();
-        currentBundle = text;
         const bundle = JSON.parse(text);
+        currentBundle = text;
         displayBundle(bundle);
     } catch (err) {
-        els.bundleStatusText.textContent = 'Failed to load: ' + err.message;
-        els.bundleStatusText.style.color = 'var(--error)';
+        showBundleError('Failed to load: ' + err.message);
     }
 }
 
 function handleUpload(event) {
     const file = event.target.files[0];
     if (!file) return;
+    // Allow choosing the same file again (the change event only fires on a new value).
+    event.target.value = '';
 
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -190,17 +205,19 @@ function handleUpload(event) {
             const bundle = JSON.parse(text);
 
             // Validate required fields
-            if (!bundle.proof_hex || !bundle.gens_hex || !bundle.dag_circuit_description) {
+            if (!bundle || typeof bundle.proof_hex !== 'string' || typeof bundle.gens_hex !== 'string'
+                || !bundle.dag_circuit_description) {
                 throw new Error('Missing required fields: proof_hex, gens_hex, dag_circuit_description');
             }
 
             currentBundle = text;
             displayBundle(bundle);
         } catch (err) {
-            els.bundleStatusText.textContent = 'Invalid bundle: ' + err.message;
-            els.bundleStatusText.style.color = 'var(--error)';
-            els.bundleStatus.classList.remove('hidden');
+            showBundleError('Invalid bundle: ' + err.message);
         }
+    };
+    reader.onerror = () => {
+        showBundleError('Failed to read file: ' + (reader.error ? reader.error.message : 'unknown error'));
     };
     reader.readAsText(file);
 }
@@ -225,25 +242,43 @@ function runVerification() {
         return;
     }
 
+    // The bundle that was clicked. A load that finishes before the deferred
+    // step below runs can replace or drop it.
+    const bundle = currentBundle;
+
     // Show spinner
+    verificationPending = true;
     els.verifyBtn.disabled = true;
     els.verifyBtn.textContent = 'Verifying...';
 
     // Use requestAnimationFrame to let the UI update before heavy computation
     requestAnimationFrame(() => {
         setTimeout(() => {
-            const t0 = performance.now();
-            let result;
-            try {
-                result = wasmModule.verify_proof_json(currentBundle);
-            } catch (err) {
-                result = { verified: false, circuit_hash: '', error: err.message };
+            // Only verify the bundle that is still the one on the page.
+            if (currentBundle === bundle) {
+                const t0 = performance.now();
+                let result;
+                try {
+                    const res = wasmModule.verify_proof_json(bundle);
+                    // Copy the fields out and release the WASM-side object.
+                    result = { verified: res.verified, circuit_hash: res.circuit_hash, error: res.error };
+                    res.free();
+                } catch (err) {
+                    // The verifier reports a failed check by panicking, which WebAssembly
+                    // turns into a trap ("unreachable"). The proof is rejected either way.
+                    const message = err instanceof WebAssembly.RuntimeError
+                        ? 'Proof rejected: a verification check failed (the WASM verifier aborted: '
+                            + err.message + '). The CLI names the failed check.'
+                        : err.message;
+                    result = { verified: false, circuit_hash: '', error: message };
+                }
+                const elapsed = performance.now() - t0;
+
+                showResult(result.verified, result.circuit_hash, elapsed, result.error);
             }
-            const elapsed = performance.now() - t0;
 
-            showResult(result.verified, result.circuit_hash, elapsed, result.error);
-
-            els.verifyBtn.disabled = false;
+            verificationPending = false;
+            els.verifyBtn.disabled = !currentBundle;
             els.verifyBtn.textContent = 'Verify Proof';
         }, 50); // Small delay to allow UI repaint
     });
@@ -262,7 +297,8 @@ function showResult(verified, circuitHash, timeMs, error) {
         els.resultText.textContent = 'VERIFICATION FAILED';
     }
 
-    els.resultCircuitHash.textContent = circuitHash || '--';
+    // The WASM API returns the hash without a prefix; show it like the bundle section does.
+    els.resultCircuitHash.textContent = circuitHash ? '0x' + circuitHash.replace(/^0x/, '') : '--';
     els.resultTime.textContent = timeMs.toFixed(1) + ' ms';
 
     if (error) {
@@ -319,4 +355,6 @@ async function main() {
     await initWasm();
 }
 
-main();
+main().catch((err) => {
+    showBundleError('Failed to start: ' + err.message);
+});

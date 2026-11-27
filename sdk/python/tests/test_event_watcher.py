@@ -2,34 +2,32 @@
 
 from __future__ import annotations
 
-import threading
 import time
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock
 
 import pytest
 
 from worldzk.event_watcher import (
-    TEEEventType,
-    TEEEventWatcher,
-    ResultSubmitted,
-    ResultChallenged,
-    ResultFinalized,
-    ResultExpired,
+    _EVENT_SIGNATURES,
+    _TOPIC_TO_NAME,
+    ALL_EVENT_NAMES,
+    EVENT_TYPES,
     DisputeResolved,
     EnclaveRegistered,
     EnclaveRevoked,
+    ResultChallenged,
+    ResultExpired,
+    ResultFinalized,
+    ResultSubmitted,
     TEEEvent,
-    EVENT_TYPES,
-    ALL_EVENT_NAMES,
-    topic_hash,
-    parse_log,
-    _EVENT_SIGNATURES,
-    _TOPIC_TO_NAME,
-    _bytes_val,
-    _address_from_topic,
+    TEEEventType,
+    TEEEventWatcher,
     _address_from_data,
+    _address_from_topic,
+    _bytes_val,
+    parse_log,
+    topic_hash,
 )
-
 
 # ---------------------------------------------------------------------------
 # Known topic hashes (computed from the Solidity event signatures via

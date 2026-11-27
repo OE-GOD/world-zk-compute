@@ -58,7 +58,7 @@ contract DeployToken {
 ///     FEE_RECIPIENT         — fee recipient address (default: deployer)
 ///     MIN_STAKE             — minimum prover stake in wei (default: 100e18)
 ///     SLASH_BPS             — slash basis points (default: 500 = 5%)
-///     REMAINDER_VERIFIER    — existing RemainderVerifier address (default: 0x0 = skip)
+///     REMAINDER_VERIFIER    — RemainderVerifier address (required: TEEMLVerifier.initialize rejects 0x0)
 ///     ENCLAVE_KEY           — TEE enclave key to register (optional)
 ///     ENCLAVE_IMAGE_HASH    — TEE enclave image hash (optional, requires ENCLAVE_KEY)
 ///     STYLUS_VERIFIER       — set to any non-zero address to enable Stylus dispute resolution
@@ -72,6 +72,9 @@ contract DeployFullStack is Script {
         uint256 minStake = vm.envOr("MIN_STAKE", uint256(100 ether));
         uint256 slashBps = vm.envOr("SLASH_BPS", uint256(500));
         address remainderAddr = vm.envOr("REMAINDER_VERIFIER", address(0));
+        require(
+            remainderAddr != address(0), "REMAINDER_VERIFIER must be set: TEEMLVerifier.initialize rejects address(0)"
+        );
 
         console.log("=== FULL STACK DEPLOYMENT ===");
         console.log("Deployer:       ", deployer);

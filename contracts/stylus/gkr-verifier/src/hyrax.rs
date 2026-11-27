@@ -467,7 +467,11 @@ fn verify_one_eval_group_hybrid(
 // ============================================================
 
 /// Tensor product matching Rust's initialize_tensor (reverse order).
+///
+/// The number of coordinates must be smaller than the word size (32 bits on
+/// wasm32): the shift that sizes the table wraps around otherwise.
 pub fn initialize_tensor(coords: &[U256]) -> Vec<U256> {
+    verify!(coords.len() < usize::BITS as usize, "tensor point too long");
     let size = 1usize << coords.len();
     let mut table = vec![U256::ZERO; size];
     table[0] = Fr::ONE.0;
@@ -492,11 +496,15 @@ pub fn initialize_tensor(coords: &[U256]) -> Vec<U256> {
 }
 
 /// Compute RLC of tensor products for L-halves.
+///
+/// `l_half_len` must be smaller than the word size, like the point length in
+/// `initialize_tensor`.
 fn compute_rlc_tensor(
     claim_points: &[&Vec<U256>],
     l_half_len: usize,
     rlc_coeffs: &[U256],
 ) -> Vec<U256> {
+    verify!(l_half_len < usize::BITS as usize, "L tensor point too long");
     let tensor_len = 1usize << l_half_len;
     let mut result = vec![U256::ZERO; tensor_len];
 
@@ -519,8 +527,13 @@ fn compute_rlc_tensor(
 
 /// Evaluate MLE of data at point: MLE(x) = sum_w data[w] * eq(w, x)
 /// Uses MSB-first convention: point[0] is the MSB of the data index.
+///
+/// The point length comes from the circuit description. It must be smaller than
+/// the word size (32 bits on wasm32), because the data index is taken apart by
+/// shifts of up to `n`.
 pub fn evaluate_mle_from_data(data: &[U256], point: &[U256]) -> U256 {
     let n = point.len();
+    verify!(n < usize::BITS as usize, "public input point too long");
     verify!(data.len() <= (1 << n), "data too large");
 
     let mut result = Fr::ZERO;
@@ -658,4 +671,46 @@ fn log2(x: usize) -> usize {
         result += 1;
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mle_point_one_below_word_size_evaluates() {
+        let data = [U256::from_u64(7), U256::from_u64(9)];
+        let point = vec![U256::ZERO; usize::BITS as usize - 1];
+        assert_eq!(evaluate_mle_from_data(&data, &point), data[0]);
+    }
+
+    #[test]
+    #[should_panic(expected = "public input point too long")]
+    fn test_mle_point_of_word_size_rejected() {
+        let data = [U256::from_u64(7)];
+        let point = vec![U256::ZERO; usize::BITS as usize];
+        evaluate_mle_from_data(&data, &point);
+    }
+
+    // A table one entry below the word size would need 2^63 entries on the
+    // host, so only the rejection is tested; the bound is the same.
+    #[test]
+    #[should_panic(expected = "tensor point too long")]
+    fn test_tensor_point_of_word_size_rejected() {
+        let coords = vec![U256::ZERO; usize::BITS as usize];
+        initialize_tensor(&coords);
+    }
+
+    #[test]
+    fn test_small_tensor_still_built() {
+        let r = U256::from_u64(3);
+        let table = initialize_tensor(&[r]);
+        assert_eq!(table, vec![Fr::ONE.sub(&Fr::new(r)).0, r]);
+    }
+
+    #[test]
+    #[should_panic(expected = "L tensor point too long")]
+    fn test_l_tensor_half_of_word_size_rejected() {
+        compute_rlc_tensor(&[], usize::BITS as usize, &[]);
+    }
 }

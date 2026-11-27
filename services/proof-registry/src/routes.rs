@@ -1,11 +1,13 @@
 //! HTTP route handlers for the proof registry API.
 
+use std::ops::Bound;
 use std::sync::Arc;
 
 use axum::{
     extract::{Json, Path, Query, State},
     http::StatusCode,
 };
+use chrono::{DateTime, Days, NaiveDate, NaiveTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
@@ -59,6 +61,7 @@ pub struct DeleteResponse {
 pub struct HealthResponse {
     pub status: &'static str,
     pub db_healthy: bool,
+    pub transparency_healthy: bool,
 }
 
 #[derive(Serialize)]
@@ -94,6 +97,61 @@ pub struct CompareRequest {
 
 fn err(code: StatusCode, msg: String) -> (StatusCode, Json<ErrorResponse>) {
     (code, Json(ErrorResponse { error: msg }))
+}
+
+/// A value of the `from` or `to` search parameter.
+enum DateParam {
+    Instant(DateTime<Utc>),
+    Day(NaiveDate),
+}
+
+/// Parse an RFC 3339 timestamp or a `YYYY-MM-DD` date (UTC).
+fn parse_date_param(
+    name: &str,
+    value: &str,
+) -> Result<DateParam, (StatusCode, Json<ErrorResponse>)> {
+    if let Ok(t) = DateTime::parse_from_rfc3339(value) {
+        return Ok(DateParam::Instant(t.to_utc()));
+    }
+    NaiveDate::parse_from_str(value, "%Y-%m-%d")
+        .ok()
+        // chrono also takes signs, spaces and missing leading zeros.
+        .filter(|d| d.format("%Y-%m-%d").to_string() == value)
+        .map(DateParam::Day)
+        .ok_or_else(|| {
+            err(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "invalid '{name}' parameter '{value}': expected an RFC 3339 timestamp \
+                     (with '+' sent as %2B) or a YYYY-MM-DD date"
+                ),
+            )
+        })
+}
+
+/// Midnight UTC at the start of `day`.
+fn start_of_day(day: NaiveDate) -> DateTime<Utc> {
+    day.and_time(NaiveTime::MIN).and_utc()
+}
+
+/// Lower bound (inclusive) of the `from` parameter.
+fn parse_from(value: &str) -> Result<DateTime<Utc>, (StatusCode, Json<ErrorResponse>)> {
+    Ok(match parse_date_param("from", value)? {
+        DateParam::Instant(t) => t,
+        DateParam::Day(d) => start_of_day(d),
+    })
+}
+
+/// Upper bound of the `to` parameter; a plain date includes the whole day.
+fn parse_to(value: &str) -> Result<Bound<DateTime<Utc>>, (StatusCode, Json<ErrorResponse>)> {
+    Ok(match parse_date_param("to", value)? {
+        DateParam::Instant(t) => Bound::Included(t),
+        DateParam::Day(d) => match d.checked_add_days(Days::new(1)) {
+            Some(next_day) => Bound::Excluded(start_of_day(next_day)),
+            // The last day chrono can represent: nothing is stored after it.
+            None => Bound::Unbounded,
+        },
+    })
 }
 
 // -- Handlers --
@@ -161,20 +219,23 @@ pub async fn get_proof(
 }
 
 /// GET /proofs — search proofs by model hash and/or date range.
+///
+/// `from` and `to` are RFC 3339 timestamps or `YYYY-MM-DD` dates (UTC); both
+/// ends are inclusive, and a plain date as `to` includes that whole day.
 pub async fn search_proofs(
     State(state): State<Arc<AppState>>,
     Query(params): Query<SearchParams>,
 ) -> Result<Json<SearchResponse>, (StatusCode, Json<ErrorResponse>)> {
     let limit = params.limit.unwrap_or(50).min(1000);
+    let from = params.from.as_deref().map(parse_from).transpose()?;
+    let to = match params.to.as_deref() {
+        Some(value) => parse_to(value)?,
+        None => Bound::Unbounded,
+    };
 
     let db = state.db.lock().await;
     let proofs = db
-        .search(
-            params.model.as_deref(),
-            params.from.as_deref(),
-            params.to.as_deref(),
-            limit,
-        )
+        .search(params.model.as_deref(), from, to, limit)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     let count = proofs.len();
@@ -310,13 +371,18 @@ pub async fn compare_proofs(
     Ok(Json(result))
 }
 
-/// GET /health — health check with DB status.
+/// GET /health — health check with proof DB and transparency log status.
 pub async fn health(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
-    let db = state.db.lock().await;
-    let db_healthy = db.is_healthy();
+    let db_healthy = state.db.lock().await.is_healthy();
+    let transparency_healthy = state.transparency_log.lock().await.is_healthy();
     Json(HealthResponse {
-        status: if db_healthy { "ok" } else { "degraded" },
+        status: if db_healthy && transparency_healthy {
+            "ok"
+        } else {
+            "degraded"
+        },
         db_healthy,
+        transparency_healthy,
     })
 }
 
@@ -544,38 +610,20 @@ mod tests {
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use axum::middleware as mw;
-    use axum::routing::{delete, get, post};
     use axum::Router;
     use tower::ServiceExt;
 
-    /// Build a test router wired to all route handlers.
-    fn build_test_app(state: Arc<AppState>) -> Router {
-        let protected = Router::new()
-            .route("/proofs", post(submit_proof))
-            .route("/proofs", get(search_proofs))
-            .route("/proofs/:id", get(get_proof))
-            .route("/proofs/:id/verify", post(verify_proof))
-            .route("/proofs/:id/receipt", get(get_receipt))
-            .route("/proofs/:id", delete(delete_proof))
-            .route("/proofs/compare", post(compare_proofs))
-            .route("/stats", get(stats))
-            .route("/transparency/root", get(transparency_root))
-            .route("/transparency/proof/:index", get(transparency_proof))
-            .route("/transparency/verify", post(transparency_verify))
-            .route("/transparency/entries", get(transparency_entries))
-            .route_layer(mw::from_fn_with_state(state.clone(), auth_middleware))
-            .with_state(state.clone());
-
-        let health_router = Router::new()
-            .route("/health", get(health))
-            .with_state(state);
-
-        Router::new().merge(health_router).merge(protected)
-    }
-
     /// Create a test state backed by temporary SQLite databases.
     fn make_test_state() -> Arc<AppState> {
+        let (state, tmp) = make_test_state_in_dir();
+        // Leak the tempdir so the files remain alive for the test duration.
+        std::mem::forget(tmp);
+        state
+    }
+
+    /// Like [`make_test_state`], but returns the directory of the databases
+    /// (`test.db` and `transparency.db`), which is removed when dropped.
+    fn make_test_state_in_dir() -> (Arc<AppState>, tempfile::TempDir) {
         let tmp = tempfile::tempdir().unwrap();
         let db_path = tmp.path().join("test.db");
         let storage_dir = tmp.path().join("bundles");
@@ -585,16 +633,22 @@ mod tests {
         let tlog = TransparencyLog::new(tlog_path.to_str().unwrap()).unwrap();
         let signing_key = SigningKey::from_slice(&[42u8; 32]).unwrap();
 
-        // Leak the tempdir so the files remain alive for the test duration.
-        std::mem::forget(tmp);
-
-        Arc::new(AppState {
+        let state = Arc::new(AppState {
             db: Mutex::new(db),
             transparency_log: Mutex::new(tlog),
             signing_key,
             api_keys: vec![],
             webhooks: crate::webhook::WebhookStore::new(),
-        })
+        });
+        (state, tmp)
+    }
+
+    /// Helper: run SQL on a database file through a connection of its own.
+    fn exec_sql(path: &std::path::Path, sql: &str) {
+        rusqlite::Connection::open(path)
+            .unwrap()
+            .execute_batch(sql)
+            .unwrap();
     }
 
     /// Build a minimal proof bundle JSON payload for submission.
@@ -641,7 +695,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_health() {
         let state = make_test_state();
-        let app = build_test_app(state);
+        let app = crate::build_app_with_state(state);
 
         let req = Request::get("/health").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -650,12 +704,38 @@ mod tests {
         let json = body_json(resp).await;
         assert_eq!(json["status"], "ok");
         assert_eq!(json["db_healthy"], true);
+        assert_eq!(json["transparency_healthy"], true);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_health_reports_unreadable_tables() {
+        // (database file, table, db_healthy, transparency_healthy)
+        for (file, table, db_ok, tlog_ok) in [
+            ("transparency.db", "transparency_log", true, false),
+            ("test.db", "proofs", false, true),
+        ] {
+            let (state, tmp) = make_test_state_in_dir();
+            let app = crate::build_app_with_state(state);
+            exec_sql(
+                &tmp.path().join(file),
+                &format!("ALTER TABLE {table} RENAME TO t_gone;"),
+            );
+
+            let req = Request::get("/health").body(Body::empty()).unwrap();
+            let resp = app.oneshot(req).await.unwrap();
+
+            assert_eq!(resp.status(), StatusCode::OK, "{table}");
+            let json = body_json(resp).await;
+            assert_eq!(json["status"], "degraded", "{table}");
+            assert_eq!(json["db_healthy"], db_ok, "{table}");
+            assert_eq!(json["transparency_healthy"], tlog_ok, "{table}");
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_stats_empty() {
         let state = make_test_state();
-        let app = build_test_app(state);
+        let app = crate::build_app_with_state(state);
 
         let req = Request::get("/stats").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -672,7 +752,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_submit_and_get_proof() {
         let state = make_test_state();
-        let app = build_test_app(state);
+        let app = crate::build_app_with_state(state);
 
         let bundle_json = make_test_bundle_json();
 
@@ -686,7 +766,7 @@ mod tests {
         assert!(submit_resp["proof_hash"].as_str().unwrap().len() == 64);
 
         // Retrieve the proof by ID.
-        let req = Request::get(&format!("/proofs/{proof_id}"))
+        let req = Request::get(format!("/proofs/{proof_id}"))
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -702,7 +782,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_get_nonexistent_proof() {
         let state = make_test_state();
-        let app = build_test_app(state);
+        let app = crate::build_app_with_state(state);
 
         let req = Request::get("/proofs/nonexistent-id-12345")
             .body(Body::empty())
@@ -717,7 +797,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_delete_proof() {
         let state = make_test_state();
-        let app = build_test_app(state);
+        let app = crate::build_app_with_state(state);
 
         let bundle_json = make_test_bundle_json();
 
@@ -738,7 +818,7 @@ mod tests {
         assert_eq!(json["status"], "deleted");
 
         // Verify it is now gone (soft-deleted).
-        let req = Request::get(&format!("/proofs/{proof_id}"))
+        let req = Request::get(format!("/proofs/{proof_id}"))
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -748,7 +828,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_search_proofs() {
         let state = make_test_state();
-        let app = build_test_app(state);
+        let app = crate::build_app_with_state(state);
 
         // Submit two proofs with the same circuit_hash.
         let bundle1 = make_test_bundle_json();
@@ -794,6 +874,120 @@ mod tests {
         assert_eq!(json["proofs"][0]["circuit_hash"], "0xothercircuit");
     }
 
+    /// Helper: GET /proofs with a query string, return the status and body.
+    async fn search(app: &Router, query: &str) -> (StatusCode, serde_json::Value) {
+        let req = Request::get(format!("/proofs?{query}"))
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let status = resp.status();
+        (status, body_json(resp).await)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_search_date_params() {
+        let (state, tmp) = make_test_state_in_dir();
+        let app = crate::build_app_with_state(state);
+        submit_bundle(&app, &make_test_bundle_json()).await;
+        exec_sql(
+            &tmp.path().join("test.db"),
+            "UPDATE proofs SET created_at = '2026-11-24T09:19:16.010210+00:00';",
+        );
+
+        for (query, count) in [
+            // Plain dates: from the start of `from` to the end of `to`.
+            ("from=2026-11-24&to=2026-11-24", 1),
+            ("to=2026-11-24", 1),
+            ("to=2026-11-23", 0),
+            ("from=2026-11-24", 1),
+            ("from=2026-11-25", 0),
+            ("from=0001-01-01&to=9999-12-31", 1),
+            // RFC 3339 in UTC, with Z and at several precisions.
+            ("from=2026-11-24T09:19:16Z", 1),
+            ("from=2026-11-24T09:19:16.010210Z", 1),
+            ("from=2026-11-24T09:19:16.010211Z", 0),
+            ("to=2026-11-24T09:19:16.010210Z", 1),
+            ("to=2026-11-24T09:19:16.01021Z", 1),
+            ("to=2026-11-24T09:19:16.010209Z", 0),
+            ("to=2026-11-24T09:19:16Z", 0),
+            // Other offsets: 09:19:16 UTC is 11:19:16+02:00 and 04:19:16-05:00.
+            ("from=2026-11-24T11:19:16%2B02:00", 1),
+            ("from=2026-11-24T11:19:17%2B02:00", 0),
+            ("to=2026-11-24T11:19:17%2B02:00", 1),
+            ("to=2026-11-24T11:19:16%2B02:00", 0),
+            ("from=2026-11-24T04:19:17-05:00", 0),
+            ("to=2026-11-24T04:19:17-05:00", 1),
+            // Dates after 9999 take a sign, up to the last day chrono can
+            // represent, which has no next day.
+            ("to=%2B10000-01-01", 1),
+            ("from=%2B10000-01-01", 0),
+            ("to=%2B262142-12-31", 1),
+            ("from=%2B262142-12-31", 0),
+            // Years before 1 take a '-', which sorts before every digit, so
+            // their text compares as the earlier time without a clamp: the
+            // proof is after from=-0001-01-01 and after the whole of that day.
+            ("from=-0001-01-01", 1),
+            ("to=-0001-01-01", 0),
+        ] {
+            let (status, json) = search(&app, query).await;
+            assert_eq!(status, StatusCode::OK, "{query}: {json}");
+            assert_eq!(json["count"], count, "{query}");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_search_plain_date_covers_exactly_one_day() {
+        let (state, tmp) = make_test_state_in_dir();
+        let app = crate::build_app_with_state(state);
+        submit_bundle(&app, &make_test_bundle_json()).await;
+
+        for (created_at, count) in [
+            ("2026-11-23T23:59:59.999999999+00:00", 0),
+            ("2026-11-24T00:00:00+00:00", 1),
+            ("2026-11-24T23:59:59.999999999+00:00", 1),
+            ("2026-11-25T00:00:00+00:00", 0),
+        ] {
+            exec_sql(
+                &tmp.path().join("test.db"),
+                &format!("UPDATE proofs SET created_at = '{created_at}';"),
+            );
+            let (status, json) = search(&app, "from=2026-11-24&to=2026-11-24").await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(json["count"], count, "{created_at}");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_search_rejects_malformed_dates() {
+        let (state, _tmp) = make_test_state_in_dir();
+        let app = crate::build_app_with_state(state);
+
+        for name in ["from", "to"] {
+            for value in [
+                "",
+                "yesterday",
+                "2026-11",
+                "2026-11-31",
+                "2026-1-5",
+                "%2B2026-1-05",
+                "%202026-11-24",
+                "2026-11-24T09:19:16",
+                "2026-11-24T25:00:00Z",
+                "1764000000",
+                // An unencoded '+' reaches the service as a space.
+                "2026-11-24T09:19:16+00:00",
+            ] {
+                let (status, json) = search(&app, &format!("{name}={value}")).await;
+                assert_eq!(status, StatusCode::BAD_REQUEST, "{name}={value}");
+                let error = json["error"].as_str().unwrap();
+                assert!(
+                    error.starts_with(&format!("invalid '{name}' parameter")),
+                    "{error}"
+                );
+            }
+        }
+    }
+
     // -- Proof comparison endpoint tests --
 
     /// Helper: submit a proof bundle with custom model/circuit hash and return its ID.
@@ -827,7 +1021,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_compare_same_model_same_output() {
         let state = make_test_state();
-        let app = build_test_app(state);
+        let app = crate::build_app_with_state(state);
 
         let id_a = submit_bundle_with_hashes(&app, "0xmodel1", "0xcircuit1", "0xaabbccdd").await;
         let id_b = submit_bundle_with_hashes(&app, "0xmodel1", "0xcircuit1", "0xaabbccdd").await;
@@ -861,7 +1055,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_compare_same_model_different_output() {
         let state = make_test_state();
-        let app = build_test_app(state);
+        let app = crate::build_app_with_state(state);
 
         let id_a = submit_bundle_with_hashes(&app, "0xmodel1", "0xcircuit1", "0xaabbccdd").await;
         let id_b = submit_bundle_with_hashes(&app, "0xmodel1", "0xcircuit1", "0x11223344").await;
@@ -889,7 +1083,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_compare_different_models() {
         let state = make_test_state();
-        let app = build_test_app(state);
+        let app = crate::build_app_with_state(state);
 
         let id_a = submit_bundle_with_hashes(&app, "0xmodel1", "0xcircuit1", "0xaabbccdd").await;
         let id_b = submit_bundle_with_hashes(&app, "0xmodel2", "0xcircuit2", "0xaabbccdd").await;
@@ -919,7 +1113,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_compare_nonexistent_proof() {
         let state = make_test_state();
-        let app = build_test_app(state);
+        let app = crate::build_app_with_state(state);
 
         let id_a = submit_bundle_with_hashes(&app, "0xmodel1", "0xcircuit1", "0xaabb").await;
 
@@ -941,7 +1135,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_compare_empty_public_inputs() {
         let state = make_test_state();
-        let app = build_test_app(state);
+        let app = crate::build_app_with_state(state);
 
         let id_a = submit_bundle_with_hashes(&app, "0xmodel1", "0xcircuit1", "").await;
         let id_b = submit_bundle_with_hashes(&app, "0xmodel1", "0xcircuit1", "").await;
@@ -965,5 +1159,54 @@ mod tests {
         assert_eq!(json["same_circuit"], true);
         // Both empty, no embedded outputs, so vacuously match.
         assert_eq!(json["outputs_match"], true);
+    }
+
+    // -- Webhook endpoint tests --
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_webhook_register_list_delete() {
+        let state = make_test_state();
+        let app = crate::build_app_with_state(state);
+
+        // Register.
+        let register_req = serde_json::json!({
+            "url": "http://127.0.0.1:9/hook",
+            "events": ["proof.verified"],
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/webhooks")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&register_req).unwrap()))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+        let json = body_json(resp).await;
+        assert_eq!(json["status"], "registered");
+        let webhook_id = json["id"].as_str().unwrap().to_string();
+
+        // List.
+        let req = Request::get("/webhooks").body(Body::empty()).unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let json = body_json(resp).await;
+        assert_eq!(json["count"], 1);
+        assert_eq!(json["webhooks"][0]["id"], webhook_id);
+        assert_eq!(json["webhooks"][0]["url"], "http://127.0.0.1:9/hook");
+
+        // Delete, then delete again.
+        for expected in [StatusCode::OK, StatusCode::NOT_FOUND] {
+            let req = Request::builder()
+                .method("DELETE")
+                .uri(format!("/webhooks/{webhook_id}"))
+                .body(Body::empty())
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), expected);
+        }
+
+        let req = Request::get("/webhooks").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(body_json(resp).await["count"], 0);
     }
 }

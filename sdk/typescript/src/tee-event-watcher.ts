@@ -163,6 +163,7 @@ let subscriptionCounter = 0;
 export class TEEEventWatcher {
   private client: PublicClient<Transport, Chain>;
   private contractAddress: Hex;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private handlers: Map<TEEEventName, EventHandler<any>[]> = new Map();
   private unwatch: WatchContractEventReturnType | null = null;
   private wsUrl: string | undefined;
@@ -192,6 +193,7 @@ export class TEEEventWatcher {
   on(event: 'DisputeResolved', handler: EventHandler<DisputeResolvedEvent>): this;
   on(event: 'EnclaveRegistered', handler: EventHandler<EnclaveRegisteredEvent>): this;
   on(event: 'EnclaveRevoked', handler: EventHandler<EnclaveRevokedEvent>): this;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   on(event: TEEEventName, handler: EventHandler<any>): this {
     const handlers = this.handlers.get(event) ?? [];
     handlers.push(handler);
@@ -202,6 +204,7 @@ export class TEEEventWatcher {
   /**
    * Remove a handler for a specific event type.
    */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   off(event: TEEEventName, handler: EventHandler<any>): this {
     const handlers = this.handlers.get(event);
     if (handlers) {
@@ -257,6 +260,7 @@ export class TEEEventWatcher {
     });
 
     return logs
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .map((log) => this.parseLog(log as any))
       .filter((e): e is TEEEventData => e !== null);
   }
@@ -318,18 +322,16 @@ export class TEEEventWatcher {
     this.subscriptions.set(id, state);
     this.startSubscription(state);
 
-    const self = this;
+    const isActive = (): boolean => this.subscriptions.get(id)?.active ?? false;
+    const unsubscribe = (): void => this.unsubscribeById(id);
     return {
       get id() {
         return id;
       },
       get active() {
-        const s = self.subscriptions.get(id);
-        return s?.active ?? false;
+        return isActive();
       },
-      unsubscribe() {
-        self.unsubscribeById(id);
-      },
+      unsubscribe,
     };
   }
 
@@ -468,6 +470,7 @@ export class TEEEventWatcher {
   private dispatchToSubscription(state: SubscriptionState, log: Log): void {
     if (!state.active) return;
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const parsed = this.parseLog(log as any);
     if (!parsed) return;
 
@@ -483,6 +486,7 @@ export class TEEEventWatcher {
   }
 
   private dispatch(log: Log): void {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const parsed = this.parseLog(log as any);
     if (!parsed) return;
 
@@ -492,6 +496,7 @@ export class TEEEventWatcher {
     }
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private parseLog(log: { eventName?: string; args?: Record<string, any> }): TEEEventData | null {
     const name = log.eventName as TEEEventName | undefined;
     const args = log.args ?? {};

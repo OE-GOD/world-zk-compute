@@ -67,6 +67,49 @@ pub struct VerifyContext {
 // Compute Layer Verification
 // ============================================================
 
+/// Check that the proof has the shape the circuit description declares.
+///
+/// The description fixes how many compute layers there are and how many
+/// sumcheck rounds each one has; the proof must match it. Without this, a
+/// description of zero compute layers skips every check, and the proof alone
+/// decides how many rounds (and so how many bindings) each layer gets. Upstream
+/// Remainder checks the binding count against the layer description in the
+/// same way. A description of zero compute layers is refused because the proof
+/// must have at least one layer proof and exactly as many as the description.
+pub fn check_proof_shape(proof: &GKRProof, desc: &DAGCircuitDescription) -> Result<(), String> {
+    if proof.layer_proofs.is_empty() || proof.output_claim_commitments.is_empty() {
+        return Err("proof has no layer proofs or no output claim".to_string());
+    }
+    if desc.num_compute_layers != proof.layer_proofs.len() {
+        return Err(format!(
+            "circuit description declares {} compute layers but the proof has {}",
+            desc.num_compute_layers,
+            proof.layer_proofs.len()
+        ));
+    }
+    if desc.num_sumcheck_rounds.len() != desc.num_compute_layers {
+        return Err(format!(
+            "circuit description has {} sumcheck round counts for {} compute layers",
+            desc.num_sumcheck_rounds.len(),
+            desc.num_compute_layers
+        ));
+    }
+    for (i, (lp, &rounds)) in proof
+        .layer_proofs
+        .iter()
+        .zip(&desc.num_sumcheck_rounds)
+        .enumerate()
+    {
+        let messages = lp.sumcheck_proof.messages.len();
+        if messages != rounds {
+            return Err(format!(
+                "layer {i}: circuit description declares {rounds} sumcheck rounds but the proof has {messages} messages"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Verify all compute layers of a DAG circuit.
 /// Returns VerifyContext with all bindings for input layer verification.
 pub fn verify_compute_layers(
@@ -75,14 +118,18 @@ pub fn verify_compute_layers(
     gens: &PedersenGens,
     sponge: &mut PoseidonSponge,
 ) -> VerifyContext {
+    if let Err(e) = check_proof_shape(proof, desc) {
+        panic!("{e}");
+    }
     let mut ctx = VerifyContext {
         all_bindings: Vec::with_capacity(desc.num_compute_layers),
         output_challenges: Vec::new(),
         output_eval: G1Point::INFINITY,
     };
 
-    // Output layer: squeeze numVars challenges
-    let num_vars = proof.layer_proofs[0].sumcheck_proof.messages.len();
+    // Output layer: one challenge per variable of layer 0, a count the
+    // description fixes (the proof was checked to carry as many messages).
+    let num_vars = desc.num_sumcheck_rounds[0];
     ctx.output_challenges = Vec::with_capacity(num_vars);
     for _ in 0..num_vars {
         ctx.output_challenges.push(Fr::from_fq(&sponge.squeeze()).0);
@@ -245,6 +292,13 @@ pub fn resolve_point(
 ) -> Vec<U256> {
     let start = desc.pt_offsets[global_atom_idx];
     let end = desc.pt_offsets[global_atom_idx + 1];
+    // Both offsets come from the circuit description. A non-empty template
+    // must lie inside `pt_data` before its length sizes the allocation below.
+    // An empty template reads nothing, so its offsets are not checked.
+    assert!(
+        start == end || (start < end && end <= desc.pt_data.len()),
+        "point template out of range"
+    );
     let len = end - start;
     let mut point = vec![U256::ZERO; len];
 
@@ -348,6 +402,9 @@ pub fn verify_compute_layers_hybrid(
     _gens: &PedersenGens,
     sponge: &mut PoseidonSponge,
 ) -> (VerifyContext, FrOutputCollector) {
+    if let Err(e) = check_proof_shape(proof, desc) {
+        panic!("{e}");
+    }
     let mut ctx = VerifyContext {
         all_bindings: Vec::with_capacity(desc.num_compute_layers),
         output_challenges: Vec::new(),
@@ -359,7 +416,7 @@ pub fn verify_compute_layers_hybrid(
     };
 
     // Output layer: squeeze numVars challenges (same as full)
-    let num_vars = proof.layer_proofs[0].sumcheck_proof.messages.len();
+    let num_vars = desc.num_sumcheck_rounds[0];
     ctx.output_challenges = Vec::with_capacity(num_vars);
     for _ in 0..num_vars {
         ctx.output_challenges.push(Fr::from_fq(&sponge.squeeze()).0);
@@ -493,4 +550,58 @@ pub fn count_claims_for(target_layer: usize, desc: &DAGCircuitDescription) -> us
         .iter()
         .filter(|&&t| t == target_layer)
         .count()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn desc_with_templates(pt_offsets: Vec<usize>, pt_data: Vec<u64>) -> DAGCircuitDescription {
+        DAGCircuitDescription {
+            num_compute_layers: 0,
+            num_input_layers: 0,
+            layer_types: Vec::new(),
+            num_sumcheck_rounds: Vec::new(),
+            atom_offsets: Vec::new(),
+            atom_target_layers: Vec::new(),
+            atom_commit_idxs: Vec::new(),
+            pt_offsets,
+            pt_data,
+            input_is_committed: Vec::new(),
+            oracle_product_offsets: Vec::new(),
+            oracle_result_idxs: Vec::new(),
+            oracle_expr_coeffs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_resolve_point_reads_template() {
+        let desc = desc_with_templates(vec![0, 1, 3], vec![5, 0, FIXED_REF_BASE + 7]);
+        let bindings = [U256::from_u64(11)];
+        assert_eq!(
+            resolve_point(1, &bindings, &desc),
+            vec![U256::from_u64(11), U256::from_u64(7)]
+        );
+    }
+
+    /// An empty template resolves to an empty point wherever its offsets lie.
+    #[test]
+    fn test_resolve_point_empty_template_ignores_offsets() {
+        let desc = desc_with_templates(vec![9, 9], vec![0]);
+        assert!(resolve_point(0, &[], &desc).is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "point template out of range")]
+    fn test_resolve_point_rejects_end_past_data() {
+        let desc = desc_with_templates(vec![0, 2], vec![0]);
+        resolve_point(0, &[U256::ZERO], &desc);
+    }
+
+    #[test]
+    #[should_panic(expected = "point template out of range")]
+    fn test_resolve_point_rejects_start_above_end() {
+        let desc = desc_with_templates(vec![1, 0], vec![0]);
+        resolve_point(0, &[U256::ZERO], &desc);
+    }
 }

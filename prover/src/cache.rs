@@ -4,9 +4,30 @@
 
 use alloy::primitives::B256;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
 use tracing::{debug, info};
+
+/// Write `data` to a temporary file next to `path` and rename it into place,
+/// so that `path` never holds a partially written file.
+pub(crate) fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let mut tmp_name = path.as_os_str().to_owned();
+    tmp_name.push(format!(
+        ".{}.{}.tmp",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    let tmp_path = PathBuf::from(tmp_name);
+
+    let result = std::fs::write(&tmp_path, data).and_then(|_| std::fs::rename(&tmp_path, path));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+    result
+}
 
 /// In-memory + disk cache for program ELFs
 pub struct ProgramCache {
@@ -69,7 +90,7 @@ impl ProgramCache {
     pub fn put(&self, image_id: &B256, elf: &[u8]) {
         // Always write to disk
         let disk_path = self.disk_path(image_id);
-        if let Err(e) = std::fs::write(&disk_path, elf) {
+        if let Err(e) = write_atomic(&disk_path, elf) {
             debug!("Failed to write disk cache: {}", e);
         } else {
             info!("Cached program to disk: {}", image_id);
@@ -130,5 +151,36 @@ mod tests {
 
         let image_id = B256::repeat_byte(0x42);
         assert!(cache.get(&image_id).is_none());
+    }
+
+    #[test]
+    fn test_put_replaces_disk_file_instead_of_overwriting_it() {
+        let dir = tempdir().unwrap();
+        let cache = ProgramCache::new(dir.path().to_path_buf(), 10).unwrap();
+
+        // An older file for the same image ID, also reachable under a second name
+        let image_id = B256::repeat_byte(0x42);
+        let disk_path = cache.disk_path(&image_id);
+        std::fs::write(&disk_path, b"old contents").unwrap();
+        let old_file = dir.path().join("old-file");
+        std::fs::hard_link(&disk_path, &old_file).unwrap();
+
+        cache.put(&image_id, b"new contents");
+
+        // The cache path points to a new, complete file; the old file was
+        // not written to, so a reader of it never sees a partial ELF.
+        assert_eq!(std::fs::read(&disk_path).unwrap(), b"new contents");
+        assert_eq!(std::fs::read(&old_file).unwrap(), b"old contents");
+
+        // No temporary file is left behind
+        let mut names: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![disk_path.file_name().unwrap(), "old-file".as_ref()]
+        );
     }
 }

@@ -1,5 +1,5 @@
 [workspace]
-members = ["host", "methods/guest"]
+members = ["host", "methods"]
 resolver = "2"
 
 [workspace.package]

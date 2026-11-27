@@ -8,14 +8,14 @@ EIP-170 limits deployed contract bytecode to **24,576 bytes (24 KB)**. Several c
 
 | Contract | Source Size | Status |
 |----------|-----------|--------|
-| `RemainderVerifier.sol` | ~2,285 lines (~99 KB source) | Exceeds limit |
-| `PoseidonSponge.sol` | ~2,569 lines (~119 KB source) | Deployed as library |
-| `DAGRemainderGroth16Verifier.sol` | ~31,261 lines (~2 MB source) | Exceeds limit |
-| `GKRDAGVerifier.sol` | ~895 lines (~38 KB source) | Deployed as library |
-| `GKRDAGHybridVerifier.sol` | ~1,167 lines (~49 KB source) | Deployed as library |
-| `RemainderGroth16Verifier.sol` | ~1,219 lines (~68 KB source) | Exceeds limit |
-| `GKRHybridVerifier.sol` | ~632 lines (~29 KB source) | Deployed as library |
-| `GKRVerifier.sol` | ~564 lines (~25 KB source) | Deployed as library |
+| `RemainderVerifier.sol` | ~2,809 lines (~126 KB source) | Exceeds limit (136,142 bytes runtime) |
+| `PoseidonSponge.sol` | ~2,569 lines (~119 KB source) | Internal library, compiled into `RemainderVerifier` |
+| `DAGRemainderGroth16Verifier.sol` | ~31,261 lines (~2 MB source) | Exceeds limit (461,497 bytes runtime) |
+| `GKRDAGVerifier.sol` | ~928 lines (~40 KB source) | Internal library, compiled into `RemainderVerifier` |
+| `GKRDAGHybridVerifier.sol` | ~1,104 lines (~46 KB source) | Internal library, compiled into `RemainderVerifier` |
+| `RemainderGroth16Verifier.sol` | ~1,219 lines (~68 KB source) | Under limit (14,714 bytes runtime) |
+| `GKRHybridVerifier.sol` | ~648 lines (~29 KB source) | Internal library, compiled into `RemainderVerifier` |
+| `GKRVerifier.sol` | ~584 lines (~26 KB source) | Internal library, compiled into `RemainderVerifier` |
 
 Contracts under the limit:
 - `HyraxVerifier.sol` (~15 KB source)
@@ -27,7 +27,7 @@ Contracts under the limit:
 
 ### 1. Library Architecture
 
-Core verification logic is implemented as Solidity libraries (`library` keyword), which are linked at deployment time rather than being part of the deploying contract's bytecode:
+Core verification logic is implemented as Solidity libraries (`library` keyword). None of their functions is `public` or `external`, so the compiler copies them into the bytecode of the contract that uses them; they are not linked at deployment time:
 
 - `GKRVerifier` — GKR protocol verification
 - `GKRDAGVerifier` — DAG circuit verification
@@ -39,27 +39,27 @@ Core verification logic is implemented as Solidity libraries (`library` keyword)
 - `SumcheckVerifier` — Sumcheck protocol
 - `DAGBatchVerifier` — Multi-tx batch state management
 
-Libraries are deployed separately and linked to `RemainderVerifier` via `forge create --libraries`.
+The libraries are not deployed separately: the `RemainderVerifier` artifact has no link references, and no deploy script passes `--libraries`. They are part of its 136,142 bytes of runtime bytecode and do not reduce its deployed size.
 
 ### 2. Multi-Transaction Batch Verification (DAGBatchVerifier)
 
-For the 88-layer XGBoost DAG circuit (~254M gas), verification is split across multiple transactions:
+For the 88-layer XGBoost DAG circuit (about 198M gas in one transaction for the phase1a fixture, `eth_estimateGas` on Anvil), verification is split across multiple transactions:
 
 - **`LAYERS_PER_BATCH = 8`**: 88 compute layers / 8 = 11 compute batches
 - **`GROUPS_PER_FINALIZE_BATCH = 16`**: 34 eval groups / 16 = 3 finalize txs
 - **Total: 1 setup + 11 continue + 3 finalize = 15 transactions**
 
-Gas per transaction: 9–28M (all under 30M block gas limit).
+Gas per transaction, measured for the phase1a fixture as real transactions on Anvil: start 8.6M, continue 18.6–31.7M, finalize 14.7–27.7M. Two of the eleven continue transactions (31.4M and 31.7M) are over a 30M block gas limit. An optional cleanup transaction uses 1.8M.
 
 ### 3. Stylus WASM Verifier (Arbitrum)
 
 A complete GKR DAG verifier is implemented in Rust/WASM for Arbitrum Stylus:
 
 - **Location**: `contracts/stylus/gkr-verifier/`
-- **Size**: 52 KB raw WASM → 24.5 KB Brotli (under 24 KB Stylus limit)
+- **Size**: ~60 KB raw WASM → ~22.8 KB Brotli after `wasm-opt` (under 24 KB Stylus limit)
 - **Integration**: `RemainderVerifier.verifyDAGProofStylus()` delegates to the WASM contract via `staticcall`
 
-This avoids EIP-170 entirely by running verification in WASM rather than EVM bytecode.
+This avoids EIP-170 for the WASM contract, by running verification in WASM rather than EVM bytecode. The Solidity entry point is still `RemainderVerifier` (136,142 bytes), which Arbitrum One and Arbitrum Sepolia reject: both enforce the 24,576-byte limit.
 
 ### 4. Function Splitting (Stack-Depth Management)
 
@@ -80,9 +80,9 @@ In `contracts/foundry.toml`:
 
 ### TEE-Only Mode (Sepolia)
 
-On Sepolia testnet, the system runs in **TEE-only mode**:
-- `TEEMLVerifier` and `ExecutionEngine` are deployed (both under EIP-170)
-- `RemainderVerifier` and its libraries are NOT deployed
+On Sepolia testnet, the system runs in **TEE-only mode** (`deployments/chains.json` marks Sepolia, Arbitrum Sepolia and World Chain Sepolia as `teeOnly`):
+- `TEEMLVerifier` and `ExecutionEngine` can be deployed (both under EIP-170: 15,045 and 11,230 bytes runtime). `deployments/` records no `TEEMLVerifier` address on any chain; `docs/CONTRACT_ADDRESSES.md` lists an `ExecutionEngine` on Sepolia
+- `RemainderVerifier` (with its libraries compiled in) is NOT deployed
 - TEE attestation provides trust, ZK verification is not needed on-chain
 - This sidesteps the EIP-170 issue entirely for testnet
 
@@ -98,7 +98,7 @@ For on-chain ZK verification, options include:
 ### Recommended Approach
 
 For **Arbitrum/World Chain** (Stylus-capable):
-- Deploy `RemainderVerifier` as a thin registry/dispatcher (under EIP-170)
+- Deploy `RemainderVerifier` as a thin registry/dispatcher (under EIP-170; the current contract is 136,142 bytes and would have to be split first)
 - Use Stylus WASM verifier for actual GKR verification
 - Use `DAGBatchVerifier` for multi-tx flow
 
@@ -109,19 +109,16 @@ For **other EVM chains**:
 
 ## Size Check Script
 
-`scripts/check-contract-sizes.sh` runs `forge build --sizes` and checks all contracts against the 24 KB limit. It's integrated into `.github/workflows/contracts-ci.yml`.
+`scripts/check-contract-sizes.sh` runs `forge build --sizes` and checks eight production contracts against the 24 KB limit. It's integrated into `.github/workflows/contracts-ci.yml`.
 
 ```bash
 cd contracts && bash ../scripts/check-contract-sizes.sh
 ```
 
-The script notes that `RemainderVerifier` is expected to exceed the limit when deployed via Arbitrum Stylus.
+The script reports `RemainderVerifier` (136,142 bytes, about 554% of the limit; the script rounds down and prints 553%) as `FAIL`, warns that a contract over the limit cannot be deployed on a chain that enforces it, and exits with status 1.
 
 ## Contract Upgrade Strategy
 
-RemainderVerifier is **non-upgradeable** (`Ownable2Step`). Changes require:
-1. Deploy new contract
-2. Re-register all circuits
-3. Update references in ExecutionEngine/TEEMLVerifier
-
-See `docs/RUNBOOK.md` Section 6 for the upgrade procedure.
+RemainderVerifier is a **UUPS implementation** deployed behind `UUPSProxy` (`contracts/src/Upgradeable.sol`). Changes require:
+1. Deploy the new implementation
+2. Call `upgradeTo()` / `upgradeToAndCall()` on the proxy as the admin (or through the timelock once `setTimelock()` has been called)

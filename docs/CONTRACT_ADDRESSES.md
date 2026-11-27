@@ -33,13 +33,13 @@ TEE-path contracts are deployable here.
 ## Localhost / Anvil (chainId: 31337)
 
 Local development network. Contracts are deployed fresh on each `anvil` start
-using `DeployAll.s.sol` or `DeployFullStack.s.sol`.
+using `DeployLocal.s.sol`, `DeployAll.s.sol` or `DeployFullStack.s.sol`.
 
 ```bash
 anvil --gas-limit 500000000 --code-size-limit 200000
 ```
 
-Deterministic addresses from the default Anvil mnemonic (deployer nonce 0, 1, 2):
+Deterministic addresses from the default Anvil mnemonic (`DeployLocal.s.sol`, deployer nonce 0, 1, 2):
 
 | Contract              | Address                                      |
 |-----------------------|----------------------------------------------|
@@ -129,7 +129,7 @@ DEPLOYER_PRIVATE_KEY=0x... DRY_RUN=true bash contracts/stylus/gkr-verifier/deplo
   TEEMLVerifier, plus XGBoost DAG circuit registration.
 - Deployer is also the admin (unlike mainnet which requires a separate multisig).
 - After first deployment, update addresses above and in
-  `deployments/arbitrum-sepolia-testnet.json`.
+  `deployments/arbitrum-sepolia.json`.
 
 **Block explorer:** <https://sepolia.arbiscan.io>
 
@@ -226,7 +226,7 @@ forge script script/DeployFullStack.s.sol \
   --broadcast
 
 # 4. Verify deployment
-./scripts/verify-deployment.sh --chain-id <CHAIN_ID> --rpc-url "$RPC_URL"
+../scripts/verify-deployment.sh --chain-id <CHAIN_ID> --rpc-url "$RPC_URL"
 ```
 
 ### Verify an existing deployment

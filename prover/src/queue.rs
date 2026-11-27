@@ -156,9 +156,11 @@ pub struct JobQueue {
 impl JobQueue {
     /// Create a new job queue
     pub fn new(max_size: usize, min_tip: U256) -> Self {
+        // max_size comes from the command line; do not allocate for all of it up front
+        let initial_capacity = max_size.min(1024);
         Self {
-            heap: BinaryHeap::with_capacity(max_size),
-            seen: HashSet::with_capacity(max_size),
+            heap: BinaryHeap::with_capacity(initial_capacity),
+            seen: HashSet::with_capacity(initial_capacity),
             max_size,
             min_tip,
         }
@@ -190,16 +192,30 @@ impl JobQueue {
 
         // Check capacity
         if self.heap.len() >= self.max_size {
-            // Only add if better than worst job
-            if let Some(worst) = self.heap.peek() {
-                let new_score = job.score();
-                if new_score.total() <= worst.score.total() {
+            // Only add if better than worst job. The heap keeps the best job
+            // on top, so the worst one has to be searched for.
+            let mut jobs = std::mem::take(&mut self.heap).into_vec();
+            let worst = jobs
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, scored)| scored.score.total())
+                .map(|(index, scored)| (index, scored.score.total()));
+            let evicted = match worst {
+                Some((index, worst_total)) if job.score().total() > worst_total => {
+                    // Remove worst to make room
+                    Some(jobs.swap_remove(index))
+                }
+                _ => None,
+            };
+            self.heap = BinaryHeap::from(jobs);
+
+            match evicted {
+                Some(removed) => {
+                    self.seen.remove(&removed.job.request_id);
+                }
+                None => {
                     debug!("Job {} not better than worst in queue", job.request_id);
                     return false;
-                }
-                // Remove worst to make room
-                if let Some(removed) = self.heap.pop() {
-                    self.seen.remove(&removed.job.request_id);
                 }
             }
         }
@@ -321,6 +337,50 @@ mod tests {
 
         // Only one job should be in the queue
         assert!(queue.pop().is_some());
+        assert!(queue.pop().is_none());
+    }
+
+    #[test]
+    fn test_full_queue_evicts_worst_for_better_job() {
+        let mut queue = JobQueue::new(2, U256::ZERO);
+        assert!(queue.push(make_job(1, 0.01, 3600)));
+        assert!(queue.push(make_job(2, 0.1, 3600)));
+
+        // Better than the worst queued job (1) but not than the best (2)
+        assert!(queue.push(make_job(3, 0.05, 3600)));
+
+        // The worst job was evicted and may be queued again later
+        assert!(!queue.seen.contains(&1));
+
+        // Better than everything queued: the best job (2) stays, the worst (3) goes
+        assert!(queue.push(make_job(4, 0.2, 3600)));
+        assert!(!queue.seen.contains(&3));
+
+        assert_eq!(queue.pop().unwrap().request_id, 4);
+        assert_eq!(queue.pop().unwrap().request_id, 2);
+        assert!(queue.pop().is_none());
+    }
+
+    #[test]
+    fn test_full_queue_rejects_worse_job() {
+        let mut queue = JobQueue::new(2, U256::ZERO);
+        assert!(queue.push(make_job(1, 0.05, 3600)));
+        assert!(queue.push(make_job(2, 0.1, 3600)));
+
+        // Worse than everything queued, and a tie with the worst
+        assert!(!queue.push(make_job(3, 0.01, 3600)));
+        assert!(!queue.push(make_job(4, 0.05, 3600)));
+
+        assert!(!queue.seen.contains(&3));
+        assert_eq!(queue.pop().unwrap().request_id, 2);
+        assert_eq!(queue.pop().unwrap().request_id, 1);
+        assert!(queue.pop().is_none());
+    }
+
+    #[test]
+    fn test_zero_capacity_queue_accepts_nothing() {
+        let mut queue = JobQueue::new(0, U256::ZERO);
+        assert!(!queue.push(make_job(1, 0.1, 3600)));
         assert!(queue.pop().is_none());
     }
 }

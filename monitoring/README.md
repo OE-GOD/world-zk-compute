@@ -105,10 +105,8 @@ including `OperatorDown`, `EnclaveDown`, and `DisputeResolutionFailed`.
 **Check config syntax:**
 
 ```bash
-# Validate the raw template (will show ${VAR} as literal strings but confirms YAML structure)
-amtool check-config monitoring/alertmanager.yml
-
-# Validate the rendered config (after envsubst)
+# The raw template does not validate: amtool rejects the ${VAR} placeholders
+# ("unsupported scheme"). Validate the rendered config (after envsubst):
 amtool check-config /etc/alertmanager/alertmanager.yml
 ```
 
@@ -206,7 +204,7 @@ documented in the table above.
 | File | Purpose |
 |------|---------|
 | `alertmanager.yml` | Alertmanager routing, receivers, and inhibition rules |
-| `alerting-rules.yml` | Prometheus alerting rules (operator, enclave, prover) |
+| `alerting-rules.yml` | Prometheus alerting rules (operator, enclave) |
 | `alerting-rules-sepolia.yml` | Prometheus alerting rules for Sepolia testnet |
 | `prometheus.yml` | Prometheus scrape configuration |
 | `grafana-operator.json` | Grafana dashboard for operator service metrics |

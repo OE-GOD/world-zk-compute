@@ -10,8 +10,8 @@
 
 World ZK Compute uses a **TEE + ZK hybrid** architecture for verifiable ML inference:
 
-- **Happy path (~3K gas):** An ML model runs inside a TEE enclave (AWS Nitro). The enclave signs the result with ECDSA. The `TEEMLVerifier` contract verifies the signature against a registered enclave key and accepts the result after a 1-hour challenge window.
-- **Dispute path (~254M gas):** Anyone can challenge a result by posting a bond. The original submitter must then provide a ZK proof (GKR/Hyrax DAG verification via `RemainderVerifier`) within 24 hours. If the proof validates, the submitter keeps both stakes. If not (or if the deadline passes), the challenger wins both stakes.
+- **Happy path (about 304K gas measured: `submitResult` 249,780 + `finalize` 53,888):** An ML model runs inside a TEE enclave (AWS Nitro). The enclave signs the result with ECDSA. The `TEEMLVerifier` contract verifies the signature against a registered enclave key and accepts the result after a 1-hour challenge window.
+- **Dispute path (about 198M gas to verify the phase1a fixture proof in one transaction, `eth_estimateGas` on Anvil):** Anyone can challenge a result by posting a bond. The original submitter must then provide a ZK proof (GKR/Hyrax DAG verification via `RemainderVerifier`) within 24 hours. If the proof validates, the submitter keeps both stakes. If not (or if the deadline passes), the challenger wins both stakes.
 - **Compute marketplace:** `ExecutionEngine` manages a request-claim-prove lifecycle for general zkVM programs (risc0), with tip-based pricing and protocol fees.
 
 ```
@@ -30,7 +30,7 @@ User --> Enclave (TEE) --> submitResult(attestation) --> Challenge? --yes--> ZK 
 
 | Assumption | Basis | Failure mode |
 |---|---|---|
-| **Contract owner is honest** | Ownable2Step; multisig recommended | Owner can pause, change stakes, register rogue enclaves, swap verifier |
+| **Contract owner is honest** | `ExecutionEngine`: Ownable2Step; `TEEMLVerifier`: behind a `UUPSProxy`, with a single `admin()` and one-step `changeAdmin()`; multisig recommended | Owner can pause, change stakes, register rogue enclaves, swap verifier |
 | **TEE enclave is trusted until compromised** | AWS Nitro hardware isolation; PCR0 image hash verified on registration | Key extraction would allow forging attestations |
 | **ZK proofs are computationally sound** | GKR/Hyrax/Groth16 over BN254; 128-bit security | Soundness break would allow false dispute resolution |
 | **Ethereum consensus is secure** | Standard blockchain assumption | Reorgs could invalidate challenge timing |
@@ -46,7 +46,7 @@ User --> Enclave (TEE) --> submitResult(attestation) --> Challenge? --yes--> ZK 
 
 **Mitigation:**
 - Submitter must post `proverStake` (default 0.1 ETH) with every submission.
-- Any observer can challenge within the 1-hour `CHALLENGE_WINDOW`.
+- Any observer can challenge within the 1-hour `challengeWindow`.
 - If challenged, submitter must produce a valid ZK proof within 24 hours or lose the stake to the challenger.
 - The ZK proof verifies the actual computation, not just the TEE attestation, so a wrong result cannot be defended.
 
@@ -100,7 +100,7 @@ User --> Enclave (TEE) --> submitResult(attestation) --> Challenge? --yes--> ZK 
 **Attack:** Owner private key is stolen. Attacker can pause/unpause, register rogue enclaves, change stake amounts (up to 100 ETH), or swap the `remainderVerifier` to a contract that always returns true.
 
 **Mitigation:**
-- `Ownable2Step` requires the new owner to explicitly accept ownership, preventing accidental transfers.
+- `ExecutionEngine` uses `Ownable2Step`, which requires the new owner to explicitly accept ownership, preventing accidental transfers. `TEEMLVerifier` does not: it sits behind a `UUPSProxy` whose admin is replaced in one step by `changeAdmin(address)`, with no acceptance step.
 - `Pausable` allows emergency stop but does not drain funds.
 - Stake/bond amounts are capped at 100 ETH.
 - Protocol fee in `ExecutionEngine` is capped at 10% (1000 bps).
@@ -112,11 +112,11 @@ User --> Enclave (TEE) --> submitResult(attestation) --> Challenge? --yes--> ZK 
 **Attack:** Reuse a valid attestation from one chain on another, or replay an old attestation for a new submission.
 
 **Mitigation (enclave side):**
-- Attestation payload includes `chainId`, monotonic `nonce`, and `timestamp` in the signed message: `keccak256(modelHash || inputHash || resultHash || chainId || nonce || timestamp)`.
+- The attestation that `TEEMLVerifier` accepts is an EIP-712 signature over `TEEMLResult(bytes32 modelHash,bytes32 inputHash,bytes32 resultHash)` with domain name `TEEMLVerifier`, version `1`, `chainId` and `verifyingContract`. The monotonic `nonce` and `timestamp` are returned with it but are not part of this signed message. (Without a verifier address the enclave signs a legacy EIP-191 message, `keccak256(modelHash || inputHash || resultHash || chainId || nonce || timestamp)`, which the contract does not accept.)
 - Registration uses a chain-bound nonce: `keccak256(chainId || blockNumber || enclaveAddress)`.
 - Nitro attestation freshness is validated (5-10 minute window).
 
-**NOTE -- On-chain gap:** The current `TEEMLVerifier.submitResult()` verifies only `keccak256(modelHash, inputHash, resultHash)` without checking `chainId`, `nonce`, or `timestamp` on-chain. The enclave signs the extended payload, but the contract recovers against the shorter hash. This means cross-chain replay of the on-chain transaction is possible if the same enclave key is registered on multiple chains. **Fixing this requires updating the contract's signature verification to match the enclave's extended payload.**
+**NOTE -- On-chain gap:** `TEEMLVerifier.submitResult()` recovers the signer from the EIP-712 digest of `(modelHash, inputHash, resultHash)`. The domain separator contains `chainId` and the contract address, so a signature made for one chain or one verifier address does not verify on another, even if the same enclave key is registered on both. The contract does not check a `nonce` or `timestamp`: the same attestation is accepted again on the same contract in a later block or from another submitter (`resultId` is `keccak256(msg.sender, modelHash, inputHash, block.number)`). **Checking them on-chain would require adding them to the signed struct.**
 
 ### 3.8 Eclipse Attack on Operator
 
@@ -150,8 +150,8 @@ User --> Enclave (TEE) --> submitResult(attestation) --> Challenge? --yes--> ZK 
 |---|---|---|
 | `proverStake` | 0.1 ETH | Submitter's skin-in-the-game; lost if ZK proof fails |
 | `challengeBondAmount` | 0.1 ETH | Challenger's skin-in-the-game; lost if ZK proof succeeds |
-| `CHALLENGE_WINDOW` | 1 hour | Time for observers to challenge |
-| `DISPUTE_WINDOW` | 24 hours | Time for submitter to produce ZK proof |
+| `challengeWindow` | 1 hour | Time for observers to challenge |
+| `disputeWindow` | 24 hours | Time for submitter to produce ZK proof |
 | `protocolFeeBps` | 250 (2.5%) | ExecutionEngine protocol fee |
 
 **Cost to submit a fake result:** Submitter loses `proverStake` (0.1 ETH) when challenged and unable to produce a valid ZK proof. There is no scenario where a submitter profits from a fake result -- the ZK fallback is deterministic.
@@ -160,7 +160,7 @@ User --> Enclave (TEE) --> submitResult(attestation) --> Challenge? --yes--> ZK 
 
 **Break-even for sustained attack:** Never profitable. Each fake submission loses 0.1 ETH with certainty (assuming at least one honest challenger exists). Each griefing challenge loses 0.1 ETH with certainty (assuming the prover is honest and has proof infrastructure).
 
-**ZK proof generation cost:** Approximately 6-7 minutes on x86_64 for Groth16 proving (computation cost). On-chain verification costs ~254M gas for direct GKR or ~300K gas for Groth16. The economic incentive (capturing 0.2 ETH total pot) outweighs proof generation cost.
+**ZK proof generation cost:** Approximately 6-7 minutes on x86_64 for Groth16 proving (computation cost). On-chain verification costs about 198M gas for direct GKR (phase1a fixture, `eth_estimateGas` on Anvil) or ~300K gas for Groth16. The economic incentive (capturing 0.2 ETH total pot) outweighs proof generation cost.
 
 ---
 
@@ -170,9 +170,9 @@ These are known, accepted risks not fully mitigated by the current design:
 
 1. **Unchallenged bad results.** If no honest observer challenges within 1 hour, a fake result finalizes. Mitigation depends on external monitoring infrastructure, not protocol enforcement.
 
-2. **On-chain replay of attestations (Section 3.7).** The contract does not verify `chainId`/`nonce`/`timestamp` in the attestation signature. A valid submission on chain A can be replayed on chain B if the same enclave key is registered on both.
+2. **On-chain replay of attestations (Section 3.7).** The contract does not verify a `nonce` or `timestamp` in the attestation signature; `chainId` and the verifier address are covered by the EIP-712 domain. A valid submission on chain A does not verify on chain B, but the same attestation can be submitted again on the same contract in a later block or by another submitter.
 
-3. **Gas limit constraints.** Direct GKR verification (~254M gas) exceeds Ethereum L1's 30M block gas limit. The batch verifier (15 transactions) works but adds latency. Single-tx verification is only viable on L2s (Arbitrum).
+3. **Gas limit constraints.** Direct GKR verification (about 198M gas for the phase1a fixture, `eth_estimateGas` on Anvil) exceeds Ethereum L1's 30M block gas limit. The batch verifier splits it into 15 transactions (plus an optional cleanup) and adds latency, but its largest step measures 31.7M gas, also above 30M. `RemainderVerifier` is 136,142 bytes of runtime bytecode, over the 24,576-byte contract size limit of Ethereum mainnet and Sepolia, Arbitrum One and Arbitrum Sepolia, World Chain and World Chain Sepolia, so neither single-tx nor batch verification can be deployed on any of them; `deployments/` records no `RemainderVerifier` address.
 
 4. **Admin centralization.** A single owner key controls enclave registration, stake amounts, verifier address, and pause functionality. A compromised owner could register a rogue enclave or swap the verifier to bypass ZK checks.
 
@@ -188,7 +188,7 @@ These are known, accepted risks not fully mitigated by the current design:
 
 The following hardening measures were applied across the contract and service codebase in Phases 74-77 (March 2026):
 
-- **Ownable2Step migration.** `ProverRegistry` and `ProverReputation` were upgraded from `Ownable` to `Ownable2Step`, requiring explicit `acceptOwnership()` to complete ownership transfers. All core contracts now use `Ownable2Step`.
+- **Ownable2Step migration.** `ProverRegistry` and `ProverReputation` were upgraded from `Ownable` to `Ownable2Step`, requiring explicit `acceptOwnership()` to complete ownership transfers. `ExecutionEngine`, `ProgramRegistry`, `ProverRegistry` and `ProverReputation` use `Ownable2Step`; `TEEMLVerifier` and `RemainderVerifier` do not (they are UUPS implementations behind `UUPSProxy`, with a single `admin()` and one-step `changeAdmin()`).
 - **nonReentrant additions.** `ProverRegistry` functions (`register`, `addStake`, `withdrawStake`, `slash`) and additional `TEEMLVerifier` functions (`challenge`, `extendDisputeWindow`) now carry the `nonReentrant` modifier.
 - **Pausable guards.** `ProverRegistry`, `ProgramRegistry`, and `ProverReputation` now inherit `Pausable`. State-changing functions are gated with `whenNotPaused`.
 - **Custom errors.** `TEEMLVerifier` was converted from 16 string-based `require()` calls to gas-efficient custom errors (defined in `ITEEMLVerifier.sol`). GKR verifier libraries also received custom error conversions.
@@ -226,7 +226,7 @@ The following hardening measures were applied across the contract and service co
 
 ### Scenario D: Admin Key Compromise
 
-1. **Immediate:** If a secondary signer exists, initiate `transferOwnership()` to a new multisig.
+1. **Immediate:** If a secondary signer exists, call `changeAdmin()` on `TEEMLVerifier` (one step, effective immediately) and initiate `transferOwnership()` on `ExecutionEngine` to a new multisig.
 2. **Monitor:** Watch for unauthorized `registerEnclave`, `setRemainderVerifier`, or `setChallengeBondAmount` calls.
-3. **If paused maliciously:** The new owner (after 2-step transfer) can `unpause()`. Users can still call `cancelExecution()` while paused.
+3. **If paused maliciously:** The new admin of `TEEMLVerifier` (after `changeAdmin()`) or the new owner of `ExecutionEngine` (after 2-step transfer) can `unpause()`. Users can still call `cancelExecution()` while paused.
 4. **Nuclear option:** If the attacker already transferred ownership, the contract cannot be recovered. Deploy a new contract and migrate.

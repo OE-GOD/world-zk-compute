@@ -5,7 +5,7 @@
 - [ ] Security audit completed on `TEEMLVerifier.sol` and `RemainderVerifier.sol`
 - [ ] Contract source verified on block explorer (Etherscan / Arbiscan)
 - [ ] Admin key stored in hardware wallet or multisig (Safe)
-- [ ] 2-step ownership transfer completed (`transferOwnership` + `acceptOwnership`)
+- [ ] Admin transferred to the production admin address (`changeAdmin(address)`, one step; TEEMLVerifier and RemainderVerifier have no `transferOwnership`/`acceptOwnership`)
 - [ ] Emergency contacts documented and shared with on-call team
 - [ ] Incident response runbook reviewed by all operators
 - [ ] Dry-run test passed on target chain (`DRY_RUN=true`)
@@ -21,8 +21,8 @@
 |-----------|---------|-------|-------|
 | `proverStake` | 0.1 ETH | 0 < x <= 100 ETH | Stake locked per `submitResult` |
 | `challengeBondAmount` | 0.1 ETH | 0 < x <= 100 ETH | Bond required to challenge |
-| `CHALLENGE_WINDOW` | 1 hour | constant | Time for challengers to act |
-| `DISPUTE_WINDOW` | 24 hours | constant | Time for prover to submit ZK proof |
+| `challengeWindow` | 1 hour | 10 min <= x <= 7 days (`setChallengeWindow`) | Time for challengers to act |
+| `disputeWindow` | 24 hours | 1 hour <= x <= 30 days (`setDisputeWindow`) | Time for prover to submit ZK proof |
 | `EXTENSION_PERIOD` | 30 minutes | constant | Per-extension time added |
 | `MAX_EXTENSIONS` | 1 | constant | Max dispute extensions allowed |
 
@@ -31,19 +31,19 @@
 ```bash
 # 1. Deploy RemainderVerifier (DAG proof verifier)
 # 2. Deploy TEEMLVerifier with admin + RemainderVerifier address
+cd contracts
 DEPLOYER_KEY=0x... \
 REMAINDER_VERIFIER=0x... \
 ADMIN_ADDRESS=0x...  \
-forge script contracts/script/DeployTEEMLVerifier.s.sol:DeployTEEMLVerifier \
+forge script script/DeployTEEMLVerifier.s.sol:DeployTEEMLVerifier \
   --rpc-url $RPC_URL \
   --private-key $DEPLOYER_KEY \
   --broadcast \
   --verify
 
-# 3. Accept ownership from multisig (if ADMIN_ADDRESS was set)
-cast send $TEE_VERIFIER "acceptOwnership()" \
-  --rpc-url $RPC_URL \
-  --private-key $ADMIN_KEY
+# 3. Confirm the admin (the script calls changeAdmin(ADMIN_ADDRESS) itself;
+#    the transfer is one-step, there is no acceptOwnership on this contract)
+cast call $TEE_VERIFIER "admin()(address)" --rpc-url $RPC_URL
 
 # 4. Register enclave key
 cast send $TEE_VERIFIER \
@@ -62,10 +62,10 @@ cast send $TEE_VERIFIER "setChallengeBondAmount(uint256)" $BOND_WEI \
 ### Verify Deployment
 
 ```bash
-bash scripts/verify-deployment.sh $RPC_URL $TEE_VERIFIER_ADDRESS
+TEE_VERIFIER_ADDR=$TEE_VERIFIER_ADDRESS bash scripts/verify-deployment.sh --rpc-url $RPC_URL
 ```
 
-This runs 8 checks: contract deployed, owner set, not paused, proverStake > 0, challengeBondAmount > 0, remainderVerifier set, CHALLENGE_WINDOW > 0, DISPUTE_WINDOW > 0.
+For TEEMLVerifier this runs 3 checks: contract has code, admin set, not paused. ExecutionEngine, ProgramRegistry, ProverRegistry and ProverReputation are checked the same way (plus their wiring) when `EXECUTION_ENGINE_ADDR`, `PROGRAM_REGISTRY_ADDR`, `PROVER_REGISTRY_ADDR`, `PROVER_REPUTATION_ADDR` are set.
 
 ---
 
@@ -135,14 +135,14 @@ DRY_RUN=true \
 OPERATOR_PRIVATE_KEY=0x... \
 TEE_VERIFIER_ADDRESS=0x... \
 OPERATOR_RPC_URL=https://... \
-cargo run --release -p operator -- watch --metrics-port 9090
+cargo run --release -p tee-operator -- watch --metrics-port 9090
 ```
 
 ### Production Startup
 
 ```bash
 # With TOML config file
-cargo run --release -p operator -- --config operator.toml watch --metrics-port 9090
+cargo run --release -p tee-operator -- --config operator.toml watch --metrics-port 9090
 
 # With env vars only
 OPERATOR_PRIVATE_KEY=0x... \
@@ -153,7 +153,7 @@ WEBHOOK_URL=https://hooks.slack.com/... \
 NITRO_VERIFICATION=true \
 EXPECTED_PCR0=abcdef... \
 RUST_LOG=info \
-cargo run --release -p operator -- watch --metrics-port 9090
+cargo run --release -p tee-operator -- watch --metrics-port 9090
 ```
 
 ---
@@ -211,7 +211,7 @@ nitro-cli run-enclave \
 
 ```bash
 curl -sf http://localhost:8080/health
-# {"status":"ok"}
+# {"status":"ok","model_loaded":true,"model_hash":"..."}
 ```
 
 ---
@@ -249,15 +249,15 @@ scrape_configs:
 
 ### Webhook Alerts (Slack-Compatible)
 
-The operator sends JSON payloads to `WEBHOOK_URL` for these events:
+The operator sends a JSON payload to `WEBHOOK_URL` for one event:
 
 - **`dispute`** -- result challenged, includes challenger address and deadline
-- **`proof_submitted`** -- ZK proof submitted, includes tx hash
-- **`dispute_resolved`** -- dispute settled, includes winner
+
+Payloads for `proof_submitted` (with the tx hash) and `dispute_resolved` (with the winner) are defined in `services/operator/src/notifications.rs`, but nothing in the operator sends them.
 
 ### Deadline Monitor
 
-The operator's built-in `DeadlineMonitor` logs warnings at 5 min and errors at 1 min before dispute deadlines expire. These appear in structured logs (`RUST_LOG=info`):
+`services/operator/src/deadline_monitor.rs` defines a `DeadlineMonitor` that would log warnings at 5 min and errors at 1 min before dispute deadlines expire, but the operator never starts it, so these lines do not appear in its logs today:
 
 ```
 WARN  deadline_monitor: WARNING: Dispute deadline approaching in <300 seconds
@@ -269,7 +269,7 @@ ERROR deadline_monitor: DISPUTE DEADLINE EXPIRED -- challenger wins by timeout
 
 ```bash
 # Structured JSON logs (recommended for production)
-RUST_LOG=info RUST_LOG_FORMAT=json cargo run --release -p operator -- watch
+RUST_LOG=info RUST_LOG_FORMAT=json cargo run --release -p tee-operator -- watch
 ```
 
 Pipe to your log aggregator (Datadog, Grafana Loki, CloudWatch, etc.).
@@ -281,8 +281,8 @@ Pipe to your log aggregator (Datadog, Grafana Loki, CloudWatch, etc.).
 ### 1. Run Health Check Script
 
 ```bash
-bash scripts/verify-deployment.sh $RPC_URL $TEE_VERIFIER_ADDRESS
-# Expected: 8/8 checks passed
+TEE_VERIFIER_ADDR=$TEE_VERIFIER_ADDRESS bash scripts/verify-deployment.sh --rpc-url $RPC_URL
+# Expected: RESULT: PASS
 ```
 
 ### 2. Verify Enclave is Responsive
@@ -303,7 +303,7 @@ curl -sf http://$OPERATOR_URL:9090/metrics/json | jq .last_block_polled
 
 ```bash
 # Use the E2E demo script
-docker compose up  # starts anvil, deployer, enclave, warm-prover, operator
+docker compose up  # starts anvil, deployer, enclave, private-input-server, warm-prover, operator
 
 # Or manually:
 cast send $TEE_VERIFIER "submitResult(bytes32,bytes32,bytes,bytes)" \
@@ -421,13 +421,14 @@ Active disputes lock `proverStake + challengeBond`. If the operator is down and 
 # Build all services
 docker compose build
 
-# Start full stack: anvil + deployer + enclave + warm-prover + operator
+# Start full stack: anvil + deployer + enclave + private-input-server + warm-prover + operator
 docker compose up
 
 # Verify all services healthy
 docker compose ps
 # anvil:        healthy (port 8545)
 # enclave:      healthy (port 8080)
+# private-input-server: healthy (port 3001)
 # warm-prover:  healthy (port 3000)
 # operator:     healthy (port 9090)
 
@@ -441,7 +442,7 @@ docker compose down -v
 
 ### Code-Level Security (Implemented in Phases 71-77)
 
-- [x] All core contracts use `Ownable2Step` (prevents accidental ownership transfer)
+- [ ] All core contracts use `Ownable2Step` (prevents accidental ownership transfer) -- only ExecutionEngine, ProgramRegistry, ProverRegistry and ProverReputation do; TEEMLVerifier and RemainderVerifier have a one-step `changeAdmin(address)`
 - [x] Custom errors replace string-based `require()` in TEEMLVerifier (gas-efficient, no info leak)
 - [x] `nonReentrant` modifier on all ETH-transferring functions (TEEMLVerifier, ProverRegistry, ExecutionEngine)
 - [x] `Pausable` inherited by all core contracts (TEEMLVerifier, ExecutionEngine, RemainderVerifier, ProgramRegistry, ProverRegistry, ProverReputation)
@@ -495,7 +496,7 @@ docker compose down -v
 - [ ] Start monitoring: `docker compose -f docker-compose.sepolia.yml -f docker-compose.monitoring.yml --env-file .env.sepolia up -d`
 - [ ] Grafana accessible at `http://localhost:3001`
 - [ ] Import `monitoring/grafana-sepolia.json` dashboard
-- [ ] Verify Prometheus scraping operator/enclave metrics
+- [ ] Verify Prometheus scraping operator metrics (the enclave's `/metrics` returns JSON, not the Prometheus text format)
 
 ### Sepolia-Specific Notes
 

@@ -69,7 +69,7 @@ ADDRESS SOURCES (priority order):
 
 CHECKS PER CONTRACT:
   - Bytecode exists (not 0x)
-  - owner() returns non-zero address
+  - owner() (admin() on the UUPS contracts) returns non-zero address
   - paused() returns false (where applicable)
 
 WIRING CHECKS:
@@ -161,7 +161,7 @@ print(data if data else '')
 # Check if a value looks like a valid nonzero address
 is_valid_addr() {
     local addr="$1"
-    if [[ -z "$addr" || "$addr" == "$ZERO_ADDRESS" || "$addr" == "0x" || ${#addr} -lt 42 ]]; then
+    if [[ "$addr" == "$ZERO_ADDRESS" || ! "$addr" =~ ^0x[0-9a-fA-F]{40}$ ]]; then
         return 1
     fi
     return 0
@@ -190,7 +190,7 @@ check_has_code() {
     fi
 }
 
-# Query owner() and record pass/fail. Sets LAST_OWNER as a side effect.
+# Query owner() (or admin()) and record pass/fail. Sets LAST_OWNER as a side effect.
 # Does NOT use subshell so counters are preserved.
 LAST_OWNER=""
 check_owner() {
@@ -198,6 +198,10 @@ check_owner() {
     local addr="$2"
 
     LAST_OWNER=$(cast call "$addr" "owner()(address)" --rpc-url "$RPC_URL" 2>/dev/null || echo "")
+    # TEEMLVerifier and RemainderVerifier are UUPS proxies: they expose admin(), not owner()
+    if [[ -z "$LAST_OWNER" ]]; then
+        LAST_OWNER=$(cast call "$addr" "admin()(address)" --rpc-url "$RPC_URL" 2>/dev/null || echo "")
+    fi
 
     if [[ -z "$LAST_OWNER" ]]; then
         record_fail "$name owner" "call reverted or empty"
@@ -528,13 +532,17 @@ for c in data.get('chains', []):
     if [[ -f "$DEPLOY_FILE" ]]; then
         echo "Loading addresses from $DEPLOY_FILE"
 
-        # Try both flat format and nested "contracts" format
+        # Try the flat format, the nested "contracts" format, and the
+        # {"address": ..., "txHash": ...} entries that scripts/deploy.sh writes
         _try_field() {
             local field="$1"
             local val=""
             val=$(json_field "$DEPLOY_FILE" ".${field}")
-            if [[ -z "$val" ]]; then
+            if ! is_valid_addr "$val"; then
                 val=$(json_field "$DEPLOY_FILE" ".contracts.${field}")
+            fi
+            if ! is_valid_addr "$val"; then
+                val=$(json_field "$DEPLOY_FILE" ".contracts.${field}.address")
             fi
             echo "$val"
         }

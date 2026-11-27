@@ -153,7 +153,7 @@ assert!(result.verified);
 Or via the CLI binary:
 
 ```bash
-zkml-verifier verify --bundle proof_bundle.json
+zkml-verifier verify proof_bundle.json
 ```
 
 The verifier is a standalone Rust crate with no blockchain dependencies. It implements the same GKR+Hyrax protocol as the Solidity contracts and the Stylus WASM verifier.
@@ -293,7 +293,7 @@ For auditors reviewing a specific inference result:
 - [ ] Check `enclaveImageHash` for the enclave matches the approved enclave image
 - [ ] If challenged: verify `DisputeResolved` event and `disputeProverWon` outcome
 - [ ] If proof exists: download `ProofBundle` from archive
-- [ ] Run `zkml-verifier verify --bundle <file>` to independently confirm proof validity
+- [ ] Run `zkml-verifier verify <file>` to independently confirm proof validity
 - [ ] Verify `result` bytes decode to expected output format (e.g., JSON prediction scores)
 - [ ] Cross-reference `inputHash` against off-chain input records (if available)
 - [ ] Verify archive entry `archived_at` timestamp is consistent with on-chain `submittedAt`

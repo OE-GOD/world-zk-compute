@@ -4,7 +4,7 @@
 //! to the existing XgboostModel/DecisionTree/TreeNode types used by the
 //! circuit builder and prover.
 
-use crate::model::{tree_depth, DecisionTree, TreeNode, XgboostModel};
+use crate::model::{check_tree_structure, DecisionTree, TreeNode, XgboostModel};
 use serde::Deserialize;
 use std::collections::VecDeque;
 use std::path::Path;
@@ -101,7 +101,12 @@ pub fn parse_lightgbm_json(json_str: &str) -> Result<XgboostModel, String> {
         lgbm.num_class
     };
 
-    let num_features = lgbm.max_feature_idx + 1;
+    let num_features = lgbm.max_feature_idx.checked_add(1).ok_or_else(|| {
+        format!(
+            "max_feature_idx {} is too large: the feature count does not fit in a usize",
+            lgbm.max_feature_idx
+        )
+    })?;
 
     let mut trees = Vec::with_capacity(lgbm.tree_info.len());
     let mut max_depth = 0usize;
@@ -114,7 +119,7 @@ pub fn parse_lightgbm_json(json_str: &str) -> Result<XgboostModel, String> {
             return Err(format!("Tree {} has no nodes", tree_idx));
         }
 
-        let d = tree_depth(&dt);
+        let d = check_tree_structure(&dt).map_err(|e| format!("Tree {}: {}", tree_idx, e))?;
         if d > max_depth {
             max_depth = d;
         }
@@ -188,8 +193,18 @@ fn flatten_lgbm_tree(root: &LightGBMNode) -> Result<DecisionTree, String> {
                 let right_idx = next_idx;
                 next_idx += 1;
 
+                // A cast would wrap a large index onto a small one, which the feature
+                // range check would then accept.
+                let feature_index = i32::try_from(*split_feature).map_err(|_| {
+                    format!(
+                        "node {} splits on feature {}, over the largest feature index {}",
+                        entry.self_index,
+                        split_feature,
+                        i32::MAX
+                    )
+                })?;
                 nodes[entry.self_index] = TreeNode {
-                    feature_index: *split_feature as i32,
+                    feature_index,
                     threshold: *threshold,
                     left_child: left_idx,
                     right_child: right_idx,
@@ -232,7 +247,7 @@ mod tests {
     use crate::model::{
         collect_all_leaf_values, compute_comparison_tables, compute_comparison_witness,
         compute_leaf_sum, compute_path_bits, predict, quantize, traverse_tree, tree_depth,
-        DEFAULT_DECOMP_K,
+        validate_model, DEFAULT_DECOMP_K,
     };
 
     /// A single-tree LightGBM binary classifier with 3 internal nodes and 4 leaves.
@@ -640,6 +655,115 @@ mod tests {
         assert!((model.trees[0].nodes[0].leaf_value - 0.42).abs() < 1e-9);
         assert_eq!(tree_depth(&model.trees[0]), 0);
         assert_eq!(model.max_depth, 0);
+
+        // It parses, but the prover cannot handle it
+        assert_eq!(
+            validate_model(&model).unwrap_err(),
+            "Model has depth 0: every tree is a single leaf"
+        );
+    }
+
+    /// A LightGBM model of one tree: `splits` splits in a chain, each with a leaf on the left.
+    fn lgbm_chain_json(splits: usize) -> String {
+        let leaf = r#"{"leaf_index": 0, "leaf_value": 0.5}"#;
+        let split = format!(
+            r#"{{"split_index": 0, "split_feature": 0, "threshold": 0.5, "left_child": {}, "right_child": "#,
+            leaf
+        );
+        format!(
+            r#"{{"max_feature_idx": 0, "tree_info": [{{"tree_structure": {}{}{}}}]}}"#,
+            split.repeat(splits),
+            leaf,
+            "}".repeat(splits)
+        )
+    }
+
+    /// The recursive helpers here (count_nodes, dropping the parsed tree) recurse once per
+    /// level, but serde_json refuses nesting deeper than 128 before they run; a tree that
+    /// nests less deeply is still refused for its depth at parse time.
+    #[test]
+    fn test_lightgbm_deep_chains_are_refused() {
+        let deep = parse_lightgbm_json(&lgbm_chain_json(1000)).unwrap_err();
+        assert!(
+            deep.starts_with("Failed to parse LightGBM JSON: "),
+            "{}",
+            deep
+        );
+        assert_eq!(
+            parse_lightgbm_json(&lgbm_chain_json(30)).unwrap_err(),
+            "Tree 0: tree is 30 levels deep, over the limit of 24"
+        );
+        assert_eq!(
+            parse_lightgbm_json(&lgbm_chain_json(24)).unwrap().max_depth,
+            24
+        );
+    }
+
+    #[test]
+    fn test_lightgbm_split_feature_out_of_range() {
+        let json = SINGLE_TREE_LGBM.replace("\"max_feature_idx\": 3", "\"max_feature_idx\": 2");
+        let model = parse_lightgbm_json(&json).unwrap();
+        assert_eq!(
+            validate_model(&model).unwrap_err(),
+            "Tree 0: node 2 splits on feature 3, but the model has 3 features"
+        );
+    }
+
+    /// Indices that do not fit the converted model's types are errors, not an overflow
+    /// panic or a wrapped value.
+    #[test]
+    fn test_lightgbm_oversized_indices_are_refused() {
+        let json = SINGLE_TREE_LGBM.replace(
+            "\"max_feature_idx\": 3",
+            &format!("\"max_feature_idx\": {}", usize::MAX),
+        );
+        assert_eq!(
+            parse_lightgbm_json(&json).unwrap_err(),
+            format!(
+                "max_feature_idx {} is too large: the feature count does not fit in a usize",
+                usize::MAX
+            )
+        );
+
+        // 2^32 + 3 would wrap to feature 3 in an i32. Node 2 of the second tree is its
+        // root's right child: nodes are numbered breadth first.
+        for feature in [(1usize << 32) + 3, i32::MAX as usize + 1] {
+            let json = MULTI_TREE_LGBM.replacen(
+                "\"split_feature\": 4",
+                &format!("\"split_feature\": {}", feature),
+                1,
+            );
+            assert_eq!(
+                parse_lightgbm_json(&json).unwrap_err(),
+                format!(
+                    "Tree 1: node 2 splits on feature {}, over the largest feature index 2147483647",
+                    feature
+                )
+            );
+        }
+
+        // The largest index that fits is converted as is, and refused for its range.
+        let json = SINGLE_TREE_LGBM.replace(
+            "\"split_feature\": 3",
+            &format!("\"split_feature\": {}", i32::MAX),
+        );
+        let model = parse_lightgbm_json(&json).unwrap();
+        assert_eq!(model.trees[0].nodes[2].feature_index, i32::MAX);
+        assert_eq!(
+            validate_model(&model).unwrap_err(),
+            "Tree 0: node 2 splits on feature 2147483647, but the model has 4 features"
+        );
+    }
+
+    /// The loader sets the max_depth field to the trees' depth, so its models pass
+    /// validate_model.
+    #[test]
+    fn test_lightgbm_models_are_valid() {
+        validate_model(&parse_lightgbm_json(SINGLE_TREE_LGBM).unwrap()).unwrap();
+        validate_model(&parse_lightgbm_json(MULTI_TREE_LGBM).unwrap()).unwrap();
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("test-model/lightgbm_sample.json");
+        validate_model(&load_lightgbm_json(&path).unwrap()).unwrap();
     }
 
     #[test]

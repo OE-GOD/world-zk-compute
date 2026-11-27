@@ -1,4 +1,7 @@
+use alloy::eips::BlockNumberOrTag;
 use alloy::primitives::{Address, B256, U256};
+use alloy::providers::{Provider, ProviderBuilder};
+use world_zk_sdk::abi::TEEMLVerifier::{self, MLResult};
 use world_zk_sdk::{Client, TEEVerifier};
 
 /// On-chain operations via the TEEMLVerifier contract.
@@ -8,15 +11,21 @@ use world_zk_sdk::{Client, TEEVerifier};
 /// transaction hash (`B256::ZERO`).
 pub struct ChainClient {
     tee_verifier: TEEVerifier,
+    rpc_url: String,
+    contract_address: Address,
     /// When true, skip on-chain submission and log instead.
     dry_run: bool,
 }
 
 impl ChainClient {
+    /// Create a `ChainClient` that sends transactions.
+    #[cfg(test)]
     pub fn new(rpc_url: &str, private_key: &str, contract_address: &str) -> anyhow::Result<Self> {
         let client = Client::new(rpc_url, private_key, contract_address)?;
         Ok(Self {
+            contract_address: client.contract_address(),
             tee_verifier: TEEVerifier::new(client),
+            rpc_url: rpc_url.to_string(),
             dry_run: false,
         })
     }
@@ -34,7 +43,9 @@ impl ChainClient {
     ) -> anyhow::Result<Self> {
         let client = Client::new(rpc_url, private_key, contract_address)?;
         Ok(Self {
+            contract_address: client.contract_address(),
             tee_verifier: TEEVerifier::new(client),
+            rpc_url: rpc_url.to_string(),
             dry_run,
         })
     }
@@ -45,9 +56,12 @@ impl ChainClient {
         self.dry_run
     }
 
-    /// Submit a TEE-attested result on-chain. Returns the transaction hash.
+    /// Submit a TEE-attested result on-chain. Returns `(transaction hash, result ID)`.
     ///
-    /// In dry-run mode, logs the call parameters and returns `B256::ZERO`.
+    /// The result ID (from the `ResultSubmitted` event) is what the contract and the
+    /// event watcher use to refer to this result; the transaction hash is not.
+    ///
+    /// In dry-run mode, logs the call parameters and returns `(B256::ZERO, B256::ZERO)`.
     pub async fn submit_result(
         &self,
         model_hash: B256,
@@ -55,7 +69,7 @@ impl ChainClient {
         result: &[u8],
         attestation: &[u8],
         stake: U256,
-    ) -> anyhow::Result<B256> {
+    ) -> anyhow::Result<(B256, B256)> {
         if self.dry_run {
             tracing::info!(
                 dry_run = true,
@@ -68,10 +82,10 @@ impl ChainClient {
                 result_hex = %format!("0x{}", hex::encode(result)),
                 "[DRY RUN] Would submit result on-chain"
             );
-            return Ok(B256::ZERO);
+            return Ok((B256::ZERO, B256::ZERO));
         }
         self.tee_verifier
-            .submit_result(model_hash, input_hash, result, attestation, stake)
+            .submit_result_with_id(model_hash, input_hash, result, attestation, stake)
             .await
     }
 
@@ -151,12 +165,35 @@ impl ChainClient {
         self.tee_verifier.finalize(result_id).await
     }
 
-    /// Check if a result is valid.
-    ///
-    /// This is a read-only call and is always executed regardless of dry-run mode.
-    #[cfg(test)]
-    pub async fn is_result_valid(&self, result_id: B256) -> anyhow::Result<bool> {
-        self.tee_verifier.is_result_valid(result_id).await
+    /// Read a result's on-chain state (a view call: nothing is submitted).
+    pub async fn get_result(&self, result_id: B256) -> anyhow::Result<MLResult> {
+        self.tee_verifier.get_result(result_id).await
+    }
+
+    /// Whether the contract has settled the dispute on a result (a view call:
+    /// nothing is submitted).
+    pub async fn dispute_resolved(&self, result_id: B256) -> anyhow::Result<bool> {
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let contract = TEEMLVerifier::new(self.contract_address, provider);
+        Ok(contract.disputeResolved(result_id).call().await?)
+    }
+
+    /// Whether the prover won the dispute on a result (a view call: nothing is
+    /// submitted). Only meaningful once [`Self::dispute_resolved`] is true.
+    pub async fn dispute_prover_won(&self, result_id: B256) -> anyhow::Result<bool> {
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let contract = TEEMLVerifier::new(self.contract_address, provider);
+        Ok(contract.disputeProverWon(result_id).call().await?)
+    }
+
+    /// Timestamp of the latest block.
+    pub async fn latest_block_timestamp(&self) -> anyhow::Result<u64> {
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let block = provider
+            .get_block_by_number(BlockNumberOrTag::Latest)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("RPC returned no latest block"))?;
+        Ok(block.header.timestamp)
     }
 
     /// Register an enclave key.
@@ -433,7 +470,11 @@ mod tests {
             )
             .await
             .expect("dry-run submit_result should succeed");
-        assert_eq!(tx, B256::ZERO, "dry-run should return B256::ZERO");
+        assert_eq!(
+            tx,
+            (B256::ZERO, B256::ZERO),
+            "dry-run should return zero tx hash and result ID"
+        );
     }
 
     #[tokio::test]
@@ -448,7 +489,7 @@ mod tests {
             .submit_result(model, input, result_data, attestation, stake)
             .await
             .expect("dry-run submit_result should succeed with non-trivial data");
-        assert_eq!(tx, B256::ZERO);
+        assert_eq!(tx, (B256::ZERO, B256::ZERO));
     }
 
     #[tokio::test]
@@ -458,7 +499,7 @@ mod tests {
             .submit_result(B256::ZERO, B256::ZERO, b"", b"", U256::ZERO)
             .await
             .expect("dry-run should handle empty byte slices");
-        assert_eq!(tx, B256::ZERO);
+        assert_eq!(tx, (B256::ZERO, B256::ZERO));
     }
 
     // ---------------------------------------------------------------------------
@@ -620,7 +661,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            assert_eq!(tx1, B256::ZERO);
+            assert_eq!(tx1, (B256::ZERO, B256::ZERO));
             assert_eq!(tx2, B256::ZERO);
             assert_eq!(tx3, B256::ZERO);
             assert_eq!(tx4, B256::ZERO);

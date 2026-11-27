@@ -36,6 +36,8 @@ pub struct MetricsState {
     pub solidity_disputes_resolved: AtomicU64,
     pub webhook_failures: AtomicU64,
     pub start_time: Instant,
+    /// Set to `true` by the first successful poll of this process.
+    pub polled: AtomicBool,
     /// Set to `true` during graceful shutdown so health endpoints report unhealthy.
     pub shutting_down: AtomicBool,
 }
@@ -61,6 +63,7 @@ impl MetricsState {
             solidity_disputes_resolved: AtomicU64::new(0),
             webhook_failures: AtomicU64::new(0),
             start_time: Instant::now(),
+            polled: AtomicBool::new(false),
             shutting_down: AtomicBool::new(false),
         }
     }
@@ -73,6 +76,17 @@ impl MetricsState {
     /// Returns true if the service is in shutdown state.
     pub fn is_shutting_down(&self) -> bool {
         self.shutting_down.load(Ordering::SeqCst)
+    }
+
+    /// Record that this process has polled the chain successfully.
+    pub fn mark_polled(&self) {
+        self.polled.store(true, Ordering::SeqCst);
+    }
+
+    /// Returns true if this process has polled the chain successfully and is
+    /// not shutting down.
+    pub fn is_ready(&self) -> bool {
+        self.polled.load(Ordering::SeqCst) && !self.is_shutting_down()
     }
 
     /// Record a new result submission.
@@ -246,13 +260,14 @@ async fn health_handler(
 
 /// Readiness probe for Kubernetes.
 ///
-/// Returns 200 if and only if the operator has polled at least one block
-/// (`last_block_polled > 0`) and is not shutting down. Otherwise returns 503.
+/// Returns 200 if and only if this process has polled the chain successfully
+/// at least once and is not shutting down. Otherwise returns 503. A block number
+/// restored from the state file does not count.
 async fn ready_handler(
     State(state): State<Arc<MetricsState>>,
 ) -> (axum::http::StatusCode, Json<ReadinessResponse>) {
     let last_block = state.last_block_polled.load(Ordering::Relaxed);
-    let ready = last_block > 0 && !state.is_shutting_down();
+    let ready = state.is_ready();
     let body = ReadinessResponse {
         ready,
         last_block_polled: last_block,
@@ -296,7 +311,7 @@ async fn json_metrics_handler(State(state): State<Arc<MetricsState>>) -> Json<Me
 
 /// Serve the metrics HTTP server with graceful shutdown support.
 ///
-/// Listens on `0.0.0.0:{port}` and shuts down when the `shutdown_rx` watch
+/// Listens on `{bind_addr}:{port}` and shuts down when the `shutdown_rx` watch
 /// channel receives `true`. On shutdown, the `MetricsState.shutting_down` flag
 /// is set so that the health endpoint reports unhealthy (503) before the
 /// server finishes draining connections.
@@ -805,9 +820,10 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[tokio::test]
-    async fn test_ready_returns_503_when_no_blocks_polled() {
+    async fn test_ready_returns_503_before_first_successful_poll() {
         let state = Arc::new(MetricsState::new());
-        // last_block_polled defaults to 0
+        // A block number from the state file does not make it ready
+        state.set_last_block(42);
 
         let app = Router::new()
             .route("/ready", get(ready_handler))
@@ -827,13 +843,14 @@ mod tests {
 
         let body: serde_json::Value = resp.json().await.unwrap();
         assert_eq!(body["ready"], false);
-        assert_eq!(body["last_block_polled"], 0);
+        assert_eq!(body["last_block_polled"], 42);
     }
 
     #[tokio::test]
-    async fn test_ready_returns_200_when_blocks_polled() {
+    async fn test_ready_returns_200_after_successful_poll() {
         let state = Arc::new(MetricsState::new());
-        state.last_block_polled.store(42, Ordering::Relaxed);
+        state.set_last_block(42);
+        state.mark_polled();
 
         let app = Router::new()
             .route("/ready", get(ready_handler))
@@ -928,6 +945,7 @@ mod tests {
     async fn test_ready_returns_503_during_shutdown() {
         let state = Arc::new(MetricsState::new());
         state.last_block_polled.store(100, Ordering::Relaxed);
+        state.mark_polled();
         // Even though blocks have been polled, shutdown should make it 503
         state.mark_shutting_down();
 

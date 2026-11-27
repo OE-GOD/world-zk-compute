@@ -4,14 +4,11 @@
 //! in parallel, then merges results. This is application-level decomposition
 //! — complementary to risc0's segment-level parallelism.
 //!
-//! ## Use Cases
+//! ## Use Case
 //!
 //! - **XGBoost inference**: Split N samples into K batches, prove each batch
-//!   independently, merge prediction results.
-//! - **Rule engine**: Split N records into K chunks, prove each chunk,
-//!   aggregate compliance results.
-//! - **Data validation**: Split large datasets into partitions for parallel
-//!   verification.
+//!   independently, merge prediction results. This is the only strategy
+//!   implemented (`xgboost_decomp`).
 //!
 //! ## How It Works
 //!
@@ -250,9 +247,8 @@ impl InputDecomposer {
 
     /// Decompose input and prove all sub-jobs, preserving Receipts.
     ///
-    /// Same as `prove_decomposed()` but returns the full Receipt for each
-    /// sub-proof so they can be passed to the recursive wrapper's
-    /// `env::verify()` via `add_assumption()`.
+    /// Returns the full Receipt for each sub-proof so they can be passed to
+    /// the recursive wrapper's `env::verify()` via `add_assumption()`.
     pub async fn prove_decomposed_with_receipts(
         &self,
         elf: &[u8],

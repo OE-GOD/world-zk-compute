@@ -6,7 +6,8 @@
 //! Run with:
 //!   cargo test -p zkml-verifier --test off_chain_e2e -- --ignored
 //!
-//! The test is #[ignore]d by default because it takes ~5s in release mode.
+//! The verification tests are #[ignore]d by default: ~2s each in release mode,
+//! about a minute in debug.
 
 use zkml_verifier::{verify, ProofBundle};
 
@@ -41,7 +42,7 @@ fn load_bundle() -> ProofBundle {
 
 /// Full verification roundtrip: fixture → bundle → verify.
 #[test]
-#[ignore] // ~5s release, ~60s debug
+#[ignore] // ~2s release, ~60s debug
 fn test_offchain_verify_roundtrip() {
     let bundle = load_bundle();
 
@@ -74,18 +75,24 @@ fn test_bundle_serde_roundtrip() {
 #[test]
 fn test_bundle_from_file() {
     let path = fixture_path();
-    // from_file expects the full ProofBundle format, but fixture is a superset.
-    // Test that we can at least parse it as a Value and extract fields.
+    // The fixture is a superset of the ProofBundle format (it carries extra
+    // prover debug fields); from_file ignores the fields it does not know.
+    let bundle = ProofBundle::from_file(&path).expect("fixture should load as a bundle");
     let json = std::fs::read_to_string(&path).unwrap();
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert!(v["proof_hex"].is_string());
-    assert!(v["gens_hex"].is_string());
-    assert!(v["dag_circuit_description"].is_object());
+    assert_eq!(bundle.proof_hex, v["proof_hex"].as_str().unwrap());
+    assert_eq!(bundle.gens_hex, v["gens_hex"].as_str().unwrap());
+    assert_eq!(
+        bundle.public_inputs_hex,
+        v["public_inputs_hex"].as_str().unwrap()
+    );
+    assert_eq!(bundle.dag_circuit_description, v["dag_circuit_description"]);
+    assert!(bundle.proof_data().unwrap().starts_with(b"REM1"));
 }
 
 /// Tampered proof should fail verification.
 #[test]
-#[ignore] // ~5s release
+#[ignore] // ~2s release
 fn test_tampered_proof_fails() {
     let mut bundle = load_bundle();
 
@@ -102,9 +109,8 @@ fn test_tampered_proof_fails() {
     bundle.proof_hex = format!("0x{}", hex::encode(&proof_bytes));
 
     let result = verify(&bundle);
-    // Should either return verified=false or an error
-    match result {
-        Ok(r) => assert!(!r.verified, "tampered proof should not verify"),
-        Err(_) => {} // Error is also acceptable
+    // Should either return verified=false or an error (an error is also acceptable)
+    if let Ok(r) = result {
+        assert!(!r.verified, "tampered proof should not verify");
     }
 }

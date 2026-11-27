@@ -31,35 +31,21 @@ const scriptDir = typeof __dirname !== 'undefined'
 const CONTRACTS_OUT = path.resolve(scriptDir, '../../../contracts/out');
 const OUTPUT_FILE = path.resolve(scriptDir, '../src/abi/index.ts');
 
-function stripInternalType(abi: any[]): any[] {
-  return abi.map((item) => {
-    const cleaned = { ...item };
-    if (cleaned.inputs) {
-      cleaned.inputs = cleaned.inputs.map((inp: any) => {
-        const { internalType, ...rest } = inp;
-        if (rest.components) {
-          rest.components = rest.components.map((c: any) => {
-            const { internalType: _, ...crest } = c;
-            return crest;
-          });
-        }
-        return rest;
-      });
-    }
-    if (cleaned.outputs) {
-      cleaned.outputs = cleaned.outputs.map((out: any) => {
-        const { internalType, ...rest } = out;
-        if (rest.components) {
-          rest.components = rest.components.map((c: any) => {
-            const { internalType: _, ...crest } = c;
-            return crest;
-          });
-        }
-        return rest;
-      });
+// Drop Solidity-only `internalType` at every nesting level (struct components included).
+function stripInternalType(value: any): any {
+  if (Array.isArray(value)) {
+    return value.map(stripInternalType);
+  }
+  if (value !== null && typeof value === 'object') {
+    const cleaned: Record<string, any> = {};
+    for (const [key, inner] of Object.entries(value)) {
+      if (key !== 'internalType') {
+        cleaned[key] = stripInternalType(inner);
+      }
     }
     return cleaned;
-  });
+  }
+  return value;
 }
 
 function main() {

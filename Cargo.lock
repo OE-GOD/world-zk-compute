@@ -6044,9 +6044,9 @@ dependencies = [
  "axum",
  "base64",
  "hex",
- "rand 0.8.5",
  "secrecy",
  "serde",
+ "serde_bytes",
  "serde_cbor",
  "serde_json",
  "serial_test",
@@ -6054,7 +6054,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "tower",
- "tower-http",
  "tracing",
  "tracing-subscriber",
 ]
@@ -6064,8 +6063,6 @@ name = "tee-events"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
- "alloy-sol-types",
- "hex",
  "serde",
  "serde_json",
 ]
@@ -6135,7 +6132,6 @@ dependencies = [
  "alloy",
  "anyhow",
  "tee-events",
- "tracing",
 ]
 
 [[package]]
@@ -7449,7 +7445,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serial_test",
- "sha2",
  "tokio",
  "tracing",
  "url",
@@ -7462,7 +7457,6 @@ dependencies = [
  "clap",
  "colored",
  "reqwest",
- "serde",
  "serde_json",
  "tokio",
 ]
@@ -7665,6 +7659,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "axum-server",
+ "getrandom 0.2.17",
  "hex",
  "rcgen",
  "rustls 0.23.37",

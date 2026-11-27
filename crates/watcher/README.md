@@ -55,4 +55,4 @@ for event in &events {
 
 - `tee-events` -- Low-level byte-array event types and compile-time topic hashes
 - `alloy` -- RPC provider, log types, `B256`/`Address` primitives
-- `anyhow`, `tracing` -- Error handling and instrumentation
+- `anyhow` -- Error handling

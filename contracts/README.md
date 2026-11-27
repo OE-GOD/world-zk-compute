@@ -48,7 +48,9 @@ $ anvil
 ### Deploy
 
 ```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
+# DeployLocal is for Anvil only: it deploys a mock verifier that accepts every proof,
+# and it reverts on any chain id other than 31337.
+$ PRIVATE_KEY=<anvil_private_key> FEE_RECIPIENT=<fee_recipient_address> forge script script/DeployLocal.s.sol:DeployLocalScript --rpc-url http://127.0.0.1:8545 --broadcast
 ```
 
 ### Cast

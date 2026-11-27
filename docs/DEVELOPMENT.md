@@ -6,7 +6,7 @@ Local development guide for World ZK Compute.
 
 | Tool | Version | Install |
 |------|---------|---------|
-| Rust | 1.75+ | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
+| Rust | 1.92+ | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
 | Foundry | latest | `curl -L https://foundry.paradigm.xyz \| bash && foundryup` |
 | Node.js | 18+ | `brew install node` or [nvm](https://github.com/nvm-sh/nvm) |
 | Python | 3.9+ | `brew install python3` or system package manager |
@@ -57,17 +57,17 @@ Runs on `http://127.0.0.1:8545` with pre-funded accounts.
 
 ```bash
 cd contracts
+DEPLOYER_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
 forge script script/DeployAll.s.sol:DeployAll \
   --rpc-url http://127.0.0.1:8545 \
-  --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
   --broadcast --code-size-limit 200000
 ```
 
 ### TEE enclave
 
 ```bash
-cargo run --manifest-path tee/enclave/Cargo.toml
-# Default: http://127.0.0.1:8080
+MODEL_PATH=tee/test-model/model.json cargo run --manifest-path tee/enclave/Cargo.toml
+# Default: http://127.0.0.1:8080 (MODEL_PATH defaults to /app/model/model.json, which only exists in the image)
 ```
 
 ### Operator service
@@ -75,6 +75,7 @@ cargo run --manifest-path tee/enclave/Cargo.toml
 ```bash
 OPERATOR_RPC_URL=http://127.0.0.1:8545 \
 OPERATOR_PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
+TEE_VERIFIER_ADDRESS=<TEEMLVerifier proxy address printed by DeployAll> \
   cargo run --manifest-path services/operator/Cargo.toml -- watch
 ```
 
@@ -121,8 +122,8 @@ docker compose -f docker-compose.gpu.yml up --build
 One-command demo script:
 
 ```bash
-./scripts/tee-local-demo.sh        # starts, tests, tears down
-./scripts/tee-local-demo.sh --keep # leaves the stack running
+./scripts/tee-local-demo.sh        # starts Anvil, runs the TEE lifecycle, tears down (no Docker)
+./scripts/tee-local-demo.sh --step # pauses between steps
 ```
 
 ## Running tests
@@ -169,10 +170,10 @@ cd sdk/typescript && npm test
 
 ```bash
 # Local E2E (requires Docker)
-./scripts/e2e-test.sh --network local
+./scripts/e2e-test.sh --example all --network local
 
 # Sepolia E2E (requires funded wallet)
-./scripts/e2e-test.sh --network sepolia
+./scripts/e2e-test.sh --example all --network sepolia
 
 # TEE E2E
 ./scripts/tee-e2e.sh
@@ -242,12 +243,11 @@ Fixtures for Solidity tests are generated from Rust:
 cd examples/xgboost-remainder
 
 # Phase 1a DAG fixture (used by GKRDAGVerifierTest)
-cargo test --release gen_phase1a_fixture -- --nocapture
+cargo test --release gen_phase1a_fixture -- --nocapture --ignored
 # Output: contracts/test/fixtures/phase1a_dag_fixture.json
 
 # Groth16 E2E fixture
-cargo run --release --bin gen_dag_groth16_witness -- \
-  --model sample_model.json --input sample_input.json
+cargo run --release --bin gen_dag_groth16_witness
 ```
 
 ## Project layout
@@ -301,13 +301,13 @@ Run `make help` for the full list. Key targets:
 Set `RUST_LOG` for verbose logging:
 
 ```bash
-RUST_LOG=debug cargo run --manifest-path services/operator/Cargo.toml
+RUST_LOG=debug cargo run --manifest-path services/operator/Cargo.toml -- watch
 ```
 
 For JSON logging (useful with log aggregators):
 
 ```bash
-RUST_LOG_FORMAT=json cargo run --manifest-path services/operator/Cargo.toml
+RUST_LOG_FORMAT=json cargo run --manifest-path services/operator/Cargo.toml -- watch
 ```
 
 ### Contract debugging

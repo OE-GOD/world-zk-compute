@@ -94,7 +94,7 @@ Response:
 ```json
 {
   "results": [
-    { "index": 0, "verified": true, "circuit_hash": "0x...", "error": null },
+    { "index": 0, "verified": true, "circuit_hash": "0x..." },
     { "index": 1, "verified": false, "circuit_hash": "", "error": "..." }
   ],
   "total": 2,

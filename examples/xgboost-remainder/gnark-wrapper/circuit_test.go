@@ -11,6 +11,20 @@ import (
 	"github.com/consensys/gnark/test"
 )
 
+// frMod is the BN254 scalar field, the field gnark circuits run in. The native
+// helpers below compute expected public outputs in it.
+var frMod = ecc.BN254.ScalarField()
+
+// TestWrapperCircuitCompiles verifies the full wrapper circuit compiles.
+func TestWrapperCircuitCompiles(t *testing.T) {
+	circuit := AllocateCircuit(SmallConfig())
+	ccs, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, circuit)
+	if err != nil {
+		t.Fatalf("wrapper circuit compilation failed: %v", err)
+	}
+	t.Logf("Full wrapper circuit: %d constraints", ccs.GetNbConstraints())
+}
+
 // ============================================================
 // Small config tests (regression)
 // ============================================================

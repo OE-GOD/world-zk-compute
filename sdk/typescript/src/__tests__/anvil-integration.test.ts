@@ -16,9 +16,12 @@ import {
   createWalletClient,
   http,
   parseEther,
+  encodeFunctionData,
   encodePacked,
   keccak256,
   getAddress,
+  domainSeparator,
+  toHex,
   type Hex,
   defineChain,
 } from 'viem';
@@ -42,7 +45,11 @@ try {
 // ---------------------------------------------------------------------------
 const CONTRACTS_ROOT = join(__dirname, '..', '..', '..', '..', 'contracts');
 let contractBytecode: Hex = '0x';
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 let contractAbi: readonly any[] = [];
+let proxyBytecode: Hex = '0x';
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let proxyAbi: readonly any[] = [];
 
 try {
   const artifact = JSON.parse(
@@ -50,6 +57,11 @@ try {
   );
   contractBytecode = artifact.bytecode.object as Hex;
   contractAbi = artifact.abi;
+  const proxyArtifact = JSON.parse(
+    readFileSync(join(CONTRACTS_ROOT, 'out', 'Upgradeable.sol', 'UUPSProxy.json'), 'utf-8'),
+  );
+  proxyBytecode = proxyArtifact.bytecode.object as Hex;
+  proxyAbi = proxyArtifact.abi;
 } catch {
   // Will be caught in beforeAll when we check the bytecode
 }
@@ -71,8 +83,9 @@ const enclaveAccount = privateKeyToAccount(ENCLAVE_PRIVATE_KEY);
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Find a free port by asking the OS. */
+/** Pick the Anvil port: ANVIL_PORT when set, otherwise a random one. */
 function getRandomPort(): number {
+  if (process.env.ANVIL_PORT) return Number(process.env.ANVIL_PORT);
   // Use a port in the ephemeral range, add randomness to avoid collisions
   return 18545 + Math.floor(Math.random() * 10000);
 }
@@ -96,19 +109,37 @@ async function waitForAnvil(rpcUrl: string, timeoutMs = 15000): Promise<void> {
   throw new Error(`Anvil did not start within ${timeoutMs}ms`);
 }
 
-/** Build an ECDSA attestation the way the contract expects it. */
+/** EIP-712 domain of a TEEMLVerifier deployment (name and version are contract constants). */
+function attestationDomain(verifyingContract: Hex) {
+  return { name: 'TEEMLVerifier', version: '1', chainId: 31337, verifyingContract } as const;
+}
+
+const ATTESTATION_TYPES = {
+  TEEMLResult: [
+    { name: 'modelHash', type: 'bytes32' },
+    { name: 'inputHash', type: 'bytes32' },
+    { name: 'resultHash', type: 'bytes32' },
+  ],
+} as const;
+
+/**
+ * Build an ECDSA attestation the way the contract expects it: an EIP-712 signature over
+ * TEEMLResult(modelHash, inputHash, keccak256(result)), bound to the chain and the verifier address.
+ */
 async function buildAttestation(
   modelHash: Hex,
   inputHash: Hex,
   resultBytes: Hex,
   signerPrivateKey: Hex,
+  verifyingContract: Hex,
 ): Promise<Hex> {
-  const resultHash = keccak256(resultBytes);
-  const message = keccak256(encodePacked(['bytes32', 'bytes32', 'bytes32'], [modelHash, inputHash, resultHash]));
-  // Sign with viem's signMessage which adds the EIP-191 prefix automatically
   const account = privateKeyToAccount(signerPrivateKey);
-  const signature = await account.signMessage({ message: { raw: message } });
-  return signature;
+  return account.signTypedData({
+    domain: attestationDomain(verifyingContract),
+    types: ATTESTATION_TYPES,
+    primaryType: 'TEEMLResult',
+    message: { modelHash, inputHash, resultHash: keccak256(resultBytes) },
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -122,13 +153,14 @@ describeIfAnvil('TEEMLVerifier Anvil Integration Tests', () => {
   let rpcUrl: string;
   let port: number;
   let contractAddress: Hex;
+  let implementationAddress: Hex;
 
   // Shared chain definition
   let chain: ReturnType<typeof defineChain>;
 
   beforeAll(async () => {
     // Verify we have the compiled artifact
-    if (contractBytecode === '0x' || contractAbi.length === 0) {
+    if (contractBytecode === '0x' || contractAbi.length === 0 || proxyBytecode === '0x') {
       throw new Error(
         'Contract artifact not found. Run `cd contracts && forge build` first.',
       );
@@ -168,20 +200,40 @@ describeIfAnvil('TEEMLVerifier Anvil Integration Tests', () => {
       transport: http(rpcUrl),
     });
 
-    // Constructor: (address _admin, address _remainderVerifier)
+    // TEEMLVerifier is UUPS-upgradeable: the implementation has a no-arg constructor and
+    // cannot be initialized itself, so deploy it behind a UUPSProxy and initialize through the proxy.
+    const implHash = await walletClient.deployContract({
+      chain,
+      abi: contractAbi,
+      bytecode: contractBytecode,
+    });
+    const implReceipt = await publicClient.waitForTransactionReceipt({ hash: implHash });
+    if (!implReceipt.contractAddress) {
+      throw new Error('Implementation deployment failed: no contractAddress in receipt');
+    }
+    implementationAddress = implReceipt.contractAddress;
+
+    // initialize(address _admin, address _remainderVerifier) rejects address(0).
     // Use a dummy address for remainderVerifier since we won't test actual ZK dispute resolution
     const dummyRemainderVerifier: Hex = '0x0000000000000000000000000000000000000001';
 
     const deployHash = await walletClient.deployContract({
       chain,
-      abi: contractAbi,
-      bytecode: contractBytecode,
-      args: [adminAccount.address, dummyRemainderVerifier],
+      abi: proxyAbi,
+      bytecode: proxyBytecode,
+      args: [
+        implementationAddress,
+        encodeFunctionData({
+          abi: contractAbi,
+          functionName: 'initialize',
+          args: [adminAccount.address, dummyRemainderVerifier],
+        }),
+      ],
     });
 
     const receipt = await publicClient.waitForTransactionReceipt({ hash: deployHash });
     if (!receipt.contractAddress) {
-      throw new Error('Contract deployment failed: no contractAddress in receipt');
+      throw new Error('Proxy deployment failed: no contractAddress in receipt');
     }
     contractAddress = receipt.contractAddress;
   }, 30000); // 30s timeout for beforeAll
@@ -210,6 +262,33 @@ describeIfAnvil('TEEMLVerifier Anvil Integration Tests', () => {
     });
 
     expect(getAddress(adminAddr as string)).toBe(getAddress(adminAccount.address));
+  });
+
+  it('should run behind the proxy and expose the EIP-712 attestation domain', async () => {
+    const publicClient = createPublicClient({ chain, transport: http(rpcUrl) });
+    const verifier = new TEEVerifier({
+      rpcUrl,
+      privateKey: ADMIN_PRIVATE_KEY,
+      contractAddress,
+    });
+
+    expect(getAddress(await verifier.implementation())).toBe(getAddress(implementationAddress));
+
+    const onChainDomain = await publicClient.readContract({
+      address: contractAddress,
+      abi: contractAbi,
+      functionName: 'DOMAIN_SEPARATOR',
+    });
+    expect(onChainDomain).toBe(domainSeparator({ domain: attestationDomain(contractAddress) }));
+
+    const typeHash = await publicClient.readContract({
+      address: contractAddress,
+      abi: contractAbi,
+      functionName: 'RESULT_TYPEHASH',
+    });
+    expect(typeHash).toBe(
+      keccak256(toHex('TEEMLResult(bytes32 modelHash,bytes32 inputHash,bytes32 resultHash)')),
+    );
   });
 
   it('should report the correct remainderVerifier', async () => {
@@ -279,10 +358,11 @@ describeIfAnvil('TEEMLVerifier Anvil Integration Tests', () => {
       abi: contractAbi,
       functionName: 'enclaves',
       args: [enclaveAccount.address],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     }) as any;
 
     // If not yet registered, register
-    if (!enclaveInfo || !enclaveInfo[0]) {
+    if (!enclaveInfo.registered) {
       const regHash = await adminWallet.writeContract({
         chain,
         address: contractAddress,
@@ -299,7 +379,7 @@ describeIfAnvil('TEEMLVerifier Anvil Integration Tests', () => {
     const resultBytes: Hex = '0xdeadbeef';
 
     // Build attestation signed by enclave key
-    const attestation = await buildAttestation(modelHash, inputHash, resultBytes, ENCLAVE_PRIVATE_KEY);
+    const attestation = await buildAttestation(modelHash, inputHash, resultBytes, ENCLAVE_PRIVATE_KEY, contractAddress);
 
     // Submit via prover wallet
     const proverWallet = createWalletClient({
@@ -335,6 +415,7 @@ describeIfAnvil('TEEMLVerifier Anvil Integration Tests', () => {
       abi: contractAbi,
       functionName: 'getResult',
       args: [resultId],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     }) as any;
 
     expect(getAddress(result.submitter)).toBe(getAddress(proverAccount.address));
@@ -360,7 +441,7 @@ describeIfAnvil('TEEMLVerifier Anvil Integration Tests', () => {
     const modelHash: Hex = '0x' + '33'.repeat(32) as Hex;
     const inputHash: Hex = '0x' + '44'.repeat(32) as Hex;
     const resultBytes: Hex = '0xcafe';
-    const attestation = await buildAttestation(modelHash, inputHash, resultBytes, ENCLAVE_PRIVATE_KEY);
+    const attestation = await buildAttestation(modelHash, inputHash, resultBytes, ENCLAVE_PRIVATE_KEY, contractAddress);
 
     const submitHash = await proverWallet.writeContract({
       chain,
@@ -422,6 +503,7 @@ describeIfAnvil('TEEMLVerifier Anvil Integration Tests', () => {
       abi: contractAbi,
       functionName: 'getResult',
       args: [resultId],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     }) as any;
     expect(result.finalized).toBe(true);
 
@@ -459,7 +541,7 @@ describeIfAnvil('TEEMLVerifier Anvil Integration Tests', () => {
     const modelHash: Hex = '0x' + '55'.repeat(32) as Hex;
     const inputHash: Hex = '0x' + '66'.repeat(32) as Hex;
     const resultBytes: Hex = '0xbabe';
-    const attestation = await buildAttestation(modelHash, inputHash, resultBytes, ENCLAVE_PRIVATE_KEY);
+    const attestation = await buildAttestation(modelHash, inputHash, resultBytes, ENCLAVE_PRIVATE_KEY, contractAddress);
 
     const submitHash = await proverWallet.writeContract({
       chain,
@@ -502,6 +584,7 @@ describeIfAnvil('TEEMLVerifier Anvil Integration Tests', () => {
       abi: contractAbi,
       functionName: 'getResult',
       args: [resultId],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     }) as any;
     expect(result.challenged).toBe(true);
     expect(getAddress(result.challenger)).toBe(getAddress(challengerAccount.address));
@@ -524,7 +607,7 @@ describeIfAnvil('TEEMLVerifier Anvil Integration Tests', () => {
     const modelHash: Hex = '0x' + '77'.repeat(32) as Hex;
     const inputHash: Hex = '0x' + '88'.repeat(32) as Hex;
     const resultBytes: Hex = '0xface';
-    const attestation = await buildAttestation(modelHash, inputHash, resultBytes, ENCLAVE_PRIVATE_KEY);
+    const attestation = await buildAttestation(modelHash, inputHash, resultBytes, ENCLAVE_PRIVATE_KEY, contractAddress);
 
     const submitHash = await proverWallet.writeContract({
       chain,
@@ -559,6 +642,7 @@ describeIfAnvil('TEEMLVerifier Anvil Integration Tests', () => {
       abi: contractAbi,
       functionName: 'getResult',
       args: [resultId],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     }) as any;
     expect(result.challenged).toBe(true);
   });
@@ -578,7 +662,7 @@ describeIfAnvil('TEEMLVerifier Anvil Integration Tests', () => {
     const modelHash: Hex = '0x' + '99'.repeat(32) as Hex;
     const inputHash: Hex = '0x' + 'aa'.repeat(32) as Hex;
     const resultBytes: Hex = '0xdead';
-    const attestation = await buildAttestation(modelHash, inputHash, resultBytes, ENCLAVE_PRIVATE_KEY);
+    const attestation = await buildAttestation(modelHash, inputHash, resultBytes, ENCLAVE_PRIVATE_KEY, contractAddress);
 
     const submitHash = await proverWallet.writeContract({
       chain,
@@ -687,9 +771,8 @@ describeIfAnvil('TEEMLVerifier Anvil Integration Tests', () => {
   // Test: Poll events using the full contract ABI (forge output)
   // ------------------------------------------------------------------
   it('should find ResultSubmitted events using the full contract ABI', async () => {
-    // NOTE: The SDK's teeMLVerifierAbi has a mismatched ResultSubmitted event
-    // signature (3 params vs 4 in the actual contract). This test uses the
-    // full contract ABI from forge output to verify events are emitted correctly.
+    // This test uses the full contract ABI from forge output to verify events
+    // are emitted correctly; the next one does the same through the SDK's ABI.
     const publicClient = createPublicClient({ chain, transport: http(rpcUrl) });
 
     const logs = await publicClient.getContractEvents({
@@ -702,6 +785,7 @@ describeIfAnvil('TEEMLVerifier Anvil Integration Tests', () => {
 
     expect(logs.length).toBeGreaterThanOrEqual(1);
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const firstLog = logs[0] as any;
     expect(firstLog.args.resultId).toMatch(/^0x[0-9a-f]{64}$/);
     expect(firstLog.args.modelHash).toMatch(/^0x[0-9a-f]{64}$/);
@@ -711,8 +795,8 @@ describeIfAnvil('TEEMLVerifier Anvil Integration Tests', () => {
   });
 
   it('should find ResultSubmitted events via TEEEventWatcher', async () => {
-    // After ABI codegen, the SDK's teeMLVerifierAbi now matches the contract's
-    // event signatures, so the TEEEventWatcher should find ResultSubmitted events.
+    // The SDK's teeMLVerifierAbi matches the contract's event signatures,
+    // so the TEEEventWatcher should find ResultSubmitted events.
     const watcher = new TEEEventWatcher({
       rpcUrl,
       contractAddress,
@@ -780,14 +864,14 @@ describeIfAnvil('TEEMLVerifier Anvil Integration Tests', () => {
     });
 
     const events = await watcher.getPastEvents(undefined, 0n, 'latest');
-    // We have at least: EnclaveRegistered + ResultChallenged + DisputeResolved + ResultFinalized
-    // Note: ResultSubmitted events are NOT matched due to SDK ABI mismatch (see above test)
-    expect(events.length).toBeGreaterThanOrEqual(3);
+    // We have at least: EnclaveRegistered + ResultSubmitted + ResultChallenged + DisputeResolved + ResultFinalized
+    expect(events.length).toBeGreaterThanOrEqual(5);
 
     // Check that we see a variety of event types
     const eventTypes = new Set(events.map((e) => e.event));
     expect(eventTypes.has('EnclaveRegistered')).toBe(true);
-    // ResultChallenged and DisputeResolved are correctly defined in SDK ABI
+    expect(eventTypes.has('ResultSubmitted')).toBe(true);
+    expect(eventTypes.has('ResultFinalized')).toBe(true);
     expect(eventTypes.has('ResultChallenged')).toBe(true);
     expect(eventTypes.has('DisputeResolved')).toBe(true);
   });
@@ -829,7 +913,7 @@ describeIfAnvil('TEEMLVerifier Anvil Integration Tests', () => {
 
     // Sign with a random key that is NOT registered as an enclave
     const fakeEnclaveKey: Hex = '0x8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba';
-    const attestation = await buildAttestation(modelHash, inputHash, resultBytes, fakeEnclaveKey);
+    const attestation = await buildAttestation(modelHash, inputHash, resultBytes, fakeEnclaveKey, contractAddress);
 
     await expect(
       proverWallet.writeContract({
@@ -841,6 +925,41 @@ describeIfAnvil('TEEMLVerifier Anvil Integration Tests', () => {
         value: parseEther('0.1'),
       }),
     ).rejects.toThrow();
+  });
+
+  // ------------------------------------------------------------------
+  // Test: Submission rejects an attestation bound to another verifier
+  // ------------------------------------------------------------------
+  it('should reject an attestation signed for a different verifier address', async () => {
+    const proverWallet = createWalletClient({
+      chain,
+      transport: http(rpcUrl),
+      account: proverAccount,
+    });
+
+    const modelHash: Hex = '0x' + 'b1'.repeat(32) as Hex;
+    const inputHash: Hex = '0x' + 'c1'.repeat(32) as Hex;
+    const resultBytes: Hex = '0x5678';
+
+    // Signed by the registered enclave, but under the implementation's domain instead of the proxy's
+    const attestation = await buildAttestation(
+      modelHash,
+      inputHash,
+      resultBytes,
+      ENCLAVE_PRIVATE_KEY,
+      implementationAddress,
+    );
+
+    await expect(
+      proverWallet.writeContract({
+        chain,
+        address: contractAddress,
+        abi: contractAbi,
+        functionName: 'submitResult',
+        args: [modelHash, inputHash, resultBytes, attestation],
+        value: parseEther('0.1'),
+      }),
+    ).rejects.toThrow(/UnregisteredEnclave/);
   });
 
   // ------------------------------------------------------------------
@@ -856,7 +975,7 @@ describeIfAnvil('TEEMLVerifier Anvil Integration Tests', () => {
     const modelHash: Hex = '0x' + 'dd'.repeat(32) as Hex;
     const inputHash: Hex = '0x' + 'ee'.repeat(32) as Hex;
     const resultBytes: Hex = '0xabcd';
-    const attestation = await buildAttestation(modelHash, inputHash, resultBytes, ENCLAVE_PRIVATE_KEY);
+    const attestation = await buildAttestation(modelHash, inputHash, resultBytes, ENCLAVE_PRIVATE_KEY, contractAddress);
 
     await expect(
       proverWallet.writeContract({
@@ -885,7 +1004,7 @@ describeIfAnvil('TEEMLVerifier Anvil Integration Tests', () => {
     const modelHash: Hex = '0x' + 'f0'.repeat(32) as Hex;
     const inputHash: Hex = '0x' + 'f1'.repeat(32) as Hex;
     const resultBytes: Hex = '0xffff';
-    const attestation = await buildAttestation(modelHash, inputHash, resultBytes, ENCLAVE_PRIVATE_KEY);
+    const attestation = await buildAttestation(modelHash, inputHash, resultBytes, ENCLAVE_PRIVATE_KEY, contractAddress);
 
     const submitHash = await proverWallet.writeContract({
       chain,
@@ -953,6 +1072,7 @@ describeIfAnvil('TEEMLVerifier Anvil Integration Tests', () => {
     });
 
     const unknownId: Hex = '0x' + '00'.repeat(32) as Hex;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const result = await verifier.getResult(unknownId) as any;
 
     // submittedAt should be 0 for non-existent results
