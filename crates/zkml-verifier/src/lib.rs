@@ -346,23 +346,11 @@ fn try_decode_circuit_description(data: &[u8]) -> Result<DAGCircuitDescription> 
     })
 }
 
-/// Reject proofs the layer loops would index out of bounds on, before any
-/// allocation is sized from the circuit description (which comes from the
-/// same untrusted bundle as the proof).
+/// Reject a proof whose shape does not match the circuit description (see
+/// [`gkr::check_proof_shape`]) before any allocation is sized from the
+/// description, which comes from the same untrusted bundle as the proof.
 fn check_layer_counts(proof: &GKRProof, desc: &DAGCircuitDescription) -> Result<()> {
-    if proof.layer_proofs.is_empty() || proof.output_claim_commitments.is_empty() {
-        return Err(VerifyError::VerificationFailed(
-            "proof has no layer proofs or no output claim".to_string(),
-        ));
-    }
-    if desc.num_compute_layers > proof.layer_proofs.len() {
-        return Err(VerifyError::VerificationFailed(format!(
-            "circuit description declares {} compute layers but the proof has {}",
-            desc.num_compute_layers,
-            proof.layer_proofs.len()
-        )));
-    }
-    Ok(())
+    gkr::check_proof_shape(proof, desc).map_err(VerifyError::VerificationFailed)
 }
 
 /// Turn a caught panic payload into a `VerificationFailed` error.
@@ -377,11 +365,12 @@ fn panic_to_error(payload: Box<dyn std::any::Any + Send>) -> VerifyError {
     VerifyError::VerificationFailed(msg)
 }
 
-/// Verify a DAG GKR proof end-to-end, returning Result instead of panicking.
+/// Verify a DAG GKR proof end-to-end, returning Result.
 ///
-/// This is the safe version of `verify_dag_proof_inner` that propagates all
-/// errors through Result instead of using assert/panic. It is suitable for
-/// use in contexts where panic=abort (e.g., fuzz testing, WASM).
+/// Decoding and the shape checks return Err. The compute and input layer
+/// checks still panic when they fail, and the panic is caught here with
+/// catch_unwind, so under panic=abort (wasm32-unknown-unknown, or a build with
+/// -Cpanic=abort) a failed layer check aborts instead of returning Err.
 fn try_verify_dag_proof_inner(
     proof_data: &[u8],
     _public_inputs: &[u8],
@@ -476,9 +465,9 @@ pub fn verify_raw(
     let mut circuit_hash = [0u8; 32];
     circuit_hash.copy_from_slice(&proof_data[4..36]);
 
-    // Use the safe (non-panicking) decode + verify path.
-    // This properly returns Err on malformed input without relying on
-    // catch_unwind (which doesn't work under panic=abort).
+    // Malformed input returns Err. A failed layer check is caught with
+    // catch_unwind inside try_verify_dag_proof_inner, so under panic=abort it
+    // aborts instead.
     match try_verify_dag_proof_inner(proof_data, &[], generators, circuit_desc) {
         Ok(true) => Ok(VerificationResult {
             circuit_hash,
@@ -510,7 +499,9 @@ pub fn verify(bundle: &ProofBundle) -> Result<VerificationResult> {
     let circuit_desc_data =
         test_utils::try_encode_circuit_desc_from_json(&bundle.dag_circuit_description)?;
 
-    // Use the safe (non-panicking) decode + verify path.
+    // Malformed input returns Err. A failed layer check is caught with
+    // catch_unwind inside try_verify_dag_proof_inner, so under panic=abort it
+    // aborts instead.
     match try_verify_dag_proof_inner(&proof_data, &public_inputs, &gens_data, &circuit_desc_data) {
         Ok(true) => Ok(VerificationResult {
             circuit_hash,
@@ -738,6 +729,51 @@ mod tests {
     #[should_panic(expected = "proof data too short for selector")]
     fn test_hybrid_rejects_short_proof() {
         let _ = verify_dag_proof_hybrid_inner(&[0u8; 3], &[], &[], &[]);
+    }
+
+    /// The fixture proof, its generators and its circuit description (JSON).
+    fn fixture_parts() -> (Vec<u8>, Vec<u8>, serde_json::Value) {
+        let fixture_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../contracts/test/fixtures/phase1a_dag_fixture.json"
+        );
+        let fixture: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(fixture_path).unwrap()).unwrap();
+        let hex_field = |key: &str| hex::decode(&fixture[key].as_str().unwrap()[2..]).unwrap();
+        (
+            hex_field("proof_hex"),
+            hex_field("gens_hex"),
+            fixture["dag_circuit_description"].clone(),
+        )
+    }
+
+    /// The trusted entry point checks the proof shape too (in
+    /// `gkr::verify_compute_layers`): zero compute layers is not a pass.
+    #[test]
+    #[should_panic(expected = "declares 0 compute layers but the proof has 88")]
+    fn test_verify_dag_proof_inner_rejects_zero_compute_layers() {
+        let (proof_data, gens_data, mut desc) = fixture_parts();
+        desc["numComputeLayers"] = serde_json::json!(0);
+        verify_dag_proof_inner(
+            &proof_data,
+            &[],
+            &gens_data,
+            &encode_circuit_desc_from_json(&desc),
+        );
+    }
+
+    /// The same check in the trusted hybrid entry point.
+    #[test]
+    #[should_panic(expected = "layer 0: circuit description declares 0 sumcheck rounds")]
+    fn test_verify_dag_proof_hybrid_inner_rejects_round_count_mismatch() {
+        let (proof_data, gens_data, mut desc) = fixture_parts();
+        desc["numSumcheckRounds"][0] = serde_json::json!(0);
+        verify_dag_proof_hybrid_inner(
+            &proof_data,
+            &[],
+            &gens_data,
+            &encode_circuit_desc_from_json(&desc),
+        );
     }
 
     #[test]

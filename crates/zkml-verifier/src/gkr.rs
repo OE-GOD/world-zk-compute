@@ -67,6 +67,49 @@ pub struct VerifyContext {
 // Compute Layer Verification
 // ============================================================
 
+/// Check that the proof has the shape the circuit description declares.
+///
+/// The description fixes how many compute layers there are and how many
+/// sumcheck rounds each one has; the proof must match it. Without this, a
+/// description of zero compute layers skips every check, and the proof alone
+/// decides how many rounds (and so how many bindings) each layer gets. Upstream
+/// Remainder checks the binding count against the layer description in the
+/// same way. A description of zero compute layers is refused because the proof
+/// must have at least one layer proof and exactly as many as the description.
+pub fn check_proof_shape(proof: &GKRProof, desc: &DAGCircuitDescription) -> Result<(), String> {
+    if proof.layer_proofs.is_empty() || proof.output_claim_commitments.is_empty() {
+        return Err("proof has no layer proofs or no output claim".to_string());
+    }
+    if desc.num_compute_layers != proof.layer_proofs.len() {
+        return Err(format!(
+            "circuit description declares {} compute layers but the proof has {}",
+            desc.num_compute_layers,
+            proof.layer_proofs.len()
+        ));
+    }
+    if desc.num_sumcheck_rounds.len() != desc.num_compute_layers {
+        return Err(format!(
+            "circuit description has {} sumcheck round counts for {} compute layers",
+            desc.num_sumcheck_rounds.len(),
+            desc.num_compute_layers
+        ));
+    }
+    for (i, (lp, &rounds)) in proof
+        .layer_proofs
+        .iter()
+        .zip(&desc.num_sumcheck_rounds)
+        .enumerate()
+    {
+        let messages = lp.sumcheck_proof.messages.len();
+        if messages != rounds {
+            return Err(format!(
+                "layer {i}: circuit description declares {rounds} sumcheck rounds but the proof has {messages} messages"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Verify all compute layers of a DAG circuit.
 /// Returns VerifyContext with all bindings for input layer verification.
 pub fn verify_compute_layers(
@@ -75,14 +118,18 @@ pub fn verify_compute_layers(
     gens: &PedersenGens,
     sponge: &mut PoseidonSponge,
 ) -> VerifyContext {
+    if let Err(e) = check_proof_shape(proof, desc) {
+        panic!("{e}");
+    }
     let mut ctx = VerifyContext {
         all_bindings: Vec::with_capacity(desc.num_compute_layers),
         output_challenges: Vec::new(),
         output_eval: G1Point::INFINITY,
     };
 
-    // Output layer: squeeze numVars challenges
-    let num_vars = proof.layer_proofs[0].sumcheck_proof.messages.len();
+    // Output layer: one challenge per variable of layer 0, a count the
+    // description fixes (the proof was checked to carry as many messages).
+    let num_vars = desc.num_sumcheck_rounds[0];
     ctx.output_challenges = Vec::with_capacity(num_vars);
     for _ in 0..num_vars {
         ctx.output_challenges.push(Fr::from_fq(&sponge.squeeze()).0);
@@ -355,6 +402,9 @@ pub fn verify_compute_layers_hybrid(
     _gens: &PedersenGens,
     sponge: &mut PoseidonSponge,
 ) -> (VerifyContext, FrOutputCollector) {
+    if let Err(e) = check_proof_shape(proof, desc) {
+        panic!("{e}");
+    }
     let mut ctx = VerifyContext {
         all_bindings: Vec::with_capacity(desc.num_compute_layers),
         output_challenges: Vec::new(),
@@ -366,7 +416,7 @@ pub fn verify_compute_layers_hybrid(
     };
 
     // Output layer: squeeze numVars challenges (same as full)
-    let num_vars = proof.layer_proofs[0].sumcheck_proof.messages.len();
+    let num_vars = desc.num_sumcheck_rounds[0];
     ctx.output_challenges = Vec::with_capacity(num_vars);
     for _ in 0..num_vars {
         ctx.output_challenges.push(Fr::from_fq(&sponge.squeeze()).0);

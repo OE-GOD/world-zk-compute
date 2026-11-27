@@ -461,3 +461,144 @@ fn truncated_and_random_inputs_are_an_error() {
         start.elapsed()
     );
 }
+
+/// `verify` and `verify_hybrid` both reject `desc` with the fixture proof
+/// before any layer is processed, with an error that contains `expected`.
+fn assert_shape_rejected(f: &serde_json::Value, desc: serde_json::Value, expected: &str) {
+    let b = bundle(&hex_field(f, "proof_hex"), &hex_field(f, "gens_hex"), desc);
+    for (name, result) in [
+        ("verify", verify(&b).map(|r| r.verified)),
+        ("verify_hybrid", verify_hybrid(&b).map(|_| true)),
+    ] {
+        let err = result.expect_err(name);
+        assert!(
+            matches!(&err, VerifyError::VerificationFailed(m) if m.contains(expected)),
+            "{name}: {err}"
+        );
+    }
+}
+
+/// With zero compute layers no sumcheck or input check would run, so any
+/// decodable proof would verify. The description must declare exactly as many
+/// compute layers as the proof has layer proofs.
+#[test]
+fn description_with_zero_compute_layers_is_an_error() {
+    let f = fixture();
+    let mut desc = f["dag_circuit_description"].clone();
+    desc["numComputeLayers"] = serde_json::json!(0);
+    assert_shape_rejected(&f, desc, "declares 0 compute layers but the proof has 88");
+
+    // The description the fuzz target used to hard-code: zero layers of
+    // every kind.
+    let empty = serde_json::json!({
+        "numComputeLayers": 0,
+        "numInputLayers": 0,
+        "layerTypes": [],
+        "numSumcheckRounds": [],
+        "atomOffsets": [0],
+        "atomTargetLayers": [],
+        "atomCommitIdxs": [],
+        "ptOffsets": [0],
+        "ptData": [],
+        "inputIsCommitted": [],
+        "oracleProductOffsets": [0],
+        "oracleResultIdxs": [],
+        "oracleExprCoeffs": []
+    });
+    assert_shape_rejected(&f, empty, "declares 0 compute layers");
+}
+
+#[test]
+fn description_with_fewer_compute_layers_than_the_proof_is_an_error() {
+    let f = fixture();
+    let mut desc = f["dag_circuit_description"].clone();
+    desc["numComputeLayers"] = serde_json::json!(87);
+    assert_shape_rejected(&f, desc, "declares 87 compute layers but the proof has 88");
+}
+
+/// The number of sumcheck rounds of each layer comes from the description:
+/// a proof with more or fewer messages than that is refused.
+#[test]
+fn sumcheck_message_count_other_than_the_declared_rounds_is_an_error() {
+    let f = fixture();
+    let rounds = f["dag_circuit_description"]["numSumcheckRounds"].clone();
+    let declared = rounds[5].as_u64().unwrap();
+    for changed in [declared + 1, declared - 1] {
+        let mut desc = f["dag_circuit_description"].clone();
+        desc["numSumcheckRounds"][5] = serde_json::json!(changed);
+        assert_shape_rejected(
+            &f,
+            desc,
+            &format!("layer 5: circuit description declares {changed} sumcheck rounds"),
+        );
+    }
+    // The cases of the audit reproducer: every entry 0, every entry 99.
+    for value in [0u64, 99] {
+        let mut desc = f["dag_circuit_description"].clone();
+        let n = rounds.as_array().unwrap().len();
+        desc["numSumcheckRounds"] = serde_json::json!(vec![value; n]);
+        assert_shape_rejected(&f, desc, "sumcheck rounds but the proof has");
+    }
+}
+
+#[test]
+fn sumcheck_round_counts_of_the_wrong_length_are_an_error() {
+    let f = fixture();
+    let mut desc = f["dag_circuit_description"].clone();
+    desc["numSumcheckRounds"].as_array_mut().unwrap().pop();
+    assert_shape_rejected(&f, desc, "87 sumcheck round counts for 88 compute layers");
+}
+
+/// Byte offset, in the proof with its selector, of the x coordinate of the
+/// first output claim commitment.
+fn output_claim_x_offset(proof: &[u8]) -> usize {
+    let read = |off: usize| u64::from_be_bytes(proof[off + 24..off + 32].try_into().unwrap());
+    // Selector, circuit hash, then the public input sections.
+    let mut off = 4 + 32;
+    let sections = read(off);
+    off += 32;
+    for _ in 0..sections {
+        off += 32 + 32 * read(off) as usize;
+    }
+    assert!(read(off) >= 1, "fixture has an output claim");
+    off + 32
+}
+
+/// x and x + q stand for the same coordinate once reduced, but the EVM
+/// precompiles reject x + q. The decoder refuses it, so one proof does not
+/// get a second encoding the chain would revert on.
+#[test]
+fn point_coordinate_not_below_the_field_modulus_is_a_decode_error() {
+    let f = fixture();
+    let mut proof = hex_field(&f, "proof_hex");
+    let gens = hex_field(&f, "gens_hex");
+    let off = output_claim_x_offset(&proof);
+    let q =
+        hex::decode("30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd47").unwrap();
+    // x + q, by schoolbook addition of the big-endian words.
+    let mut carry = 0u16;
+    for i in (0..32).rev() {
+        let sum = proof[off + i] as u16 + q[i] as u16 + carry;
+        proof[off + i] = sum as u8;
+        carry = sum >> 8;
+    }
+    assert_eq!(carry, 0, "x + q fits in 256 bits");
+
+    let b = bundle(&proof, &gens, f["dag_circuit_description"].clone());
+    let expected = "coordinate not below the field modulus";
+    for (name, result) in [
+        ("verify", verify(&b).map(|r| r.verified)),
+        ("verify_hybrid", verify_hybrid(&b).map(|_| true)),
+    ] {
+        let err = result.expect_err(name);
+        assert!(
+            matches!(&err, VerifyError::DecodeError(m) if m.contains(expected)),
+            "{name}: {err}"
+        );
+    }
+    let desc = encode_circuit_desc_from_json(&f["dag_circuit_description"]);
+    assert!(matches!(
+        verify_raw(&proof, &gens, &desc),
+        Err(VerifyError::DecodeError(_))
+    ));
+}

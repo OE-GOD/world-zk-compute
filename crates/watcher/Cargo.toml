@@ -6,5 +6,4 @@ edition = "2021"
 [dependencies]
 tee-events = { path = "../events" }
 alloy = { workspace = true }
-tracing.workspace = true
 anyhow.workspace = true

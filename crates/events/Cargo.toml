@@ -6,7 +6,6 @@ edition = "2021"
 [dependencies]
 alloy-primitives = "1.0"
 serde = { workspace = true }
-hex.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

@@ -187,14 +187,14 @@ fn field_inv(a: &U256, modulus: &[u64; 4]) -> U256 {
     field_pow(a, &exp, modulus)
 }
 
+/// Read 32 big-endian bytes as a field element, reduced fully. A 256-bit word
+/// can hold about five multiples of a BN254 modulus, so one subtraction is
+/// not enough, and `field_add` / `field_sub` assume reduced inputs.
 fn field_from_be_bytes(bytes: &[u8; 32], modulus: &[u64; 4]) -> U256 {
     let v = U256::from_be_bytes(bytes);
-    let m = U256(*modulus);
-    if v.gte(&m) {
-        v.sub_no_mod(&m)
-    } else {
-        v
-    }
+    let mut wide = [0u64; 8];
+    wide[..4].copy_from_slice(&v.0);
+    reduce_512(&wide, modulus)
 }
 
 // ============================================================
@@ -516,6 +516,43 @@ mod tests {
         let neg_a = a.neg();
         let sum = a.add(&neg_a);
         assert_eq!(sum, Fr::ZERO);
+    }
+
+    fn be_word(hex_str: &str) -> [u8; 32] {
+        hex::decode(hex_str).unwrap().try_into().unwrap()
+    }
+
+    /// Words of several moduli in size reduce to the value modulo the field,
+    /// not to the word minus one modulus (expected values from Python big ints).
+    #[test]
+    fn test_from_be_bytes_reduces_fully() {
+        let all_ones = [0xffu8; 32];
+        assert_eq!(
+            Fq::from_be_bytes(&all_ones).0,
+            U256::from_be_bytes(&be_word(
+                "0e0a77c19a07df2f666ea36f7879462c0a78eb28f5c70b3dd35d438dc58f0d9c"
+            ))
+        );
+        assert_eq!(
+            Fr::from_be_bytes(&all_ones).0,
+            U256::from_be_bytes(&be_word(
+                "0e0a77c19a07df2f666ea36f7879462e36fc76959f60cd29ac96341c4ffffffa"
+            ))
+        );
+        // 5q + 7 and 5r + 9.
+        assert_eq!(
+            Fq::from_be_bytes(&be_word(
+                "f1f5883e65f820d099915c908786b9d3f58714d70a38f4c22ca2bc723a70f26a"
+            )),
+            Fq::from_u64(7)
+        );
+        assert_eq!(
+            Fr::from_be_bytes(&be_word(
+                "f1f5883e65f820d099915c908786b9d1c903896a609f32d65369cbe3b000000e"
+            )),
+            Fr::from_u64(9)
+        );
+        assert_eq!(Fq::from_be_bytes(&Fq::MODULUS.to_be_bytes()), Fq::ZERO);
     }
 
     #[test]

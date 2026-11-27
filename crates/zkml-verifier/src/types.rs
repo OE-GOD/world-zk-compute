@@ -1,7 +1,7 @@
-//! Public types for the zkml-verifier crate.
+//! Proof metadata type for the public API.
 //!
-//! This module provides the self-contained proof bundle type (`ProofBundle`),
-//! verification result types, and metadata types used by the public API.
+//! This module holds only `ProofMetadata`. The proof bundle type
+//! (`ProofBundle`) and the verification result types are in `bundle.rs`.
 
 use serde::{Deserialize, Serialize};
 

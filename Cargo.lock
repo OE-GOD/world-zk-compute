@@ -6063,7 +6063,6 @@ name = "tee-events"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
- "hex",
  "serde",
  "serde_json",
 ]
@@ -6133,7 +6132,6 @@ dependencies = [
  "alloy",
  "anyhow",
  "tee-events",
- "tracing",
 ]
 
 [[package]]
