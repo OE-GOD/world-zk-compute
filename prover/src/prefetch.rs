@@ -27,16 +27,17 @@
 
 use crate::ipfs::IpfsClient;
 use crate::queue::QueuedJob;
+use crate::redact;
+use crate::validation::read_body_capped;
 use alloy::primitives::B256;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Semaphore};
 use tracing::{debug, info, warn};
 
 /// Configuration for the input prefetcher
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct PrefetchConfig {
     /// Maximum number of concurrent prefetch operations
@@ -74,20 +75,40 @@ pub struct InputPrefetcher {
     config: PrefetchConfig,
     /// IPFS client for fetching
     ipfs_client: Arc<IpfsClient>,
+    /// HTTP client for http(s) inputs, shared by all prefetches
+    http_client: reqwest::Client,
+    /// One permit per prefetch that may download at a time
+    /// (`max_concurrent`)
+    fetch_permits: Arc<Semaphore>,
     /// Cache of prefetched inputs (keyed by input URL)
     cache: Arc<RwLock<HashMap<String, CachedInput>>>,
     /// Current cache size in bytes
     cache_size: Arc<RwLock<usize>>,
-    /// Prefetch in-progress tracker (to avoid duplicate fetches)
+    /// Prefetch in-progress tracker (to avoid duplicate fetches); it also
+    /// holds the prefetches that wait for a permit
     in_progress: Arc<RwLock<std::collections::HashSet<String>>>,
 }
 
 impl InputPrefetcher {
     /// Create a new input prefetcher
     pub fn new(ipfs_client: Arc<IpfsClient>, config: PrefetchConfig) -> Self {
+        // Building fails only when the TLS backend cannot start, which is
+        // what makes reqwest::Client::new() panic too
+        let http_client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .expect("failed to build the prefetch HTTP client");
+        // With no permit no prefetch would ever finish; 0 is taken as 1
+        // Semaphore::new panics above MAX_PERMITS
+        let fetch_permits = Arc::new(Semaphore::new(
+            config.max_concurrent.clamp(1, Semaphore::MAX_PERMITS),
+        ));
+
         Self {
             config,
             ipfs_client,
+            http_client,
+            fetch_permits,
             cache: Arc::new(RwLock::new(HashMap::new())),
             cache_size: Arc::new(RwLock::new(0)),
             in_progress: Arc::new(RwLock::new(std::collections::HashSet::new())),
@@ -114,6 +135,8 @@ impl InputPrefetcher {
 
         // Clone references for the spawned task
         let ipfs_client = self.ipfs_client.clone();
+        let http_client = self.http_client.clone();
+        let fetch_permits = self.fetch_permits.clone();
         let cache = self.cache.clone();
         let cache_size = self.cache_size.clone();
         let in_progress = self.in_progress.clone();
@@ -146,10 +169,22 @@ impl InputPrefetcher {
             }
 
             // Fetch input
-            debug!("[Prefetch {}] Starting fetch from {}", request_id, url);
+            debug!(
+                "[Prefetch {}] Starting fetch from {}",
+                request_id,
+                redact::url_origin(&url)
+            );
             let start = Instant::now();
 
-            let result = fetch_input_for_prefetch(&ipfs_client, &url, &config).await;
+            // The permit is held until the download is done, so at most
+            // max_concurrent prefetches download at a time; the others wait
+            // here. The semaphore is never closed.
+            let result = match fetch_permits.acquire_owned().await {
+                Ok(_permit) => {
+                    fetch_input_for_prefetch(&ipfs_client, &http_client, &url, &config).await
+                }
+                Err(e) => Err(e.into()),
+            };
 
             // Remove from in-progress
             {
@@ -189,7 +224,10 @@ impl InputPrefetcher {
                             if let Some(key) = oldest_key {
                                 if let Some(removed) = cache_write.remove(&key) {
                                     *size_write -= removed.size;
-                                    debug!("[Prefetch] Evicted {} from cache", key);
+                                    debug!(
+                                        "[Prefetch] Evicted {} from cache",
+                                        redact::url_origin(&key)
+                                    );
                                 }
                             } else {
                                 break;
@@ -231,7 +269,10 @@ impl InputPrefetcher {
         if let Some(entry) = cache.get(url) {
             // Check TTL
             if entry.fetched_at.elapsed() > self.config.cache_ttl {
-                debug!("[Prefetch] Cache entry expired for {}", url);
+                debug!(
+                    "[Prefetch] Cache entry expired for {}",
+                    redact::url_origin(url)
+                );
                 return None;
             }
 
@@ -239,12 +280,18 @@ impl InputPrefetcher {
             if entry.hash != *expected_hash {
                 warn!(
                     "[Prefetch] Cache hash mismatch for {}: expected {}, got {}",
-                    url, expected_hash, entry.hash
+                    redact::url_origin(url),
+                    expected_hash,
+                    entry.hash
                 );
                 return None;
             }
 
-            debug!("[Prefetch] Cache hit for {} ({} bytes)", url, entry.size);
+            debug!(
+                "[Prefetch] Cache hit for {} ({} bytes)",
+                redact::url_origin(url),
+                entry.size
+            );
             return Some(entry.data.clone());
         }
 
@@ -291,27 +338,25 @@ impl std::fmt::Display for PrefetchStats {
 /// Fetch input for prefetching (with size limit)
 async fn fetch_input_for_prefetch(
     ipfs_client: &IpfsClient,
+    http_client: &reqwest::Client,
     url: &str,
     config: &PrefetchConfig,
 ) -> anyhow::Result<Vec<u8>> {
     // Determine fetch method based on URL scheme
     let data = if IpfsClient::is_ipfs_url(url) {
-        ipfs_client.fetch(url).await?
+        ipfs_client
+            .fetch_at_most(url, config.max_input_size)
+            .await?
     } else if url.starts_with("http://") || url.starts_with("https://") {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .build()?;
+        // The error of a failed request names the URL, whose path can hold a
+        // key
+        let response = http_client
+            .get(url)
+            .send()
+            .await
+            .map_err(reqwest::Error::without_url)?;
 
-        let response = client.get(url).send().await?;
-
-        // Check content length before downloading
-        if let Some(len) = response.content_length() {
-            if len as usize > config.max_input_size {
-                anyhow::bail!("Input too large for prefetch: {} bytes", len);
-            }
-        }
-
-        response.bytes().await?.to_vec()
+        read_body_capped(response, config.max_input_size).await?
     } else if url.starts_with("data:") {
         // Data URL - decode inline
         use base64::Engine;
@@ -321,7 +366,7 @@ async fn fetch_input_for_prefetch(
         }
         base64::engine::general_purpose::STANDARD.decode(parts[1])?
     } else {
-        anyhow::bail!("Unsupported URL scheme: {}", url);
+        anyhow::bail!("Unsupported URL scheme: {}", redact::url_origin(url));
     };
 
     // Final size check
@@ -344,6 +389,9 @@ fn compute_hash(data: &[u8]) -> B256 {
 mod tests {
     use super::*;
     use crate::ipfs::IpfsConfig;
+    use crate::test_support::{gzip_zeros, serve_http_responses, HttpResponse};
+    use crate::validation::ValidationError;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[tokio::test]
     async fn test_prefetch_stats() {
@@ -393,9 +441,10 @@ mod tests {
         let ipfs = ipfs_client_with_gateway(format!("http://{addr}/other-gateway/"));
 
         let url = format!("http://{addr}/ipfs/{TEST_CID}");
-        let data = fetch_input_for_prefetch(&ipfs, &url, &PrefetchConfig::default())
-            .await
-            .unwrap();
+        let data =
+            fetch_input_for_prefetch(&ipfs, &test_http_client(), &url, &PrefetchConfig::default())
+                .await
+                .unwrap();
         assert_eq!(data, b"gateway content");
     }
 
@@ -404,10 +453,157 @@ mod tests {
         let addr = serve_test_gateway().await;
         let ipfs = ipfs_client_with_gateway(format!("http://{addr}/ipfs/"));
 
-        let data = fetch_input_for_prefetch(&ipfs, TEST_CID, &PrefetchConfig::default())
+        let data = fetch_input_for_prefetch(
+            &ipfs,
+            &test_http_client(),
+            TEST_CID,
+            &PrefetchConfig::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(data, b"gateway content");
+    }
+
+    fn test_http_client() -> reqwest::Client {
+        reqwest::Client::new()
+    }
+
+    /// A server that sends a body that decompresses to `decompressed` zero
+    /// bytes, with Content-Encoding: gzip and the (much smaller) compressed
+    /// Content-Length
+    async fn serve_gzip(decompressed: usize) -> std::net::SocketAddr {
+        let gzip = gzip_zeros(decompressed);
+        serve_http_responses(move |_| {
+            HttpResponse::new(200, gzip.clone()).header("Content-Encoding", "gzip")
+        })
+        .await
+    }
+
+    /// The prefetch limit is applied while the decompressed body is read, on
+    /// the http path and on the IPFS path (whose own limit is 100 MB)
+    #[tokio::test]
+    async fn test_compressed_input_over_limit_is_refused_while_reading() {
+        const LIMIT: usize = 64 * 1024;
+        const DECOMPRESSED: usize = 8 * 1024 * 1024;
+        assert!(gzip_zeros(DECOMPRESSED).len() < LIMIT);
+        let addr = serve_gzip(DECOMPRESSED).await;
+        let ipfs = ipfs_client_with_gateway(format!("http://{addr}/ipfs/"));
+        let config = PrefetchConfig {
+            max_input_size: LIMIT,
+            ..PrefetchConfig::default()
+        };
+
+        for url in [format!("http://{addr}/input"), TEST_CID.to_string()] {
+            let err = fetch_input_for_prefetch(&ipfs, &test_http_client(), &url, &config)
+                .await
+                .unwrap_err();
+
+            match err.downcast_ref::<ValidationError>() {
+                Some(ValidationError::BodyTooLarge { max, read }) => {
+                    assert_eq!(*max, LIMIT, "{url}");
+                    assert!(*read < DECOMPRESSED / 4, "{url}: read {read}");
+                }
+                _ => panic!("{url}: expected BodyTooLarge, got {err}"),
+            }
+        }
+    }
+
+    /// The same stream is taken whole under a higher limit: it is valid
+    /// gzip and reqwest decompresses it
+    #[tokio::test]
+    async fn test_compressed_input_under_limit_is_read_decompressed() {
+        const DECOMPRESSED: usize = 8 * 1024 * 1024;
+        let addr = serve_gzip(DECOMPRESSED).await;
+        let ipfs = ipfs_client_with_gateway(format!("http://{addr}/ipfs/"));
+        let config = PrefetchConfig {
+            max_input_size: 2 * DECOMPRESSED,
+            ..PrefetchConfig::default()
+        };
+
+        let url = format!("http://{addr}/input");
+        let data = fetch_input_for_prefetch(&ipfs, &test_http_client(), &url, &config)
             .await
             .unwrap();
-        assert_eq!(data, b"gateway content");
+        assert_eq!(data.len(), DECOMPRESSED);
+    }
+
+    /// A max_concurrent beyond what a semaphore can hold is taken as its
+    /// largest value instead of stopping the prover at start-up
+    #[test]
+    fn test_huge_max_concurrent_does_not_stop_the_prover() {
+        let ipfs = Arc::new(IpfsClient::new(IpfsConfig::default()).unwrap());
+        let config = PrefetchConfig {
+            max_concurrent: usize::MAX,
+            ..PrefetchConfig::default()
+        };
+        let _prefetcher = InputPrefetcher::new(ipfs, config);
+    }
+
+    /// With max_concurrent = 2 and twelve queued jobs, the server never has
+    /// more than two prefetch requests open at once, and every job is
+    /// fetched.
+    #[tokio::test]
+    async fn test_prefetches_in_progress_never_exceed_max_concurrent() {
+        const JOBS: u64 = 12;
+        const FETCH_TIME: Duration = Duration::from_millis(150);
+        let open = Arc::new(AtomicUsize::new(0));
+        let most_open = Arc::new(AtomicUsize::new(0));
+        let served = Arc::new(AtomicUsize::new(0));
+
+        let (counted_open, counted_most, counted_served) =
+            (open.clone(), most_open.clone(), served.clone());
+        let addr = serve_http_responses(move |_| {
+            let now_open = counted_open.fetch_add(1, Ordering::SeqCst) + 1;
+            counted_most.fetch_max(now_open, Ordering::SeqCst);
+            counted_served.fetch_add(1, Ordering::SeqCst);
+            // Counted as closed a little before the answer is written: a
+            // request that a finished fetch lets through can only come after
+            // the answer, so the count never runs ahead of the open requests
+            let closing = counted_open.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(FETCH_TIME - Duration::from_millis(30)).await;
+                closing.fetch_sub(1, Ordering::SeqCst);
+            });
+            HttpResponse::new(200, b"input".to_vec()).delayed(FETCH_TIME)
+        })
+        .await;
+
+        let ipfs = Arc::new(IpfsClient::new(IpfsConfig::default()).unwrap());
+        let config = PrefetchConfig {
+            max_concurrent: 2,
+            ..PrefetchConfig::default()
+        };
+        let prefetcher = InputPrefetcher::new(ipfs, config);
+        let jobs: Vec<QueuedJob> = (0..JOBS)
+            .map(|id| queued_job(id, format!("http://{addr}/input/{id}"), b"input"))
+            .collect();
+        for job in &jobs {
+            prefetcher.prefetch(job);
+        }
+
+        for job in &jobs {
+            let cached = wait_for_cached(&prefetcher, &job.input_url, &job.input_hash).await;
+            assert_eq!(cached.as_deref(), Some(&b"input"[..]));
+        }
+        assert_eq!(served.load(Ordering::SeqCst), JOBS as usize);
+        assert_eq!(most_open.load(Ordering::SeqCst), 2);
+    }
+
+    fn queued_job(request_id: u64, input_url: String, data: &[u8]) -> QueuedJob {
+        QueuedJob {
+            request_id,
+            image_id: B256::ZERO,
+            input_hash: compute_hash(data),
+            input_url,
+            input_type: 0,
+            tip: alloy::primitives::U256::ZERO,
+            requester: alloy::primitives::Address::ZERO,
+            expires_at: u64::MAX,
+            queued_at: Instant::now(),
+            estimated_cycles: None,
+            program_cached: false,
+            prefetched_input: None,
+        }
     }
 
     /// Poll the prefetch cache until the entry appears
@@ -416,7 +612,7 @@ mod tests {
         url: &str,
         hash: &B256,
     ) -> Option<Vec<u8>> {
-        for _ in 0..400 {
+        for _ in 0..1000 {
             if let Some(data) = prefetcher.get_cached(url, hash).await {
                 return Some(data);
             }
@@ -435,20 +631,11 @@ mod tests {
         let prefetcher = InputPrefetcher::new(ipfs, config);
 
         // "hello" as a data URL, so no network is involved
-        let job = QueuedJob {
-            request_id: 1,
-            image_id: B256::ZERO,
-            input_hash: compute_hash(b"hello"),
-            input_url: "data:application/octet-stream;base64,aGVsbG8=".to_string(),
-            input_type: 0,
-            tip: alloy::primitives::U256::ZERO,
-            requester: alloy::primitives::Address::ZERO,
-            expires_at: u64::MAX,
-            queued_at: Instant::now(),
-            estimated_cycles: None,
-            program_cached: false,
-            prefetched_input: None,
-        };
+        let job = queued_job(
+            1,
+            "data:application/octet-stream;base64,aGVsbG8=".to_string(),
+            b"hello",
+        );
 
         prefetcher.prefetch(&job);
         let cached = wait_for_cached(&prefetcher, &job.input_url, &job.input_hash).await;

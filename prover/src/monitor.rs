@@ -672,14 +672,8 @@ async fn process_single_job(
             job.request_id
         );
         let retry_config = RetryConfig::default();
-        let claim_result = send_claim_with_retry(
-            &engine,
-            request_id,
-            nonce_manager,
-            job.request_id,
-            &retry_config,
-        )
-        .await?;
+        let claim_result =
+            claim_private_job(&engine, &job, signer, nonce_manager, &retry_config).await?;
         info!(
             "[Job {}] Claimed in tx: {:?}",
             job.request_id, claim_result.tx_hash
@@ -1412,6 +1406,32 @@ async fn claim_unless_claimed(
         send_claim_with_retry(engine, request_id, nonce_manager, job_id, config).await?;
     info!("[Job {}] Claimed in tx: {:?}", job_id, claim_result.tx_hash);
     Ok(())
+}
+
+/// Claim a private job, after checking what fetching its input needs: a
+/// signer, and an input URL that the fetch accepts. The auth server releases
+/// the input only to the prover that has claimed the job, so the claim comes
+/// before the fetch; a job whose input could not be fetched must not cost a
+/// claim.
+async fn claim_private_job(
+    engine: &IExecutionEngine::IExecutionEngineInstance<Arc<SigningProvider>>,
+    job: &QueuedJob,
+    signer: &Option<Arc<PrivateKeySigner>>,
+    nonce_manager: &Arc<SigningNonceManager>,
+    config: &RetryConfig,
+) -> anyhow::Result<TransactionResult> {
+    if signer.is_none() {
+        anyhow::bail!("Signer required for private input jobs");
+    }
+    private_input::input_url(&job.input_url, job.request_id)?;
+    send_claim_with_retry(
+        engine,
+        U256::from(job.request_id),
+        nonce_manager,
+        job.request_id,
+        config,
+    )
+    .await
 }
 
 /// Send a claim transaction with retry logic
@@ -2502,6 +2522,55 @@ mod tests {
             program_cached: false,
             prefetched_input: None,
         }
+    }
+
+    /// A private job is claimed only when its input can be fetched: there is a
+    /// signer, and the fetch accepts the input URL. A job whose input the fetch
+    /// would refuse sends no claim, so it does not cost one.
+    #[tokio::test]
+    async fn test_private_job_is_claimed_only_when_its_input_can_be_fetched() {
+        let node = MockNode::start(MockChain::default()).await;
+        let signer = Some(Arc::new(PrivateKeySigner::random()));
+        let private_job = |input_url: &str| QueuedJob {
+            input_url: input_url.to_string(),
+            input_type: 1,
+            ..test_job(7, 1)
+        };
+        let claim_job = |job: QueuedJob, signer: Option<Arc<PrivateKeySigner>>| {
+            let engine = node.engine();
+            let nonce_manager = node.nonce_manager.clone();
+            async move {
+                claim_private_job(
+                    &engine,
+                    &job,
+                    &signer,
+                    &nonce_manager,
+                    &RetryConfig::default(),
+                )
+                .await
+            }
+        };
+
+        for url in [
+            "http://inputs.example.com",
+            "https://127.0.0.1:8090",
+            "https://[::1]:8090",
+            "https://localhost.:8090",
+        ] {
+            let result = claim_job(private_job(url), signer.clone()).await;
+            assert!(result.is_err(), "{url} was claimed");
+        }
+        let err = claim_job(private_job("https://inputs.example.com"), None)
+            .await
+            .err()
+            .expect("a private job without a signer was claimed");
+        assert!(err.to_string().contains("Signer required"), "{err}");
+        assert_eq!(node.transactions_sent(), 0);
+
+        claim_job(private_job("https://inputs.example.com"), signer)
+            .await
+            .unwrap();
+        assert_eq!(node.transactions_sent(), 1);
     }
 
     #[tokio::test]

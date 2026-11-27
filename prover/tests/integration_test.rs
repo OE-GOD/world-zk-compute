@@ -527,6 +527,44 @@ fn test_config_parse_error_does_not_quote_the_file() {
     }
 }
 
+/// `validate` exits non-zero for a URL whose host the `url` crate (reqwest's
+/// parser) reads as an internal address, and zero for a public one.
+#[test]
+fn test_validate_exit_status_follows_the_url_check() {
+    let validate = |url: &str| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_world-zk-prover"))
+            .env_clear()
+            .args(["validate", "--url", url])
+            .current_dir(std::env::temp_dir())
+            .output()
+            .unwrap()
+    };
+
+    for url in [
+        "https://2130706433/",
+        "https://127.1/",
+        "https://0x7f.0.0.1/",
+        "https://localhost./",
+        "https:/127.0.0.1/x",
+        "https://169.254.169.254\\@example.com/",
+        "https://①②⑦.⓪.⓪.①/",
+        "https://0177.0.0.1/",
+        "https:\\\\127.0.0.1\\x",
+    ] {
+        let output = validate(url);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(!output.status.success(), "{url}: {stdout}");
+        assert!(stdout.contains("✗ URL invalid"), "{url}: {stdout}");
+    }
+
+    let output = validate("https://example.com/input");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
 /// An unknown proving mode is an error at start-up, not CPU proving.
 #[test]
 fn test_unknown_proving_mode_is_an_error_at_start_up() {

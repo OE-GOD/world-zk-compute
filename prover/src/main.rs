@@ -1078,43 +1078,60 @@ fn show_info() {
     }
 }
 
+/// Check each input given and print the result. An error (a non-zero exit)
+/// when an input is invalid, or when none is given, so that scripts can rely
+/// on the exit status.
 fn validate_inputs(
     address: Option<String>,
     image_id: Option<String>,
     url: Option<String>,
 ) -> anyhow::Result<()> {
     let validator = validation::Validator::new();
-    let mut any_validated = false;
+    let mut checked = 0;
+    let mut invalid = 0;
 
     if let Some(addr) = address {
-        any_validated = true;
+        checked += 1;
         match validator.validate_address(&addr) {
             Ok(normalized) => println!("✓ Address valid: {}", normalized),
-            Err(e) => println!("✗ Address invalid: {}", e),
+            Err(e) => {
+                invalid += 1;
+                println!("✗ Address invalid: {}", e);
+            }
         }
     }
 
     if let Some(id) = image_id {
-        any_validated = true;
+        checked += 1;
         match validator.validate_image_id(&id) {
             Ok(normalized) => println!("✓ Image ID valid: {}", normalized),
-            Err(e) => println!("✗ Image ID invalid: {}", e),
+            Err(e) => {
+                invalid += 1;
+                println!("✗ Image ID invalid: {}", e);
+            }
         }
     }
 
     if let Some(u) = url {
-        any_validated = true;
+        checked += 1;
         match validator.validate_url(&u) {
             Ok(validated) => println!("✓ URL valid: {}", validated),
-            Err(e) => println!("✗ URL invalid: {}", e),
+            Err(e) => {
+                invalid += 1;
+                println!("✗ URL invalid: {}", e);
+            }
         }
     }
 
-    if !any_validated {
+    if checked == 0 {
         println!("Usage:");
         println!("  world-zk-prover validate --address 0x...");
         println!("  world-zk-prover validate --image-id 0x...");
         println!("  world-zk-prover validate --url https://...");
+        anyhow::bail!("nothing to validate: give --address, --image-id or --url");
+    }
+    if invalid > 0 {
+        anyhow::bail!("{} of {} inputs are invalid", invalid, checked);
     }
 
     Ok(())
@@ -1301,9 +1318,37 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_inputs_invalid_address() {
-        // Should not error (prints error message but returns Ok)
+    fn test_validate_inputs_invalid_address_is_an_error() {
         let result = validate_inputs(Some("not-an-address".to_string()), None, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_inputs_invalid_image_id_is_an_error() {
+        let result = validate_inputs(None, Some("zz".to_string()), None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_inputs_internal_url_is_an_error() {
+        let result = validate_inputs(None, None, Some("https://127.1/".to_string()));
+        assert!(result.is_err());
+    }
+
+    /// One invalid input among valid ones is enough for an error
+    #[test]
+    fn test_validate_inputs_one_invalid_among_valid_is_an_error() {
+        let result = validate_inputs(
+            Some("0x1234567890abcdef1234567890abcdef12345678".to_string()),
+            None,
+            Some("https://0x7f.0.0.1/".to_string()),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_inputs_valid_url() {
+        let result = validate_inputs(None, None, Some("https://example.com/input".to_string()));
         assert!(result.is_ok());
     }
 
@@ -1316,9 +1361,9 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_inputs_none_all() {
-        // No inputs provided -- just prints usage
+    fn test_validate_inputs_none_given_is_an_error() {
+        // Prints usage; nothing was checked, so there is no success to report
         let result = validate_inputs(None, None, None);
-        assert!(result.is_ok());
+        assert!(result.is_err());
     }
 }

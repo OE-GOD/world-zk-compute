@@ -22,6 +22,38 @@ pub struct HttpRequest {
     pub body: Vec<u8>,
 }
 
+/// An answer of a server started with [`serve_http_responses`]. It always
+/// has a Content-Type of application/json and the Content-Length of `body`.
+pub struct HttpResponse {
+    pub status: u16,
+    /// Headers written after Content-Type and Content-Length
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+    /// How long to wait before the answer is written
+    pub delay: Duration,
+}
+
+impl HttpResponse {
+    pub fn new(status: u16, body: Vec<u8>) -> Self {
+        Self {
+            status,
+            headers: Vec::new(),
+            body,
+            delay: Duration::ZERO,
+        }
+    }
+
+    pub fn header(mut self, name: &str, value: &str) -> Self {
+        self.headers.push((name.to_string(), value.to_string()));
+        self
+    }
+
+    pub fn delayed(mut self, delay: Duration) -> Self {
+        self.delay = delay;
+        self
+    }
+}
+
 /// Serve HTTP on a free loopback port. `handler` maps each request to a
 /// status code and a response body. The server runs until the runtime of the
 /// calling test shuts down.
@@ -29,18 +61,18 @@ pub async fn serve_http<F>(handler: F) -> SocketAddr
 where
     F: Fn(&HttpRequest) -> (u16, Vec<u8>) + Send + Sync + 'static,
 {
-    serve_http_late(move |request| {
+    serve_http_responses(move |request| {
         let (status, body) = handler(request);
-        (status, body, Duration::ZERO)
+        HttpResponse::new(status, body)
     })
     .await
 }
 
-/// [`serve_http`] with a handler that also says how long to wait before
-/// the answer is written
-async fn serve_http_late<F>(handler: F) -> SocketAddr
+/// [`serve_http`] with a handler that gives the whole answer: headers and a
+/// delay too
+pub async fn serve_http_responses<F>(handler: F) -> SocketAddr
 where
-    F: Fn(&HttpRequest) -> (u16, Vec<u8>, Duration) + Send + Sync + 'static,
+    F: Fn(&HttpRequest) -> HttpResponse + Send + Sync + 'static,
 {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -58,7 +90,7 @@ where
 /// Answer requests on one connection until the client closes it
 async fn serve_connection<F>(mut stream: TcpStream, handler: Arc<F>)
 where
-    F: Fn(&HttpRequest) -> (u16, Vec<u8>, Duration) + Send + Sync + 'static,
+    F: Fn(&HttpRequest) -> HttpResponse + Send + Sync + 'static,
 {
     let mut buf = Vec::new();
 
@@ -95,21 +127,100 @@ where
         let body = buf[head_end..head_end + content_length].to_vec();
         buf.drain(..head_end + content_length);
 
-        let (status, response_body, delay) = handler(&HttpRequest { path, body });
-        tokio::time::sleep(delay).await;
-        let reason = if status == 200 { "OK" } else { "Error" };
+        let answer = handler(&HttpRequest { path, body });
+        tokio::time::sleep(answer.delay).await;
+        let reason = if answer.status == 200 { "OK" } else { "Error" };
         let mut response = format!(
-            "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
-            status,
+            "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n",
+            answer.status,
             reason,
-            response_body.len()
-        )
-        .into_bytes();
-        response.extend_from_slice(&response_body);
+            answer.body.len()
+        );
+        for (name, value) in &answer.headers {
+            response.push_str(&format!("{name}: {value}\r\n"));
+        }
+        response.push_str("\r\n");
+        let mut response = response.into_bytes();
+        response.extend_from_slice(&answer.body);
         if stream.write_all(&response).await.is_err() {
             return;
         }
     }
+}
+
+/// A gzip stream that decompresses to `len` zero bytes. It is about 160
+/// times smaller than that: one deflate block with fixed Huffman codes, of a
+/// literal zero and then copies of 258 bytes from one byte back.
+pub fn gzip_zeros(len: usize) -> Vec<u8> {
+    // Bits go into each byte from the lowest bit up
+    struct Bits {
+        bytes: Vec<u8>,
+        used: u32,
+    }
+    impl Bits {
+        fn push(&mut self, bit: u32) {
+            if self.used.is_multiple_of(8) {
+                self.bytes.push(0);
+            }
+            *self.bytes.last_mut().unwrap() |= (bit as u8) << (self.used % 8);
+            self.used += 1;
+        }
+        /// A number, lowest bit first
+        fn number(&mut self, value: u32, width: u32) {
+            for i in 0..width {
+                self.push((value >> i) & 1);
+            }
+        }
+        /// A Huffman code, highest bit first
+        fn code(&mut self, code: u32, width: u32) {
+            for i in (0..width).rev() {
+                self.push((code >> i) & 1);
+            }
+        }
+    }
+
+    let mut bits = Bits {
+        bytes: Vec::new(),
+        used: 0,
+    };
+    bits.number(1, 1); // last block
+    bits.number(1, 2); // fixed Huffman codes
+    let literal_zero = |bits: &mut Bits| bits.code(0x30, 8);
+    let mut written = 0;
+    if len > 0 {
+        literal_zero(&mut bits);
+        written = 1;
+    }
+    while len - written >= 258 {
+        bits.code(0xc5, 8); // length 258 (code 285)
+        bits.code(0, 5); // distance 1 (code 0)
+        written += 258;
+    }
+    while written < len {
+        literal_zero(&mut bits);
+        written += 1;
+    }
+    bits.code(0, 7); // end of block (code 256)
+
+    // CRC-32 (IEEE) of the decompressed bytes
+    let table: Vec<u32> = (0..256u32)
+        .map(|n| {
+            (0..8).fold(n, |c, _| {
+                if c & 1 == 1 {
+                    0xedb8_8320 ^ (c >> 1)
+                } else {
+                    c >> 1
+                }
+            })
+        })
+        .collect();
+    let crc = !(0..len).fold(!0u32, |crc, _| table[(crc & 0xff) as usize] ^ (crc >> 8));
+
+    let mut gzip = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff];
+    gzip.extend_from_slice(&bits.bytes);
+    gzip.extend_from_slice(&crc.to_le_bytes());
+    gzip.extend_from_slice(&(len as u32).to_le_bytes());
+    gzip
 }
 
 /// Read more bytes into `buf`; false when the client is gone
@@ -373,7 +484,7 @@ impl MockNode {
         let chain = Arc::new(Mutex::new(chain));
 
         let served = chain.clone();
-        let addr = serve_http_late(move |request| {
+        let addr = serve_http_responses(move |request| {
             let call: Value = serde_json::from_slice(&request.body).unwrap();
             let method = call["method"].as_str().unwrap();
             let mut chain = served.lock().unwrap();
@@ -390,7 +501,7 @@ impl MockNode {
                     "error": { "code": code, "message": message },
                 }),
             };
-            (200, response.to_string().into_bytes(), delay)
+            HttpResponse::new(200, response.to_string().into_bytes()).delayed(delay)
         })
         .await;
 
