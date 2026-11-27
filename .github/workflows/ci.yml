@@ -81,6 +81,9 @@ jobs:
       - name: Run workspace tests
         run: cargo test --workspace
 
+      - name: Run proof-registry S3 tests (behind the s3 feature, off by default)
+        run: cargo test -p proof-registry --features s3
+
   # ── Prover (separate workspace, needs risc0) ────────────────────────────
 
   prover:

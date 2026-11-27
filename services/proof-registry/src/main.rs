@@ -16,14 +16,16 @@
 //! | `LOG_FORMAT` | `json`, or any other value for human-readable logs | `json` |
 //! | `RUST_LOG` | Log filter | `info` |
 //!
-//! Read only when built with the `s3` feature:
+//! Read only when built with the `s3` feature, where a value that is not
+//! valid UTF-8 is an error. A build without the feature refuses to start when
+//! `S3_BUCKET` is set and not empty.
 //!
 //! | Variable | Description | Default |
 //! |---|---|---|
-//! | `S3_BUCKET` | Bucket for proof bundles; replaces `PROOF_STORAGE_DIR` when set | (none) |
+//! | `S3_BUCKET` | Bucket for proof bundles; replaces `PROOF_STORAGE_DIR` when set; an empty value is an error | (none) |
 //! | `S3_REGION` | AWS region | `us-east-1` |
-//! | `S3_RETENTION_MODE` | `GOVERNANCE` or `COMPLIANCE` | `GOVERNANCE` |
-//! | `S3_RETENTION_YEARS` | Retention period in years | `7` |
+//! | `S3_RETENTION_MODE` | `GOVERNANCE` or `COMPLIANCE`; any other value is an error | `GOVERNANCE` |
+//! | `S3_RETENTION_YEARS` | Retention period in calendar years (a whole number above 0); any other value is an error | `7` |
 //! | `S3_PREFIX` | Key prefix inside the bucket | `proofs/` |
 
 pub mod compare;
@@ -136,15 +138,27 @@ async fn main() {
     let blob_store: Arc<dyn storage::ProofStorage> = {
         #[cfg(feature = "s3")]
         {
-            if let Ok(bucket) = env::var("S3_BUCKET") {
-                let region = env::var("S3_REGION").unwrap_or_else(|_| "us-east-1".to_string());
-                let mode =
-                    env::var("S3_RETENTION_MODE").unwrap_or_else(|_| "GOVERNANCE".to_string());
-                let years: u32 = env::var("S3_RETENTION_YEARS")
-                    .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(7);
-                let prefix = env::var("S3_PREFIX").unwrap_or_else(|_| "proofs/".to_string());
+            let setting = |name: &str| {
+                s3::parse_setting(name, env::var_os(name)).unwrap_or_else(|e| {
+                    tracing::error!("Failed to initialize S3 storage: {e}");
+                    std::process::exit(1);
+                })
+            };
+            if let Some(bucket) = setting("S3_BUCKET") {
+                // An empty bucket name would start the service and fail every
+                // request later.
+                if bucket.is_empty() {
+                    tracing::error!("Failed to initialize S3 storage: S3_BUCKET is set but empty");
+                    std::process::exit(1);
+                }
+                let region = setting("S3_REGION").unwrap_or_else(|| "us-east-1".to_string());
+                let mode = setting("S3_RETENTION_MODE").unwrap_or_else(|| "GOVERNANCE".to_string());
+                let years = s3::parse_retention_years(env::var_os("S3_RETENTION_YEARS").as_deref())
+                    .unwrap_or_else(|e| {
+                        tracing::error!("Failed to initialize S3 storage: {e}");
+                        std::process::exit(1);
+                    });
+                let prefix = setting("S3_PREFIX").unwrap_or_else(|| "proofs/".to_string());
 
                 let s3 = s3::S3Storage::new(&bucket, &region, &mode, years, &prefix)
                     .await
@@ -156,7 +170,7 @@ async fn main() {
                 tracing::info!(
                     bucket = %bucket,
                     region = %region,
-                    mode = %mode,
+                    mode = %s3.retention_mode(),
                     retention_years = years,
                     "Storage backend: S3"
                 );
@@ -172,6 +186,15 @@ async fn main() {
         }
         #[cfg(not(feature = "s3"))]
         {
+            // A service configured for S3 would otherwise keep its proofs on
+            // local disk, without Object Lock, and not say so.
+            if env::var_os("S3_BUCKET").is_some_and(|bucket| !bucket.is_empty()) {
+                tracing::error!(
+                    "S3_BUCKET is set, but this build has no S3 support \
+                     (built without the s3 feature)"
+                );
+                std::process::exit(1);
+            }
             let local = storage::LocalStorage::new(&storage_dir).unwrap_or_else(|e| {
                 tracing::error!("Failed to initialize local storage: {e}");
                 std::process::exit(1);

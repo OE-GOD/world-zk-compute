@@ -246,10 +246,16 @@ impl TransparencyLog {
         Ok(leaves)
     }
 
-    /// Check if the log database is healthy.
-    #[allow(dead_code)]
+    /// Check if the log database is healthy (its table can be read).
     pub fn is_healthy(&self) -> bool {
-        self.conn.query_row("SELECT 1", [], |_| Ok(())).is_ok()
+        self.conn
+            .query_row(
+                "SELECT idx, proof_hash FROM transparency_log LIMIT 1",
+                [],
+                |_| Ok(()),
+            )
+            .optional()
+            .is_ok()
     }
 }
 
@@ -685,7 +691,15 @@ mod tests {
 
     #[test]
     fn test_health_check() {
-        let (log, _tmp) = make_test_log();
+        let (mut log, _tmp) = make_test_log();
         assert!(log.is_healthy());
+
+        log.append(make_hash(0), "proof-0").unwrap();
+        assert!(log.is_healthy());
+
+        log.conn
+            .execute_batch("ALTER TABLE transparency_log RENAME TO log_gone;")
+            .unwrap();
+        assert!(!log.is_healthy());
     }
 }
