@@ -229,6 +229,10 @@ async fn deliver_with_retry(
         }
     };
 
+    // The path and query of a webhook URL often carry a token, so the logs
+    // name the receiver by its origin only; webhook_id tells hooks apart.
+    let url = url_origin(&hook.url);
+
     for attempt in 0..MAX_ATTEMPTS {
         let mut request = client
             .post(&hook.url)
@@ -247,7 +251,7 @@ async fn deliver_with_retry(
             Ok(resp) if resp.status().is_success() => {
                 tracing::info!(
                     webhook_id = %hook.id,
-                    url = %hook.url,
+                    url = %url,
                     status = resp.status().as_u16(),
                     attempt = attempt + 1,
                     "webhook delivered"
@@ -257,7 +261,7 @@ async fn deliver_with_retry(
             Ok(resp) => {
                 tracing::warn!(
                     webhook_id = %hook.id,
-                    url = %hook.url,
+                    url = %url,
                     status = resp.status().as_u16(),
                     attempt = attempt + 1,
                     "webhook delivery got non-success status"
@@ -266,8 +270,8 @@ async fn deliver_with_retry(
             Err(e) => {
                 tracing::warn!(
                     webhook_id = %hook.id,
-                    url = %hook.url,
-                    error = %e,
+                    url = %url,
+                    error = %e.without_url(),
                     attempt = attempt + 1,
                     "webhook delivery failed"
                 );
@@ -283,9 +287,47 @@ async fn deliver_with_retry(
 
     tracing::error!(
         webhook_id = %hook.id,
-        url = %hook.url,
+        url = %url,
         "webhook delivery failed after {MAX_ATTEMPTS} attempts"
     );
+}
+
+/// Scheme, host and port of a URL. The path, the query and any credentials
+/// are left out. What is not a complete URL, or has a '@' behind the host, is
+/// not shown at all. The same rules as `tee_watcher::redact::url_origin`,
+/// which the operator uses; the gateway does not depend on tee-watcher, which
+/// pulls in alloy.
+fn url_origin(url: &str) -> String {
+    origin(url).unwrap_or_else(|| "<URL not shown>".to_string())
+}
+
+fn origin(url: &str) -> Option<String> {
+    let url = url.trim();
+    let (scheme, after_scheme) = url.split_once("://")?;
+    // The parser is lenient: it takes "http:host" for a URL, skips slashes in
+    // front of the host, and drops tabs and line breaks. What it then takes
+    // for the host can be a part of the credentials or the path.
+    let is_scheme = |c: char| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.');
+    if !scheme.chars().all(is_scheme)
+        || after_scheme.starts_with(['/', '\\'])
+        || url.contains(|c: char| c.is_whitespace() || c.is_control())
+    {
+        return None;
+    }
+    let parsed = reqwest::Url::parse(url).ok()?;
+    // A '@' behind the host can mean that a '/', '?' or '#' in the credentials
+    // was not encoded, and that what the parser takes for the host is a part
+    // of them. (Looked for in the text as written: the parser takes '..' out
+    // of a path.)
+    let host_end = after_scheme.find(['/', '\\', '?', '#']);
+    if host_end.is_some_and(|end| after_scheme[end..].contains('@')) {
+        return None;
+    }
+    let host = parsed.host_str()?;
+    Some(match parsed.port() {
+        Some(port) => format!("{}://{}:{}", parsed.scheme(), host, port),
+        None => format!("{}://{}", parsed.scheme(), host),
+    })
 }
 
 /// Compute HMAC-SHA256 of `body` using `secret`, returning the hex-encoded
@@ -828,6 +870,119 @@ mod tests {
         let body = &requests[0].body;
         let expected_sig = compute_signature(b"test-secret", body).unwrap();
         assert_eq!(sig_str, format!("sha256={expected_sig}"));
+    }
+
+    /// Log output written while `f` runs on this thread.
+    async fn capture_logs<F: std::future::Future<Output = ()>>(f: F) -> String {
+        #[derive(Clone)]
+        struct Capture(Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Capture {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let buf = Capture(Arc::new(std::sync::Mutex::new(Vec::new())));
+        let writer = buf.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        f.await;
+        let out = buf.0.lock().unwrap().clone();
+        String::from_utf8(out).unwrap()
+    }
+
+    fn hook_for(url: String) -> WebhookRegistration {
+        WebhookRegistration {
+            id: "wh_test".to_string(),
+            url,
+            events: vec!["proof.created".to_string()],
+            secret: None,
+            active: true,
+        }
+    }
+
+    fn test_payload() -> WebhookPayload {
+        WebhookPayload {
+            event: "proof.created".to_string(),
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            data: serde_json::json!({}),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_delivered_log_names_the_receiver_by_origin_only() {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/internal"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+        let hook = hook_for(format!(
+            "{}/internal?token=ALICE-SECRET-TOKEN",
+            mock_server.uri()
+        ));
+
+        let client = reqwest::Client::new();
+        let logs = capture_logs(deliver_with_retry(&client, &hook, &test_payload())).await;
+
+        assert!(logs.contains("webhook delivered"), "{logs}");
+        assert!(logs.contains(&mock_server.uri()), "{logs}");
+        assert!(!logs.contains("ALICE-SECRET-TOKEN"), "{logs}");
+        assert!(!logs.contains("/internal"), "{logs}");
+    }
+
+    #[tokio::test]
+    async fn test_failed_delivery_logs_leave_the_url_out_of_the_error() {
+        // A port nothing listens on: every attempt fails to connect, and the
+        // reqwest error would name the full URL.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let hook = hook_for(format!(
+            "http://127.0.0.1:{port}/internal?token=ALICE-SECRET-TOKEN"
+        ));
+
+        let client = reqwest::Client::new();
+        let logs = capture_logs(deliver_with_retry(&client, &hook, &test_payload())).await;
+
+        assert!(logs.contains("webhook delivery failed after"), "{logs}");
+        assert!(logs.contains(&format!("http://127.0.0.1:{port}")), "{logs}");
+        assert!(!logs.contains("ALICE-SECRET-TOKEN"), "{logs}");
+        assert!(!logs.contains("/internal"), "{logs}");
+    }
+
+    #[test]
+    fn test_url_origin_drops_path_query_and_credentials() {
+        assert_eq!(
+            url_origin("https://user:pw@hooks.example.com/v2/SECRET?token=SECRET"),
+            "https://hooks.example.com"
+        );
+        assert_eq!(
+            url_origin("http://127.0.0.1:9000/hook"),
+            "http://127.0.0.1:9000"
+        );
+        // Credentials with a character that should have been encoded, and
+        // texts that the parser reads as a URL although they are not one.
+        for url in [
+            "SECRET, not a URL",
+            "https://user:p@ss#SECRET@host/",
+            "https://user:1/SECRET@host/",
+            "https://SECRET:1/x@host/..",
+            "http:SECRET",
+            "http:///SECRET",
+            "https://h\nSECRET/x",
+        ] {
+            assert_eq!(url_origin(url), "<URL not shown>", "{url}");
+        }
     }
 
     // -- HMAC unit test --

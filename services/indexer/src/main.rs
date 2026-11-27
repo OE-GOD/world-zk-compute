@@ -766,28 +766,41 @@ pub(crate) struct AppState {
     pub(crate) storage: Arc<dyn Storage>,
     #[allow(dead_code)] // stored for lifetime management; websocket routes receive it separately
     pub(crate) broadcaster: Arc<EventBroadcaster>,
+    /// The rate limiter's trusted proxies, so that handlers that log a client
+    /// address name it the way the rate limiter counts it.
+    pub(crate) trusted_proxies: rate_limit::TrustedProxyConfig,
 }
 
 // ---------------------------------------------------------------------------
 // App builder (delegates to routes module)
 // ---------------------------------------------------------------------------
 
+/// Router with the default rate limit and no background cleanup, for tests.
+#[cfg(test)]
 pub fn build_app(storage: Arc<dyn Storage>, broadcaster: Arc<EventBroadcaster>) -> Router {
     routes::build_app(
         storage,
         broadcaster,
-        rate_limit::RateLimitConfig::default(),
-        rate_limit::TrustedProxyConfig::default(),
+        rate_limit::RateLimitLayer::new_without_cleanup(
+            rate_limit::RateLimitConfig::default(),
+            rate_limit::TrustedProxyConfig::default(),
+        ),
     )
 }
 
+/// The production router. Its rate limiter drops idle clients' buckets in
+/// the background, so it must be built inside the tokio runtime.
 pub fn build_app_with_rate_limit(
     storage: Arc<dyn Storage>,
     broadcaster: Arc<EventBroadcaster>,
     rate_limit_config: rate_limit::RateLimitConfig,
     trusted_proxies: rate_limit::TrustedProxyConfig,
 ) -> Router {
-    routes::build_app(storage, broadcaster, rate_limit_config, trusted_proxies)
+    routes::build_app(
+        storage,
+        broadcaster,
+        rate_limit::RateLimitLayer::new(rate_limit_config, trusted_proxies),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -846,7 +859,9 @@ variables:
   ADMIN_API_KEY              Key for the admin endpoints (default: none, no such
                              endpoints)
   RATE_LIMIT_PER_IP          Requests per IP per minute (default 100)
-  TRUSTED_PROXIES            CIDR ranges whose X-Forwarded-For is trusted
+  TRUSTED_PROXIES            CIDR ranges of the proxies in front; behind them a
+                             client is the right-most X-Forwarded-For address
+                             outside these ranges (HTTP and WebSocket limits)
   MAX_WS_CONNECTIONS         WebSocket connections in total (default 100)
   MAX_WS_CONNECTIONS_PER_IP  WebSocket connections per IP (default 5)
   LOG_FORMAT                 json, or anything else for text (default json)
@@ -1703,6 +1718,21 @@ mod tests {
     }
 
     // -- HTTP endpoint tests --
+
+    #[tokio::test]
+    async fn test_production_router_spawns_rate_limit_cleanup() {
+        // The cleanup task is the only task building the router spawns; without
+        // it the rate limiter keeps a bucket for every client address for ever.
+        let metrics = tokio::runtime::Handle::current().metrics();
+        let before = metrics.num_alive_tasks();
+        let _app = build_app_with_rate_limit(
+            test_storage(),
+            test_broadcaster(),
+            rate_limit::RateLimitConfig::default(),
+            rate_limit::TrustedProxyConfig::none(),
+        );
+        assert_eq!(metrics.num_alive_tasks(), before + 1);
+    }
 
     #[tokio::test]
     async fn test_health_endpoint() {

@@ -43,6 +43,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tee_watcher::TEEEvent;
 
+/// Longest time the `/ready` database check waits for `SELECT 1`, so that an
+/// unreachable database is reported (503) within it rather than after the
+/// pool's acquire timeout.
+const CONNECTIVITY_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
+
 // ---------------------------------------------------------------------------
 // EventRow -- matches the `events` table from 001_init.sql
 // ---------------------------------------------------------------------------
@@ -699,6 +704,24 @@ impl PgStorage {
         Ok(())
     }
 
+    async fn check_connectivity_async(&self) -> anyhow::Result<()> {
+        // While Postgres refuses connections the pool keeps retrying until its
+        // acquire timeout (30 s by default), longer than a readiness probe
+        // waits, and each waiting /ready call holds a runtime worker.
+        tokio::time::timeout(
+            CONNECTIVITY_CHECK_TIMEOUT,
+            sqlx::query_as::<_, (i32,)>("SELECT 1").fetch_one(&self.pool),
+        )
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "database did not answer within {}s",
+                CONNECTIVITY_CHECK_TIMEOUT.as_secs()
+            )
+        })??;
+        Ok(())
+    }
+
     async fn get_total_results_async(&self) -> u64 {
         let row: Result<(i64,), _> = sqlx::query_as("SELECT COUNT(*) FROM results")
             .fetch_one(&self.pool)
@@ -809,6 +832,14 @@ impl Storage for PgStorage {
         })
     }
 
+    // Without this the trait default answers Ok, and /ready reports the
+    // database as reachable while Postgres is down.
+    fn check_connectivity(&self) -> anyhow::Result<()> {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(self.check_connectivity_async())
+        })
+    }
+
     fn apply_event(&self, event: &TEEEvent) -> anyhow::Result<()> {
         match event {
             TEEEvent::ResultSubmitted {
@@ -865,14 +896,57 @@ mod tests {
     // Unit tests (no PostgreSQL instance required)
     // -----------------------------------------------------------------------
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_check_connectivity_gives_up_after_its_own_timeout_not_the_acquire_timeout() {
+        // Nothing listens on port 1. The pool would retry for the default
+        // 30 s acquire timeout; the check must answer within its own 5 s.
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(PgStorageConfig::default().acquire_timeout)
+            .connect_lazy("postgres://indexer:pw@127.0.0.1:1/indexer")
+            .unwrap();
+        let storage = PgStorage {
+            pool,
+            last_indexed_block: AtomicU64::new(0),
+        };
+
+        let started = std::time::Instant::now();
+        assert!(storage.check_connectivity().is_err());
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_check_connectivity_fails_when_postgres_is_unreachable() {
+        // Nothing listens on port 1, so every connection attempt is refused.
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(1))
+            .connect_lazy("postgres://indexer:pw@127.0.0.1:1/indexer")
+            .unwrap();
+        let storage = PgStorage {
+            pool,
+            last_indexed_block: AtomicU64::new(0),
+        };
+
+        assert!(storage.check_connectivity().is_err());
+    }
+
+    /// Held by every test that sets or removes DB_TYPE: env vars are
+    /// process-global, and the tests run in parallel.
+    static DB_TYPE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn test_db_type_defaults_to_sqlite() {
+        let _env = DB_TYPE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var("DB_TYPE");
         assert_eq!(DbType::from_env(), DbType::Sqlite);
     }
 
     #[test]
     fn test_db_type_recognises_postgres_variants() {
+        let _env = DB_TYPE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         for variant in &[
             "postgres",
             "postgresql",
@@ -893,6 +967,7 @@ mod tests {
 
     #[test]
     fn test_db_type_unknown_falls_back_to_sqlite() {
+        let _env = DB_TYPE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var("DB_TYPE", "mysql");
         assert_eq!(DbType::from_env(), DbType::Sqlite);
         std::env::remove_var("DB_TYPE");
@@ -1130,6 +1205,15 @@ mod tests {
     //   DATABASE_URL=postgres://user:pass@localhost/indexer_test \
     //     cargo test --package tee-indexer pg_storage -- --ignored
     // -----------------------------------------------------------------------
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "requires a running PostgreSQL instance (set DATABASE_URL)"]
+    async fn test_pg_check_connectivity_succeeds() {
+        let url = std::env::var("DATABASE_URL")
+            .expect("DATABASE_URL must be set for PG integration tests");
+        let pg = PgStorage::new(&url).await.unwrap();
+        pg.check_connectivity().unwrap();
+    }
 
     #[tokio::test]
     #[ignore = "requires a running PostgreSQL instance (set DATABASE_URL)"]

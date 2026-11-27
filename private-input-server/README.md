@@ -67,7 +67,7 @@ Supports `.env` file via `dotenvy`.
 ## Storage
 
 - **In-memory** (default): Fast, but data is lost on restart
-- **File-backed** (`STORAGE_DIR`): Inputs persisted as `{request_id}.bin` files with in-memory cache
+- **File-backed** (`STORAGE_DIR`): Inputs persisted as `{request_id}.bin` files with in-memory cache. Each file is written to a temporary file, synced and renamed into place. On Unix a missing directory is created 0700, an existing one keeps its mode (a warning is logged when group or other users can access it), each file is created 0600, and the directory is synced after the rename. An upload that cannot be written answers 500.
 
 ## Rate Limiting
 
