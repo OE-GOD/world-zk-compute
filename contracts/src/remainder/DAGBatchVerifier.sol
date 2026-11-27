@@ -307,7 +307,8 @@ library DAGBatchVerifier {
 
     /// @notice Clear all storage associated with a batch verification session
     /// @dev Zeroes out the 14-slot session struct and all three cross-batch arrays.
-    ///      Should be called after successful verification or to abort a stale session.
+    ///      Only possible after finalization: the only caller, RemainderVerifier.cleanupDAGBatchSession,
+    ///      requires it. An unfinished session stays in storage.
     ///      Gas cost depends on the amount of stored data (binding values + offsets).
     ///      Provides gas refunds via SSTORE-to-zero (EIP-3529: up to 4800 gas per slot).
     /// @param sessionId The session to clean up

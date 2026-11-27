@@ -180,7 +180,7 @@ cast send $ENGINE_ADDRESS \
 The TEE path deploys `ProgramRegistry`, `TEEMLVerifier` (implementation + `UUPSProxy`) and
 `ExecutionEngine` to Ethereum Sepolia.
 
-> **Note:** The `RemainderVerifier` contract (135,533 bytes) exceeds the 24,576-byte contract
+> **Note:** The `RemainderVerifier` contract (135,888 bytes) exceeds the 24,576-byte contract
 > size limit on Sepolia. Arbitrum Sepolia, Arbitrum One, World Chain, World Chain Sepolia and
 > Ethereum mainnet enforce the same limit, so full ZK verification cannot be deployed on any of
 > them; only the TEE path (`TEEMLVerifier`) can (see `docs/CROSS_CHAIN.md` and

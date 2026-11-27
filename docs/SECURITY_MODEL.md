@@ -210,7 +210,7 @@ The contract and prover code have not undergone a formal third-party security au
 
 ### 6.3 Gas Costs Limit On-Chain Verification
 
-Direct GKR+Hyrax verification costs about 198M gas for the phase1a fixture (`eth_estimateGas` on Anvil), exceeding Ethereum L1's 30M block gas limit. The batch verifier splits it into 15 transactions (plus an optional cleanup), but its largest step measures 31.7M gas, also above 30M; the hybrid Stylus+Groth16 path is quoted at ~3-6M gas. `RemainderVerifier` is 135,533 bytes of runtime bytecode, over the 24,576-byte contract size limit of Ethereum mainnet and Sepolia, Arbitrum One and Arbitrum Sepolia, World Chain and World Chain Sepolia, so it cannot be deployed on any of them; `TEEMLVerifier` alone can.
+Direct GKR+Hyrax verification costs about 198M gas for the phase1a fixture (`eth_estimateGas` on Anvil), exceeding Ethereum L1's 30M block gas limit. The batch verifier splits it into 15 transactions (plus an optional cleanup), but its largest step measures 31.7M gas, also above 30M; the hybrid Stylus+Groth16 path is quoted at ~3-6M gas. `RemainderVerifier` is 135,888 bytes of runtime bytecode, over the 24,576-byte contract size limit of Ethereum mainnet and Sepolia, Arbitrum One and Arbitrum Sepolia, World Chain and World Chain Sepolia, so it cannot be deployed on any of them; `TEEMLVerifier` alone can.
 
 **Implication:** On-chain dispute resolution is expensive. The economic security model requires that the prover stake (0.1 ETH) exceeds the ZK proof generation cost for disputes to be economically rational.
 
@@ -245,7 +245,7 @@ The enclave's legacy EIP-191 attestation signs an extended payload including `ch
 | Replay protection | TEEMLVerifier | EIP-712 domain separator with `chainId` + `verifyingContract` |
 | Stake caps | TEEMLVerifier | `setChallengeBondAmount` / `setProverStake` capped at 100 ETH |
 | Window bounds | TEEMLVerifier | Challenge window: 10min-7days; Dispute window: 1hr-30days |
-| Upgradeability | RemainderVerifier | UUPS proxy (ERC-1967 storage slots); `_authorizeUpgrade` checks code exists |
+| Upgradeability | RemainderVerifier | UUPS proxy (ERC-1967 storage slots); `_authorizeUpgrade` checks code exists; the base requires the new implementation's `proxiableUUID()` to be the ERC-1967 implementation slot, which also refuses the address of a proxy whose implementation has this check (its `proxiableUUID()` reverts) but not of a proxy on an older implementation, which answers through `delegatecall` (RUNBOOK section 6, step 3, checks the target's implementation slot and its address for it); it does not check that the new implementation has the upgrade functions or a compatible storage layout |
 | Circuit validation | RemainderVerifier | Registered circuits with description hash, generator hash, active flag |
 | Batch session auth | DAGBatchVerifier | `msg.sender` check on every continue/finalize call |
 | Custom errors | Both | Gas-efficient custom errors (no string reverts) |

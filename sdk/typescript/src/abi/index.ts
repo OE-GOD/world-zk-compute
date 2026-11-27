@@ -402,7 +402,7 @@ export const teeMLVerifierAbi = [
         "type": "bytes32"
       }
     ],
-    "stateMutability": "pure"
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -1237,6 +1237,11 @@ export const teeMLVerifierAbi = [
   },
   {
     "type": "error",
+    "name": "UUPSUnauthorizedCallContext",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "UnregisteredEnclave",
     "inputs": []
   },
@@ -1244,6 +1249,16 @@ export const teeMLVerifierAbi = [
     "type": "error",
     "name": "UpgradeCallFailed",
     "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "UpgradeToNonUUPS",
+    "inputs": [
+      {
+        "name": "newImplementation",
+        "type": "address"
+      }
+    ]
   },
   {
     "type": "error",
@@ -4610,7 +4625,7 @@ export const remainderVerifierAbi = [
         "type": "bytes32"
       }
     ],
-    "stateMutability": "pure"
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -6532,8 +6547,23 @@ export const remainderVerifierAbi = [
   },
   {
     "type": "error",
+    "name": "UUPSUnauthorizedCallContext",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "UpgradeCallFailed",
     "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "UpgradeToNonUUPS",
+    "inputs": [
+      {
+        "name": "newImplementation",
+        "type": "address"
+      }
+    ]
   },
   {
     "type": "error",

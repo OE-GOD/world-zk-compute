@@ -8,7 +8,7 @@ EIP-170 limits deployed contract bytecode to **24,576 bytes (24 KB)**. Several c
 
 | Contract | Source Size | Status |
 |----------|-----------|--------|
-| `RemainderVerifier.sol` | ~2,784 lines (~125 KB source) | Exceeds limit (135,533 bytes runtime) |
+| `RemainderVerifier.sol` | ~2,784 lines (~125 KB source) | Exceeds limit (135,888 bytes runtime) |
 | `PoseidonSponge.sol` | ~2,569 lines (~119 KB source) | Internal library, compiled into `RemainderVerifier` |
 | `DAGRemainderGroth16Verifier.sol` | ~31,261 lines (~2 MB source) | Exceeds limit (461,497 bytes runtime) |
 | `GKRDAGVerifier.sol` | ~905 lines (~39 KB source) | Internal library, compiled into `RemainderVerifier` |
@@ -39,7 +39,7 @@ Core verification logic is implemented as Solidity libraries (`library` keyword)
 - `SumcheckVerifier` — Sumcheck protocol
 - `DAGBatchVerifier` — Multi-tx batch state management
 
-The libraries are not deployed separately: the `RemainderVerifier` artifact has no link references, and no deploy script passes `--libraries`. They are part of its 135,533 bytes of runtime bytecode and do not reduce its deployed size.
+The libraries are not deployed separately: the `RemainderVerifier` artifact has no link references, and no deploy script passes `--libraries`. They are part of its 135,888 bytes of runtime bytecode and do not reduce its deployed size.
 
 ### 2. Multi-Transaction Batch Verification (DAGBatchVerifier)
 
@@ -59,7 +59,7 @@ A complete GKR DAG verifier is implemented in Rust/WASM for Arbitrum Stylus:
 - **Size**: ~60 KB raw WASM → ~22.8 KB Brotli after `wasm-opt` (under 24 KB Stylus limit)
 - **Integration**: `RemainderVerifier.verifyDAGProofStylus()` delegates to the WASM contract via `staticcall`
 
-This avoids EIP-170 for the WASM contract, by running verification in WASM rather than EVM bytecode. The Solidity entry point is still `RemainderVerifier` (135,533 bytes), which Arbitrum One and Arbitrum Sepolia reject: both enforce the 24,576-byte limit.
+This avoids EIP-170 for the WASM contract, by running verification in WASM rather than EVM bytecode. The Solidity entry point is still `RemainderVerifier` (135,888 bytes), which Arbitrum One and Arbitrum Sepolia reject: both enforce the 24,576-byte limit.
 
 ### 4. Function Splitting (Stack-Depth Management)
 
@@ -81,7 +81,7 @@ In `contracts/foundry.toml`:
 ### TEE-Only Mode (Sepolia)
 
 On Sepolia testnet, the system runs in **TEE-only mode** (`deployments/chains.json` marks Sepolia, Arbitrum Sepolia and World Chain Sepolia as `teeOnly`):
-- `TEEMLVerifier` and `ExecutionEngine` can be deployed (both under EIP-170: 14,714 and 11,230 bytes runtime). `deployments/` records no `TEEMLVerifier` address on any chain; `docs/CONTRACT_ADDRESSES.md` lists an `ExecutionEngine` on Sepolia
+- `TEEMLVerifier` and `ExecutionEngine` can be deployed (both under EIP-170: 15,045 and 11,230 bytes runtime). `deployments/` records no `TEEMLVerifier` address on any chain; `docs/CONTRACT_ADDRESSES.md` lists an `ExecutionEngine` on Sepolia
 - `RemainderVerifier` (with its libraries compiled in) is NOT deployed
 - TEE attestation provides trust, ZK verification is not needed on-chain
 - This sidesteps the EIP-170 issue entirely for testnet
@@ -98,7 +98,7 @@ For on-chain ZK verification, options include:
 ### Recommended Approach
 
 For **Arbitrum/World Chain** (Stylus-capable):
-- Deploy `RemainderVerifier` as a thin registry/dispatcher (under EIP-170; the current contract is 135,533 bytes and would have to be split first)
+- Deploy `RemainderVerifier` as a thin registry/dispatcher (under EIP-170; the current contract is 135,888 bytes and would have to be split first)
 - Use Stylus WASM verifier for actual GKR verification
 - Use `DAGBatchVerifier` for multi-tx flow
 
@@ -115,7 +115,7 @@ For **other EVM chains**:
 cd contracts && bash ../scripts/check-contract-sizes.sh
 ```
 
-The script reports `RemainderVerifier` (135,533 bytes, 551% of the limit) as `FAIL`, warns that a contract over the limit cannot be deployed on a chain that enforces it, and exits with status 1.
+The script reports `RemainderVerifier` (135,888 bytes, 552% of the limit) as `FAIL`, warns that a contract over the limit cannot be deployed on a chain that enforces it, and exits with status 1.
 
 ## Contract Upgrade Strategy
 

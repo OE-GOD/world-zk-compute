@@ -586,7 +586,7 @@ kubectl -n world-zk rollout restart deployment worldzk-indexer
 - **Timelock set**: only the timelock contract can call them, and the admin's direct call reverts with `NotTimelocked`. With the repository's `TimelockController` (`contracts/src/TimelockController.sol`), its `owner` schedules the call with `schedule(bytes32,address,bytes,uint256)` and, once the delay has passed, anyone can run it with `execute(bytes32)`.
 - `setTimelock(address)` is `onlyAdmin` and is not delayed: the admin can set, replace or clear the timelock in one transaction.
 
-The only check made on the new implementation is that the address has code (`InvalidImplementation` otherwise). `pause()`, `unpause()` and `changeAdmin(address)` stay with the admin whether or not a timelock is set.
+Two checks are made on the new implementation: the address has code (`InvalidImplementation` otherwise), and its `proxiableUUID()` returns the ERC-1967 implementation slot (`UpgradeToNonUUPS(address)` otherwise). Called through a proxy whose implementation has this check, `proxiableUUID()` reverts, so the address of such a proxy, this one included, fails the second check. A proxy that runs an older implementation (as every proxy deployed before this check does) answers `proxiableUUID()` through `delegatecall` and passes it; the checks in Step 3 catch that case: the storage check for a proxy that keeps its implementation in the ERC-1967 implementation slot, such as UUPSProxy, and the check of the address against Step 2 in every case. The checks are made by the implementation the proxy runs at the time of the upgrade, so a proxy still on an older implementation makes only the checks that version has. `pause()`, `unpause()` and `changeAdmin(address)` stay with the admin whether or not a timelock is set.
 
 ### Upgrading TEEMLVerifier or RemainderVerifier
 
@@ -626,17 +626,27 @@ forge create src/tee/TEEMLVerifier.sol:TEEMLVerifier \
 # Record: $NEW_IMPL
 ```
 
-For RemainderVerifier the contract is `src/remainder/RemainderVerifier.sol:RemainderVerifier`. Its runtime bytecode is 135,533 bytes, above the 24,576-byte contract size limit, so this step only succeeds on a chain without that limit (locally, `anvil --disable-code-size-limit`); on a default Anvil it fails with `max initcode size exceeded`.
+For RemainderVerifier the contract is `src/remainder/RemainderVerifier.sol:RemainderVerifier`. Its runtime bytecode is 135,888 bytes, above the 24,576-byte contract size limit, so this step only succeeds on a chain without that limit (locally, `anvil --disable-code-size-limit`); on a default Anvil it fails with `max initcode size exceeded`.
 
 **Step 3: Check that the new implementation is a UUPS implementation**
 
 ```bash
 cast call $NEW_IMPL "proxiableUUID()(bytes32)" --rpc-url $RPC
 # Expected: 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc
-# A contract that does not inherit UUPSUpgradeable reverts here
+# Anything else (a revert, no return data, another value) is not a UUPS implementation.
+# A proxy whose implementation has the upgrade check reverts here with UUPSUnauthorizedCallContext.
+# A proxy on an older implementation, as $PROXY is until its first upgrade to a version with the
+# check, returns the expected value: the next check catches a proxy that keeps its implementation
+# in the ERC-1967 slot, such as UUPSProxy, and checking the address against Step 2 catches every case.
+
+cast storage $NEW_IMPL 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc --rpc-url $RPC
+# Expected: 0x0000000000000000000000000000000000000000000000000000000000000000
+# A proxy that keeps its implementation in this slot, such as UUPSProxy, holds its address here
 ```
 
-> **Warning:** `upgradeTo` accepts any address that has code, and after an upgrade to a contract without the upgrade functions (for example one that does not inherit `UUPSUpgradeable`) the proxy has no `upgradeTo`, `upgradeToAndCall` or `implementation()` any more (those calls revert), so it can never be upgraded or rolled back again.
+Also check that `$NEW_IMPL` is not `$PROXY` and is the address recorded in Step 2. The upgrade check does not make these checks unnecessary: a proxy still on an implementation older than the check (see "Who Can Upgrade") accepts any address with code, its own included, and a proxy on the current implementation still accepts the address of a proxy that runs an older implementation. After an upgrade to a proxy every call on it fails, `upgradeTo` included.
+
+> **Warning:** `upgradeTo` refuses a contract without `proxiableUUID()`, a contract whose `proxiableUUID()` returns another value, and the address of a proxy whose implementation has this check (`UpgradeToNonUUPS`). It accepts the address of a proxy on an older implementation: the storage check above catches a proxy that keeps its implementation in the ERC-1967 implementation slot, such as UUPSProxy, and checking the address against Step 2 catches every case. It does not check that the new implementation has the upgrade functions themselves or a compatible storage layout: after an upgrade to a contract that answers `proxiableUUID()` but has no `upgradeTo`, `upgradeToAndCall` or `implementation()`, the proxy can never be upgraded or rolled back again.
 
 **Step 4: Rehearse on a fork**
 

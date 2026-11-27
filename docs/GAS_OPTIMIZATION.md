@@ -173,7 +173,7 @@ At 0.1% dispute rate: ~502K gas ($0.13 at 0.1 gwei).
 
 The ZK figure is `eth_estimateGas` for `verifyDAGProof` on the phase1a fixture, on a local Anvil chain
 (198,249,628). The "Arb" and "L1" rows for the ZK path are price conversions only: `RemainderVerifier`
-(135,533 bytes) is over the 24,576-byte contract size limit of Ethereum, Arbitrum and World Chain and
+(135,888 bytes) is over the 24,576-byte contract size limit of Ethereum, Arbitrum and World Chain and
 cannot be deployed there. In batched mode the largest of the 15 transactions uses 31.7M gas.
 
 The TEE path is designed so ZK is only triggered during disputes. At dispute rates below
