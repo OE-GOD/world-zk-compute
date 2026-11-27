@@ -497,7 +497,14 @@ fn version_info_to_summary(info: &VersionInfo) -> VersionSummary {
 /// In mock mode, returns a deterministic mock proof. Otherwise a prover is
 /// registered for the model on its first proof request (in managed mode this
 /// starts a child process) and the request is forwarded to it. A registered
-/// prover that has died is not started again.
+/// prover that has died is not started again. A request that the prover
+/// refuses because of its input (see `ProveError::refused_request`: a 400
+/// with a JSON `error` text, or a 413) is answered with 400 and the
+/// prover's message; any other failure to prove is a 500. In external mode
+/// (`--prover-url`) nothing checks that the external prover serves the
+/// uploaded model, so if it serves another one, its feature-count refusal
+/// still reaches the client as the client's 400, although the deployment is
+/// at fault.
 async fn prove_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ProveRequest>,
@@ -587,13 +594,14 @@ async fn prove_handler(
     let result = prover_mgr
         .prove(&req.model_id, &req.features)
         .await
-        .map_err(|e| {
-            (
+        .map_err(|e| match e.refused_request() {
+            Some(error) => (StatusCode::BAD_REQUEST, Json(ErrorResponse { error })),
+            None => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
                     error: format!("Proof generation failed: {}", e),
                 }),
-            )
+            ),
         })?;
 
     let prove_time_ms = start.elapsed().as_millis() as u64;
@@ -2169,12 +2177,17 @@ mod tests {
 
     /// Serve `reply` with HTTP 200 for every POST to `path`; returns the base URL.
     async fn start_server_replying(path: &str, reply: serde_json::Value) -> String {
+        start_server_answering(path, StatusCode::OK, reply.to_string()).await
+    }
+
+    /// Answer every POST to `path` with `status` and `body`; returns the base URL.
+    async fn start_server_answering(path: &str, status: StatusCode, body: String) -> String {
         let app = axum::Router::new()
             .route(
                 path,
                 post(move || {
-                    let reply = reply.clone();
-                    async move { Json(reply) }
+                    let body = body.clone();
+                    async move { (status, [("content-type", "application/json")], body) }
                 }),
             )
             .route("/health", get(|| async { Json(serde_json::json!({})) }));
@@ -2211,10 +2224,8 @@ mod tests {
         assert_eq!(prove_resp.registry_proof_id, None);
     }
 
-    /// A prover that answers 200 without the proof fields has not produced a proof.
-    #[tokio::test]
-    async fn test_prove_fails_when_prover_reply_has_no_proof() {
-        let prover_url = start_server_replying("/prove/bundle", serde_json::json!({})).await;
+    /// Create a test app that sends its proof requests to `prover_url`.
+    async fn test_app_with_prover(prover_url: String) -> (Router, tempfile::TempDir) {
         let tmp = tempfile::TempDir::new().unwrap();
         let store = ModelStore::new(tmp.path().to_path_buf()).await.unwrap();
         let registry = ModelRegistry::new(store.clone()).await;
@@ -2227,7 +2238,185 @@ mod tests {
             job_store: Arc::new(JobStore::new()),
             start_time: Instant::now(),
         });
-        let app = build_router(state, false);
+        (build_router(state, false), tmp)
+    }
+
+    /// `POST /prove` on an app whose prover answers with `status` and `body`:
+    /// the status and the `error` text of the response.
+    async fn prove_with_prover_answering(status: u16, body: &str) -> (StatusCode, String) {
+        let prover_status = StatusCode::from_u16(status).unwrap();
+        let prover_url =
+            start_server_answering("/prove/bundle", prover_status, body.to_string()).await;
+        let (app, _tmp) = test_app_with_prover(prover_url).await;
+        let model_id = upload_test_model(&app).await;
+
+        let resp = prove(&app, &model_id).await;
+        let status = resp.status();
+        let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let error: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        (status, error["error"].as_str().unwrap().to_string())
+    }
+
+    /// A request that the prover refuses because of its input is the
+    /// client's fault, and the client is told what the prover said.
+    #[tokio::test]
+    async fn test_prove_refused_by_prover_is_400() {
+        for status in [400, 413] {
+            let body = r#"{"error":"Expected 5 features, got 3"}"#;
+            let (got, message) = prove_with_prover_answering(status, body).await;
+            assert_eq!(got, StatusCode::BAD_REQUEST, "prover answered {status}");
+            assert_eq!(message, "Expected 5 features, got 3");
+        }
+
+        // A 413 without an `error` text is passed on as it is.
+        for body in ["length limit exceeded", r#"{"detail":"too long"}"#] {
+            let (got, message) = prove_with_prover_answering(413, body).await;
+            assert_eq!(got, StatusCode::BAD_REQUEST, "{body}");
+            assert_eq!(message, body);
+        }
+
+        for body in ["", " ", r#"{"error":""}"#, r#"{"error":"  "}"#] {
+            let (got, message) = prove_with_prover_answering(413, body).await;
+            assert_eq!(got, StatusCode::BAD_REQUEST, "{body:?}");
+            assert_eq!(message, "Prover returned error 413 Payload Too Large");
+        }
+    }
+
+    /// A 413 whose JSON `error` is not a text has no message of its own, so
+    /// its body is passed on as it is.
+    #[tokio::test]
+    async fn test_prove_413_with_a_non_text_error_passes_the_body_on() {
+        for body in [
+            r#"{"error":5}"#,
+            r#"{"error":null}"#,
+            r#"{"error":{"a":1}}"#,
+        ] {
+            let (got, message) = prove_with_prover_answering(413, body).await;
+            assert_eq!(got, StatusCode::BAD_REQUEST, "{body}");
+            assert_eq!(message, body);
+        }
+    }
+
+    /// The prover's message reaches the client as it is, spaces and line
+    /// breaks around it included.
+    #[tokio::test]
+    async fn test_prove_refusal_text_reaches_the_client_untrimmed() {
+        for status in [400, 413] {
+            let body = r#"{"error":"  Expected 5 features, got 3 \n"}"#;
+            let (got, message) = prove_with_prover_answering(status, body).await;
+            assert_eq!(got, StatusCode::BAD_REQUEST, "prover answered {status}");
+            assert_eq!(message, "  Expected 5 features, got 3 \n");
+        }
+
+        let body = "  length limit exceeded\n";
+        let (got, message) = prove_with_prover_answering(413, body).await;
+        assert_eq!(got, StatusCode::BAD_REQUEST);
+        assert_eq!(message, body);
+    }
+
+    /// Other answers of the prover are not the client's fault.
+    #[tokio::test]
+    async fn test_prove_other_prover_errors_are_500() {
+        for status in [401, 403, 404, 429, 500, 503, 504] {
+            let body = r#"{"error":"not today"}"#;
+            let (got, message) = prove_with_prover_answering(status, body).await;
+            assert_eq!(
+                got,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "prover answered {status}"
+            );
+            let expected = format!("Proof generation failed: Prover returned error {status} ");
+            assert!(message.starts_with(&expected), "{message}");
+            assert!(message.ends_with(body), "{message}");
+        }
+    }
+
+    /// A 422, or a 400 that is not the prover's JSON refusal of an input,
+    /// means the generator and the prover disagree on the request: a 500
+    /// with the prover's answer, as for any other failure.
+    #[tokio::test]
+    async fn test_prove_request_the_prover_cannot_read_is_500() {
+        let answers = [
+            (422, r#"{"error":"Expected 5 features, got 3"}"#),
+            (422, "Failed to deserialize the JSON body"),
+            (400, "Failed to parse the request body as JSON"),
+            (400, r#"{"error":""}"#),
+            (400, r#"{"error":"  "}"#),
+            (400, r#"{"error":5}"#),
+            (400, r#"{"detail":"bad"}"#),
+            (400, ""),
+        ];
+        for (status, body) in answers {
+            let (got, message) = prove_with_prover_answering(status, body).await;
+            assert_eq!(got, StatusCode::INTERNAL_SERVER_ERROR, "{status} {body:?}");
+            let expected = format!("Proof generation failed: Prover returned error {status} ");
+            assert!(message.starts_with(&expected), "{message}");
+            assert!(message.ends_with(body), "{message}");
+        }
+    }
+
+    /// A batch and an async job report a refused request in their entry.
+    #[tokio::test]
+    async fn test_batch_and_async_report_a_refused_request_per_entry() {
+        let prover_url = start_server_answering(
+            "/prove/bundle",
+            StatusCode::BAD_REQUEST,
+            r#"{"error":"Expected 5 features, got 1"}"#.to_string(),
+        )
+        .await;
+        let (app, _tmp) = test_app_with_prover(prover_url).await;
+        let model_id = upload_test_model(&app).await;
+        let send = |method: &str, uri: String, body: String| {
+            let req = axum::http::Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap();
+            let app = app.clone();
+            async move {
+                let resp = app.oneshot(req).await.unwrap();
+                let status = resp.status();
+                let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+                let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                (status, json)
+            }
+        };
+        let expected = "Proof generation failed: Prover returned error 400 Bad Request: \
+                        {\"error\":\"Expected 5 features, got 1\"}";
+
+        let body = serde_json::json!({ "model_id": model_id, "inputs": [[1.0], [2.0]] });
+        let (status, batch) = send("POST", "/prove/batch".into(), body.to_string()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(batch["failed"], 2, "{batch}");
+        for entry in batch["results"].as_array().unwrap() {
+            assert_eq!(entry["error"], expected);
+        }
+
+        let body = serde_json::json!({ "model_id": model_id, "features": [1.0] });
+        let (status, job) = send("POST", "/prove/async".into(), body.to_string()).await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        let uri = format!("/jobs/{}", job["job_id"].as_str().unwrap());
+        let finished = async {
+            loop {
+                let (_, job) = send("GET", uri.clone(), String::new()).await;
+                if job["status"] == "Failed" || job["status"] == "Completed" {
+                    break job;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        };
+        let job = tokio::time::timeout(std::time::Duration::from_secs(60), finished)
+            .await
+            .expect("the job did not finish");
+        assert_eq!(job["error"], expected, "{job}");
+    }
+
+    /// A prover that answers 200 without the proof fields has not produced a proof.
+    #[tokio::test]
+    async fn test_prove_fails_when_prover_reply_has_no_proof() {
+        let prover_url = start_server_replying("/prove/bundle", serde_json::json!({})).await;
+        let (app, _tmp) = test_app_with_prover(prover_url).await;
         let model_id = upload_test_model(&app).await;
 
         let resp = prove(&app, &model_id).await;

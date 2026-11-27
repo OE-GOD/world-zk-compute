@@ -7,8 +7,11 @@
 //! - **Rollback**: Quickly revert to a previous version
 //!
 //! The registry maintains a secondary index from model name to an ordered list
-//! of version IDs (oldest-first). Activation state is tracked per version ID
-//! and persisted via the underlying `ModelStore`.
+//! of version IDs (oldest-first). Activation state is tracked per version ID.
+//! The activated flag is persisted via the underlying `ModelStore`; the time
+//! of the activation (`activated_at`) is kept in memory only. After a restart
+//! `activated_at` is the creation time for an active version and `None` for
+//! an inactive one.
 //!
 //! Every operation that changes the registry runs in a task of its own (see
 //! `run_to_completion`) and switches versions through `make_only_active`,
@@ -32,6 +35,9 @@ pub struct VersionInfo {
     /// ISO-8601 timestamp when this version was created.
     pub created_at: String,
     /// ISO-8601 timestamp when this version was last activated, or `None`.
+    ///
+    /// Kept in memory only: after a restart it is the creation time for an
+    /// active version and `None` for an inactive one.
     pub activated_at: Option<String>,
     /// Whether this version is currently active for proving.
     pub is_active: bool,
@@ -679,6 +685,42 @@ mod tests {
 
         let model = reg.store().get_model(&v1.id).await.unwrap();
         assert!(!model.active);
+    }
+
+    /// `activated_at` is not kept on disk: a reopened registry reports the
+    /// creation time for the active version and `None` for the others.
+    #[tokio::test]
+    async fn test_reopened_registry_reports_activated_at_from_the_active_flag() {
+        let (reg, tmp) = make_registry().await;
+        let v1 = reg
+            .upload("m".into(), xgboost_json("1"), None)
+            .await
+            .unwrap();
+        reg.upload("m".into(), xgboost_json("2"), None)
+            .await
+            .unwrap();
+        reg.upload("m".into(), xgboost_json("3"), None)
+            .await
+            .unwrap();
+        // v1 is active again, and the other two were active once.
+        reg.activate(&v1.id).await.unwrap();
+
+        let store = ModelStore::new(tmp.path().to_path_buf()).await.unwrap();
+        let reopened = ModelRegistry::new(store).await;
+        let versions = reopened.list_versions("m").await.unwrap();
+
+        let activated: Vec<(u32, bool, Option<&str>)> = versions
+            .iter()
+            .map(|v| (v.version, v.is_active, v.activated_at.as_deref()))
+            .collect();
+        assert_eq!(
+            activated,
+            [
+                (1, true, Some(versions[0].created_at.as_str())),
+                (2, false, None),
+                (3, false, None),
+            ]
+        );
     }
 
     /// `(version, is_active)` for every version of `name`.

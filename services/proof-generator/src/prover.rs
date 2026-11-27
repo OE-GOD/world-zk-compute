@@ -8,10 +8,11 @@
 //!   `xgboost-remainder --serve` child process on the next port of a counter
 //!   that starts at 13100 (the port is not checked to be free). Proof
 //!   requests are forwarded to that process via its `/prove/bundle` endpoint.
-//!   The child is killed when its handle is dropped (`remove_prover`, or the
-//!   manager itself); deactivating a model does not stop its prover. Nothing
-//!   in the service calls `remove_prover`, and a generator that exits on a
-//!   signal leaves its children running.
+//!   The child is killed and its copy of the model removed when its handle is
+//!   dropped (`remove_prover`, or the manager itself); deactivating a model
+//!   does not stop its prover. Nothing in the service calls `remove_prover`,
+//!   and a generator that exits on a signal leaves its children running and
+//!   their model copies in the temp directory.
 //!
 //! - **External mode**: Point at an already-running warm prover instance via
 //!   `--prover-url`. All models share the same external prover (suitable when
@@ -20,8 +21,10 @@
 //! The response from `/prove/bundle` is a self-contained JSON proof bundle
 //! compatible with the on-chain verifier.
 
+use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
@@ -55,10 +58,123 @@ pub struct RealProofResult {
     pub prove_time_ms: u64,
 }
 
+/// Why `ProverManager::prove` returned no proof.
+#[derive(Debug)]
+pub enum ProveError {
+    /// The prover answered with a status other than success.
+    Status { status: StatusCode, body: String },
+    /// Anything else: no prover, no answer from it, or an answer that is not
+    /// a proof.
+    Other(anyhow::Error),
+}
+
+impl ProveError {
+    /// The prover's message if it refused the request because of the
+    /// client's input, which is the client's fault.
+    ///
+    /// The generator builds the request to the prover itself, so a refusal
+    /// is the client's only when it is about the input:
+    ///
+    /// - a 400 whose body is JSON with a non-blank `error` text, which is
+    ///   how the bundled prover refuses an input (such as "Expected 5
+    ///   features, got 3"); the message is that text;
+    /// - a 413, the input is too large; the message is the `error` text of
+    ///   a JSON body, else the body; when that text is empty or blank, a
+    ///   note of the status.
+    ///
+    /// Anything else, a 422 or a 400 of another shape among them, means the
+    /// generator and the prover do not agree on the request, which is not
+    /// the client's fault; so are the other statuses (401, 403, 404, 429,
+    /// 5xx, ...).
+    ///
+    /// In external mode (`--prover-url`) nothing checks that the external
+    /// prover serves the model that was uploaded to the generator. If it
+    /// serves another one, its feature-count refusal is still passed to the
+    /// client as the client's 400, although the deployment is at fault.
+    pub fn refused_request(&self) -> Option<String> {
+        let ProveError::Status { status, body } = self else {
+            return None;
+        };
+        let json_error = serde_json::from_str::<serde_json::Value>(body)
+            .ok()
+            .and_then(|json| json["error"].as_str().map(str::to_string));
+        match *status {
+            StatusCode::BAD_REQUEST => json_error.filter(|error| !error.trim().is_empty()),
+            StatusCode::PAYLOAD_TOO_LARGE => {
+                let message = json_error.unwrap_or_else(|| body.clone());
+                if message.trim().is_empty() {
+                    return Some(format!("Prover returned error {}", status));
+                }
+                Some(message)
+            }
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for ProveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProveError::Status { status, body } => {
+                write!(f, "Prover returned error {}: {}", status, body)
+            }
+            ProveError::Other(e) => write!(f, "{}", e),
+        }
+    }
+}
+
+impl std::error::Error for ProveError {}
+
+impl From<anyhow::Error> for ProveError {
+    fn from(e: anyhow::Error) -> Self {
+        ProveError::Other(e)
+    }
+}
+
+/// The copy of a model that a managed prover reads, in a directory of its
+/// own that is removed on drop.
+#[derive(Debug)]
+struct ModelCopy {
+    dir: PathBuf,
+}
+
+impl ModelCopy {
+    /// Write `model_json` to a new directory in `root`. The name of the
+    /// directory is random and, on Unix, only its owner can open it.
+    fn create_in(root: &Path, model_json: &str) -> std::io::Result<Self> {
+        std::fs::create_dir_all(root)?;
+        let dir = root.join(format!("proof-gen-{}", uuid::Uuid::new_v4()));
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder.create(&dir)?;
+        let copy = Self { dir };
+        std::fs::write(copy.path(), model_json)?;
+        Ok(copy)
+    }
+
+    /// The model file.
+    fn path(&self) -> PathBuf {
+        self.dir.join("model.json")
+    }
+}
+
+impl Drop for ModelCopy {
+    fn drop(&mut self) {
+        if let Err(e) = std::fs::remove_dir_all(&self.dir) {
+            tracing::warn!(
+                dir = %self.dir.display(),
+                error = %e,
+                "could not remove the model copy of a managed prover"
+            );
+        }
+    }
+}
+
 /// Arguments that start `xgboost-remainder` as a warm prover HTTP server.
 ///
 /// Server mode is the `--serve` flag of that CLI; it has no `serve` subcommand.
-fn serve_args(model_path: &std::path::Path, port: u16) -> Vec<std::ffi::OsString> {
+fn serve_args(model_path: &Path, port: u16) -> Vec<std::ffi::OsString> {
     vec![
         "--serve".into(),
         "--model".into(),
@@ -116,9 +232,18 @@ struct ProverHandle {
     /// Child process handle (only set in managed mode).
     #[allow(dead_code)]
     child: Option<tokio::process::Child>,
+    /// The child's copy of the model (only set in managed mode). Declared
+    /// after `child`, so it is removed after the child has been killed.
+    #[allow(dead_code)]
+    model_copy: Option<ModelCopy>,
     /// Model hash for correlation.
     #[allow(dead_code)]
     model_hash: String,
+    /// Dropped with the handle, so that a test can see what holds while
+    /// a handle is dropped.
+    #[cfg(test)]
+    #[allow(dead_code)]
+    drop_probe: Option<Box<dyn Send + Sync>>,
 }
 
 /// Manages prover instances for registered models.
@@ -134,6 +259,8 @@ pub struct ProverManager {
     binary_path: String,
     /// External prover URL (when set, all models share this prover).
     external_url: Option<String>,
+    /// Directory that holds the model copies of managed provers.
+    model_copy_root: PathBuf,
     /// Next port to assign to a managed child process; `None` once the last
     /// port has been assigned.
     next_port: RwLock<Option<u16>>,
@@ -160,6 +287,7 @@ impl ProverManager {
                 .expect("Failed to build HTTP client"),
             binary_path,
             external_url,
+            model_copy_root: std::env::temp_dir(),
             // Start assigning ports from 13100 to avoid conflicts with the
             // proof-generator service itself (default 3100).
             next_port: RwLock::new(Some(13100)),
@@ -257,7 +385,10 @@ impl ProverManager {
             let handle = Arc::new(ProverHandle {
                 base_url: url.clone(),
                 child: None,
+                model_copy: None,
                 model_hash: model_hash.to_string(),
+                #[cfg(test)]
+                drop_probe: None,
             });
             self.provers
                 .write()
@@ -289,11 +420,13 @@ impl ProverManager {
         // Managed mode: write model to a temp file and spawn child process.
         let port = self.take_port().await?;
 
-        // Write model JSON to a temp file
-        let model_dir = std::env::temp_dir().join(format!("proof-gen-{}", model_id));
-        tokio::fs::create_dir_all(&model_dir).await?;
-        let model_path = model_dir.join("model.json");
-        tokio::fs::write(&model_path, model_json).await?;
+        // Write model JSON to a temp file. The blocking task runs to its end
+        // when this future is dropped, and drops the copy it has made.
+        let root = self.model_copy_root.clone();
+        let model_json = model_json.to_string();
+        let model_copy =
+            tokio::task::spawn_blocking(move || ModelCopy::create_in(&root, &model_json)).await??;
+        let model_path = model_copy.path();
 
         tracing::info!(
             model_id,
@@ -304,7 +437,8 @@ impl ProverManager {
         );
 
         // Spawn the warm prover process. It is killed when `child` is dropped,
-        // which also covers every early return below.
+        // and the model copy is removed when `model_copy` is dropped, which
+        // also covers every early return below.
         let mut child = tokio::process::Command::new(&self.binary_path)
             .args(serve_args(&model_path, port))
             .stdout(std::process::Stdio::piped())
@@ -378,7 +512,10 @@ impl ProverManager {
         let handle = Arc::new(ProverHandle {
             base_url,
             child: Some(child),
+            model_copy: Some(model_copy),
             model_hash: model_hash.to_string(),
+            #[cfg(test)]
+            drop_probe: None,
         });
         self.provers
             .write()
@@ -396,7 +533,11 @@ impl ProverManager {
     /// Generate a proof for the given model and feature vector.
     ///
     /// Forwards the request to the model's prover instance via HTTP.
-    pub async fn prove(&self, model_id: &str, features: &[f64]) -> anyhow::Result<RealProofResult> {
+    pub async fn prove(
+        &self,
+        model_id: &str,
+        features: &[f64],
+    ) -> Result<RealProofResult, ProveError> {
         let handle = {
             let provers = self.provers.read().await;
             provers
@@ -418,12 +559,12 @@ impl ProverManager {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            anyhow::bail!("Prover returned error {}: {}", status, text);
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ProveError::Status { status, body });
         }
 
-        let bundle: serde_json::Value = resp.json().await?;
-        parse_bundle(&bundle)
+        let bundle: serde_json::Value = resp.json().await.map_err(anyhow::Error::from)?;
+        Ok(parse_bundle(&bundle)?)
     }
 
     /// Check if a prover is registered for the given model.
@@ -433,15 +574,27 @@ impl ProverManager {
 
     /// Remove a prover instance for the given model.
     ///
-    /// In managed mode, this kills the child process.
+    /// In managed mode, this kills the child process and removes its copy of
+    /// the model.
     #[allow(dead_code)]
     pub async fn remove_prover(&self, model_id: &str) {
-        if let Some(handle) = self.provers.write().await.remove(model_id) {
+        // Taken out in a statement of its own, so that the write lock is
+        // released before the handle is dropped: the drop kills the child
+        // and removes the model copy from disk, and every `prove` call waits
+        // for the lock.
+        let removed = self.provers.write().await.remove(model_id);
+        if let Some(handle) = removed {
             // A managed child is spawned with `kill_on_drop`, so it is killed
-            // once the last clone of the handle is dropped (a `prove` call in
-            // flight holds one until it returns). We log the removal.
+            // (and its model copy removed) once the last clone of the handle
+            // is dropped (a `prove` call in flight holds one until it
+            // returns, and drops it where it returns). We log the removal.
             tracing::info!(model_id, "Removed prover instance");
-            drop(handle);
+            // The removal of the copy is blocking file I/O, so the handle is
+            // dropped on a blocking thread, not on the async worker. Awaited,
+            // so that the copy is gone when this returns.
+            if let Err(e) = tokio::task::spawn_blocking(move || drop(handle)).await {
+                tracing::warn!(model_id, error = %e, "dropping a removed prover failed");
+            }
         }
     }
 }
@@ -540,7 +693,7 @@ done
     #[cfg(unix)]
     pub struct StandIn {
         dir: tempfile::TempDir,
-        /// The model the test registers; its temp copy is removed on drop.
+        /// The model the test registers.
         pub model_id: String,
     }
 
@@ -575,24 +728,29 @@ done
                 .unwrap_or(0)
         }
 
+        /// Where the manager keeps its model copies.
+        pub fn model_copy_root(&self) -> PathBuf {
+            self.dir.path().join("models")
+        }
+
+        /// The model copies that exist.
+        pub fn model_copies(&self) -> Vec<PathBuf> {
+            match std::fs::read_dir(self.model_copy_root()) {
+                Ok(entries) => entries.map(|entry| entry.unwrap().path()).collect(),
+                Err(_) => Vec::new(),
+            }
+        }
+
         /// A manager whose first child gets the port of a stand-in HTTP
         /// server. Its first `unanswered_probes` health requests get no
         /// answer; then it is ready as soon as the script has logged.
         pub async fn manager(&self, unanswered_probes: usize) -> ProverManager {
             let ready_file = Some(self.log("alive"));
             let port = stand_in_prover_http(complete_bundle(), unanswered_probes, ready_file).await;
-            let mgr = ProverManager::new(self.script().display().to_string(), None);
+            let mut mgr = ProverManager::new(self.script().display().to_string(), None);
+            mgr.model_copy_root = self.model_copy_root();
             *mgr.next_port.write().await = Some(port);
             mgr
-        }
-    }
-
-    #[cfg(unix)]
-    impl Drop for StandIn {
-        fn drop(&mut self) {
-            // The model copy `register_model` leaves in the temp directory.
-            let copy = std::env::temp_dir().join(format!("proof-gen-{}", self.model_id));
-            let _ = std::fs::remove_dir_all(copy);
         }
     }
 }
@@ -786,6 +944,31 @@ mod tests {
         assert!(mgr.has_prover(id).await);
     }
 
+    #[tokio::test]
+    async fn test_prove_keeps_the_prover_status() {
+        let app = axum::Router::new().route(
+            "/prove/bundle",
+            axum::routing::post(|| async { (StatusCode::TOO_MANY_REQUESTS, "slow down") }),
+        );
+        let app = app.route("/health", axum::routing::get(|| async { "{}" }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mgr = ProverManager::new("unused".to_string(), Some(url));
+        mgr.ensure_prover("m", "{}", "0x00").await.unwrap();
+
+        let err = mgr.prove("m", &[1.0]).await.unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                ProveError::Status { status, body }
+                    if *status == StatusCode::TOO_MANY_REQUESTS && body == "slow down"
+            ),
+            "{err:?}"
+        );
+        assert_eq!(err.refused_request(), None);
+    }
+
     /// Requests that were waiting while a start failed get that failure and
     /// do not start the prover again.
     #[cfg(unix)]
@@ -855,13 +1038,144 @@ mod tests {
 
         slow_start.abort();
         let _ = slow_start.await;
-        let _ =
-            std::fs::remove_dir_all(std::env::temp_dir().join(format!("proof-gen-{slow_model}")));
         second
             .expect("the second model waited for the first model's start")
             .unwrap();
         assert!(mgr.has_prover(id).await);
         assert!(!mgr.has_prover(&slow_model).await);
+    }
+
+    /// While a prover runs, its copy of the model is in a directory that only
+    /// its owner can open and whose name does not follow from the model id.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_model_copy_is_private_and_removed_with_the_prover() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _spawning = SPAWNING.lock().await;
+        let stand_in = StandIn::new(RUNS_FOR_30S);
+        let mgr = stand_in.manager(0).await;
+        let id = stand_in.model_id.as_str();
+        mgr.ensure_prover(id, r#"{"a":1}"#, "0x00").await.unwrap();
+
+        let copies = stand_in.model_copies();
+        let [dir] = copies.as_slice() else {
+            panic!("model copies: {copies:?}");
+        };
+        let name = dir.file_name().unwrap().to_str().unwrap();
+        let uuid = name.strip_prefix("proof-gen-").unwrap();
+        assert!(uuid::Uuid::parse_str(uuid).is_ok(), "{name}");
+        let mode = std::fs::metadata(dir).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700, "{mode:o}");
+        let model = std::fs::read_to_string(dir.join("model.json")).unwrap();
+        assert_eq!(model, r#"{"a":1}"#);
+
+        mgr.remove_prover(id).await;
+        assert_eq!(stand_in.model_copies(), Vec::<PathBuf>::new());
+    }
+
+    /// The copies of the provers that are still registered are removed with
+    /// the manager.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_model_copy_is_removed_with_the_manager() {
+        let _spawning = SPAWNING.lock().await;
+        let stand_in = StandIn::new(RUNS_FOR_30S);
+        let mgr = stand_in.manager(0).await;
+        mgr.ensure_prover(&stand_in.model_id, "{}", "0x00")
+            .await
+            .unwrap();
+        assert_eq!(stand_in.model_copies().len(), 1);
+
+        drop(mgr);
+        assert_eq!(stand_in.model_copies(), Vec::<PathBuf>::new());
+    }
+
+    /// A start that fails leaves no copy: one whose prover exits, and one
+    /// whose prover cannot be spawned.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_model_copy_is_removed_when_the_start_fails() {
+        let _spawning = SPAWNING.lock().await;
+        let stand_in = StandIn::new(STARTS_THEN_EXITS);
+        let mut mgr = stand_in.manager(0).await;
+        let port = *mgr.next_port.read().await;
+
+        let id = stand_in.model_id.as_str();
+        let err = mgr.ensure_prover(id, "{}", "0x00").await.unwrap_err();
+        assert!(err.to_string().contains("exited during startup"), "{err}");
+        assert!(stand_in.model_copy_root().exists(), "no copy was made");
+        assert_eq!(stand_in.model_copies(), Vec::<PathBuf>::new());
+
+        mgr.binary_path = stand_in
+            .model_copy_root()
+            .join("none")
+            .display()
+            .to_string();
+        *mgr.next_port.write().await = port;
+        let err = mgr.ensure_prover(id, "{}", "0x00").await.unwrap_err();
+        assert!(err.to_string().contains("Failed to spawn"), "{err}");
+        assert_eq!(stand_in.model_copies(), Vec::<PathBuf>::new());
+    }
+
+    /// A start that is cancelled while the prover is not ready yet (its
+    /// client has disconnected) leaves no copy.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_model_copy_is_removed_when_the_start_is_cancelled() {
+        let _spawning = SPAWNING.lock().await;
+        let stand_in = StandIn::new(RUNS_FOR_30S);
+        // No health probe is answered.
+        let mgr = Arc::new(stand_in.manager(usize::MAX).await);
+        let start = tokio::spawn({
+            let mgr = mgr.clone();
+            let id = stand_in.model_id.clone();
+            async move { mgr.ensure_prover(&id, "{}", "0x00").await }
+        });
+        while stand_in.lines("starts") == 0 {
+            assert!(!start.is_finished(), "the start has ended");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(stand_in.model_copies().len(), 1);
+
+        start.abort();
+        assert!(start.await.unwrap_err().is_cancelled());
+        assert_eq!(stand_in.model_copies(), Vec::<PathBuf>::new());
+    }
+
+    /// A start that is cancelled before the copy has been written leaves no
+    /// copy either.
+    #[cfg(unix)]
+    #[test]
+    fn test_model_copy_is_removed_when_the_start_is_cancelled_while_writing_it() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let stand_in = StandIn::new(EXITS_AT_ONCE);
+            let mgr = stand_in.manager(0).await;
+            let port = *mgr.next_port.read().await;
+
+            // Hold the one blocking thread, so that the write has to wait.
+            let (release, held) = std::sync::mpsc::channel::<()>();
+            let holder = tokio::task::spawn_blocking(move || held.recv());
+
+            // Polled once, then dropped.
+            let start = mgr.ensure_prover(&stand_in.model_id, "{}", "0x00");
+            tokio::time::timeout(Duration::ZERO, start)
+                .await
+                .expect_err("the start did not wait for the blocking thread");
+            assert_ne!(*mgr.next_port.read().await, port, "the start has not begun");
+
+            release.send(()).unwrap();
+            holder.await.unwrap().unwrap();
+            // Everything queued before this has been run when it returns.
+            tokio::task::spawn_blocking(|| ()).await.unwrap();
+            assert!(stand_in.model_copy_root().exists(), "no copy was made");
+            assert_eq!(stand_in.model_copies(), Vec::<PathBuf>::new());
+        });
     }
 
     /// Every port up to the last is handed out once. After that a start is an
@@ -898,6 +1212,63 @@ mod tests {
         assert!(alive > 0);
         tokio::time::sleep(Duration::from_millis(500)).await;
         assert_eq!(stand_in.lines("alive"), alive, "child is still running");
+    }
+
+    /// The handle of a removed prover is dropped (which kills the child and
+    /// removes the model copy) after the lock on the provers is released,
+    /// so that `prove` calls for other models do not wait for it, and on a
+    /// blocking thread before `remove_prover` returns, so that the removal
+    /// of the copy does not stall the async worker.
+    #[tokio::test]
+    async fn test_removed_prover_is_dropped_off_the_worker_without_the_lock() {
+        /// Records, when dropped, whether the provers lock was free and on
+        /// which thread the drop ran.
+        struct LockProbe {
+            mgr: Arc<ProverManager>,
+            lock_was_free: Arc<std::sync::Mutex<Option<bool>>>,
+            dropped_on: Arc<std::sync::Mutex<Option<std::thread::ThreadId>>>,
+        }
+        impl Drop for LockProbe {
+            fn drop(&mut self) {
+                let free = self.mgr.provers.try_write().is_ok();
+                *self.lock_was_free.lock().unwrap() = Some(free);
+                *self.dropped_on.lock().unwrap() = Some(std::thread::current().id());
+            }
+        }
+
+        // The runtime of the test runs every task on this thread.
+        let worker = std::thread::current().id();
+        let mgr = Arc::new(ProverManager::new("unused".to_string(), None));
+        let lock_was_free = Arc::new(std::sync::Mutex::new(None));
+        let dropped_on = Arc::new(std::sync::Mutex::new(None));
+        let probe = LockProbe {
+            mgr: mgr.clone(),
+            lock_was_free: lock_was_free.clone(),
+            dropped_on: dropped_on.clone(),
+        };
+        let handle = Arc::new(ProverHandle {
+            base_url: "http://127.0.0.1:1".to_string(),
+            child: None,
+            model_copy: None,
+            model_hash: "0x00".to_string(),
+            drop_probe: Some(Box::new(probe)),
+        });
+        mgr.provers.write().await.insert("m".to_string(), handle);
+
+        mgr.remove_prover("m").await;
+
+        assert!(!mgr.has_prover("m").await);
+        assert_eq!(
+            *lock_was_free.lock().unwrap(),
+            Some(true),
+            "the handle was dropped while the provers lock was held (Some(false)) \
+             or not dropped (None)"
+        );
+        let dropped_on = dropped_on.lock().unwrap().expect("not dropped");
+        assert_ne!(
+            dropped_on, worker,
+            "the handle was dropped on the async worker"
+        );
     }
 
     #[cfg(unix)]
