@@ -95,6 +95,16 @@ cargo run --release -- --model sample_model.json --input sample_input.json --exe
 cargo run --release -- --model sample_model.json --serve --port 3000
 ```
 
+Proofs that take longer than `--request-timeout` (default 120 s) get a 504.
+A proof cannot be cancelled: it keeps running on the server after the 504
+and its result is dropped. `openapi.yaml` describes `/health`, `/prove` and
+`/prove/batch`; `/prove/bundle` is not in it yet. At most as many proofs run at
+once as the server's async runtime has worker threads (one per CPU by default);
+a request that waits for a free slot past its timeout gets the same 504. Under
+sustained overload this can turn every answer into a 504: a request reaches a
+free slot with little of its timeout left, starts its proof, times out, and
+keeps the slot until the proof ends.
+
 Supports XGBoost (`--model-format xgboost`) and LightGBM
 (`--model-format lightgbm`) JSON model files.
 

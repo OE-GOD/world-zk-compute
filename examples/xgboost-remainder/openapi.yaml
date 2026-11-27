@@ -50,7 +50,18 @@ info:
 
     Proof generation is subject to a per-request timeout controlled by
     `--request-timeout` (default: 120 seconds). Requests that exceed the
-    timeout receive a 504 response.
+    timeout receive a 504 response. Proofs run on a blocking thread pool
+    and cannot be cancelled: after a 504 the proof keeps running to the
+    end, using CPU, and its result is dropped.
+
+    At most as many proofs run at once as the server's async runtime has
+    worker threads (one per CPU by default; a batch counts as one). Other
+    requests wait for a free slot, and the wait counts toward the
+    timeout: a request still waiting when its timeout expires gets the
+    same 504. A proof that timed out keeps its slot until it ends. Under
+    sustained overload this can turn every answer into a 504: a request
+    reaches a free slot with little of its timeout left, starts its proof,
+    times out, and keeps the slot until the proof ends.
 
     ## CORS
 
@@ -181,7 +192,9 @@ paths:
         "500":
           description: |
             Internal error during proof generation (e.g., witness
-            computation failure).
+            computation failure). If the proof panics, the body is always
+            `{"error": "proof generation panicked"}`; the details are only
+            in the server log.
           content:
             application/json:
               schema:
@@ -191,13 +204,16 @@ paths:
         "504":
           description: |
             Proof generation exceeded the per-request timeout configured
-            via `--request-timeout` (default: 120 seconds).
+            via `--request-timeout` (default: 120 seconds), counting any
+            wait for a free proof slot (at most as many proofs run at once
+            as the server's runtime has worker threads). The proof keeps
+            running on the server after this response; its result is dropped.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
               example:
-                error: "Request timed out"
+                error: "Proof generation timed out after 120s"
 
   /prove/batch:
     post:
@@ -310,7 +326,9 @@ paths:
         "500":
           description: |
             Internal error during proof generation for one of the items
-            in the batch.
+            in the batch. If a proof panics, the body is always
+            `{"error": "proof generation panicked"}`; the details are only
+            in the server log.
           content:
             application/json:
               schema:
@@ -321,13 +339,17 @@ paths:
           description: |
             Proof generation exceeded the per-request timeout configured
             via `--request-timeout` (default: 120 seconds). The timeout
-            applies to the entire batch, not individual items.
+            applies to the entire batch, not individual items, and counts
+            any wait for a free proof slot (at most as many proofs run at
+            once as the server's runtime has worker threads; the batch takes
+            one). The batch keeps running on the server after this
+            response; its results are dropped.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
               example:
-                error: "Request timed out"
+                error: "Batch proof generation timed out after 120s"
 
 components:
   securitySchemes:
@@ -498,9 +520,9 @@ components:
           type: integer
           format: uint64
           description: |
-            Total wall-clock time for the entire batch in milliseconds.
-            This includes all individual prove times plus any overhead
-            between items.
+            Total wall-clock time for the entire batch in milliseconds,
+            not counting any wait for a free proof slot. This includes all
+            individual prove times plus any overhead between items.
           example: 3680
 
     ErrorResponse:

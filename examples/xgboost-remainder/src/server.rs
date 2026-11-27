@@ -11,6 +11,10 @@
 //! - **Rate limiting**: Per-IP token bucket via `rate_limit` / `rate_limit_burst`.
 //! - **CORS**: Optional cross-origin support via `enable_cors` / `cors_origins`.
 //! - **Request timeout**: Per-request timeout on proof generation via `request_timeout_secs`.
+//!   Proofs run on the blocking thread pool, at most as many at once as the
+//!   async runtime has worker threads. A request waiting for its turn counts
+//!   toward the timeout. A proof cannot be cancelled: after a 504 it keeps
+//!   running to the end and its result is dropped.
 
 use crate::abi_encode::encode_pedersen_gens;
 use crate::circuit::CachedProver;
@@ -28,6 +32,7 @@ use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tokio::sync::Semaphore;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 /// Maximum number of requests in a single batch.
@@ -145,6 +150,8 @@ struct AppState {
     request_timeout: Duration,
     /// Pre-computed hex-encoded Pedersen generators (same for all proofs from this model).
     gens_hex: String,
+    /// One permit per proof job allowed to run at once (see `proof_permit_count`).
+    proof_permits: Arc<Semaphore>,
 }
 
 /// Request body for the /prove endpoint.
@@ -272,7 +279,10 @@ async fn rate_limit_middleware(
 /// - **Auth**: When `config.api_key` is set, POST routes require `Authorization: Bearer <key>`.
 /// - **Rate limiting**: Token bucket per IP when `config.rate_limit > 0`.
 /// - **CORS**: Cross-origin headers when `config.enable_cors` is true.
-/// - **Request timeout**: Proof generation aborts after `config.request_timeout_secs` (0 = unlimited).
+/// - **Request timeout**: The response is a 504 after `config.request_timeout_secs` (0 = unlimited).
+///   The proof itself cannot be cancelled and keeps running to the end.
+/// - **Proof concurrency**: At most as many proof jobs run at once as the
+///   current runtime has worker threads; the others wait, inside their timeout.
 ///
 /// GET /health is always unauthenticated and exempt from rate limiting.
 pub async fn run_server_with_config(
@@ -332,12 +342,15 @@ pub async fn run_server_with_config(
 
     let request_timeout = Duration::from_secs(config.request_timeout_secs);
     let rate_limiter = RateLimiter::new(config.rate_limit, config.rate_limit_burst);
+    let max_proofs = proof_permit_count();
+    println!("At most {} proofs run at once", max_proofs);
     let state = Arc::new(AppState {
         prover,
         api_key: config.api_key,
         rate_limiter,
         request_timeout,
         gens_hex,
+        proof_permits: Arc::new(Semaphore::new(max_proofs)),
     });
 
     // POST routes are protected by auth middleware and rate limiting.
@@ -418,10 +431,136 @@ async fn health_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse
     Json(resp)
 }
 
+/// How many proof jobs may run at once: the number of worker threads of the
+/// current runtime (tokio's default is one per CPU).
+///
+/// Before proofs moved to the blocking pool, each one held an async worker, so
+/// no more ran at once than there were workers. The blocking pool has up to 512
+/// threads, and a timed-out proof keeps running, so without this bound retries
+/// after a 504 would pile up proofs that all share the CPU and all run slower.
+fn proof_permit_count() -> usize {
+    tokio::runtime::Handle::current().metrics().num_workers()
+}
+
+/// Message sent to the client when a proof job panics. The panic message stays
+/// in the server log: it can name internal values the client has no use for.
+const PROOF_PANIC_MESSAGE: &str = "proof generation panicked";
+
+/// Why a proof job gave no result.
+enum ProofJobError {
+    /// The request timeout passed first, while the job waited for a permit or
+    /// ran. A job that had started is still running.
+    TimedOut,
+    /// The job returned an error, its blocking task was cancelled (only at
+    /// runtime shutdown), or the permits were closed.
+    Failed(anyhow::Error),
+    /// The job panicked. The details were logged, not kept here.
+    Panicked,
+}
+
+/// Run a proof job on the blocking thread pool, under `timeout` unless it is zero.
+///
+/// The job first waits for a permit from `permits`; the wait counts toward the
+/// timeout. Proving is CPU-bound and takes seconds. Run on an async worker it
+/// would stall every other request on that worker, and a timeout around it
+/// would never be checked, since the proof finishes before the timer is first
+/// polled. A blocking task cannot be cancelled: after a timeout it keeps
+/// running to the end, still holding its permit, and its result is dropped.
+async fn run_proof_job<T, F>(
+    permits: Arc<Semaphore>,
+    timeout: Duration,
+    job: F,
+) -> Result<T, ProofJobError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> anyhow::Result<T> + Send + 'static,
+{
+    let run = async move {
+        let permit = permits.acquire_owned().await.map_err(|_closed| {
+            ProofJobError::Failed(anyhow::anyhow!("proof permits are closed"))
+        })?;
+        tokio::task::spawn_blocking(move || {
+            // Released when the closure ends, that is when the proof ends,
+            // also after the request has timed out.
+            let _permit = permit;
+            job()
+        })
+        .await
+        .map_err(join_error_to_job_error)
+    };
+    let joined = if timeout.is_zero() {
+        run.await?
+    } else {
+        tokio::time::timeout(timeout, run)
+            .await
+            .map_err(|_elapsed| ProofJobError::TimedOut)??
+    };
+    joined.map_err(ProofJobError::Failed)
+}
+
+/// Turn a failed blocking task into an error. A panic is logged on the server,
+/// and its details are kept out of the error.
+fn join_error_to_job_error(err: tokio::task::JoinError) -> ProofJobError {
+    if !err.is_panic() {
+        // A blocking task is only cancelled when the runtime shuts down.
+        return ProofJobError::Failed(anyhow::anyhow!("proof task was cancelled"));
+    }
+    let payload = err.into_panic();
+    let detail = payload
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "(panic payload is not a string)".to_string());
+    tracing::error!(panic = %detail, "proof job panicked");
+    ProofJobError::Panicked
+}
+
+/// The answer for a proof job of /prove or /prove/bundle that gave no result.
+fn single_proof_error(err: ProofJobError, timeout: Duration) -> (StatusCode, Json<ErrorResponse>) {
+    let (status, error) = match err {
+        ProofJobError::TimedOut => (
+            StatusCode::GATEWAY_TIMEOUT,
+            format!("Proof generation timed out after {}s", timeout.as_secs()),
+        ),
+        ProofJobError::Failed(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Proof generation failed: {}", e),
+        ),
+        ProofJobError::Panicked => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            PROOF_PANIC_MESSAGE.to_string(),
+        ),
+    };
+    (status, Json(ErrorResponse { error }))
+}
+
+/// The answer for a /prove/batch job that gave no result.
+fn batch_proof_error(err: ProofJobError, timeout: Duration) -> (StatusCode, Json<ErrorResponse>) {
+    let (status, error) = match err {
+        ProofJobError::TimedOut => (
+            StatusCode::GATEWAY_TIMEOUT,
+            format!(
+                "Batch proof generation timed out after {}s",
+                timeout.as_secs()
+            ),
+        ),
+        ProofJobError::Failed(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Proof failed: {}", e),
+        ),
+        ProofJobError::Panicked => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            PROOF_PANIC_MESSAGE.to_string(),
+        ),
+    };
+    (status, Json(ErrorResponse { error }))
+}
+
 /// POST /prove -- generate a proof for the given features.
 ///
 /// Returns `X-Request-Duration` header with elapsed time in milliseconds.
-/// Returns 504 if the proof exceeds the configured request timeout.
+/// Returns 504 if waiting for a proof slot plus the proof take longer than the
+/// configured request timeout.
 async fn prove_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ProveRequest>,
@@ -445,45 +584,8 @@ async fn prove_handler(
     // Run inference
     let predicted_class = model::predict(&state.prover.model, &req.features);
 
-    // Generate proof with optional timeout
-    let start = Instant::now();
-    let prove_result: anyhow::Result<(Vec<u8>, Vec<u8>, Vec<u8>)> =
-        if state.request_timeout.is_zero() {
-            // No timeout — run directly
-            state.prover.prove(&req.features, predicted_class)
-        } else {
-            // Wrap in timeout. Proving is CPU-bound but we can't cancel it,
-            // so if timeout fires the blocking task keeps running (result is dropped).
-            let timeout_dur = state.request_timeout;
-            match tokio::time::timeout(timeout_dur, async {
-                state.prover.prove(&req.features, predicted_class)
-            })
-            .await
-            {
-                Ok(result) => result,
-                Err(_elapsed) => {
-                    return Err((
-                        StatusCode::GATEWAY_TIMEOUT,
-                        Json(ErrorResponse {
-                            error: format!(
-                                "Proof generation timed out after {}s",
-                                state.request_timeout.as_secs()
-                            ),
-                        }),
-                    ));
-                }
-            }
-        };
-
-    let (proof_bytes, circuit_hash, public_inputs) = prove_result.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Proof generation failed: {}", e),
-            }),
-        )
-    })?;
-    let prove_time = start.elapsed();
+    let (proof_bytes, circuit_hash, public_inputs, prove_time) =
+        prove_single(&state, req.features, predicted_class).await?;
     let duration_ms = request_start.elapsed().as_millis();
 
     let response = Json(ProveResponse {
@@ -506,7 +608,37 @@ async fn prove_handler(
     Ok((headers, response))
 }
 
+/// Proof bytes, circuit hash, public inputs and the time the proof itself took.
+type SingleProof = (Vec<u8>, Vec<u8>, Vec<u8>, Duration);
+
+/// Prove one feature vector on the blocking pool, under the request timeout.
+///
+/// The proving time is measured inside the job, so it leaves out the wait for
+/// a permit.
+async fn prove_single(
+    state: &Arc<AppState>,
+    features: Vec<f64>,
+    predicted_class: u32,
+) -> Result<SingleProof, (StatusCode, Json<ErrorResponse>)> {
+    let job_state = state.clone();
+    run_proof_job(
+        state.proof_permits.clone(),
+        state.request_timeout,
+        move || {
+            let start = Instant::now();
+            let (proof_bytes, circuit_hash, public_inputs) =
+                job_state.prover.prove(&features, predicted_class)?;
+            Ok((proof_bytes, circuit_hash, public_inputs, start.elapsed()))
+        },
+    )
+    .await
+    .map_err(|e| single_proof_error(e, state.request_timeout))
+}
+
 /// POST /prove/bundle -- generate a self-contained ProofBundle JSON.
+///
+/// Returns 504 if waiting for a proof slot plus the proof take longer than the
+/// configured request timeout.
 async fn prove_bundle_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ProveRequest>,
@@ -525,18 +657,8 @@ async fn prove_bundle_handler(
     }
 
     let predicted_class = model::predict(&state.prover.model, &req.features);
-    let start = Instant::now();
-    let (proof_bytes, circuit_hash, public_inputs) = state
-        .prover
-        .prove(&req.features, predicted_class)
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Proof generation failed: {}", e),
-                }),
-            )
-        })?;
+    let (proof_bytes, circuit_hash, public_inputs, prove_time) =
+        prove_single(&state, req.features, predicted_class).await?;
 
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -552,7 +674,7 @@ async fn prove_bundle_handler(
         "timestamp": timestamp,
         "prover_version": env!("CARGO_PKG_VERSION"),
         "predicted_class": predicted_class,
-        "prove_time_ms": start.elapsed().as_millis() as u64,
+        "prove_time_ms": prove_time.as_millis() as u64,
     });
 
     Ok(Json(bundle))
@@ -607,52 +729,18 @@ async fn batch_prove_handler(
         }
     }
 
-    // Run batch proving (potentially with timeout)
-    let batch_result = if state.request_timeout.is_zero() {
-        run_batch_proofs(&state, &req.requests)
-    } else {
-        let state_clone = state.clone();
-        let requests: Vec<ProveRequest> = req
-            .requests
-            .into_iter()
-            .map(|r| ProveRequest {
-                features: r.features,
-            })
-            .collect();
-        let timeout_dur = state.request_timeout;
-
-        match tokio::time::timeout(timeout_dur, async move {
-            let result: anyhow::Result<_> =
-                tokio::task::spawn_blocking(move || run_batch_proofs(&state_clone, &requests))
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Task join error: {}", e))?;
-            result
-        })
-        .await
-        {
-            Ok(result) => result,
-            Err(_elapsed) => {
-                return Err((
-                    StatusCode::GATEWAY_TIMEOUT,
-                    Json(ErrorResponse {
-                        error: format!(
-                            "Batch proof generation timed out after {}s",
-                            state.request_timeout.as_secs()
-                        ),
-                    }),
-                ));
-            }
-        }
-    };
-
-    let (results, batch_elapsed) = batch_result.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Proof failed: {}", e),
-            }),
-        )
-    })?;
+    // Run batch proving on the blocking pool (with the timeout, when one is set)
+    let job_state = state.clone();
+    let requests = req.requests;
+    // The whole batch is one job: its proofs run one after another on one
+    // thread, so it takes one permit.
+    let (results, batch_elapsed) = run_proof_job(
+        state.proof_permits.clone(),
+        state.request_timeout,
+        move || run_batch_proofs(&job_state, &requests),
+    )
+    .await
+    .map_err(|e| batch_proof_error(e, state.request_timeout))?;
 
     let duration_ms = request_start.elapsed().as_millis();
     let response = Json(BatchProveResponse {
@@ -670,8 +758,7 @@ async fn batch_prove_handler(
     Ok((headers, response))
 }
 
-/// Run batch proofs synchronously. Extracted so it can be used with or without
-/// `spawn_blocking` + timeout.
+/// Run batch proofs synchronously, inside one proof job (see `run_proof_job`).
 fn run_batch_proofs(
     state: &AppState,
     requests: &[ProveRequest],
@@ -923,6 +1010,144 @@ mod tests {
             limiter.check(ip),
             "Should be allowed after tokens have refilled"
         );
+    }
+
+    fn permits(n: usize) -> Arc<Semaphore> {
+        Arc::new(Semaphore::new(n))
+    }
+
+    #[tokio::test]
+    async fn test_proof_job_times_out_while_the_job_still_runs() {
+        // A single-threaded runtime: a job run on it instead of the blocking
+        // pool would hold the thread, and the timer could not fire.
+        let start = Instant::now();
+        let result = run_proof_job(permits(1), Duration::from_millis(50), || {
+            std::thread::sleep(Duration::from_millis(1500));
+            Ok(())
+        })
+        .await;
+        assert!(matches!(result, Err(ProofJobError::TimedOut)));
+        assert!(
+            start.elapsed() < Duration::from_millis(1000),
+            "the timeout fired only after the job ended: {:?}",
+            start.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_proof_job_returns_result_and_error_without_timeout() {
+        let ok = run_proof_job(permits(1), Duration::ZERO, || Ok(7u32)).await;
+        assert!(matches!(ok, Ok(7)));
+        let err = run_proof_job(
+            permits(1),
+            Duration::from_secs(30),
+            || -> anyhow::Result<u32> { anyhow::bail!("witness failed") },
+        )
+        .await;
+        match err {
+            Err(ProofJobError::Failed(e)) => assert_eq!(e.to_string(), "witness failed"),
+            _ => panic!("expected the job's error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_proof_jobs_never_run_more_at_once_than_permits() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let shared = permits(2);
+        let running = Arc::new(AtomicUsize::new(0));
+        let most_at_once = Arc::new(AtomicUsize::new(0));
+        let mut jobs = tokio::task::JoinSet::new();
+        for _ in 0..6 {
+            let (shared, running, most_at_once) =
+                (shared.clone(), running.clone(), most_at_once.clone());
+            jobs.spawn(run_proof_job(shared, Duration::from_secs(30), move || {
+                let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+                most_at_once.fetch_max(now, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(100));
+                running.fetch_sub(1, Ordering::SeqCst);
+                Ok(())
+            }));
+        }
+        while let Some(joined) = jobs.join_next().await {
+            assert!(matches!(joined.unwrap(), Ok(())));
+        }
+        assert_eq!(most_at_once.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_timed_out_job_keeps_its_permit_and_waiting_job_times_out() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let shared = permits(1);
+        let first = run_proof_job(shared.clone(), Duration::from_millis(50), || {
+            std::thread::sleep(Duration::from_millis(800));
+            Ok(())
+        })
+        .await;
+        assert!(matches!(first, Err(ProofJobError::TimedOut)));
+        assert_eq!(
+            shared.available_permits(),
+            0,
+            "the timed-out job still runs and must still hold its permit"
+        );
+
+        // A second job cannot start while the first runs; its timeout expires
+        // while it waits for the permit.
+        let second_ran = Arc::new(AtomicBool::new(false));
+        let flag = second_ran.clone();
+        let start = Instant::now();
+        let second = run_proof_job(shared.clone(), Duration::from_millis(100), move || {
+            flag.store(true, Ordering::SeqCst);
+            Ok(())
+        })
+        .await;
+        assert!(matches!(second, Err(ProofJobError::TimedOut)));
+        assert!(start.elapsed() < Duration::from_millis(500));
+        assert!(!second_ran.load(Ordering::SeqCst));
+
+        // Once the first job ends, its permit is free again.
+        let free = shared.clone().acquire_owned();
+        let _permit = tokio::time::timeout(Duration::from_secs(5), free)
+            .await
+            .expect("the permit was not released when the job ended")
+            .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+    async fn test_proof_permit_count_is_the_runtime_worker_count() {
+        assert_eq!(proof_permit_count(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_panicking_job_answers_500_with_a_fixed_message() {
+        let result = run_proof_job(
+            permits(1),
+            Duration::from_secs(30),
+            || -> anyhow::Result<()> { panic!("secret witness value 1234") },
+        )
+        .await;
+        let err = match result {
+            Err(e) => e,
+            Ok(()) => panic!("the job panicked, it cannot succeed"),
+        };
+        assert!(matches!(err, ProofJobError::Panicked));
+        let (status, Json(body)) = single_proof_error(err, Duration::from_secs(30));
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body.error, "proof generation panicked");
+        let (status, Json(body)) =
+            batch_proof_error(ProofJobError::Panicked, Duration::from_secs(30));
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body.error, "proof generation panicked");
+    }
+
+    #[tokio::test]
+    async fn test_panicking_job_releases_its_permit() {
+        let shared = permits(1);
+        let result = run_proof_job(shared.clone(), Duration::ZERO, || -> anyhow::Result<()> {
+            panic!("boom")
+        })
+        .await;
+        assert!(matches!(result, Err(ProofJobError::Panicked)));
+        assert_eq!(shared.available_permits(), 1);
     }
 
     #[tokio::test]
