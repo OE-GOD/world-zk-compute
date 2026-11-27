@@ -13,7 +13,7 @@
 //! | `OTEL_ENABLED`                | `false`                    | Enable OpenTelemetry export        |
 //! | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317`    | OTLP collector gRPC endpoint       |
 //! | `OTEL_SERVICE_NAME`           | `worldzk-enclave`          | Service name for traces            |
-//! | `LOG_LEVEL`                   | `info`                     | Log level filter directive         |
+//! | `LOG_LEVEL`                   | `info`                     | Log level (trace .. error, off)    |
 //!
 //! Note: The enclave's `tracing-subscriber` dependency does not include the
 //! `env-filter` or `json` features. Log filtering is done via a simple
@@ -99,17 +99,35 @@ impl TracingConfig {
 // Initialisation
 // ---------------------------------------------------------------------------
 
-/// Parse a log-level string into a [`tracing::level_filters::LevelFilter`].
-fn parse_level_filter(level: &str) -> tracing::level_filters::LevelFilter {
+/// The [`tracing::level_filters::LevelFilter`] with the given name, in any case.
+fn level_filter_by_name(level: &str) -> Option<tracing::level_filters::LevelFilter> {
     match level.to_lowercase().as_str() {
-        "trace" => tracing::level_filters::LevelFilter::TRACE,
-        "debug" => tracing::level_filters::LevelFilter::DEBUG,
-        "info" => tracing::level_filters::LevelFilter::INFO,
-        "warn" | "warning" => tracing::level_filters::LevelFilter::WARN,
-        "error" => tracing::level_filters::LevelFilter::ERROR,
-        "off" => tracing::level_filters::LevelFilter::OFF,
-        _ => tracing::level_filters::LevelFilter::INFO,
+        "trace" => Some(tracing::level_filters::LevelFilter::TRACE),
+        "debug" => Some(tracing::level_filters::LevelFilter::DEBUG),
+        "info" => Some(tracing::level_filters::LevelFilter::INFO),
+        "warn" | "warning" => Some(tracing::level_filters::LevelFilter::WARN),
+        "error" => Some(tracing::level_filters::LevelFilter::ERROR),
+        "off" => Some(tracing::level_filters::LevelFilter::OFF),
+        _ => None,
     }
+}
+
+/// Parse a log-level string into a [`tracing::level_filters::LevelFilter`].
+/// Anything but a level name is `info`.
+fn parse_level_filter(level: &str) -> tracing::level_filters::LevelFilter {
+    level_filter_by_name(level).unwrap_or(tracing::level_filters::LevelFilter::INFO)
+}
+
+/// The message for a `LOG_LEVEL` that is not a level name. Filter directives
+/// (`target=level`) are not level names either: the `LevelFilter` cannot apply
+/// them.
+fn unknown_level_message(level: &str) -> Option<String> {
+    if level_filter_by_name(level).is_some() {
+        return None;
+    }
+    Some(format!(
+        "LOG_LEVEL {level:?} is not one of trace, debug, info, warn, error, off; using info"
+    ))
 }
 
 /// Initialise the global tracing subscriber.
@@ -137,11 +155,15 @@ pub fn init_tracing(service_name: &str, otlp_endpoint: Option<&str>) {
 ///
 /// Currently installs:
 /// - A [`LevelFilter`](tracing::level_filters::LevelFilter) layer from `config.log_level`
+///   (`info`, with a message on stderr, if that is not a level name)
 /// - `fmt` layer (human-readable, with target and level)
 ///
 /// When OpenTelemetry crates are available, an OTLP span-exporter layer will
 /// be added here conditionally on `config.enabled`.
 pub fn init_tracing_with_config(config: &TracingConfig) {
+    if let Some(message) = unknown_level_message(&config.log_level) {
+        eprintln!("{message}");
+    }
     let level_filter = parse_level_filter(&config.log_level);
 
     if config.enabled {
@@ -376,6 +398,71 @@ mod tests {
             parse_level_filter("unknown"),
             tracing::level_filters::LevelFilter::INFO
         );
+    }
+
+    #[test]
+    fn test_unknown_level_message() {
+        for level in [
+            "trace", "debug", "info", "warn", "warning", "error", "off", "INFO", "Warning",
+        ] {
+            assert_eq!(unknown_level_message(level), None, "{level}");
+        }
+        for level in [
+            "verbose",
+            "2",
+            "info debug",
+            "tee_enclave=debug",
+            "info,tee_enclave=trace",
+        ] {
+            let message = unknown_level_message(level).unwrap();
+            assert!(message.contains(level), "{message}");
+            assert!(message.ends_with("using info"), "{message}");
+        }
+    }
+
+    /// Runs in the child process of `test_unknown_log_level_is_reported_on_stderr`
+    /// and does nothing otherwise: it installs the global subscriber.
+    #[test]
+    fn log_level_child() {
+        if std::env::var_os("__TEST_ENCLAVE_LOG_LEVEL_CHILD__").is_none() {
+            return;
+        }
+        init_tracing("log-level-child", None);
+        tracing::info!("child info line");
+        tracing::debug!("child debug line");
+    }
+
+    #[test]
+    fn test_unknown_log_level_is_reported_on_stderr() {
+        let run = |log_level: &str| {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "tracing_setup::tests::log_level_child"])
+                .arg("--nocapture")
+                .env("__TEST_ENCLAVE_LOG_LEVEL_CHILD__", "1")
+                .env("LOG_LEVEL", log_level)
+                .env_remove("OTEL_ENABLED")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{out:?}");
+            (
+                String::from_utf8(out.stdout).unwrap(),
+                String::from_utf8(out.stderr).unwrap(),
+            )
+        };
+
+        let (stdout, stderr) = run("verbose");
+        assert!(stderr.contains("LOG_LEVEL \"verbose\""), "{stderr}");
+        assert!(stderr.contains("using info"), "{stderr}");
+        assert!(stdout.contains("child info line"), "{stdout}");
+        assert!(!stdout.contains("child debug line"), "{stdout}");
+
+        let (stdout, stderr) = run("debug");
+        assert!(!stderr.contains("LOG_LEVEL"), "{stderr}");
+        assert!(stdout.contains("child debug line"), "{stdout}");
+
+        let (stdout, stderr) = run("Warning");
+        assert!(!stderr.contains("LOG_LEVEL"), "{stderr}");
+        assert!(!stdout.contains("child info line"), "{stdout}");
     }
 
     #[test]

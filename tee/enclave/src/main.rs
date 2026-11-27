@@ -4,6 +4,7 @@
 //! via HTTP, runs tree ensemble prediction (XGBoost or LightGBM), and returns an
 //! ECDSA-signed attestation compatible with TEEMLVerifier.sol.
 
+mod admin_auth;
 mod attestation;
 mod config;
 mod metrics;
@@ -25,6 +26,7 @@ use serde::{Deserialize, Serialize};
 
 use secrecy::ExposeSecret;
 
+use admin_auth::AdminKey;
 use attestation::Attestor;
 use config::Config;
 use metrics::{Metrics, MetricsSnapshot};
@@ -121,7 +123,7 @@ struct AppState {
     /// watchdog background task can hold a reference independently.
     metrics: Arc<Metrics>,
     /// Optional admin API key. If `None`, admin endpoints return 403.
-    admin_api_key: Option<String>,
+    admin_api_key: Option<AdminKey>,
     /// Rate limiter for POST /infer endpoint.
     rate_limiter: RateLimiter,
     /// Optional watchdog for background health monitoring.
@@ -629,7 +631,7 @@ async fn reload_model(
         .and_then(|s| s.strip_prefix("Bearer "))
         .unwrap_or("");
 
-    if provided_key != expected_key {
+    if !expected_key.matches(provided_key) {
         tracing::warn!(
             target: "audit",
             event = "model_reload_auth_failed",
@@ -787,7 +789,7 @@ async fn load_model_handler(
         .and_then(|s| s.strip_prefix("Bearer "))
         .unwrap_or("");
 
-    if provided_key != expected_key {
+    if !expected_key.matches(provided_key) {
         tracing::warn!(
             target: "audit",
             event = "model_load_auth_failed",
@@ -869,7 +871,7 @@ async fn unload_model_handler(
         .and_then(|s| s.strip_prefix("Bearer "))
         .unwrap_or("");
 
-    if provided_key != expected_key {
+    if !expected_key.matches(provided_key) {
         tracing::warn!(
             target: "audit",
             event = "model_unload_auth_failed",
@@ -1101,7 +1103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         enclave_address,
         tee_verifier_address: config.tee_verifier_address,
         metrics,
-        admin_api_key: config.admin_api_key,
+        admin_api_key: config.admin_api_key.as_deref().map(AdminKey::new),
         rate_limiter: RateLimiter::new(config.max_requests_per_minute),
         watchdog,
         expected_model_hash: config.expected_model_hash,
@@ -1251,7 +1253,7 @@ mod tests {
             enclave_address,
             tee_verifier_address,
             metrics,
-            admin_api_key,
+            admin_api_key: admin_api_key.as_deref().map(AdminKey::new),
             rate_limiter: RateLimiter::new(120), // generous limit for tests
             watchdog,
             expected_model_hash: None,
@@ -1303,6 +1305,48 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         assert!(state.model_registry.get_model("extra").is_none());
+    }
+
+    /// Every admin handler takes the exact key only.
+    #[tokio::test]
+    async fn test_admin_handlers_reject_keys_close_to_the_admin_key() {
+        let state = test_app_state_with_admin_key(Some("admin-key".to_string()));
+
+        let request = |verb: &str, uri: &str, key: &str| {
+            let body = serde_json::json!({
+                "model_id": "none",
+                "model_path": "/nonexistent/model.json",
+            });
+            Request::builder()
+                .method(verb)
+                .uri(uri)
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {key}"))
+                .body(Body::from(body.to_string()))
+                .unwrap()
+        };
+
+        for (verb, uri) in [
+            ("POST", "/admin/reload-model"),
+            ("POST", "/models/load"),
+            ("DELETE", "/models/none"),
+        ] {
+            for key in ["", "admin-ke", "admin-key2", "admin-kez", "Admin-key"] {
+                let resp = test_app(state.clone())
+                    .oneshot(request(verb, uri, key))
+                    .await
+                    .unwrap();
+                assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "{uri} {key:?}");
+            }
+
+            // The right key gets past the check, to a model that does not exist.
+            let resp = test_app(state.clone())
+                .oneshot(request(verb, uri, "admin-key"))
+                .await
+                .unwrap();
+            assert_ne!(resp.status(), StatusCode::UNAUTHORIZED, "{uri}");
+            assert!(resp.status().is_client_error(), "{uri}: {}", resp.status());
+        }
     }
 
     #[tokio::test]
