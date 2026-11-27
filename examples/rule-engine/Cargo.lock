@@ -2354,12 +2354,10 @@ name = "rule-engine-host"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "bincode",
  "hex",
  "risc0-zkvm",
  "rule-engine-methods",
  "serde",
- "sha2",
 ]
 
 [[package]]

@@ -49,18 +49,20 @@ The guest ELF is compiled automatically by `script/build.rs` during the build.
 
 ## Run
 
-Generate a proof and verify it:
+The script needs a mode; with neither flag it prints its usage and exits 1.
 
 ```bash
 cd examples/anomaly-detector-sp1
-cargo run --release --bin anomaly-detector-sp1-script
+# Execute the guest on the sample input (no proof); prints cycles and results
+cargo run --release --bin anomaly-detector-sp1-script -- --execute
+# Generate a compressed STARK proof and verify it locally
+cargo run --release --bin anomaly-detector-sp1-script -- --prove
 ```
 
-This will:
-1. Compile the guest program to a RISC-V ELF.
-2. Execute the guest with sample input data.
-3. Generate an SP1 proof.
-4. Verify the proof locally.
+`--prove` verifies the proof against the verifying key, which also checks
+that the public values bundled with the proof are the ones the guest
+committed; the script does not read those values or compare them with
+expected results.
 
 ## Input Format
 
@@ -96,7 +98,7 @@ struct DetectionOutput {
 | Entry point | `sp1_zkvm::entrypoint!` | `risc0_zkvm::guest::entry!` |
 | I/O | `sp1_zkvm::io::read/commit` | `risc0_zkvm::guest::env::read/commit` |
 | Algorithm | Identical | Identical |
-| Proof system | STARK + Groth16 wrap | STARK + Groth16 wrap |
+| Proof system | Compressed STARK (`--prove`) | STARK + Groth16 wrap |
 
 The detection logic is the same. Only the zkVM interface layer differs.
 

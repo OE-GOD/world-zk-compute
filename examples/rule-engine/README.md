@@ -1,8 +1,10 @@
 # Rule Engine -- risc0-zkvm Guest Program
 
 A rule-based classification engine that runs inside the RISC Zero zkVM,
-producing a zero-knowledge proof that rules were evaluated correctly
-without revealing the underlying data.
+producing a proof that the rules were evaluated correctly. When the program
+is submitted through World ZK Compute, inputs are visible to the prover that
+executes the job and to anyone who can fetch the input URL, which is
+published with the request.
 
 ## What it does
 
@@ -83,13 +85,15 @@ evaluation results.
 - 10 records, each with 4 integer fields (timestamp, score, count, flag)
   and 2 string fields (region, device)
 - 3 rules:
-  - Rule 0 (AND): score > 90 AND region starts with "us"
-  - Rule 1 (OR): flag >= 10 OR score <= 82
+  - Rule 0 (AND): score >= 90 AND region starts with "us"
+  - Rule 1 (OR): flag > 10 OR score < 82
   - Rule 2 (AND): device matches "iphone-*" AND region contains "east"
 - 4 aggregations: count all, sum scores for rule-0 matches, max flag for
   rule-1 matches, min score overall
 
-**Output**:
+**Output** (the execution time, cycle count and input hash below are
+illustrative; the rule and aggregation results are what the guest computes
+for this input):
 ```
 === RISC Zero Rule Engine Benchmark ===
 
@@ -102,10 +106,13 @@ RISC0 Cycles: 524288
 Results:
   Total records: 10
   Input hash: 0xabcdef...
-  Rule 0: 3 matches, flagged: [0x00..11, 0x06..62, 0x09..99]
-  Rule 1: 2 matches, flagged: [0x08..88, 0x09..99]
+  Rule 0: 1 matches, flagged: [0x0600..0066]
+  Rule 1: 3 matches, flagged: [0x0000..0000, 0x0800..0088, 0x0900..0099]
+  Rule 2: 3 matches, flagged: [0x0000..0000, 0x0600..0066, 0x0900..0099]
   Agg 0: value=10, count=10
-  Agg 1: value=267, count=3
+  Agg 1: value=98, count=1
+  Agg 2: value=50, count=3
+  Agg 3: value=80, count=10
 ```
 
 ## Related

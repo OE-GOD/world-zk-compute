@@ -149,9 +149,21 @@ jobs:
           }
           echo "$DEPLOY_OUTPUT"
 
-          STYLUS_ADDRESS=$(echo "$DEPLOY_OUTPUT" | grep -oE '0x[0-9a-fA-F]{40}' | tail -1)
-          if [ -z "$STYLUS_ADDRESS" ]; then
-            echo "::error::Could not extract contract address"
+          # The output also holds the deployment and activation tx hashes, whose
+          # first 40 hex digits look like an address, so read the address line only
+          # and reject anything that is not exactly 20 bytes.
+          STYLUS_ADDRESS=$(printf '%s\n' "$DEPLOY_OUTPUT" \
+            | sed "s/$(printf '\033')\[[0-9;]*m//g" \
+            | grep -i 'deployed code at address' \
+            | grep -oE '0x[0-9a-fA-F]+' | head -1 || true)
+          if ! printf '%s' "$STYLUS_ADDRESS" | grep -qE '^0x[0-9a-fA-F]{40}$'; then
+            echo "::error::Could not extract contract address from the 'deployed code at address' line"
+            exit 1
+          fi
+          # setDAGStylusVerifier accepts an address with no code, so check here.
+          STYLUS_CODE=$(cast code --rpc-url ${{ env.ARB_SEPOLIA_RPC }} "$STYLUS_ADDRESS")
+          if [ -z "$STYLUS_CODE" ] || [ "$STYLUS_CODE" = "0x" ]; then
+            echo "::error::No code at $STYLUS_ADDRESS"
             exit 1
           fi
           echo "stylus_address=$STYLUS_ADDRESS" >> "$GITHUB_OUTPUT"
@@ -213,17 +225,19 @@ jobs:
 
       - name: Deployment summary
         run: |
-          echo "## Stylus Deployment Results" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Component | Address |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|-----------|---------|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Stylus Verifier | \`${{ steps.stylus_deploy.outputs.stylus_address }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          if [ -n "${{ steps.adapter_deploy.outputs.adapter_address }}" ]; then
-            echo "| RemainderVerifier | \`${{ steps.adapter_deploy.outputs.adapter_address }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          fi
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Network: Arbitrum Sepolia (421614)" >> "$GITHUB_STEP_SUMMARY"
-          echo "Brotli size: ${{ needs.build.outputs.brotli_size }} bytes" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Stylus Deployment Results"
+            echo ""
+            echo "| Component | Address |"
+            echo "|-----------|---------|"
+            echo "| Stylus Verifier | \`${{ steps.stylus_deploy.outputs.stylus_address }}\` |"
+            if [ -n "${{ steps.adapter_deploy.outputs.adapter_address }}" ]; then
+              echo "| RemainderVerifier | \`${{ steps.adapter_deploy.outputs.adapter_address }}\` |"
+            fi
+            echo ""
+            echo "Network: Arbitrum Sepolia (421614)"
+            echo "Brotli size: ${{ needs.build.outputs.brotli_size }} bytes"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Save deployment addresses
         run: |

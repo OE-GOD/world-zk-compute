@@ -440,8 +440,6 @@ dependencies = [
  "bincode",
  "hex",
  "serde",
- "serde_json",
- "sha2",
  "sp1-build",
  "sp1-sdk",
 ]
