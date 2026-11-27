@@ -51,7 +51,10 @@ export interface ServiceHealth {
 
 /** Response from `GET /health` on the gateway. */
 export interface HealthCheckResponse {
-  /** `"healthy"` when every backend answers, otherwise `"degraded"`. */
+  /**
+   * `"healthy"` when every backend answers, `"degraded"` when only some do,
+   * `"unhealthy"` when none does.
+   */
   status: string;
   services?: ServiceHealth[];
   healthy_count?: number;

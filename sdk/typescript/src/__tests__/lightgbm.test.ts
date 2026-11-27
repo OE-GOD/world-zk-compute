@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
+import { createHash } from 'node:crypto';
 import {
   LightGBMConverter,
+  sha256BitLengthWords,
   ModelParseError,
   InputValidationError,
   type TreeNode,
@@ -845,6 +847,25 @@ describe('LightGBMConverter - Input digest', () => {
     conv2.addSample(zeroId, [1.0, 2.0, 3.0, 4.0]);
 
     expect(conv1.inputDigest()).toBe(conv2.inputDigest());
+  });
+
+  it('matches node:crypto sha256 of the serialized bytes', () => {
+    const converter = LightGBMConverter.fromJSON(JSON.stringify(sampleBinaryModel()));
+    const zeroId = ('0x' + '00'.repeat(32)) as `0x${string}`;
+    // Growing the input moves its length across 64-byte block boundaries.
+    for (let i = 0; i < 6; i++) {
+      converter.addSample(zeroId, [1.0, 2.0, 3.0, 4.0 + i]);
+      const expected = '0x' + createHash('sha256').update(converter.serialize()).digest('hex');
+      expect(converter.inputDigest()).toBe(expected);
+    }
+  });
+
+  it('writes the full 64-bit bit length, including past 512 MiB', () => {
+    expect(sha256BitLengthWords(636132)).toEqual([0, 5089056]);
+    // 2^29 bytes is 2^32 bits: the first length that needs the high word.
+    expect(sha256BitLengthWords(0x20000000)).toEqual([1, 0]);
+    expect(sha256BitLengthWords(0x20000000 + 1)).toEqual([1, 8]);
+    expect(sha256BitLengthWords(0x60000003)).toEqual([3, 24]);
   });
 });
 

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { proverRegistryAbi } from '../abi';
 import { ProverRegistryClient } from '../prover-registry';
+import { ApiError } from '../errors';
 
 // ---------------------------------------------------------------------------
 // ABI validation tests
@@ -371,6 +372,37 @@ describe('ProverRegistryClient', () => {
     await expect(client.setMinStake(2000n)).rejects.toThrow(
       'walletClient is required',
     );
+  });
+
+  // A mined transaction that reverted still yields a receipt; only its
+  // status says the call failed.
+  const clientWithReceipt = (status: 'success' | 'reverted') =>
+    new ProverRegistryClient(
+      {
+        waitForTransactionReceipt: async () => ({ status, blockNumber: 7n }),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any,
+      {
+        writeContract: async () => '0xdead',
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any,
+      '0x1234567890abcdef1234567890abcdef12345678',
+    );
+
+  it('rejects a write whose transaction was mined but reverted', async () => {
+    const err = await clientWithReceipt('reverted')
+      .withdrawStake(100n)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).code).toBe('WZK-4002');
+    expect((err as ApiError).details).toMatchObject({
+      transactionHash: '0xdead',
+      functionName: 'withdrawStake',
+    });
+  });
+
+  it('returns the hash of a write whose transaction succeeded', async () => {
+    await expect(clientWithReceipt('success').withdrawStake(100n)).resolves.toBe('0xdead');
   });
 });
 

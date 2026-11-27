@@ -42,11 +42,12 @@ export function computeModelHash(modelBytes: Uint8Array | Hex): Hex {
  * Compute the input hash from a feature vector.
  *
  * This matches the enclave's computation:
- * `keccak256(JSON.stringify(features))` where the JSON format matches
- * Rust's `serde_json::to_vec` for `Vec<f64>`.
+ * `keccak256(serde_json::to_vec(&features))`, using {@link serializeF64List}
+ * for the JSON bytes.
  *
  * @param features - Array of number feature values
  * @returns 0x-prefixed hex keccak256 hash
+ * @throws {RangeError} If any feature is NaN or Infinity
  */
 export function computeInputHash(features: number[]): Hex {
   const jsonBytes = serializeF64List(features);
@@ -57,11 +58,12 @@ export function computeInputHash(features: number[]): Hex {
  * Compute the result hash from prediction scores.
  *
  * This matches the enclave's computation:
- * `keccak256(JSON.stringify(scores))` where the JSON format matches
- * Rust's `serde_json::to_vec` for `Vec<f64>`.
+ * `keccak256(serde_json::to_vec(&scores))`, using {@link serializeF64List}
+ * for the JSON bytes.
  *
  * @param scores - Array of number prediction scores
  * @returns 0x-prefixed hex keccak256 hash
+ * @throws {RangeError} If any score is NaN or Infinity
  */
 export function computeResultHash(scores: number[]): Hex {
   const jsonBytes = serializeF64List(scores);
@@ -96,30 +98,54 @@ export function computeResultHashFromBytes(resultBytes: Uint8Array | Hex): Hex {
 }
 
 /**
- * Serialize a list of numbers to JSON bytes matching Rust's serde_json.
+ * Format one finite f64 the way serde_json (1.0.149, through the zmij crate)
+ * writes it, so the bytes hash to what the enclave hashes.
  *
- * Rust's serde_json serializes f64 values with the following rules:
- * - Integers like 1.0 are serialized as "1.0" (not "1")
- * - No spaces after commas or colons
+ * Both sides use the shortest digit string that reads back as the same
+ * number; only the layout differs from JavaScript's:
+ * - leading-digit exponent from -5 to 15: plain decimal, with ".0" added to
+ *   whole numbers (`1.0`, `0.00001`, `1000000000000000.0`);
+ * - any other exponent: scientific with an explicit sign (`1e+16`, `2.5e-6`);
+ * - negative zero keeps its sign (`-0.0`).
+ */
+function formatF64(v: number): string {
+  if (!Number.isFinite(v)) {
+    // serde_json would write `null`, which no f64 reads back as; the Rust SDK
+    // refuses these values, so the SDKs agree on which inputs have a hash.
+    throw new RangeError(`f64 values must be finite (no NaN or Infinity), got ${v}`);
+  }
+  const sign = v < 0 || Object.is(v, -0) ? '-' : '';
+  const abs = Math.abs(v);
+  if (abs === 0) {
+    return sign + '0.0';
+  }
+  // toExponential() with no argument gives the shortest round-trip digits.
+  const [mantissa, expPart] = abs.toExponential().split('e');
+  const digits = mantissa.replace('.', '');
+  const exp = Number(expPart);
+  if (exp >= -5 && exp <= 15) {
+    if (digits.length - 1 <= exp) {
+      return sign + digits + '0'.repeat(exp + 1 - digits.length) + '.0';
+    }
+    if (exp >= 0) {
+      return sign + digits.slice(0, exp + 1) + '.' + digits.slice(exp + 1);
+    }
+    return sign + '0.' + '0'.repeat(-exp - 1) + digits;
+  }
+  const fraction = digits.length > 1 ? '.' + digits.slice(1) : '';
+  return sign + digits[0] + fraction + 'e' + (exp < 0 ? '-' : '+') + Math.abs(exp);
+}
+
+/**
+ * Serialize a list of numbers to the JSON bytes Rust's
+ * `serde_json::to_vec(&Vec<f64>)` produces: no spaces, and each number laid
+ * out as serde_json lays it out (see {@link formatF64}).
  *
- * JavaScript's JSON.stringify serializes 1.0 as "1" (no decimal point),
- * so we must fix up integer-valued floats.
- *
- * @param values - Array of numbers
+ * @param values - Array of finite numbers
  * @returns UTF-8 encoded JSON bytes
+ * @throws {RangeError} If any value is NaN or Infinity
  */
 export function serializeF64List(values: number[]): Uint8Array {
-  // Build a JSON string that matches Rust serde_json for Vec<f64>
-  const parts = values.map((v) => {
-    // JSON.stringify produces "1" for 1.0. Rust produces "1.0".
-    // We need to ensure integer-valued floats include ".0"
-    const s = JSON.stringify(v);
-    // If the number is finite and has no decimal point or exponent notation, add .0
-    if (Number.isFinite(v) && !s.includes('.') && !s.includes('e') && !s.includes('E')) {
-      return s + '.0';
-    }
-    return s;
-  });
-  const jsonStr = '[' + parts.join(',') + ']';
+  const jsonStr = '[' + values.map(formatF64).join(',') + ']';
   return new TextEncoder().encode(jsonStr);
 }

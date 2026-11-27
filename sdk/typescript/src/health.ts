@@ -73,6 +73,45 @@ export interface CheckReadyOptions {
 const DEFAULT_HEALTH_TIMEOUT = 5000;
 
 /**
+ * Read the JSON body of an indexer `/health` or `/ready` answer.
+ *
+ * The indexer answers 200, or 503 with the same JSON body when it is
+ * degraded or not ready. Any other status (the rate limiter's 429, a proxy's
+ * 502) carries no health report, so it is a failed check, not an unhealthy
+ * indexer.
+ */
+async function readIndexerJson(
+  response: Response,
+  check: string,
+): Promise<Record<string, unknown>> {
+  if (response.status !== 200 && response.status !== 503) {
+    throw new NetworkError(
+      'WZK-5000',
+      `Indexer ${check} check failed: HTTP ${response.status}`,
+      response.status,
+    );
+  }
+  let data: unknown;
+  try {
+    data = await response.json();
+  } catch (e) {
+    // A timeout while the body streams in must stay a timeout.
+    if (e instanceof Error && e.name === 'AbortError') {
+      throw e;
+    }
+    data = undefined;
+  }
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) {
+    throw new NetworkError(
+      'WZK-5000',
+      `Indexer ${check} check failed: HTTP ${response.status} without a JSON object body`,
+      response.status,
+    );
+  }
+  return data as Record<string, unknown>;
+}
+
+/**
  * Check the health of an indexer service.
  *
  * Makes a `GET /health` request to the given indexer URL and returns a typed
@@ -83,9 +122,10 @@ const DEFAULT_HEALTH_TIMEOUT = 5000;
  * @param options - Optional timeout configuration.
  * @returns The parsed health response.
  *
- * @throws {ServiceHealthError} If the indexer reports a non-"ok" status.
- * @throws {TimeoutError} If the request exceeds the configured timeout.
- * @throws {NetworkError} If the request fails due to a network issue (connection refused, DNS failure, etc.).
+ * @throws {ServiceHealthError} If the indexer reports a non-"ok" status, or answers 503 with a JSON health body.
+ * @throws {TimeoutError} If the request, including reading the body, exceeds `options.timeout` (default 5000 ms).
+ * @throws {NetworkError} If the request fails due to a network issue (connection refused, DNS failure, etc.),
+ *   the HTTP status is neither 200 nor 503, or the body is not a JSON object.
  *
  * @example
  * ```typescript
@@ -116,9 +156,7 @@ export async function checkHealth(
       signal: controller.signal,
     });
 
-    clearTimeout(timeoutId);
-
-    const data = (await response.json()) as Record<string, unknown>;
+    const data = await readIndexerJson(response, 'health');
 
     const status = (data.status as string) ?? 'unknown';
     const lastIndexedBlock = (data.last_indexed_block as number) ?? 0;
@@ -137,12 +175,18 @@ export async function checkHealth(
     if (status !== 'ok') {
       throw new ServiceHealthError(status, lastIndexedBlock, totalResults);
     }
+    if (response.status !== 200) {
+      throw new ServiceHealthError(
+        status,
+        lastIndexedBlock,
+        totalResults,
+        `Indexer is unhealthy: HTTP ${response.status} with status="${status}"`,
+      );
+    }
 
     return result;
   } catch (e) {
-    clearTimeout(timeoutId);
-
-    if (e instanceof ServiceHealthError) {
+    if (e instanceof ServiceHealthError || e instanceof NetworkError) {
       throw e;
     }
 
@@ -161,6 +205,9 @@ export async function checkHealth(
     }
 
     throw e;
+  } finally {
+    // Cleared only now so that the deadline also covers reading the body.
+    clearTimeout(timeoutId);
   }
 }
 
@@ -172,15 +219,16 @@ export async function checkHealth(
  * require a {@link Client} instance.
  *
  * Unlike {@link checkHealth}, this function does **not** throw when the
- * service reports `ready: false` -- it simply returns the response so
- * callers can inspect individual checks.
+ * service reports `ready: false` (HTTP 503) -- it simply returns the
+ * response so callers can inspect individual checks.
  *
  * @param indexerUrl - Base URL of the indexer (e.g. `"http://localhost:8081"`).
  * @param options - Optional timeout configuration.
  * @returns The parsed readiness response.
  *
- * @throws {TimeoutError} If the request exceeds the configured timeout.
- * @throws {NetworkError} If the request fails due to a network issue (connection refused, DNS failure, etc.).
+ * @throws {TimeoutError} If the request, including reading the body, exceeds `options.timeout` (default 5000 ms).
+ * @throws {NetworkError} If the request fails due to a network issue (connection refused, DNS failure, etc.),
+ *   the HTTP status is neither 200 nor 503, or the body is not a JSON object.
  *
  * @example
  * ```typescript
@@ -207,11 +255,10 @@ export async function checkReady(
       signal: controller.signal,
     });
 
-    clearTimeout(timeoutId);
+    const data = await readIndexerJson(response, 'ready');
 
-    const data = (await response.json()) as Record<string, unknown>;
-
-    const ready = (data.ready as boolean) ?? false;
+    // A 503 means not ready whatever the body says.
+    const ready = data.ready === true && response.status === 200;
     const rawChecks = (data.checks as Record<string, unknown>) ?? {};
 
     return {
@@ -222,7 +269,9 @@ export async function checkReady(
       },
     };
   } catch (e) {
-    clearTimeout(timeoutId);
+    if (e instanceof NetworkError) {
+      throw e;
+    }
 
     if (e instanceof Error) {
       if (e.name === 'AbortError') {
@@ -239,5 +288,8 @@ export async function checkReady(
     }
 
     throw e;
+  } finally {
+    // Cleared only now so that the deadline also covers reading the body.
+    clearTimeout(timeoutId);
   }
 }

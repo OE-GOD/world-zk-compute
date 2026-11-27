@@ -49,6 +49,45 @@ describe('serializeF64List', () => {
     const result = new TextDecoder().decode(serializeF64List([0.0]));
     expect(result).toBe('[0.0]');
   });
+
+  // Expected strings were printed by serde_json 1.0.149 (zmij 1.0.21, the
+  // versions in Cargo.lock that the enclave hashes with) for the same f64
+  // bit patterns. They cover each edge of serde_json's plain/scientific
+  // layout, where JSON.stringify writes something else.
+  it('matches serde_json output at the plain/scientific layout boundaries', () => {
+    const vectors: [number, string][] = [
+      [-0.0, '-0.0'],
+      [1e-5, '0.00001'],
+      [9.99e-6, '9.99e-6'],
+      [2.5e-6, '2.5e-6'],
+      [1e-6, '1e-6'],
+      [-2.5e-6, '-2.5e-6'],
+      [1e-7, '1e-7'],
+      [0.0001234, '0.0001234'],
+      [999999999999999.9, '999999999999999.9'],
+      [1e15, '1000000000000000.0'],
+      [9.9e15, '9900000000000000.0'],
+      [1e16, '1e+16'],
+      [1.5e16, '1.5e+16'],
+      [-1e16, '-1e+16'],
+      [1.2345678901234568e20, '1.2345678901234568e+20'],
+      [1e21, '1e+21'],
+      [1.5e300, '1.5e+300'],
+      [5e-324, '5e-324'],
+      [1.7976931348623157e308, '1.7976931348623157e+308'],
+      [123.456, '123.456'],
+      [0.30000000000000004, '0.30000000000000004'],
+    ];
+    for (const [value, expected] of vectors) {
+      expect(new TextDecoder().decode(serializeF64List([value]))).toBe(`[${expected}]`);
+    }
+  });
+
+  it('throws on NaN and Infinity instead of hashing them as null', () => {
+    for (const value of [NaN, Infinity, -Infinity]) {
+      expect(() => serializeF64List([1.0, value])).toThrow(RangeError);
+    }
+  });
 });
 
 describe('computeModelHash', () => {
@@ -111,6 +150,11 @@ describe('computeInputHash', () => {
     const result = computeInputHash([-1.5, 0.0, 2.3]);
     const expected = keccak256(toHex(new TextEncoder().encode('[-1.5,0.0,2.3]')));
     expect(result).toBe(expected);
+  });
+
+  it('hashes small features in the serde_json layout the enclave hashes', () => {
+    const expected = keccak256(toHex(new TextEncoder().encode('[2.5e-6,-0.0,1e+16]')));
+    expect(computeInputHash([2.5e-6, -0.0, 1e16])).toBe(expected);
   });
 
   it('should produce different hashes for different orderings', () => {

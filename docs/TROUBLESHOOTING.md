@@ -307,10 +307,11 @@ print(w3.eth.get_balance("0xYourAddress"))
 
 | Error | Cause | Fix |
 |---|---|---|
-| `ContractFunctionRevertedError` | On-chain revert | See [Contract Errors](#contract-errors-teemlverifier) |
-| `TransactionReceiptNotFoundError` | Transaction not mined within timeout | Check network; increase gas price |
+| `ContractFunctionExecutionError` (cause `ContractFunctionRevertedError`; find it with `err.walk()`) | On-chain revert during gas estimation | See [Contract Errors](#contract-errors-teemlverifier) |
+| `ApiError` `WZK-4002` (TransactionReverted) | Transaction mined but reverted; `details` holds `transactionHash`, `blockNumber` and `functionName` | See [Contract Errors](#contract-errors-teemlverifier) |
+| `WaitForTransactionReceiptTimeoutError` | Transaction not mined within viem's receipt timeout (180 s by default) | Check network; increase gas price |
 | `HttpRequestError: ... ECONNREFUSED` | Cannot connect to RPC | Verify `rpcUrl` in config |
-| `InsufficientFundsError` | Account has no ETH for gas + value | Fund the signer account |
+| `ContractFunctionExecutionError` (cause `InsufficientFundsError`) | Account has no ETH for gas + value | Fund the signer account |
 | Wrong `chainId` | SDK chain ID does not match network | Set `chainId` in `TEEVerifierConfig` (default: 31337 for Anvil) |
 
 ```typescript

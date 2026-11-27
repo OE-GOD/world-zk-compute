@@ -335,9 +335,11 @@ export class Client {
    * @returns The parsed {@link IndexerHealthResponse}.
    *
    * @throws {Error} If no indexer URL is configured and none is provided.
-   * @throws {ServiceHealthError} If the indexer reports a non-"ok" status.
-   * @throws {TimeoutError} If the request exceeds the configured timeout.
-   * @throws {NetworkError} If the request fails due to a network issue.
+   * @throws {ServiceHealthError} If the indexer reports a non-"ok" status, or answers 503 with a JSON health body.
+   * @throws {TimeoutError} If the request, including reading the body, exceeds `options.timeout`
+   *   (default 5000 ms; the client's own `timeout` is not used).
+   * @throws {NetworkError} If the request fails due to a network issue (connection refused, DNS failure, etc.),
+   *   the HTTP status is neither 200 nor 503, or the body is not a JSON object.
    */
   async indexerHealth(
     options: CheckHealthOptions & { indexerUrl?: string } = {},
