@@ -76,7 +76,8 @@ operator:
     timeoutSeconds: 3
     failureThreshold: 3
   proofStorageSizeLimit: 2Gi
-  terminationGracePeriodSeconds: 60
+  # Longer than the operator's 60 s wait for running disputes at shutdown
+  terminationGracePeriodSeconds: 75
 
 # =============================================================================
 # Indexer

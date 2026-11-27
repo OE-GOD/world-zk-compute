@@ -1,7 +1,7 @@
 use alloy::eips::BlockNumberOrTag;
 use alloy::primitives::{Address, B256, U256};
 use alloy::providers::{Provider, ProviderBuilder};
-use world_zk_sdk::abi::TEEMLVerifier::MLResult;
+use world_zk_sdk::abi::TEEMLVerifier::{self, MLResult};
 use world_zk_sdk::{Client, TEEVerifier};
 
 /// On-chain operations via the TEEMLVerifier contract.
@@ -12,14 +12,18 @@ use world_zk_sdk::{Client, TEEVerifier};
 pub struct ChainClient {
     tee_verifier: TEEVerifier,
     rpc_url: String,
+    contract_address: Address,
     /// When true, skip on-chain submission and log instead.
     dry_run: bool,
 }
 
 impl ChainClient {
+    /// Create a `ChainClient` that sends transactions.
+    #[cfg(test)]
     pub fn new(rpc_url: &str, private_key: &str, contract_address: &str) -> anyhow::Result<Self> {
         let client = Client::new(rpc_url, private_key, contract_address)?;
         Ok(Self {
+            contract_address: client.contract_address(),
             tee_verifier: TEEVerifier::new(client),
             rpc_url: rpc_url.to_string(),
             dry_run: false,
@@ -39,6 +43,7 @@ impl ChainClient {
     ) -> anyhow::Result<Self> {
         let client = Client::new(rpc_url, private_key, contract_address)?;
         Ok(Self {
+            contract_address: client.contract_address(),
             tee_verifier: TEEVerifier::new(client),
             rpc_url: rpc_url.to_string(),
             dry_run,
@@ -163,6 +168,22 @@ impl ChainClient {
     /// Read a result's on-chain state (a view call: nothing is submitted).
     pub async fn get_result(&self, result_id: B256) -> anyhow::Result<MLResult> {
         self.tee_verifier.get_result(result_id).await
+    }
+
+    /// Whether the contract has settled the dispute on a result (a view call:
+    /// nothing is submitted).
+    pub async fn dispute_resolved(&self, result_id: B256) -> anyhow::Result<bool> {
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let contract = TEEMLVerifier::new(self.contract_address, provider);
+        Ok(contract.disputeResolved(result_id).call().await?)
+    }
+
+    /// Whether the prover won the dispute on a result (a view call: nothing is
+    /// submitted). Only meaningful once [`Self::dispute_resolved`] is true.
+    pub async fn dispute_prover_won(&self, result_id: B256) -> anyhow::Result<bool> {
+        let provider = ProviderBuilder::new().connect_http(self.rpc_url.parse()?);
+        let contract = TEEMLVerifier::new(self.contract_address, provider);
+        Ok(contract.disputeProverWon(result_id).call().await?)
     }
 
     /// Timestamp of the latest block.

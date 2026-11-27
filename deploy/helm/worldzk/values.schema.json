@@ -99,7 +99,7 @@
           "type": "integer",
           "description": "Termination grace period in seconds",
           "minimum": 0,
-          "default": 30
+          "default": 75
         },
         "canary": {
           "type": "object",
@@ -149,7 +149,7 @@
               "type": "integer",
               "description": "Termination grace period for canary pods",
               "minimum": 0,
-              "default": 30
+              "default": 75
             },
             "proofStorageSizeLimit": {
               "type": "string",

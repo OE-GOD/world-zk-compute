@@ -38,7 +38,8 @@ spec:
         app.kubernetes.io/part-of: world-zk-compute
     spec:
       serviceAccountName: worldzk-operator
-      terminationGracePeriodSeconds: 30
+      # Longer than the operator's 60 s wait for running disputes at shutdown
+      terminationGracePeriodSeconds: 75
       containers:
         - name: operator
           image: world-zk-compute/operator:latest

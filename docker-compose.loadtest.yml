@@ -183,6 +183,8 @@ services:
     build:
       context: .
       dockerfile: services/operator/Dockerfile
+    # Longer than the operator's 60 s wait for running disputes at shutdown
+    stop_grace_period: 75s
     depends_on:
       deployer:
         condition: service_completed_successfully

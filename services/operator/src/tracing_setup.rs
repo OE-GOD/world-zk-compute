@@ -14,7 +14,7 @@
 //! | `OTEL_ENABLED`                | `false`                    | Enable OpenTelemetry export        |
 //! | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317`    | OTLP collector gRPC endpoint       |
 //! | `OTEL_SERVICE_NAME`           | `worldzk-operator`         | Service name for traces            |
-//! | `LOG_LEVEL`                   | `info`                     | Log level filter directive         |
+//! | `LOG_LEVEL`                   | `info`                     | Log level or filter directives     |
 
 use tracing::Span;
 use tracing_subscriber::EnvFilter;
@@ -117,14 +117,16 @@ pub fn init_tracing(service_name: &str, otlp_endpoint: Option<&str>) {
 /// Initialise the global tracing subscriber from a [`TracingConfig`].
 ///
 /// Currently installs:
-/// - `EnvFilter` layer (reads `RUST_LOG`, falls back to `config.log_level`)
+/// - `EnvFilter` layer (reads `RUST_LOG`, falls back to `config.log_level`; a
+///   value there that is not a log level or a valid filter is replaced by the
+///   default level, which is said on stderr)
 /// - `fmt` layer (human-readable, with target and level)
 ///
 /// When OpenTelemetry crates are available, an OTLP span-exporter layer will
 /// be added here conditionally on `config.enabled`.
 pub fn init_tracing_with_config(config: &TracingConfig) {
     let filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.log_level));
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| log_level_filter(&config.log_level));
 
     let json_format = std::env::var("LOG_FORMAT")
         .or_else(|_| std::env::var("RUST_LOG_FORMAT"))
@@ -220,6 +222,44 @@ pub fn span_dispute(result_id: &str, challenger: &str) -> Span {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// The filter directives for a `LOG_LEVEL` value, or `None` if it is a single
+/// word that is not a log level. `EnvFilter` takes such a word for a target
+/// name, which would leave every other target without a level.
+///
+/// A level is what `EnvFilter` itself reads as one (`LevelFilter`'s parser,
+/// which also takes the numbers 0 to 5), or "warning". A value that starts with
+/// `[` is a span directive and is passed on as it is.
+fn filter_directives(log_level: &str) -> Option<&str> {
+    if log_level.contains(['=', ',']) || log_level.starts_with('[') {
+        return Some(log_level);
+    }
+    if log_level
+        .parse::<tracing_subscriber::filter::LevelFilter>()
+        .is_ok()
+    {
+        return Some(log_level);
+    }
+    if log_level.eq_ignore_ascii_case("warning") {
+        return Some("warn");
+    }
+    None
+}
+
+/// The filter for a `LOG_LEVEL` value. A value that is not a log level, or that
+/// holds a directive `EnvFilter`'s parser rejects (such as `+4` or `[dispute`),
+/// is replaced by the default level, which is said on stderr. `EnvFilter::new`
+/// would drop only the bad directive, and with none left it logs errors alone.
+fn log_level_filter(log_level: &str) -> EnvFilter {
+    let parsed = filter_directives(log_level).and_then(|d| EnvFilter::builder().parse(d).ok());
+    parsed.unwrap_or_else(|| {
+        eprintln!(
+            "LOG_LEVEL {:?} is not a log level (trace, debug, info, warn, error, off, 0 to 5) or a valid filter, using {}",
+            log_level, DEFAULT_LOG_LEVEL
+        );
+        EnvFilter::new(DEFAULT_LOG_LEVEL)
+    })
+}
 
 /// Return the value of an environment variable if it is set and non-empty.
 fn non_empty_env(key: &str) -> Option<String> {
@@ -367,6 +407,89 @@ mod tests {
             Some("hello".to_string())
         );
         std::env::remove_var("__TEST_TRACING_VAL__");
+    }
+
+    #[test]
+    fn test_filter_directives_accepts_levels_in_any_case() {
+        use tracing_subscriber::filter::LevelFilter;
+
+        for (value, level) in [
+            ("trace", LevelFilter::TRACE),
+            ("DEBUG", LevelFilter::DEBUG),
+            ("Info", LevelFilter::INFO),
+            ("warn", LevelFilter::WARN),
+            ("warning", LevelFilter::WARN),
+            ("WARNING", LevelFilter::WARN),
+            ("Error", LevelFilter::ERROR),
+            ("OFF", LevelFilter::OFF),
+            ("0", LevelFilter::OFF),
+            ("1", LevelFilter::ERROR),
+            ("2", LevelFilter::WARN),
+            ("3", LevelFilter::INFO),
+            ("4", LevelFilter::DEBUG),
+            ("5", LevelFilter::TRACE),
+        ] {
+            let directives = filter_directives(value).unwrap_or_else(|| panic!("{value}"));
+            let filter = EnvFilter::new(directives);
+            assert_eq!(filter.max_level_hint(), Some(level), "{value}");
+        }
+    }
+
+    #[test]
+    fn test_filter_directives_passes_directives_through() {
+        for value in [
+            "tee_operator=trace",
+            "warn,audit=info",
+            "info,verbose",
+            "[dispute]",
+            "[dispute{result_id=0x01}]=debug",
+        ] {
+            assert_eq!(filter_directives(value), Some(value));
+        }
+    }
+
+    #[test]
+    fn test_filter_directives_rejects_other_words() {
+        for value in [
+            "verbose",
+            "fatal",
+            "tee_operator",
+            "6",
+            "-1",
+            "warnings",
+            "dispute]",
+        ] {
+            assert_eq!(filter_directives(value), None, "{value}");
+        }
+    }
+
+    /// Values the parser rejects fall back to the default level instead of
+    /// leaving only errors logged.
+    #[test]
+    fn test_log_level_filter_falls_back_to_info_for_invalid_directives() {
+        use tracing_subscriber::filter::LevelFilter;
+
+        for value in ["+4", "[dispute", "info,[dispute", "verbose"] {
+            let filter = log_level_filter(value);
+            assert_eq!(filter.max_level_hint(), Some(LevelFilter::INFO), "{value}");
+        }
+    }
+
+    #[test]
+    fn test_log_level_filter_keeps_valid_values() {
+        use tracing_subscriber::filter::LevelFilter;
+
+        for (value, level) in [
+            ("4", LevelFilter::DEBUG),
+            ("04", LevelFilter::DEBUG),
+            ("warning", LevelFilter::WARN),
+            ("tee_operator=trace", LevelFilter::TRACE),
+            ("warn,audit=debug", LevelFilter::DEBUG),
+            ("[dispute]=debug", LevelFilter::DEBUG),
+        ] {
+            let filter = log_level_filter(value);
+            assert_eq!(filter.max_level_hint(), Some(level), "{value}");
+        }
     }
 
     #[test]

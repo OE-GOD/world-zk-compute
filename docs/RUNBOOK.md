@@ -88,7 +88,7 @@ docker compose up -d operator
 kubectl -n world-zk set env deployment/worldzk-operator DRY_RUN=true
 ```
 
-When `DRY_RUN=true` (env var or `dry_run = true` in TOML config), the `watch` loop keeps polling and logs `[DRY-RUN] Would submit proof to resolve dispute for <result id>` for each challenge it sees, but it generates no proof and sends no on-chain transactions (auto-finalize is skipped as well). A challenge seen in this mode is recorded in `processed_event_ids`, so if the state file survives the restart the operator skips it after `DRY_RUN` is turned off. With the shipped compose file and manifests the restart recreates the container, so the state file is lost (Section 10) and the operator replays from block 0 instead. This is useful for:
+When `DRY_RUN=true` (env var or `dry_run = true` in TOML config), the `watch` loop keeps polling and logs `[DRY-RUN] Would submit proof to resolve dispute for <result id>` for each challenge it sees, but it generates no proof and sends no on-chain transactions (auto-finalize is skipped as well). The other commands honour it too: `submit` sends no transaction (it still calls the enclave, and prints `Dry run: the result was not submitted, no transaction was sent`), `run` submits nothing and then watches in dry-run as above, and `register` registers nothing (it still reads the enclave's attestation and prints `Dry run: the enclave was not registered, no transaction was sent`). A challenge seen in this mode is recorded in `processed_event_ids`, so if the state file survives the restart the operator skips it after `DRY_RUN` is turned off. With the shipped compose file and manifests the restart recreates the container, so the state file is lost (Section 10) and the operator replays from block 0 instead. This is useful for:
 
 - Validating a new operator configuration against a live chain without spending gas
 - Temporarily halting submissions while keeping the watch loop active for monitoring
@@ -110,11 +110,11 @@ kubectl -n world-zk scale deployment worldzk-operator --replicas=0
 
 On SIGTERM/SIGINT, the operator:
 1. Stops accepting new events
-2. Waits up to 60 seconds for in-flight proof submissions to complete
+2. Waits up to 60 seconds for running dispute tasks to finish (it does not cancel them)
 3. Saves final state to `operator-state.json`
 4. Exits cleanly
 
-The container runtime can cut the 60-second wait short: `docker-compose.yml` sets no `stop_grace_period`, so Docker Compose's own stop timeout applies (`docker compose stop -t <seconds>` overrides it), and the Kubernetes manifest sets `terminationGracePeriodSeconds: 30`.
+The container runtime has to leave the operator more than these 60 seconds: the compose files with an operator service set `stop_grace_period: 75s` (`docker compose stop -t <seconds>` overrides it), and the Kubernetes manifest and the Helm values set `terminationGracePeriodSeconds: 75`. A dispute task still running when the wait ends is dropped; its challenge is not saved as processed, and the next start polls it again.
 
 On restart, it resumes from `last_polled_block` in the state file.
 
@@ -456,11 +456,11 @@ When the operator crashes, there may be proofs being generated that have not yet
 
 1. **Pre-computed proofs are preserved.** Proofs are stored as JSON files in `PROOFS_DIR` (default: `./proofs`). The operator checks this directory when a challenge is detected and uses existing proofs without regeneration.
 
-2. **In-progress dispute tasks are lost.** Any `tokio::spawn`-ed dispute-resolution tasks that were running at crash time are abandoned. The challenge was added to `processed_event_ids` when its task was started, so with a saved state file the operator skips it after the restart; it is handled again only if the operator replays without that entry (no state file). The `watch` loop does not generate proofs: it reads them from `PROOFS_DIR` and waits up to 60 seconds for one to appear.
+2. **In-progress dispute tasks are lost, their challenges are not.** Any dispute task that was running at crash time is abandoned. A challenge is added to `processed_event_ids` only when its dispute task has finished, and the saved `last_polled_block` is at or before the poll that delivered a challenge that is still open, so after the restart the operator sees the challenge again and disputes it, unless its dispute is already resolved on chain (a dispute the prover lost is reported, not sent again). The `watch` loop does not generate proofs: it reads them from `PROOFS_DIR` and waits up to 60 seconds for one to appear.
 
-3. **Semaphore-blocked proofs.** The operator limits concurrent proof submissions to 10 via a semaphore. If a challenge was skipped because the semaphore was full, it was NOT marked as processed, but the loop has already advanced `last_polled_block` past its block, so it is not polled again; it is seen again only if the operator replays from an earlier block.
+3. **Queued challenges.** The operator runs at most 10 disputes at once. Further challenges wait in a queue, oldest first, and start when a slot is free. They are open like the running ones, so a restart polls them again.
 
-4. **Graceful shutdown.** On SIGINT/SIGTERM, the operator waits up to 60 seconds for in-flight tasks to complete before saving state. If this timeout expires, remaining tasks are abandoned but the state file is still saved with the last polled block.
+4. **Graceful shutdown.** On SIGINT/SIGTERM, the operator waits up to 60 seconds for running dispute tasks to finish before saving state. If this timeout expires, the remaining tasks are dropped. The state file is still saved: challenges that are still open are not in `processed_event_ids`, and `last_polled_block` is the start of the poll that delivered the earliest of them, so the next start handles them again.
 
 ### Corrupt State File Recovery
 

@@ -5,6 +5,7 @@ mod enclave;
 mod metrics;
 mod nitro;
 pub mod notifications;
+mod open_challenges;
 mod prover;
 mod store;
 mod tracing_setup;
@@ -21,12 +22,14 @@ use tracing::Instrument;
 use uuid::Uuid;
 
 use config::{Config, ModelConfig};
+use open_challenges::{challenge_id, OpenChallenges};
 use prover::ProofManager;
 use secrecy::ExposeSecret;
-use store::StateStore;
+use store::{OperatorState, StateStore};
 use tee_operator::alerting::{AlertConfig, AlertManager, AlertSeverity};
 use tee_operator::audit;
 use tee_operator::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
+use tee_operator::verify::{PreVerifyResult, ProofPreVerifier};
 use watcher::{EventWatcher, TEEEvent};
 use world_zk_sdk::abi::TEEMLVerifier::MLResult;
 
@@ -369,6 +372,9 @@ async fn cmd_submit(
 /// Run one inference and submit it on-chain. Returns the handles of the
 /// best-effort follow-up tasks (archive write, proof pre-computation), which keep
 /// running in the background.
+///
+/// With `config.dry_run` nothing is sent, so there is no result to archive or to
+/// prove and no follow-up task.
 #[tracing::instrument(skip(config, features_json, model))]
 async fn submit(
     config: &Config,
@@ -416,10 +422,11 @@ async fn submit(
     );
 
     // 3. Submit on-chain
-    let chain_client = chain::ChainClient::new(
+    let chain_client = chain::ChainClient::new_with_dry_run(
         &config.rpc_url,
         config.private_key.expose_secret(),
         &config.tee_verifier_address,
+        config.dry_run,
     )?;
 
     let model_hash = hex_to_b256(&response.model_hash)?;
@@ -432,6 +439,10 @@ async fn submit(
     let (tx_hash, result_id) = chain_client
         .submit_result(model_hash, input_hash, &result_bytes, &attestation, stake)
         .await?;
+    if config.dry_run {
+        println!("Dry run: the result was not submitted, no transaction was sent");
+        return Ok(Vec::new());
+    }
     tracing::info!("Submitted on-chain: tx={} result_id={}", tx_hash, result_id);
 
     // Audit log: result submission
@@ -728,12 +739,14 @@ impl ShutdownState {
         self.in_flight_tasks.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Release, paired with the Acquire in [`Self::in_flight_count`]: a task's
+    /// report, sent before this, is there for whoever reads the count it left.
     fn track_task_done(&self) {
-        self.in_flight_tasks.fetch_sub(1, Ordering::Relaxed);
+        self.in_flight_tasks.fetch_sub(1, Ordering::Release);
     }
 
     fn in_flight_count(&self) -> u64 {
-        self.in_flight_tasks.load(Ordering::Relaxed)
+        self.in_flight_tasks.load(Ordering::Acquire)
     }
 
     /// Subscribe to shutdown cancellation notifications.
@@ -804,8 +817,210 @@ fn alert_config_from_env_value(value: Option<&str>) -> AlertConfig {
     })
 }
 
+/// How long the watch loop waits.
+struct WatchTiming {
+    /// Pause between two polls.
+    poll_interval: std::time::Duration,
+    /// Longest wait for running dispute tasks on shutdown.
+    drain_timeout: std::time::Duration,
+}
+
+impl Default for WatchTiming {
+    fn default() -> Self {
+        Self {
+            poll_interval: std::time::Duration::from_secs(5),
+            drain_timeout: std::time::Duration::from_secs(60),
+        }
+    }
+}
+
+/// Limit on dispute tasks running at the same time.
+const MAX_CONCURRENT_DISPUTES: usize = 10;
+
+/// What a dispute task needs, and the slots that limit how many run at once.
+struct DisputeRunner {
+    chain: Arc<chain::ChainClient>,
+    proof_mgr: Arc<ProofManager>,
+    alert_manager: Arc<AlertManager>,
+    metrics: Arc<metrics::MetricsState>,
+    chain_cb: Arc<CircuitBreaker>,
+    pre_verifier: Option<Arc<ProofPreVerifier>>,
+    shutdown: Arc<ShutdownState>,
+    slots: Arc<tokio::sync::Semaphore>,
+    /// Receives the id of every challenge whose task has finished.
+    finished_tx: tokio::sync::mpsc::UnboundedSender<String>,
+}
+
+impl DisputeRunner {
+    /// Start a task for each waiting challenge, oldest first, while slots are free.
+    ///
+    /// Proof resolution runs in tasks of its own so that it does not block the
+    /// event loop. A shutdown does not cancel them.
+    fn start_waiting(&self, challenges: &mut OpenChallenges) {
+        self.start_waiting_with(challenges, |result_id| self.dispute(result_id));
+    }
+
+    /// [`Self::start_waiting`] with `dispute` as the work of each task.
+    fn start_waiting_with<F>(&self, challenges: &mut OpenChallenges, dispute: impl Fn(B256) -> F)
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        loop {
+            let Ok(permit) = self.slots.clone().try_acquire_owned() else {
+                return;
+            };
+            let Some(challenge) = challenges.next_waiting() else {
+                return;
+            };
+            let id = challenge_id(&challenge.result_id);
+            let dispute_span =
+                tracing_setup::span_dispute(&id, &format!("{}", challenge.challenger));
+            self.shutdown.track_task_start();
+            let report = FinishedReport {
+                id,
+                finished_tx: self.finished_tx.clone(),
+                shutdown: self.shutdown.clone(),
+                _permit: permit,
+                completed: false,
+            };
+            let task = dispute(challenge.result_id);
+            tokio::spawn(
+                async move {
+                    task.await;
+                    report.finish();
+                }
+                .instrument(dispute_span),
+            );
+        }
+    }
+
+    /// The dispute of one challenge, ready to be spawned.
+    fn dispute(&self, result_id: B256) -> impl std::future::Future<Output = ()> + Send + 'static {
+        let chain = self.chain.clone();
+        let proof_mgr = self.proof_mgr.clone();
+        let alert_manager = self.alert_manager.clone();
+        let metrics = self.metrics.clone();
+        let chain_cb = self.chain_cb.clone();
+        let pre_verifier = self.pre_verifier.clone();
+        async move {
+            handle_challenge(
+                &chain,
+                &proof_mgr,
+                result_id,
+                &alert_manager,
+                &metrics,
+                &chain_cb,
+                pre_verifier.as_ref(),
+            )
+            .await;
+        }
+    }
+}
+
+/// Ends a dispute task's turn when it is dropped: it frees the slot and stops
+/// counting as in flight. At the end of the task, or when the task panics, it
+/// also reports the challenge as finished, so that it is closed and recorded as
+/// processed. Otherwise a task that panics would leave its challenge open for
+/// ever, hold the saved block at the poll that delivered it and keep counting as
+/// in flight. A task that the runtime drops unfinished reports nothing: its
+/// dispute may not have been sent, so the challenge stays open and the next
+/// start handles it again.
+struct FinishedReport {
+    id: String,
+    finished_tx: tokio::sync::mpsc::UnboundedSender<String>,
+    shutdown: Arc<ShutdownState>,
+    /// The task's slot, freed with the report.
+    _permit: tokio::sync::OwnedSemaphorePermit,
+    /// Set when the dispute has returned.
+    completed: bool,
+}
+
+impl FinishedReport {
+    /// Report the dispute as returned. Taking the report whole keeps it inside
+    /// the task: an async block that only set the field would capture the field
+    /// alone and drop the report at once.
+    fn finish(mut self) {
+        self.completed = true;
+    }
+}
+
+impl Drop for FinishedReport {
+    fn drop(&mut self) {
+        // Tokio drops the future of a task that panics while the panic unwinds.
+        let report = if self.completed {
+            true
+        } else if std::thread::panicking() {
+            tracing::error!(
+                "Dispute task for {} panicked, the challenge is closed like a failed dispute",
+                self.id
+            );
+            true
+        } else {
+            tracing::warn!(
+                "Dispute task for {} was stopped before it finished, the challenge stays open",
+                self.id
+            );
+            false
+        };
+        // Reported before the task stops counting as in flight: the shutdown
+        // reads the reports once no task is left.
+        if report {
+            let _ = self.finished_tx.send(std::mem::take(&mut self.id));
+        }
+        self.shutdown.track_task_done();
+    }
+}
+
+/// Close the challenges whose dispute task has finished and record them as processed.
+fn record_finished(
+    finished_rx: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+    challenges: &mut OpenChallenges,
+    op_state: &mut OperatorState,
+) {
+    while let Ok(id) = finished_rx.try_recv() {
+        challenges.close(&id);
+        op_state.processed_event_ids.insert(id);
+    }
+}
+
 #[tracing::instrument(skip(config))]
 async fn cmd_watch(config: &Config, metrics_port: u16, dry_run: bool) -> anyhow::Result<()> {
+    let shutdown = Arc::new(ShutdownState::new());
+
+    // Spawn shutdown signal handler
+    {
+        let shutdown = shutdown.clone();
+        tokio::spawn(async move {
+            let reason = shutdown_signal().await;
+            tracing::info!(
+                signal = reason,
+                "shutting down gracefully, reason: {}",
+                reason
+            );
+            shutdown.signal_shutdown_with_reason(reason);
+        });
+    }
+
+    watch(
+        config,
+        metrics_port,
+        dry_run,
+        shutdown,
+        Arc::new(metrics::MetricsState::new()),
+        WatchTiming::default(),
+    )
+    .await
+}
+
+/// Watch the chain and handle challenges until `shutdown` is signalled.
+async fn watch(
+    config: &Config,
+    metrics_port: u16,
+    dry_run: bool,
+    shutdown: Arc<ShutdownState>,
+    metrics_state: Arc<metrics::MetricsState>,
+    timing: WatchTiming,
+) -> anyhow::Result<()> {
     if dry_run {
         tracing::info!(
             "[DRY-RUN] Dry-run mode enabled. No on-chain transactions will be submitted."
@@ -860,42 +1075,30 @@ async fn cmd_watch(config: &Config, metrics_port: u16, dry_run: bool) -> anyhow:
         success_threshold_for_close: 1,
     }));
 
-    // Semaphore to limit concurrent proof submissions (T215)
-    let proof_semaphore = Arc::new(tokio::sync::Semaphore::new(10));
-
     // Initialize local proof pre-verifier (if circuit descriptions are available)
-    let pre_verifier: Option<Arc<tee_operator::verify::ProofPreVerifier>> =
-        if !config.circuit_desc_dir.is_empty() {
-            tracing::info!(
-                circuit_desc_dir = %config.circuit_desc_dir,
-                "Local proof pre-verification enabled"
-            );
-            Some(Arc::new(tee_operator::verify::ProofPreVerifier::new(
-                &config.circuit_desc_dir,
-            )))
-        } else {
-            tracing::debug!("Local proof pre-verification disabled (no CIRCUIT_DESC_DIR)");
-            None
-        };
+    let pre_verifier: Option<Arc<ProofPreVerifier>> = if !config.circuit_desc_dir.is_empty() {
+        tracing::info!(
+            circuit_desc_dir = %config.circuit_desc_dir,
+            "Local proof pre-verification enabled"
+        );
+        Some(Arc::new(ProofPreVerifier::new(&config.circuit_desc_dir)))
+    } else {
+        tracing::debug!("Local proof pre-verification disabled (no CIRCUIT_DESC_DIR)");
+        None
+    };
 
-    let shutdown = Arc::new(ShutdownState::new());
-
-    // Initialize metrics state before shutdown handler so it can be marked
-    let metrics_state = Arc::new(metrics::MetricsState::new());
-
-    // Spawn shutdown signal handler
-    {
-        let shutdown = shutdown.clone();
-        tokio::spawn(async move {
-            let reason = shutdown_signal().await;
-            tracing::info!(
-                signal = reason,
-                "shutting down gracefully, reason: {}",
-                reason
-            );
-            shutdown.signal_shutdown_with_reason(reason);
-        });
-    }
+    let (finished_tx, mut finished_rx) = tokio::sync::mpsc::unbounded_channel();
+    let disputes = DisputeRunner {
+        chain: chain_client.clone(),
+        proof_mgr,
+        alert_manager: alert_manager.clone(),
+        metrics: metrics_state.clone(),
+        chain_cb: chain_cb.clone(),
+        pre_verifier,
+        shutdown: shutdown.clone(),
+        slots: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_DISPUTES)),
+        finished_tx,
+    };
 
     // Spawn HTTP metrics server with graceful shutdown support.
     // The cancel receiver fires when ShutdownState broadcasts the
@@ -928,8 +1131,13 @@ async fn cmd_watch(config: &Config, metrics_port: u16, dry_run: bool) -> anyhow:
     let mut finalize_counter = 0u64;
     // Cache result_id → model_hash for multi-model proof selection
     let mut result_model_map: HashMap<String, String> = HashMap::new();
+    let mut open_challenges = OpenChallenges::default();
 
     while !shutdown.is_shutting_down() {
+        // Challenges that waited for a slot get the ones freed since the last pass
+        record_finished(&mut finished_rx, &mut open_challenges, &mut op_state);
+        disputes.start_waiting(&mut open_challenges);
+
         // Poll for new events (through RPC circuit breaker)
         let (events, next_block) = if let Err(e) = rpc_cb.allow_request() {
             tracing::warn!("RPC circuit breaker: {}", e);
@@ -938,6 +1146,7 @@ async fn cmd_watch(config: &Config, metrics_port: u16, dry_run: bool) -> anyhow:
             match watcher.poll_events(from_block).await {
                 Ok(r) => {
                     rpc_cb.record_success();
+                    metrics_state.mark_polled();
                     r
                 }
                 Err(e) => {
@@ -963,6 +1172,7 @@ async fn cmd_watch(config: &Config, metrics_port: u16, dry_run: bool) -> anyhow:
             );
         }
 
+        let poll_block = from_block;
         from_block = next_block;
 
         // Update last polled block
@@ -971,6 +1181,8 @@ async fn cmd_watch(config: &Config, metrics_port: u16, dry_run: bool) -> anyhow:
         for event in &events {
             if shutdown.is_shutting_down() {
                 tracing::info!("Shutdown in progress, skipping remaining events");
+                // The next start polls this range again
+                from_block = poll_block;
                 break;
             }
             match event {
@@ -978,13 +1190,22 @@ async fn cmd_watch(config: &Config, metrics_port: u16, dry_run: bool) -> anyhow:
                     result_id,
                     challenger,
                 } => {
-                    let rid_hex = format!("0x{}", hex::encode(result_id));
+                    let rid_hex = challenge_id(result_id);
 
                     // Dedup: skip events already processed in a prior session
                     if op_state.processed_event_ids.contains(&rid_hex) {
                         tracing::debug!(
                             result_id = %result_id,
                             "Skipping already-processed challenge event"
+                        );
+                        continue;
+                    }
+
+                    // Dedup: skip events whose challenge is still being handled
+                    if open_challenges.is_open(&rid_hex) {
+                        tracing::debug!(
+                            result_id = %result_id,
+                            "Skipping challenge event that is already being handled"
                         );
                         continue;
                     }
@@ -1062,55 +1283,18 @@ async fn cmd_watch(config: &Config, metrics_port: u16, dry_run: bool) -> anyhow:
                         continue;
                     }
 
-                    // Spawn proof resolution as a separate task to avoid blocking
-                    // the event loop (T215)
-                    let dispute_span =
-                        tracing_setup::span_dispute(&rid_hex, &format!("{}", challenger));
-                    let permit = proof_semaphore.clone().try_acquire_owned();
-                    match permit {
-                        Ok(permit) => {
-                            let chain = chain_client.clone();
-                            let pm = proof_mgr.clone();
-                            let rid = *result_id;
-                            let am = alert_manager.clone();
-                            let ms = metrics_state.clone();
-                            let cb = chain_cb.clone();
-                            let pv = pre_verifier.clone();
-                            shutdown.track_task_start();
-                            let sd = shutdown.clone();
-                            let mut cancel_rx = shutdown.subscribe_cancel();
-                            tokio::spawn(
-                                async move {
-                                    tokio::select! {
-                                        _ = handle_challenge(&chain, &pm, rid, &am, &ms, &cb, pv.as_deref()) => {},
-                                        _ = cancel_rx.changed() => {
-                                            tracing::info!(
-                                                result_id = %rid,
-                                                "cancelling in-flight dispute task due to shutdown"
-                                            );
-                                        },
-                                    }
-                                    sd.track_task_done();
-                                    drop(permit);
-                                }
-                                .instrument(dispute_span),
-                            );
-                        }
-                        Err(_) => {
-                            tracing::warn!(
-                                "Max concurrent proof submissions reached, skipping challenge (it is not polled again unless the operator replays from an earlier block): {}",
-                                rid_hex
-                            );
-                            metrics_state.record_error();
-                            // Not marked as processed, but the poll loop has
-                            // already moved past this block, so the challenge
-                            // is only seen again after a replay.
-                            continue;
-                        }
+                    // Open until its dispute task has finished; only then is it
+                    // recorded as processed
+                    open_challenges.open(*result_id, *challenger, poll_block);
+                    disputes.start_waiting(&mut open_challenges);
+                    if open_challenges.waiting_count() > 0 {
+                        tracing::warn!(
+                            waiting = open_challenges.waiting_count(),
+                            "Max concurrent proof submissions reached, challenge queued until a slot is free: {}",
+                            rid_hex
+                        );
+                        metrics_state.record_error();
                     }
-
-                    // Mark as processed after handling initiated
-                    op_state.processed_event_ids.insert(rid_hex);
                 }
                 TEEEvent::ResultSubmitted {
                     result_id,
@@ -1165,12 +1349,12 @@ async fn cmd_watch(config: &Config, metrics_port: u16, dry_run: bool) -> anyhow:
         }
 
         // Persist state after each poll cycle for crash recovery
-        op_state.last_polled_block = from_block;
+        op_state.last_polled_block = open_challenges.resume_block(from_block);
         if let Err(e) = state_store.save(&op_state) {
             tracing::warn!("Failed to persist watcher state: {}", e);
         }
 
-        // Every ~60 seconds (12 iterations * 5s), check for finalizeable results
+        // Every ~60 seconds (12 iterations * 5s poll interval), check for finalizeable results
         finalize_counter += 1;
         if finalize_counter >= 12 && !dry_run {
             finalize_counter = 0;
@@ -1180,6 +1364,7 @@ async fn cmd_watch(config: &Config, metrics_port: u16, dry_run: bool) -> anyhow:
                 from_block.saturating_sub(7200),
                 &rpc_cb,
                 &chain_cb,
+                &shutdown,
             )
             .await;
         }
@@ -1187,7 +1372,7 @@ async fn cmd_watch(config: &Config, metrics_port: u16, dry_run: bool) -> anyhow:
         // Use select to allow shutdown to interrupt the sleep
         let mut cancel_rx = shutdown.subscribe_cancel();
         tokio::select! {
-            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {},
+            _ = tokio::time::sleep(timing.poll_interval) => {},
             _ = cancel_rx.changed() => {
                 break;
             },
@@ -1208,9 +1393,10 @@ async fn cmd_watch(config: &Config, metrics_port: u16, dry_run: bool) -> anyhow:
     if in_flight > 0 {
         tracing::info!(
             in_flight_tasks = in_flight,
-            "Waiting for in-flight tasks to complete (60s timeout)"
+            "Waiting for in-flight tasks to complete ({}s timeout)",
+            timing.drain_timeout.as_secs()
         );
-        let deadline = Instant::now() + std::time::Duration::from_secs(60);
+        let deadline = Instant::now() + timing.drain_timeout;
         while shutdown.in_flight_count() > 0 && Instant::now() < deadline {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
@@ -1225,13 +1411,16 @@ async fn cmd_watch(config: &Config, metrics_port: u16, dry_run: bool) -> anyhow:
         }
     }
 
-    // Final state save before shutdown
-    op_state.last_polled_block = from_block;
+    // Final state save before shutdown. Challenges that are still open are not
+    // in it as processed, and the next start polls their blocks again.
+    record_finished(&mut finished_rx, &mut open_challenges, &mut op_state);
+    op_state.last_polled_block = open_challenges.resume_block(from_block);
     if let Err(e) = state_store.save(&op_state) {
         tracing::warn!("Failed to save state on shutdown: {}", e);
     } else {
         tracing::info!(
-            last_polled_block = from_block,
+            last_polled_block = op_state.last_polled_block,
+            open_challenges = open_challenges.len(),
             "Watcher state saved to {:?}",
             state_store.path()
         );
@@ -1257,9 +1446,9 @@ async fn cmd_run(
         return Err(e);
     }
 
-    // 2. Start watching (Run command never uses dry-run)
+    // 2. Start watching
     tracing::info!("Starting watch loop...");
-    cmd_watch(config, metrics_port, false).await
+    cmd_watch(config, metrics_port, config.dry_run).await
 }
 
 #[tracing::instrument(skip(config))]
@@ -1349,15 +1538,20 @@ async fn cmd_register(
     };
 
     // 6. Register on-chain
-    let chain_client = chain::ChainClient::new(
+    let chain_client = chain::ChainClient::new_with_dry_run(
         &config.rpc_url,
         config.private_key.expose_secret(),
         &config.tee_verifier_address,
+        config.dry_run,
     )?;
 
     let tx_hash = chain_client
         .register_enclave(enclave_addr, image_hash)
         .await?;
+    if config.dry_run {
+        println!("Dry run: the enclave was not registered, no transaction was sent");
+        return Ok(());
+    }
     tracing::info!("Enclave registered on-chain: tx={}", tx_hash);
     audit::log_enclave_registered(
         &format!("{}", enclave_addr),
@@ -1382,86 +1576,47 @@ async fn handle_challenge(
     alert_manager: &AlertManager,
     metrics: &metrics::MetricsState,
     chain_cb: &CircuitBreaker,
-    pre_verifier: Option<&tee_operator::verify::ProofPreVerifier>,
+    pre_verifier: Option<&Arc<ProofPreVerifier>>,
 ) {
-    let rid_hex = format!("0x{}", hex::encode(result_id));
+    let rid_hex = challenge_id(&result_id);
 
-    // Local pre-verification helper: returns true if proof should be submitted,
-    // false if pre-verification failed (bad proof, don't waste gas).
-    // Converts the binary crate's StoredProof to the library crate's StoredProof
-    // since they are compiled as separate crate types.
-    let pre_verify_proof = |proof: &store::StoredProof, rid: &str| -> bool {
-        if let Some(pv) = pre_verifier {
-            let lib_proof = tee_operator::store::StoredProof {
-                proof_hex: proof.proof_hex.clone(),
-                circuit_hash: proof.circuit_hash.clone(),
-                public_inputs_hex: proof.public_inputs_hex.clone(),
-                gens_hex: proof.gens_hex.clone(),
-            };
-            match pv.pre_verify(&lib_proof) {
-                tee_operator::verify::PreVerifyResult::Verified => {
-                    tracing::info!("Pre-verification passed for {}", rid);
-                    true
-                }
-                tee_operator::verify::PreVerifyResult::Failed(reason) => {
-                    tracing::error!("Pre-verification FAILED for {}: {}", rid, reason);
-                    false
-                }
-                tee_operator::verify::PreVerifyResult::Skipped(reason) => {
-                    tracing::debug!("Pre-verification skipped for {}: {}", rid, reason);
-                    true
-                }
-            }
-        } else {
-            true
-        }
-    };
-
-    let resolve_result = match proof_mgr.read_proof(&rid_hex) {
-        Ok(Some(proof)) => {
-            tracing::info!("Found pre-computed proof for {}", rid_hex);
-            if !pre_verify_proof(&proof, &rid_hex) {
-                metrics.record_dispute_failed();
-                return;
-            }
-            resolve_with_proof(chain, result_id, &proof, metrics).await
-        }
-        Ok(None) => {
-            tracing::warn!(
-                "No pre-computed proof for {}. Waiting up to 60s...",
+    // After a restart a challenge comes round again whose dispute may have been
+    // mined before the stop. Disputing it again would only revert. This reads
+    // mined state alone: it does not stop a second transaction while the first
+    // is still pending.
+    let state = tokio::time::timeout(DISPUTE_STATE_TIMEOUT, dispute_state(chain, result_id)).await;
+    match state {
+        Ok(Ok(DisputeState::Settled)) => {
+            tracing::info!(
+                "Challenge on {} needs no dispute any more, it is settled on chain",
                 rid_hex
             );
-            match proof_mgr.wait_for_proof(&rid_hex, 60).await {
-                Ok(true) => {
-                    if let Ok(Some(proof)) = proof_mgr.read_proof(&rid_hex) {
-                        if !pre_verify_proof(&proof, &rid_hex) {
-                            metrics.record_dispute_failed();
-                            return;
-                        }
-                        resolve_with_proof(chain, result_id, &proof, metrics).await
-                    } else {
-                        Err(anyhow::anyhow!("Proof disappeared after wait"))
-                    }
-                }
-                Ok(false) => {
-                    tracing::error!("Proof not available after timeout for {}", rid_hex);
-                    Err(anyhow::anyhow!("Proof timeout for {}", rid_hex))
-                }
-                Err(e) => {
-                    tracing::error!("Error waiting for proof: {}", e);
-                    Err(e)
-                }
-            }
+            return;
         }
-        Err(e) => {
-            tracing::error!("Error reading proof: {}", e);
-            Err(e)
+        Ok(Ok(DisputeState::Lost)) => {
+            report_lost_dispute(&rid_hex, alert_manager, metrics);
+            return;
         }
+        Ok(Ok(DisputeState::Open)) => {}
+        Ok(Err(e)) => tracing::warn!(
+            "Could not read the state of {}, disputing it anyway: {}",
+            rid_hex,
+            rpc_error_text(&e)
+        ),
+        Err(_) => tracing::warn!(
+            "Reading the state of {} took over {} s, disputing it anyway",
+            rid_hex,
+            DISPUTE_STATE_TIMEOUT.as_secs()
+        ),
+    }
+
+    let resolve_result = match verified_proof(proof_mgr, &rid_hex, pre_verifier).await {
+        Ok(proof) => resolve_with_proof(chain, result_id, &proof, metrics, chain_cb).await,
+        Err(e) => Err(e),
     };
 
     match resolve_result {
         Ok(tx) => {
-            chain_cb.record_success();
             tracing::info!("Dispute resolved for {}! tx={}", rid_hex, tx);
             audit::log_dispute_submitted(&rid_hex, "", &format!("{}", tx));
             metrics.record_dispute_resolved();
@@ -1479,7 +1634,6 @@ async fn handle_challenge(
             }
         }
         Err(e) => {
-            chain_cb.record_failure();
             let error = rpc_error_text(&e);
             tracing::error!("Failed to resolve dispute for {}: {}", rid_hex, error);
             audit::log_dispute_failed(&rid_hex, "", &error);
@@ -1500,6 +1654,140 @@ async fn handle_challenge(
     }
 }
 
+/// Longest wait for the state read before a dispute; a node that does not answer
+/// must not hold the dispute up until its deadline.
+const DISPUTE_STATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// What the chain says about the challenge on a result.
+#[derive(Debug, PartialEq, Eq)]
+enum DisputeState {
+    /// Nothing settled yet: dispute it.
+    Open,
+    /// The contract resolved the dispute for the prover.
+    Settled,
+    /// The contract resolved the dispute against the prover (timeout, or a
+    /// proof that failed on chain).
+    Lost,
+}
+
+/// The state of the challenge on a result, read from `disputeResolved` and
+/// `disputeProverWon` only. The contract sets both, with `finalized`, in the
+/// transaction that settles a dispute, and they never change after it, so on
+/// one node the two reads cannot disagree the way a read of `finalized` taken
+/// before or after the settlement could. Reads that reach nodes at different
+/// heights can report a won dispute as lost (a spurious dispute_lost alert),
+/// never a lost one as settled. Anything short of a resolved dispute is
+/// disputed: a node that lags behind cannot make the operator skip a dispute,
+/// and a dispute of a result that is settled some other way reverts and is
+/// reported.
+async fn dispute_state(
+    chain: &chain::ChainClient,
+    result_id: B256,
+) -> anyhow::Result<DisputeState> {
+    if !chain.dispute_resolved(result_id).await? {
+        return Ok(DisputeState::Open);
+    }
+    Ok(if chain.dispute_prover_won(result_id).await? {
+        DisputeState::Settled
+    } else {
+        DisputeState::Lost
+    })
+}
+
+/// Report a dispute that the contract resolved against the prover. Nothing is
+/// sent: the dispute is over. It is a failed dispute, but not a chain failure.
+fn report_lost_dispute(
+    rid_hex: &str,
+    alert_manager: &AlertManager,
+    metrics: &metrics::MetricsState,
+) {
+    let error = "the dispute was resolved against the prover";
+    tracing::error!("Dispute on {} is lost: {}", rid_hex, error);
+    audit::log_dispute_failed(rid_hex, "", error);
+    metrics.record_dispute_failed();
+    let mut meta = HashMap::new();
+    meta.insert("result_id".to_string(), rid_hex.to_string());
+    if let Err(e) = alert_manager.send_alert(
+        AlertSeverity::Critical,
+        "dispute_lost",
+        "operator",
+        &format!("Dispute lost: {}", error),
+        meta,
+    ) {
+        tracing::warn!("Failed to send dispute_lost alert: {}", e);
+    }
+}
+
+/// The proof to submit for a challenged result: read from the proofs directory,
+/// waiting up to 60 s for it, and checked by the local pre-verifier, if there is one.
+async fn verified_proof(
+    proof_mgr: &ProofManager,
+    rid_hex: &str,
+    pre_verifier: Option<&Arc<ProofPreVerifier>>,
+) -> anyhow::Result<store::StoredProof> {
+    let proof = match proof_mgr.read_proof(rid_hex) {
+        Ok(Some(proof)) => {
+            tracing::info!("Found pre-computed proof for {}", rid_hex);
+            proof
+        }
+        Ok(None) => {
+            tracing::warn!(
+                "No pre-computed proof for {}. Waiting up to 60s...",
+                rid_hex
+            );
+            match proof_mgr.wait_for_proof(rid_hex, 60).await {
+                Ok(true) => match proof_mgr.read_proof(rid_hex) {
+                    Ok(Some(proof)) => proof,
+                    _ => anyhow::bail!("Proof disappeared after wait"),
+                },
+                Ok(false) => {
+                    tracing::error!("Proof not available after timeout for {}", rid_hex);
+                    anyhow::bail!("Proof timeout for {}", rid_hex);
+                }
+                Err(e) => {
+                    tracing::error!("Error waiting for proof: {}", e);
+                    return Err(e);
+                }
+            }
+        }
+        Err(e) => {
+            tracing::error!("Error reading proof: {}", e);
+            return Err(e);
+        }
+    };
+
+    if let Some(pv) = pre_verifier {
+        // Converts the binary crate's StoredProof to the library crate's StoredProof
+        // since they are compiled as separate crate types.
+        let lib_proof = tee_operator::store::StoredProof {
+            proof_hex: proof.proof_hex.clone(),
+            circuit_hash: proof.circuit_hash.clone(),
+            public_inputs_hex: proof.public_inputs_hex.clone(),
+            gens_hex: proof.gens_hex.clone(),
+        };
+        // Verification takes seconds of CPU time: keep it off the async workers.
+        let pv = pv.clone();
+        let verdict = tokio::task::spawn_blocking(move || pv.pre_verify(&lib_proof))
+            .await
+            .map_err(|e| anyhow::anyhow!("Pre-verification task failed: {}", e))?;
+        match verdict {
+            PreVerifyResult::Verified => {
+                tracing::info!("Pre-verification passed for {}", rid_hex);
+            }
+            PreVerifyResult::Failed(reason) => {
+                // A bad proof is not submitted: it would only waste gas.
+                tracing::error!("Pre-verification FAILED for {}: {}", rid_hex, reason);
+                anyhow::bail!("Pre-verification failed: {}", reason);
+            }
+            PreVerifyResult::Skipped(reason) => {
+                tracing::debug!("Pre-verification skipped for {}: {}", rid_hex, reason);
+            }
+        }
+    }
+
+    Ok(proof)
+}
+
 /// Gas threshold for classifying dispute resolution paths.
 /// Disputes that use less than this amount of gas are classified as using the
 /// Stylus (WASM) verification path; those above 200M gas are classified as
@@ -1512,6 +1800,7 @@ async fn resolve_with_proof(
     result_id: B256,
     proof: &store::StoredProof,
     metrics: &metrics::MetricsState,
+    chain_cb: &CircuitBreaker,
 ) -> anyhow::Result<B256> {
     let proof_bytes = hex_to_bytes(&proof.proof_hex)?;
     let circuit_hash = hex_to_b256(&proof.circuit_hash)?;
@@ -1532,7 +1821,9 @@ async fn resolve_with_proof(
             &public_inputs,
             &gens_data,
         )
-        .await?;
+        .await
+        .inspect_err(|_| chain_cb.record_failure())?;
+    chain_cb.record_success();
 
     // Classify the verification path based on gas consumption.
     // Stylus (WASM) verification uses significantly less gas than the
@@ -1567,6 +1858,7 @@ async fn auto_finalize(
     from_block: u64,
     rpc_cb: &CircuitBreaker,
     chain_cb: &CircuitBreaker,
+    shutdown: &ShutdownState,
 ) {
     if rpc_cb.allow_request().is_err() {
         return; // RPC circuit breaker is open, skip finalize poll
@@ -1593,6 +1885,12 @@ async fn auto_finalize(
     let now = chain_now(chain).await;
     for event in &events {
         if let TEEEvent::ResultSubmitted { result_id, .. } = event {
+            // Each finalize waits for its receipt; the shutdown's drain should
+            // not wait for the rest of the window.
+            if shutdown.is_shutting_down() {
+                tracing::info!("Shutdown in progress, stopping auto-finalize");
+                break;
+            }
             if chain_cb.allow_request().is_err() {
                 break; // Chain circuit breaker is open
             }
@@ -1960,14 +2258,56 @@ mod tests {
     const TEST_SENDER: &str = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
     const TEST_CONTRACT: &str = "0xA51c1fc2f0D1a1b8494Ed1FE312d7C3a78Ed91C0";
 
-    /// JSON-RPC stub of a chain with one TEEMLVerifier holding `results`.
+    /// JSON-RPC stub of a chain with one TEEMLVerifier holding `results`. A
+    /// result it does not hold reads as challenged and not finalized.
     struct StubChain {
         results: Vec<(B256, MLResult)>,
+        /// Results the contract reports as challenged.
+        challenges: Vec<B256>,
+        /// Results whose dispute the contract reports as resolved, won by the
+        /// prover unless the result is in `prover_lost` too.
+        resolved: Vec<B256>,
+        /// Resolved results whose dispute the prover lost.
+        prover_lost: Vec<B256>,
+        /// When true, reading a result or its dispute state fails.
+        reads_fail: bool,
+        /// When true, reading a result or its dispute state gets no answer.
+        reads_hang: bool,
+        /// When true, `eth_blockNumber` fails, and so every poll of the watcher.
+        polls_fail: AtomicBool,
         /// When true, `eth_estimateGas` answers "execution reverted" (what a node
         /// returns for a `finalize` the contract rejects).
         estimate_gas_reverts: bool,
         /// Number of transactions the client tried to send.
         estimate_gas_calls: AtomicUsize,
+        /// Number of `eth_blockNumber` requests: one per poll of the watcher.
+        polls: AtomicUsize,
+        /// Number of disputes the client started to resolve. Each is answered
+        /// with an error once it has a permit of `dispute_gate`.
+        disputes: AtomicUsize,
+        dispute_gate: tokio::sync::Semaphore,
+        /// Signalled before the answer to `eth_getLogs`.
+        shutdown_on_logs: Option<Arc<ShutdownState>>,
+    }
+
+    /// A chain without results. Disputes stay unanswered until the test adds
+    /// permits to `dispute_gate`.
+    fn empty_chain() -> StubChain {
+        StubChain {
+            results: Vec::new(),
+            challenges: Vec::new(),
+            resolved: Vec::new(),
+            prover_lost: Vec::new(),
+            reads_fail: false,
+            reads_hang: false,
+            polls_fail: AtomicBool::new(false),
+            estimate_gas_reverts: false,
+            estimate_gas_calls: AtomicUsize::new(0),
+            polls: AtomicUsize::new(0),
+            disputes: AtomicUsize::new(0),
+            dispute_gate: tokio::sync::Semaphore::new(0),
+            shutdown_on_logs: None,
+        }
     }
 
     fn ml_result(deadline: u64, finalized: bool, challenged: bool) -> MLResult {
@@ -2009,6 +2349,21 @@ mod tests {
         })
     }
 
+    fn challenged_log(result_id: B256, index: usize) -> serde_json::Value {
+        let challenger: Address = TEST_SENDER.parse().unwrap();
+        serde_json::json!({
+            "address": TEST_CONTRACT,
+            "topics": [TEEMLVerifier::ResultChallenged::SIGNATURE_HASH, result_id],
+            "data": challenger.into_word(),
+            "blockHash": B256::repeat_byte(0xbb),
+            "blockNumber": "0x11",
+            "transactionHash": B256::repeat_byte(0xcd),
+            "transactionIndex": "0x0",
+            "logIndex": format!("0x{:x}", index),
+            "removed": false,
+        })
+    }
+
     async fn stub_rpc(
         axum::extract::State(chain): axum::extract::State<Arc<StubChain>>,
         axum::Json(req): axum::Json<serde_json::Value>,
@@ -2022,22 +2377,66 @@ mod tests {
             axum::Json(body)
         };
         let logs = || -> Vec<serde_json::Value> {
-            chain
+            let submitted = chain
                 .results
                 .iter()
                 .enumerate()
-                .map(|(i, (id, _))| submitted_log(*id, i))
-                .collect()
+                .map(|(i, (id, _))| submitted_log(*id, i));
+            let challenged = chain
+                .challenges
+                .iter()
+                .enumerate()
+                .map(|(i, id)| challenged_log(*id, i));
+            submitted.chain(challenged).collect()
         };
         match req["method"].as_str().unwrap_or_default() {
             "eth_chainId" => reply(Ok("0x7a69".into())),
-            "eth_blockNumber" => reply(Ok("0x64".into())),
+            "eth_blockNumber" => {
+                chain.polls.fetch_add(1, Ordering::SeqCst);
+                if chain.polls_fail.load(Ordering::SeqCst) {
+                    return reply(Err("stub chain is down"));
+                }
+                reply(Ok("0x64".into()))
+            }
             "eth_getTransactionCount" => reply(Ok("0x0".into())),
-            "eth_getLogs" => reply(Ok(logs().into())),
+            "eth_getLogs" => {
+                if let Some(shutdown) = &chain.shutdown_on_logs {
+                    shutdown.signal_shutdown();
+                }
+                reply(Ok(logs().into()))
+            }
             "eth_call" => {
                 let call = &req["params"][0];
                 let input = call["input"].as_str().or(call["data"].as_str()).unwrap();
                 let input = hex::decode(input.trim_start_matches("0x")).unwrap();
+                // The first call of every dispute resolution.
+                if input[..4] == TEEMLVerifier::remainderVerifierCall::SELECTOR {
+                    chain.disputes.fetch_add(1, Ordering::SeqCst);
+                    chain.dispute_gate.acquire().await.unwrap().forget();
+                    return reply(Err("no RemainderVerifier in the stub"));
+                }
+                if chain.reads_fail {
+                    return reply(Err("stub cannot read results"));
+                }
+                if chain.reads_hang {
+                    std::future::pending::<()>().await;
+                }
+                if input[..4] == TEEMLVerifier::disputeResolvedCall::SELECTOR {
+                    let id = TEEMLVerifier::disputeResolvedCall::abi_decode(&input)
+                        .unwrap()
+                        .resultId;
+                    let resolved = chain.resolved.contains(&id);
+                    let encoded = TEEMLVerifier::disputeResolvedCall::abi_encode_returns(&resolved);
+                    return reply(Ok(format!("0x{}", hex::encode(encoded)).into()));
+                }
+                if input[..4] == TEEMLVerifier::disputeProverWonCall::SELECTOR {
+                    let id = TEEMLVerifier::disputeProverWonCall::abi_decode(&input)
+                        .unwrap()
+                        .resultId;
+                    let won = chain.resolved.contains(&id) && !chain.prover_lost.contains(&id);
+                    let encoded = TEEMLVerifier::disputeProverWonCall::abi_encode_returns(&won);
+                    return reply(Ok(format!("0x{}", hex::encode(encoded)).into()));
+                }
                 let id = TEEMLVerifier::getResultCall::abi_decode(&input)
                     .unwrap()
                     .resultId;
@@ -2046,7 +2445,7 @@ mod tests {
                     .iter()
                     .find(|(rid, _)| *rid == id)
                     .map(|(_, r)| r.clone())
-                    .unwrap_or_else(|| ml_result(0, false, false));
+                    .unwrap_or_else(|| ml_result(0, false, true));
                 let encoded = TEEMLVerifier::getResultCall::abi_encode_returns(&result);
                 reply(Ok(format!("0x{}", hex::encode(encoded)).into()))
             }
@@ -2098,11 +2497,16 @@ mod tests {
         results: Vec<(B256, MLResult)>,
         estimate_gas_reverts: bool,
     ) -> (String, Arc<StubChain>) {
-        let chain = Arc::new(StubChain {
+        serve_chain(StubChain {
             results,
             estimate_gas_reverts,
-            estimate_gas_calls: AtomicUsize::new(0),
-        });
+            ..empty_chain()
+        })
+        .await
+    }
+
+    async fn serve_chain(chain: StubChain) -> (String, Arc<StubChain>) {
+        let chain = Arc::new(chain);
         let app = axum::Router::new()
             .route("/", axum::routing::post(stub_rpc))
             .with_state(chain.clone());
@@ -2122,7 +2526,39 @@ mod tests {
         let watcher = EventWatcher::new(rpc_url, TEST_CONTRACT.parse().unwrap());
         let chain = chain::ChainClient::new(rpc_url, TEST_KEY, TEST_CONTRACT).unwrap();
         let rpc_cb = CircuitBreaker::new(CircuitBreakerConfig::default());
-        auto_finalize(&watcher, &chain, 0, &rpc_cb, chain_cb).await;
+        auto_finalize(
+            &watcher,
+            &chain,
+            0,
+            &rpc_cb,
+            chain_cb,
+            &ShutdownState::new(),
+        )
+        .await;
+    }
+
+    /// A shutdown signalled during the scan stops the pass before the next
+    /// result, so that the drain starts without waiting for its finalizes.
+    #[tokio::test]
+    async fn test_auto_finalize_stops_between_results_on_shutdown() {
+        let shutdown = Arc::new(ShutdownState::new());
+        let (rpc_url, stub) = serve_chain(StubChain {
+            results: vec![
+                (B256::repeat_byte(1), ml_result(1, false, false)),
+                (B256::repeat_byte(2), ml_result(1, false, false)),
+            ],
+            shutdown_on_logs: Some(shutdown.clone()),
+            ..empty_chain()
+        })
+        .await;
+        let watcher = EventWatcher::new(&rpc_url, TEST_CONTRACT.parse().unwrap());
+        let chain = chain::ChainClient::new(&rpc_url, TEST_KEY, TEST_CONTRACT).unwrap();
+        let rpc_cb = CircuitBreaker::new(CircuitBreakerConfig::default());
+
+        auto_finalize(&watcher, &chain, 0, &rpc_cb, &chain_breaker(), &shutdown).await;
+
+        assert!(shutdown.is_shutting_down());
+        assert_eq!(stub.estimate_gas_calls.load(Ordering::SeqCst), 0);
     }
 
     #[test]
@@ -2232,6 +2668,73 @@ mod tests {
         }
     }
 
+    /// An enclave that answers `/infer`, `/info` and `/attestation` (with an
+    /// unsigned development document).
+    fn stub_enclave() -> axum::Router {
+        use base64::Engine;
+        use ciborium::Value;
+
+        let word = |b: u8| format!("0x{}", hex::encode([b; 32]));
+        let infer = serde_json::json!({
+            "result": "0x01",
+            "model_hash": word(0x11),
+            "input_hash": word(0x22),
+            "result_hash": word(0x33),
+            "attestation": format!("0x{}", "00".repeat(65)),
+            "enclave_address": TEST_SENDER,
+        });
+        let info = serde_json::json!({
+            "enclave_address": TEST_SENDER,
+            "model_hash": word(0x11),
+        });
+
+        let sender: Address = TEST_SENDER.parse().unwrap();
+        let text = |s: &str| Value::Text(s.to_string());
+        let payload = Value::Map(vec![
+            (text("module_id"), text("test-mock")),
+            (text("timestamp"), Value::Integer(1.into())),
+            (text("digest"), text("SHA384")),
+            (
+                text("pcrs"),
+                Value::Map(vec![(Value::Integer(0.into()), Value::Bytes(vec![0; 48]))]),
+            ),
+            (text("public_key"), Value::Bytes(sender.to_vec())),
+            (text("user_data"), Value::Bytes(vec![1; 32])),
+            (text("nonce"), Value::Null),
+        ]);
+        let mut payload_bytes = Vec::new();
+        ciborium::into_writer(&payload, &mut payload_bytes).unwrap();
+        let cose = Value::Array(vec![
+            Value::Bytes(vec![]),
+            Value::Map(vec![]),
+            Value::Bytes(payload_bytes),
+            Value::Bytes(vec![0; 96]),
+        ]);
+        let mut document = Vec::new();
+        ciborium::into_writer(&cose, &mut document).unwrap();
+        let attestation = serde_json::json!({
+            "document": base64::engine::general_purpose::STANDARD.encode(document),
+            "enclave_address": TEST_SENDER,
+            "is_nitro": false,
+            "pcr0": "00".repeat(48),
+        });
+
+        axum::Router::new()
+            .route("/health", axum::routing::get(|| async { "ok" }))
+            .route(
+                "/infer",
+                axum::routing::post(move || async move { axum::Json(infer) }),
+            )
+            .route(
+                "/info",
+                axum::routing::get(move || async move { axum::Json(info) }),
+            )
+            .route(
+                "/attestation",
+                axum::routing::get(move || async move { axum::Json(attestation) }),
+            )
+    }
+
     /// `submit` is a one-shot command: when it returns the process exits. The
     /// pre-computed proof and the archive entry must exist by then, otherwise they
     /// are never written and a later challenge finds no proof.
@@ -2244,22 +2747,7 @@ mod tests {
         let (rpc_url, _stub) =
             serve_stub_chain(vec![(result_id, ml_result(1, false, false))], false).await;
 
-        let word = |b: u8| format!("0x{}", hex::encode([b; 32]));
-        let infer = serde_json::json!({
-            "result": "0x01",
-            "model_hash": word(0x11),
-            "input_hash": word(0x22),
-            "result_hash": word(0x33),
-            "attestation": format!("0x{}", "00".repeat(65)),
-            "enclave_address": TEST_SENDER,
-        });
-        let enclave = axum::Router::new()
-            .route("/health", axum::routing::get(|| async { "ok" }))
-            .route(
-                "/infer",
-                axum::routing::post(move || async move { axum::Json(infer) }),
-            );
-        let enclave_url = serve_stub(enclave).await;
+        let enclave_url = serve_stub(stub_enclave()).await;
 
         // Stand-in prover: takes a moment, then writes the file named by --output.
         let dir = tempfile::tempdir().unwrap();
@@ -2552,5 +3040,974 @@ mod tests {
             );
             assert!(!logged.contains("SECRETKEY"), "start-up logged: {}", logged);
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // dry_run in submit, run and register
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_dry_run_submit_sends_and_writes_nothing() {
+        let (rpc_url, stub) = serve_chain(empty_chain()).await;
+        let enclave_url = serve_stub(stub_enclave()).await;
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = submit_test_config(&rpc_url, &enclave_url, dir.path());
+        config.dry_run = true;
+
+        let background = submit(&config, "[1.0, 2.0]", &config.models[0])
+            .await
+            .unwrap();
+        assert!(background.is_empty(), "no follow-up task in dry-run");
+        cmd_submit(&config, "[1.0, 2.0]", &config.models[0])
+            .await
+            .unwrap();
+
+        assert_eq!(stub.estimate_gas_calls.load(Ordering::SeqCst), 0);
+        let written: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+        assert!(written.is_empty(), "no archive and no proof: {:?}", written);
+    }
+
+    #[tokio::test]
+    async fn test_dry_run_register_sends_nothing() {
+        let (rpc_url, stub) = serve_chain(empty_chain()).await;
+        let enclave_url = serve_stub(stub_enclave()).await;
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = submit_test_config(&rpc_url, &enclave_url, dir.path());
+
+        config.dry_run = true;
+        cmd_register(&config, None, true).await.unwrap();
+        assert_eq!(stub.estimate_gas_calls.load(Ordering::SeqCst), 0);
+
+        // The same call without dry-run reaches the chain.
+        config.dry_run = false;
+        cmd_register(&config, None, true).await.unwrap();
+        assert_eq!(stub.estimate_gas_calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// `run` in dry-run: neither its submit step nor its watch loop sends anything.
+    #[tokio::test]
+    async fn test_dry_run_run_sends_nothing() {
+        let result_id = B256::repeat_byte(0x55);
+        let (rpc_url, stub) = serve_chain(StubChain {
+            challenges: vec![result_id],
+            ..empty_chain()
+        })
+        .await;
+        let enclave_url = serve_stub(stub_enclave()).await;
+        let dir = tempfile::tempdir().unwrap();
+        write_proof(dir.path(), result_id);
+        let mut config = submit_test_config(&rpc_url, &enclave_url, dir.path());
+        config.dry_run = true;
+
+        let logs = LogBuffer::default();
+        let _guard = tracing::subscriber::set_default(logs.subscriber(tracing::Level::INFO));
+        let mut run = std::pin::pin!(cmd_run(&config, "[1.0, 2.0]", 0, &config.models[0]));
+        let handled = || {
+            logs.contents().contains("[DRY-RUN] Would submit proof")
+                || stub.disputes.load(Ordering::SeqCst) > 0
+        };
+        for _ in 0..600 {
+            let step = std::time::Duration::from_millis(50);
+            if let Ok(result) = tokio::time::timeout(step, run.as_mut()).await {
+                panic!("cmd_run returned: {:?}", result);
+            }
+            if handled() {
+                break;
+            }
+        }
+
+        assert!(handled(), "logged: {}", logs.contents());
+        assert_eq!(stub.disputes.load(Ordering::SeqCst), 0);
+        assert_eq!(stub.estimate_gas_calls.load(Ordering::SeqCst), 0);
+        assert!(!dir.path().join("archive").exists());
+    }
+
+    // -----------------------------------------------------------------------
+    // Watch loop: open challenges, saved state, shutdown, readiness
+    // -----------------------------------------------------------------------
+
+    /// Block the saved state of these tests starts from; the stub chain's
+    /// latest block is 100.
+    const START_BLOCK: u64 = 40;
+
+    fn write_proof(dir: &std::path::Path, result_id: B256) {
+        write_proof_text(
+            dir,
+            result_id,
+            r#"{"proof_hex":"0x01","circuit_hash":"0x1111111111111111111111111111111111111111111111111111111111111111","public_inputs_hex":"0x02","gens_hex":"0x03"}"#,
+        );
+    }
+
+    fn write_proof_text(dir: &std::path::Path, result_id: B256, text: &str) {
+        let proofs = dir.join("proofs");
+        std::fs::create_dir_all(&proofs).unwrap();
+        std::fs::write(
+            proofs.join(format!("{}.json", challenge_id(&result_id))),
+            text,
+        )
+        .unwrap();
+    }
+
+    /// Wait until `condition` holds; fails the test after 30 s.
+    async fn wait_until(what: &str, condition: impl Fn() -> bool) {
+        for _ in 0..6000 {
+            if condition() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        panic!("timed out waiting until {}", what);
+    }
+
+    /// A watcher with its own directory, where its state file says that it has
+    /// polled up to [`START_BLOCK`] and its proofs directory holds a proof for
+    /// every challenge of the stub chain.
+    struct WatchTest {
+        dir: tempfile::TempDir,
+        config: Config,
+        stub: Arc<StubChain>,
+        shutdown: Arc<ShutdownState>,
+        metrics: Arc<metrics::MetricsState>,
+        drain_timeout: std::time::Duration,
+    }
+
+    impl WatchTest {
+        async fn new(chain: StubChain) -> Self {
+            let shutdown = chain
+                .shutdown_on_logs
+                .clone()
+                .unwrap_or_else(|| Arc::new(ShutdownState::new()));
+            let (rpc_url, stub) = serve_chain(chain).await;
+            let dir = tempfile::tempdir().unwrap();
+            for id in &stub.challenges {
+                write_proof(dir.path(), *id);
+            }
+            let test = Self {
+                config: submit_test_config(&rpc_url, "http://127.0.0.1:1", dir.path()),
+                dir,
+                stub,
+                shutdown,
+                metrics: Arc::new(metrics::MetricsState::new()),
+                drain_timeout: std::time::Duration::from_secs(60),
+            };
+            test.save_state(&OperatorState {
+                last_polled_block: START_BLOCK,
+                ..OperatorState::default()
+            });
+            test
+        }
+
+        /// Run the watch loop next to `script`, until the script has shut it down.
+        async fn run(&self, script: impl std::future::Future<Output = ()>) {
+            let timing = WatchTiming {
+                poll_interval: std::time::Duration::from_millis(10),
+                drain_timeout: self.drain_timeout,
+            };
+            let (watched, ()) = tokio::join!(
+                watch(
+                    &self.config,
+                    0,
+                    false,
+                    self.shutdown.clone(),
+                    self.metrics.clone(),
+                    timing,
+                ),
+                script
+            );
+            watched.unwrap();
+        }
+
+        /// The same watcher after a restart from `state`.
+        fn restarted(self, state: &OperatorState) -> Self {
+            let test = Self {
+                shutdown: Arc::new(ShutdownState::new()),
+                metrics: Arc::new(metrics::MetricsState::new()),
+                ..self
+            };
+            test.save_state(state);
+            test
+        }
+
+        fn save_state(&self, state: &OperatorState) {
+            StateStore::new(&self.config.state_file)
+                .save(state)
+                .unwrap();
+        }
+
+        fn saved_state(&self) -> OperatorState {
+            StateStore::new(&self.config.state_file)
+                .load()
+                .unwrap()
+                .unwrap()
+        }
+
+        fn disputes(&self) -> usize {
+            self.stub.disputes.load(Ordering::SeqCst)
+        }
+
+        async fn wait_for_disputes(&self, count: usize) {
+            wait_until("the disputes have started", || self.disputes() >= count).await;
+        }
+
+        /// Wait until the loop has saved its state at least once more.
+        async fn wait_for_save(&self) {
+            let polls = self.stub.polls.load(Ordering::SeqCst);
+            wait_until("the loop has gone round", || {
+                self.stub.polls.load(Ordering::SeqCst) >= polls + 3
+            })
+            .await;
+        }
+    }
+
+    fn challenges(count: u8) -> Vec<B256> {
+        (1..=count).map(B256::repeat_byte).collect()
+    }
+
+    fn chain_with_challenges(count: u8) -> StubChain {
+        StubChain {
+            challenges: challenges(count),
+            ..empty_chain()
+        }
+    }
+
+    /// While the dispute runs the saved state points at the poll that delivered
+    /// the challenge and does not have its id; afterwards both are up to date.
+    #[tokio::test]
+    async fn test_challenge_is_saved_as_processed_when_its_dispute_has_finished() {
+        let test = WatchTest::new(chain_with_challenges(1)).await;
+        let id = challenge_id(&challenges(1)[0]);
+
+        test.run(async {
+            test.wait_for_disputes(1).await;
+            test.wait_for_save().await;
+            let state = test.saved_state();
+            assert!(state.active_disputes.contains_key(&id));
+            assert!(!state.processed_event_ids.contains(&id));
+            assert_eq!(state.last_polled_block, START_BLOCK);
+
+            test.stub.dispute_gate.add_permits(1);
+            wait_until("the id is saved", || {
+                test.saved_state().processed_event_ids.contains(&id)
+            })
+            .await;
+            assert_eq!(test.saved_state().last_polled_block, 101);
+            test.shutdown.signal_shutdown();
+        })
+        .await;
+
+        let state = test.saved_state();
+        assert!(state.processed_event_ids.contains(&id));
+        assert_eq!(state.last_polled_block, 101);
+        assert_eq!(test.disputes(), 1, "a failed dispute is not tried again");
+    }
+
+    /// A shutdown leaves a running dispute alone and waits for it.
+    #[tokio::test]
+    async fn test_shutdown_waits_for_running_dispute() {
+        let test = WatchTest::new(chain_with_challenges(1)).await;
+        let id = challenge_id(&challenges(1)[0]);
+
+        test.run(async {
+            test.wait_for_disputes(1).await;
+            test.shutdown.signal_shutdown();
+            // Time for a cancelled task to end before the dispute can.
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            test.stub.dispute_gate.add_permits(1);
+        })
+        .await;
+
+        // The stub answers with an error, so the dispute ran to its end if it failed.
+        let failed = test.metrics.total_disputes_failed.load(Ordering::SeqCst);
+        assert_eq!(failed, 1);
+        assert_eq!(test.shutdown.in_flight_count(), 0);
+        let state = test.saved_state();
+        assert!(state.processed_event_ids.contains(&id));
+        assert_eq!(state.last_polled_block, 101);
+    }
+
+    /// What is still running when the wait ends, or was still waiting for a
+    /// slot, stays open in the saved state.
+    #[tokio::test]
+    async fn test_shutdown_leaves_unfinished_challenges_open() {
+        let mut test = WatchTest::new(chain_with_challenges(11)).await;
+        test.drain_timeout = std::time::Duration::ZERO;
+
+        test.run(async {
+            test.wait_for_disputes(10).await;
+            test.shutdown.signal_shutdown();
+        })
+        .await;
+
+        assert_eq!(test.disputes(), 10);
+        let state = test.saved_state();
+        assert!(state.processed_event_ids.is_empty());
+        assert_eq!(state.last_polled_block, START_BLOCK);
+    }
+
+    /// A start from the state saved during a dispute handles it again, one from
+    /// the state saved after it does not.
+    #[tokio::test]
+    async fn test_restart_handles_unfinished_challenge_again() {
+        let test = WatchTest::new(chain_with_challenges(1)).await;
+        let id = challenge_id(&challenges(1)[0]);
+
+        let unfinished = std::cell::RefCell::new(None);
+        test.run(async {
+            test.wait_for_disputes(1).await;
+            test.wait_for_save().await;
+            *unfinished.borrow_mut() = Some(test.saved_state());
+            test.shutdown.signal_shutdown();
+            test.stub.dispute_gate.add_permits(1);
+        })
+        .await;
+        let finished = test.saved_state();
+
+        let test = test.restarted(&unfinished.take().unwrap());
+        test.run(async {
+            test.wait_for_disputes(2).await;
+            test.stub.dispute_gate.add_permits(1);
+            wait_until("the id is saved", || {
+                test.saved_state().processed_event_ids.contains(&id)
+            })
+            .await;
+            test.shutdown.signal_shutdown();
+        })
+        .await;
+        assert_eq!(test.disputes(), 2);
+
+        // Also when the finished challenge's block is polled again.
+        let replay = OperatorState {
+            last_polled_block: START_BLOCK,
+            ..finished
+        };
+        let test = test.restarted(&replay);
+        test.run(async {
+            test.wait_for_save().await;
+            test.shutdown.signal_shutdown();
+        })
+        .await;
+        assert_eq!(test.disputes(), 2);
+        assert!(test.dir.path().exists());
+    }
+
+    /// With all ten slots busy the eleventh challenge waits, and is started when
+    /// one of the ten disputes finishes.
+    #[tokio::test]
+    async fn test_eleventh_challenge_starts_when_a_slot_is_free() {
+        let test = WatchTest::new(chain_with_challenges(11)).await;
+
+        test.run(async {
+            test.wait_for_disputes(10).await;
+            test.wait_for_save().await;
+            assert_eq!(test.disputes(), 10);
+            assert_eq!(test.shutdown.in_flight_count(), 10);
+            assert_eq!(test.metrics.total_errors.load(Ordering::SeqCst), 1);
+            assert_eq!(test.saved_state().last_polled_block, START_BLOCK);
+
+            test.stub.dispute_gate.add_permits(1);
+            test.wait_for_disputes(11).await;
+            wait_until("the first id is saved", || {
+                test.saved_state().processed_event_ids.len() == 1
+            })
+            .await;
+            assert_eq!(test.saved_state().last_polled_block, START_BLOCK);
+
+            test.stub.dispute_gate.add_permits(10);
+            wait_until("all ids are saved", || {
+                test.saved_state().processed_event_ids.len() == 11
+            })
+            .await;
+            assert_eq!(test.saved_state().last_polled_block, 101);
+            test.shutdown.signal_shutdown();
+        })
+        .await;
+
+        assert_eq!(test.disputes(), 11);
+    }
+
+    /// A second event for a challenge that is being handled starts nothing.
+    #[tokio::test]
+    async fn test_event_for_open_challenge_is_skipped() {
+        let id = challenges(1)[0];
+        let test = WatchTest::new(StubChain {
+            challenges: vec![id, id],
+            ..empty_chain()
+        })
+        .await;
+        test.stub.dispute_gate.add_permits(2);
+
+        test.run(async {
+            test.wait_for_disputes(1).await;
+            test.wait_for_save().await;
+            test.shutdown.signal_shutdown();
+        })
+        .await;
+
+        assert_eq!(test.disputes(), 1);
+        assert_eq!(test.metrics.total_challenges.load(Ordering::SeqCst), 1);
+    }
+
+    /// Events that a shutdown keeps the loop from looking at are polled again.
+    #[tokio::test]
+    async fn test_shutdown_before_all_events_saves_the_start_of_the_poll() {
+        let test = WatchTest::new(StubChain {
+            shutdown_on_logs: Some(Arc::new(ShutdownState::new())),
+            ..chain_with_challenges(2)
+        })
+        .await;
+
+        test.run(async {}).await;
+
+        assert_eq!(test.disputes(), 0);
+        let state = test.saved_state();
+        assert!(state.processed_event_ids.is_empty());
+        assert_eq!(state.last_polled_block, START_BLOCK);
+    }
+
+    /// Ready after a successful poll, not because the state file held a block.
+    #[tokio::test]
+    async fn test_ready_after_a_successful_poll_only() {
+        let test = WatchTest::new(empty_chain()).await;
+        test.run(async {
+            wait_until("ready", || test.metrics.is_ready()).await;
+            test.shutdown.signal_shutdown();
+        })
+        .await;
+
+        let mut test = test.restarted(&OperatorState {
+            last_polled_block: 1234,
+            ..OperatorState::default()
+        });
+        test.config.rpc_url = SECRET_RPC_URL.to_string();
+        let logs = LogBuffer::default();
+        let _guard = tracing::subscriber::set_default(logs.subscriber(tracing::Level::INFO));
+        test.run(async {
+            wait_until("two polls have failed", || {
+                logs.contents().matches("RPC poll failed").count() >= 2
+            })
+            .await;
+            let last_block = test.metrics.last_block_polled.load(Ordering::SeqCst);
+            assert_eq!(last_block, 1234);
+            assert!(!test.metrics.is_ready());
+            test.shutdown.signal_shutdown();
+        })
+        .await;
+    }
+
+    /// Once a poll has succeeded, later failed polls do not take readiness away.
+    #[tokio::test]
+    async fn test_ready_stays_after_later_polls_fail() {
+        let test = WatchTest::new(empty_chain()).await;
+        test.run(async {
+            wait_until("ready", || test.metrics.is_ready()).await;
+            test.stub.polls_fail.store(true, Ordering::SeqCst);
+            let polls = test.stub.polls.load(Ordering::SeqCst);
+            wait_until("two polls have failed", || {
+                test.stub.polls.load(Ordering::SeqCst) >= polls + 2
+            })
+            .await;
+            assert!(test.metrics.is_ready());
+            test.shutdown.signal_shutdown();
+        })
+        .await;
+    }
+
+    /// A challenge seen again after a restart whose dispute was settled before
+    /// the stop is recorded as processed without a dispute or a failure.
+    #[tokio::test]
+    async fn test_restart_does_not_dispute_a_settled_challenge_again() {
+        let test = WatchTest::new(StubChain {
+            resolved: challenges(1),
+            ..chain_with_challenges(1)
+        })
+        .await;
+        let id = challenge_id(&challenges(1)[0]);
+
+        test.run(async {
+            wait_until("the id is saved", || {
+                test.saved_state().processed_event_ids.contains(&id)
+            })
+            .await;
+            test.shutdown.signal_shutdown();
+        })
+        .await;
+
+        assert_eq!(test.disputes(), 0);
+        let failed = test.metrics.total_disputes_failed.load(Ordering::SeqCst);
+        assert_eq!(failed, 0);
+        assert_eq!(test.saved_state().last_polled_block, 101);
+    }
+
+    /// The default drain timeout, which the deployments' grace periods (75 s)
+    /// leave room for.
+    #[test]
+    fn test_default_drain_timeout_is_sixty_seconds() {
+        let timing = WatchTiming::default();
+        assert_eq!(timing.drain_timeout, std::time::Duration::from_secs(60));
+    }
+
+    // -----------------------------------------------------------------------
+    // Dispute tasks that do not return
+    // -----------------------------------------------------------------------
+
+    fn dispute_runner(
+        dir: &std::path::Path,
+        shutdown: Arc<ShutdownState>,
+    ) -> (DisputeRunner, tokio::sync::mpsc::UnboundedReceiver<String>) {
+        let (finished_tx, finished_rx) = tokio::sync::mpsc::unbounded_channel();
+        let chain = chain::ChainClient::new("http://127.0.0.1:1", TEST_KEY, TEST_CONTRACT).unwrap();
+        let proofs_dir = dir.to_str().unwrap();
+        let proof_mgr =
+            ProofManager::with_config("unused", "unused", proofs_dir, 0, 1, 1, None).unwrap();
+        let runner = DisputeRunner {
+            chain: Arc::new(chain),
+            proof_mgr: Arc::new(proof_mgr),
+            alert_manager: Arc::new(AlertManager::new(AlertConfig::default())),
+            metrics: Arc::new(metrics::MetricsState::new()),
+            chain_cb: Arc::new(chain_breaker()),
+            pre_verifier: None,
+            shutdown,
+            slots: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_DISPUTES)),
+            finished_tx,
+        };
+        (runner, finished_rx)
+    }
+
+    /// One open challenge, waiting for its task, delivered by the poll from
+    /// [`START_BLOCK`].
+    fn one_open_challenge() -> (OpenChallenges, String) {
+        let result_id = B256::repeat_byte(0x55);
+        let mut challenges = OpenChallenges::default();
+        assert!(challenges.open(result_id, Address::ZERO, START_BLOCK));
+        (challenges, challenge_id(&result_id))
+    }
+
+    async fn panicking_dispute() {
+        panic!("a bug in the dispute");
+    }
+
+    /// A dispute task that panics frees its slot, stops counting as in flight and
+    /// reports its challenge, which is then closed and recorded as processed.
+    #[tokio::test]
+    async fn test_panicking_dispute_is_closed_and_processed() {
+        let dir = tempfile::tempdir().unwrap();
+        let shutdown = Arc::new(ShutdownState::new());
+        let (runner, mut finished_rx) = dispute_runner(dir.path(), shutdown.clone());
+        let (mut challenges, id) = one_open_challenge();
+        let mut state = OperatorState::default();
+        let logs = LogBuffer::default();
+        let _guard = tracing::subscriber::set_default(logs.subscriber(tracing::Level::ERROR));
+
+        runner.start_waiting_with(&mut challenges, |_| panicking_dispute());
+        assert_eq!(shutdown.in_flight_count(), 1);
+        wait_until("the task has ended", || shutdown.in_flight_count() == 0).await;
+
+        assert_eq!(runner.slots.available_permits(), MAX_CONCURRENT_DISPUTES);
+        record_finished(&mut finished_rx, &mut challenges, &mut state);
+        assert!(!challenges.is_open(&id));
+        assert!(state.processed_event_ids.contains(&id));
+        assert_eq!(challenges.resume_block(101), 101);
+        assert!(
+            logs.contents().contains("panicked"),
+            "logged: {}",
+            logs.contents()
+        );
+    }
+
+    /// A dispute task that the runtime drops unfinished frees its slot and stops
+    /// counting as in flight, but its challenge stays open: the dispute may not
+    /// have been sent.
+    #[test]
+    fn test_dropped_dispute_task_leaves_its_challenge_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let shutdown = Arc::new(ShutdownState::new());
+        let (runner, mut finished_rx) = dispute_runner(dir.path(), shutdown.clone());
+        let (mut challenges, id) = one_open_challenge();
+        let mut state = OperatorState::default();
+        let logs = LogBuffer::default();
+        let _guard = tracing::subscriber::set_default(logs.subscriber(tracing::Level::WARN));
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            runner.start_waiting_with(&mut challenges, |_| std::future::pending());
+            tokio::task::yield_now().await;
+        });
+        assert_eq!(shutdown.in_flight_count(), 1);
+        drop(runtime);
+
+        assert_eq!(shutdown.in_flight_count(), 0);
+        assert_eq!(runner.slots.available_permits(), MAX_CONCURRENT_DISPUTES);
+        record_finished(&mut finished_rx, &mut challenges, &mut state);
+        assert!(challenges.is_open(&id));
+        assert!(state.processed_event_ids.is_empty());
+        assert_eq!(challenges.resume_block(101), START_BLOCK);
+        assert!(
+            logs.contents().contains("the challenge stays open"),
+            "logged: {}",
+            logs.contents()
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // handle_challenge: pre-verification and the chain circuit breaker
+    // -----------------------------------------------------------------------
+
+    struct DisputeOutcome {
+        /// Chain failures counted by a breaker that started with one.
+        chain_failures: u32,
+        disputes_failed: u64,
+        critical_alerts: Vec<String>,
+        /// The `result_id` metadata of each critical alert.
+        critical_result_ids: Vec<String>,
+        logged: String,
+    }
+
+    /// Handle one challenge against `stub` with the files in `dir`.
+    async fn handle_one(
+        rpc_url: &str,
+        dir: &std::path::Path,
+        result_id: B256,
+        pre_verifier: Option<&Arc<ProofPreVerifier>>,
+        dry_run: bool,
+    ) -> DisputeOutcome {
+        let config = submit_test_config(rpc_url, "http://127.0.0.1:1", dir);
+        let chain = chain::ChainClient::new_with_dry_run(rpc_url, TEST_KEY, TEST_CONTRACT, dry_run)
+            .unwrap();
+        let proof_mgr =
+            ProofManager::with_config("unused", "unused", &config.proofs_dir, 0, 1, 1, None)
+                .unwrap();
+        let alerts = AlertManager::new(AlertConfig::default());
+        let metrics = metrics::MetricsState::new();
+        let chain_cb = chain_breaker();
+        chain_cb.record_failure();
+        let logs = LogBuffer::default();
+        let _guard = tracing::subscriber::set_default(logs.subscriber(tracing::Level::INFO));
+
+        handle_challenge(
+            &chain,
+            &proof_mgr,
+            result_id,
+            &alerts,
+            &metrics,
+            &chain_cb,
+            pre_verifier,
+        )
+        .await;
+
+        let critical: Vec<_> = alerts
+            .get_active_alerts()
+            .into_iter()
+            .filter(|a| a.severity == AlertSeverity::Critical)
+            .collect();
+        DisputeOutcome {
+            chain_failures: chain_cb.consecutive_failures(),
+            disputes_failed: metrics.total_disputes_failed.load(Ordering::SeqCst),
+            critical_alerts: critical
+                .iter()
+                .map(|a| format!("{}: {}", a.alert_type, a.message))
+                .collect(),
+            critical_result_ids: critical
+                .iter()
+                .map(|a| a.metadata.get("result_id").cloned().unwrap_or_default())
+                .collect(),
+            logged: logs.contents(),
+        }
+    }
+
+    /// Circuit description that no proof verifies against, for [`write_proof`].
+    const BAD_CIRCUIT: &str = r#"{"numComputeLayers":0,"numInputLayers":0,"layerTypes":[],"numSumcheckRounds":[],"atomOffsets":[0],"atomTargetLayers":[],"atomCommitIdxs":[],"ptOffsets":[0],"ptData":[],"inputIsCommitted":[],"oracleProductOffsets":[0],"oracleResultIdxs":[],"oracleExprCoeffs":[]}"#;
+
+    fn circuit_path(dir: &std::path::Path) -> std::path::PathBuf {
+        dir.join(format!("{}.json", "11".repeat(32)))
+    }
+
+    fn pre_verifier(dir: &std::path::Path) -> Arc<ProofPreVerifier> {
+        Arc::new(ProofPreVerifier::new(dir.to_str().unwrap()))
+    }
+
+    /// A proof that fails the local check is not submitted, and is reported like
+    /// every other failed dispute. The chain had no part in it.
+    #[tokio::test]
+    async fn test_failed_pre_verification_is_reported_and_not_submitted() {
+        let (rpc_url, stub) = serve_chain(empty_chain()).await;
+        stub.dispute_gate.add_permits(1);
+        let dir = tempfile::tempdir().unwrap();
+        let id = B256::repeat_byte(0x55);
+        write_proof(dir.path(), id);
+        std::fs::write(circuit_path(dir.path()), BAD_CIRCUIT).unwrap();
+
+        let verifier = pre_verifier(dir.path());
+        let outcome = handle_one(&rpc_url, dir.path(), id, Some(&verifier), false).await;
+
+        assert_eq!(stub.disputes.load(Ordering::SeqCst), 0);
+        assert_eq!(outcome.disputes_failed, 1);
+        assert_eq!(outcome.critical_alerts.len(), 1);
+        assert!(
+            outcome.critical_alerts[0]
+                .starts_with("dispute_failed: Dispute resolution failed: Pre-verification failed"),
+            "{:?}",
+            outcome.critical_alerts
+        );
+        assert!(
+            outcome.logged.contains("event=\"dispute_failed\""),
+            "logged: {}",
+            outcome.logged
+        );
+        assert_eq!(outcome.chain_failures, 1, "not a chain failure");
+    }
+
+    /// The pre-verifier runs off the async threads: on a runtime with a single
+    /// one, other work goes on while it reads its (slow) circuit description.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_pre_verification_does_not_block_the_async_thread() {
+        let (rpc_url, stub) = serve_chain(empty_chain()).await;
+        // Answers a dispute that should not be sent, so that the test then fails
+        // instead of waiting for ever.
+        stub.dispute_gate.add_permits(1);
+        let dir = tempfile::tempdir().unwrap();
+        let id = B256::repeat_byte(0x55);
+        write_proof(dir.path(), id);
+        let fifo = circuit_path(dir.path());
+        let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+        assert!(made.unwrap().success());
+
+        // Reading the pipe blocks until this thread writes to it: once the rest
+        // of the test has run, or after 10 s if it cannot.
+        let (others_ran, rx) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            let ran = rx.recv_timeout(std::time::Duration::from_secs(10)).is_ok();
+            std::fs::write(&fifo, BAD_CIRCUIT).unwrap();
+            ran
+        });
+
+        let verifier = pre_verifier(dir.path());
+        let (outcome, ()) = tokio::join!(
+            handle_one(&rpc_url, dir.path(), id, Some(&verifier), false),
+            async { others_ran.send(()).unwrap() }
+        );
+
+        assert!(writer.join().unwrap(), "the async thread was blocked");
+        assert_eq!(outcome.disputes_failed, 1, "logged: {}", outcome.logged);
+        assert_eq!(stub.disputes.load(Ordering::SeqCst), 0);
+    }
+
+    /// A proof that cannot be read or decoded is not a chain failure either.
+    #[tokio::test]
+    async fn test_unreadable_proof_is_not_a_chain_failure() {
+        let (rpc_url, stub) = serve_chain(empty_chain()).await;
+        stub.dispute_gate.add_permits(2);
+        let dir = tempfile::tempdir().unwrap();
+        let id = B256::repeat_byte(0x55);
+
+        for text in [
+            "not json",
+            r#"{"proof_hex":"zz","circuit_hash":"0x11","public_inputs_hex":"","gens_hex":""}"#,
+        ] {
+            write_proof_text(dir.path(), id, text);
+            let outcome = handle_one(&rpc_url, dir.path(), id, None, false).await;
+            assert_eq!(outcome.disputes_failed, 1);
+            assert_eq!(outcome.critical_alerts.len(), 1);
+            assert_eq!(outcome.chain_failures, 1, "{}", text);
+        }
+        assert_eq!(stub.disputes.load(Ordering::SeqCst), 0);
+    }
+
+    /// The chain call's own outcome is what the breaker counts.
+    #[tokio::test]
+    async fn test_chain_call_outcome_reaches_the_breaker() {
+        let (rpc_url, stub) = serve_chain(empty_chain()).await;
+        stub.dispute_gate.add_permits(1);
+        let dir = tempfile::tempdir().unwrap();
+        let id = B256::repeat_byte(0x55);
+        write_proof(dir.path(), id);
+
+        let outcome = handle_one(&rpc_url, dir.path(), id, None, false).await;
+        assert_eq!(stub.disputes.load(Ordering::SeqCst), 1);
+        assert_eq!(outcome.chain_failures, 2);
+
+        // The dry-run client stands in for a call that succeeds.
+        let outcome = handle_one(&rpc_url, dir.path(), id, None, true).await;
+        assert_eq!(outcome.disputes_failed, 0);
+        assert_eq!(outcome.chain_failures, 0);
+    }
+
+    /// A challenge whose dispute the prover won is not disputed again and not
+    /// reported as a failure.
+    #[tokio::test]
+    async fn test_settled_dispute_is_not_disputed_again() {
+        let id = B256::repeat_byte(0x55);
+        let (rpc_url, stub) = serve_chain(StubChain {
+            resolved: vec![id],
+            results: vec![(id, ml_result(0, true, true))],
+            ..empty_chain()
+        })
+        .await;
+        stub.dispute_gate.add_permits(1);
+        let dir = tempfile::tempdir().unwrap();
+        write_proof(dir.path(), id);
+
+        let outcome = handle_one(&rpc_url, dir.path(), id, None, false).await;
+        assert_eq!(stub.disputes.load(Ordering::SeqCst), 0);
+        assert_eq!(stub.estimate_gas_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(outcome.disputes_failed, 0);
+        assert!(outcome.critical_alerts.is_empty());
+        assert_eq!(outcome.chain_failures, 1);
+        assert!(
+            outcome.logged.contains("settled on chain"),
+            "{}",
+            outcome.logged
+        );
+    }
+
+    /// Only a resolved dispute counts as settled. A result that reads as
+    /// finalized while its dispute reads as unresolved (reads that straddle the
+    /// settlement, or nodes at different heights) is disputed, so that a lost
+    /// dispute cannot pass for a settled one.
+    #[tokio::test]
+    async fn test_finalized_result_without_a_resolved_dispute_is_disputed() {
+        let id = B256::repeat_byte(0x55);
+        let (rpc_url, stub) = serve_chain(StubChain {
+            results: vec![(id, ml_result(0, true, true))],
+            ..empty_chain()
+        })
+        .await;
+        stub.dispute_gate.add_permits(1);
+        let dir = tempfile::tempdir().unwrap();
+        write_proof(dir.path(), id);
+
+        let outcome = handle_one(&rpc_url, dir.path(), id, None, false).await;
+        assert_eq!(stub.disputes.load(Ordering::SeqCst), 1);
+        assert!(
+            !outcome.logged.contains("settled on chain"),
+            "{}",
+            outcome.logged
+        );
+    }
+
+    /// A dispute that the contract resolved against the prover is not disputed
+    /// again, and is reported: a critical alert for its result, a failed
+    /// dispute in the metrics and the audit log. It is not a chain failure.
+    #[tokio::test]
+    async fn test_lost_dispute_is_reported_and_not_disputed() {
+        let id = B256::repeat_byte(0x55);
+        let (rpc_url, stub) = serve_chain(StubChain {
+            resolved: vec![id],
+            prover_lost: vec![id],
+            results: vec![(id, ml_result(0, true, true))],
+            ..empty_chain()
+        })
+        .await;
+        stub.dispute_gate.add_permits(1);
+        let dir = tempfile::tempdir().unwrap();
+        write_proof(dir.path(), id);
+
+        let outcome = handle_one(&rpc_url, dir.path(), id, None, false).await;
+
+        assert_eq!(stub.disputes.load(Ordering::SeqCst), 0);
+        assert_eq!(stub.estimate_gas_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(outcome.disputes_failed, 1);
+        assert_eq!(
+            outcome.critical_alerts,
+            ["dispute_lost: Dispute lost: the dispute was resolved against the prover"]
+        );
+        assert_eq!(outcome.critical_result_ids, [challenge_id(&id)]);
+        assert!(
+            outcome.logged.contains("ERROR")
+                && outcome.logged.contains("is lost")
+                && outcome.logged.contains("event=\"dispute_failed\""),
+            "logged: {}",
+            outcome.logged
+        );
+        assert!(!outcome.logged.contains("settled on chain"));
+        assert_eq!(outcome.chain_failures, 1, "not a chain failure");
+    }
+
+    /// A state read that gets no answer does not hold the dispute up: after
+    /// [`DISPUTE_STATE_TIMEOUT`] the dispute goes ahead. The clock is paused and
+    /// jumps to the timeout once nothing else is left to run.
+    #[tokio::test(start_paused = true)]
+    async fn test_dispute_goes_ahead_when_its_state_read_hangs() {
+        let (rpc_url, stub) = serve_chain(StubChain {
+            reads_hang: true,
+            ..empty_chain()
+        })
+        .await;
+        stub.dispute_gate.add_permits(1);
+        let dir = tempfile::tempdir().unwrap();
+        let id = B256::repeat_byte(0x55);
+        write_proof(dir.path(), id);
+
+        // Without a bound of its own the dispute would wait for ever. The test
+        // fails instead after 60 s of real time: a second paused-clock timer
+        // would be jumped to while the stub's answers are on their way.
+        let (gave_up, mut give_up) = tokio::sync::oneshot::channel();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(60));
+            let _ = gave_up.send(());
+        });
+        let started = tokio::time::Instant::now();
+        let outcome = tokio::select! {
+            outcome = handle_one(&rpc_url, dir.path(), id, None, false) => outcome,
+            _ = &mut give_up => panic!("the dispute waited for the state read"),
+        };
+
+        assert!(started.elapsed() >= DISPUTE_STATE_TIMEOUT);
+        assert_eq!(stub.disputes.load(Ordering::SeqCst), 1);
+        assert!(
+            outcome
+                .logged
+                .contains("took over 30 s, disputing it anyway"),
+            "logged: {}",
+            outcome.logged
+        );
+    }
+
+    /// A result that reads as not challenged, as on a node that has not seen the
+    /// challenge yet, is still disputed: only a resolved dispute means the
+    /// challenge needs nothing more.
+    #[tokio::test]
+    async fn test_result_that_reads_as_not_challenged_is_disputed() {
+        let id = B256::repeat_byte(0x55);
+        let (rpc_url, stub) = serve_chain(StubChain {
+            results: vec![(id, ml_result(0, false, false))],
+            ..empty_chain()
+        })
+        .await;
+        stub.dispute_gate.add_permits(1);
+        let dir = tempfile::tempdir().unwrap();
+        write_proof(dir.path(), id);
+
+        let outcome = handle_one(&rpc_url, dir.path(), id, None, false).await;
+        assert_eq!(stub.disputes.load(Ordering::SeqCst), 1);
+        assert!(
+            !outcome.logged.contains("settled on chain"),
+            "{}",
+            outcome.logged
+        );
+    }
+
+    /// When the dispute's state cannot be read the dispute goes ahead.
+    #[tokio::test]
+    async fn test_dispute_goes_ahead_when_its_state_cannot_be_read() {
+        let (rpc_url, stub) = serve_chain(StubChain {
+            reads_fail: true,
+            ..empty_chain()
+        })
+        .await;
+        stub.dispute_gate.add_permits(1);
+        let dir = tempfile::tempdir().unwrap();
+        let id = B256::repeat_byte(0x55);
+        write_proof(dir.path(), id);
+
+        let outcome = handle_one(&rpc_url, dir.path(), id, None, false).await;
+        assert_eq!(stub.disputes.load(Ordering::SeqCst), 1);
+        assert!(
+            outcome.logged.contains("disputing it anyway"),
+            "logged: {}",
+            outcome.logged
+        );
     }
 }

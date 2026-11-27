@@ -565,8 +565,270 @@ fn test_printed_validation_error_names_the_allowed_schemes() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("must start with http://, https://, ws://, or wss://"),
+        stderr.contains("must start with http:// or https:// (ws:// and wss:// are not supported)"),
         "{stderr}"
     );
     assert!(!stderr.contains("SECRETKEY"), "{stderr}");
+}
+
+/// A WebSocket RPC URL is refused before any command runs, without its path.
+#[test]
+fn test_websocket_rpc_url_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    for url in [
+        "ws://127.0.0.1:8545/v2/SECRETKEY",
+        "wss://rpc.example.com/v2/SECRETKEY",
+    ] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_tee-operator"))
+            .env_clear()
+            .env("OPERATOR_PRIVATE_KEY", format!("0x{}", "1".repeat(64)))
+            .env(
+                "TEE_VERIFIER_ADDRESS",
+                "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+            )
+            .env("OPERATOR_RPC_URL", url)
+            .arg("models")
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{url}");
+        assert!(
+            stderr.contains(
+                "rpc_url is invalid: must start with http:// or https:// \
+                 (ws:// and wss:// are not supported)"
+            ),
+            "{stderr}"
+        );
+        assert!(!stderr.contains("SECRETKEY"), "{stderr}");
+    }
+}
+
+/// An enclave on an ephemeral local port that answers `/health` and `/infer`.
+async fn serve_enclave() -> String {
+    let word = |b: u8| format!("0x{}", hex::encode([b; 32]));
+    let infer = serde_json::json!({
+        "result": "0x01",
+        "model_hash": word(0x11),
+        "input_hash": word(0x22),
+        "result_hash": word(0x33),
+        "attestation": format!("0x{}", "00".repeat(65)),
+        "enclave_address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+    });
+    let app = axum::Router::new()
+        .route("/health", axum::routing::get(|| async { "ok" }))
+        .route(
+            "/infer",
+            axum::routing::post(move || async move { axum::Json(infer) }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    url
+}
+
+/// An enclave on an ephemeral local port that answers `/info` and
+/// `/attestation`, with an unsigned development document.
+async fn serve_registering_enclave() -> String {
+    use base64::Engine;
+    use ciborium::Value;
+
+    let enclave = "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266";
+    let info = serde_json::json!({
+        "enclave_address": enclave,
+        "model_hash": format!("0x{}", "11".repeat(32)),
+    });
+    let text = |s: &str| Value::Text(s.to_string());
+    let payload = Value::Map(vec![
+        (text("module_id"), text("test-mock")),
+        (text("timestamp"), Value::Integer(1.into())),
+        (text("digest"), text("SHA384")),
+        (
+            text("pcrs"),
+            Value::Map(vec![(Value::Integer(0.into()), Value::Bytes(vec![0; 48]))]),
+        ),
+        (
+            text("public_key"),
+            Value::Bytes(hex::decode(&enclave[2..]).unwrap()),
+        ),
+        (text("user_data"), Value::Bytes(vec![1; 32])),
+        (text("nonce"), Value::Null),
+    ]);
+    let mut payload_bytes = Vec::new();
+    ciborium::into_writer(&payload, &mut payload_bytes).unwrap();
+    let cose = Value::Array(vec![
+        Value::Bytes(vec![]),
+        Value::Map(vec![]),
+        Value::Bytes(payload_bytes),
+        Value::Bytes(vec![0; 96]),
+    ]);
+    let mut document = Vec::new();
+    ciborium::into_writer(&cose, &mut document).unwrap();
+    let attestation = serde_json::json!({
+        "document": base64::engine::general_purpose::STANDARD.encode(document),
+        "enclave_address": enclave,
+        "is_nitro": false,
+        "pcr0": "00".repeat(48),
+    });
+    let app = axum::Router::new()
+        .route(
+            "/info",
+            axum::routing::get(move || async move { axum::Json(info) }),
+        )
+        .route(
+            "/attestation",
+            axum::routing::get(move || async move { axum::Json(attestation) }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    url
+}
+
+/// A JSON-RPC node on an ephemeral local port that answers the chain id and
+/// the block number and refuses every other method. Returns its URL and the
+/// methods it was asked for.
+async fn serve_rpc() -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    let methods = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = methods.clone();
+    let rpc = move |axum::Json(req): axum::Json<serde_json::Value>| async move {
+        let method = req["method"].as_str().unwrap_or_default().to_string();
+        seen.lock().unwrap().push(method.clone());
+        let mut body = serde_json::json!({ "jsonrpc": "2.0", "id": req["id"] });
+        match method.as_str() {
+            "eth_chainId" => body["result"] = "0x7a69".into(),
+            "eth_blockNumber" => body["result"] = "0x64".into(),
+            _ => body["error"] = serde_json::json!({ "code": -32601, "message": "refused" }),
+        }
+        axum::Json(body)
+    };
+    let app = axum::Router::new().route("/", axum::routing::post(rpc));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (url, methods)
+}
+
+/// `register --skip-verify` in dry-run says that nothing was sent, and reads
+/// no more from the chain than the chain id and the block number.
+#[tokio::test]
+async fn test_dry_run_register_prints_that_nothing_was_sent() {
+    let enclave_url = serve_registering_enclave().await;
+    let (rpc_url, methods) = serve_rpc().await;
+    let dir = tempfile::tempdir().unwrap();
+    let register = |dry_run: &str| {
+        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_tee-operator"));
+        command
+            .env_clear()
+            .env("OPERATOR_PRIVATE_KEY", format!("0x{}", "1".repeat(64)))
+            .env(
+                "TEE_VERIFIER_ADDRESS",
+                "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+            )
+            .env("OPERATOR_RPC_URL", &rpc_url)
+            .env("ENCLAVE_URL", &enclave_url)
+            .env("DRY_RUN", dry_run)
+            .args(["register", "--skip-verify"])
+            .current_dir(dir.path());
+        command
+    };
+
+    let output = register("true").output().await.unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        stdout.contains("Dry run: the enclave was not registered, no transaction was sent"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("Enclave registered:"), "{stdout}");
+    assert_eq!(*methods.lock().unwrap(), ["eth_chainId", "eth_blockNumber"]);
+
+    // Without dry-run the same command goes on to the chain, which refuses it.
+    let output = register("false").output().await.unwrap();
+    assert!(!output.status.success(), "{output:?}");
+    assert!(methods.lock().unwrap().len() > 2);
+}
+
+/// Run `submit` in `dir` with nothing listening at the RPC URL.
+async fn run_submit(
+    enclave_url: &str,
+    dir: &std::path::Path,
+    envs: &[(&str, &str)],
+) -> std::process::Output {
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_tee-operator"));
+    command
+        .env_clear()
+        .env("OPERATOR_PRIVATE_KEY", format!("0x{}", "1".repeat(64)))
+        .env(
+            "TEE_VERIFIER_ADDRESS",
+            "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+        )
+        .env("OPERATOR_RPC_URL", "http://127.0.0.1:1")
+        .env("ENCLAVE_URL", enclave_url)
+        .envs(envs.iter().copied())
+        .args(["submit", "--features", "[1.0]"])
+        .current_dir(dir);
+    command.output().await.unwrap()
+}
+
+/// `submit` in dry-run succeeds without a chain, and says that it was one.
+#[tokio::test]
+async fn test_dry_run_submit_prints_that_nothing_was_sent() {
+    let enclave_url = serve_enclave().await;
+    let dir = tempfile::tempdir().unwrap();
+
+    let output = run_submit(&enclave_url, dir.path(), &[("DRY_RUN", "1")]).await;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        stdout.contains("Dry run: the result was not submitted, no transaction was sent"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("tx_hash="), "{stdout}");
+
+    let output = run_submit(&enclave_url, dir.path(), &[("DRY_RUN", "0")]).await;
+    assert!(!output.status.success(), "{output:?}");
+}
+
+/// A boolean variable that is neither true nor false stops the operator.
+#[tokio::test]
+async fn test_unknown_boolean_value_is_an_error() {
+    let dir = tempfile::tempdir().unwrap();
+    for name in ["DRY_RUN", "NITRO_VERIFICATION"] {
+        let output = run_submit("http://127.0.0.1:1", dir.path(), &[(name, "enabled")]).await;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success());
+        assert!(
+            stderr.contains(&format!("{name} must be one of")),
+            "{stderr}"
+        );
+        assert!(!stderr.contains("enabled"), "{stderr}");
+    }
+}
+
+/// A `LOG_LEVEL` that is not a level is reported on stderr and does not silence
+/// the log.
+#[tokio::test]
+async fn test_unknown_log_level_falls_back_to_info() {
+    let enclave_url = serve_enclave().await;
+    let dir = tempfile::tempdir().unwrap();
+
+    for (level, reported) in [
+        ("verbose", true),
+        ("INFO", false),
+        ("4", false),
+        ("tee_operator=info", false),
+    ] {
+        let envs = [("DRY_RUN", "true"), ("LOG_LEVEL", level)];
+        let output = run_submit(&enclave_url, dir.path(), &envs).await;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stdout.contains("Submitting inference"), "{level}: {stdout}");
+        assert_eq!(
+            stderr.contains("is not a log level"),
+            reported,
+            "{level}: {stderr}"
+        );
+    }
 }

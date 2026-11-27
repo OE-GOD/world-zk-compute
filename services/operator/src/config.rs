@@ -251,6 +251,26 @@ pub struct Config {
     pub proof_archive_dir: String,
 }
 
+/// The value of the boolean environment variable `name`, or `None` if it is
+/// unset or empty.
+fn env_bool(name: &str) -> anyhow::Result<Option<bool>> {
+    match std::env::var_os(name) {
+        Some(value) => parse_bool(name, &value.to_string_lossy()),
+        None => Ok(None),
+    }
+}
+
+/// Parse the value of the boolean environment variable `name`. An error names
+/// the variable, not the value.
+fn parse_bool(name: &str, value: &str) -> anyhow::Result<Option<bool>> {
+    match value.to_ascii_lowercase().as_str() {
+        "" => Ok(None),
+        "true" | "1" | "yes" | "on" => Ok(Some(true)),
+        "false" | "0" | "no" | "off" => Ok(Some(false)),
+        _ => anyhow::bail!("{name} must be one of true, false, 1, 0, yes, no, on, off"),
+    }
+}
+
 impl Config {
     /// Load configuration with priority: env vars > config file > defaults.
     ///
@@ -317,9 +337,7 @@ impl Config {
             .or(file_cfg.precompute_bin)
             .unwrap_or_else(|| "precompute_proof".to_string());
 
-        let nitro_verification = std::env::var("NITRO_VERIFICATION")
-            .ok()
-            .and_then(|v| v.parse::<bool>().ok())
+        let nitro_verification = env_bool("NITRO_VERIFICATION")?
             .or(file_cfg.nitro_verification)
             .unwrap_or(false);
 
@@ -458,11 +476,7 @@ impl Config {
             file_cfg.models
         };
 
-        let dry_run = std::env::var("DRY_RUN")
-            .ok()
-            .and_then(|v| v.parse::<bool>().ok())
-            .or(file_cfg.dry_run)
-            .unwrap_or(false);
+        let dry_run = env_bool("DRY_RUN")?.or(file_cfg.dry_run).unwrap_or(false);
 
         let metrics_port = std::env::var("METRICS_PORT")
             .ok()
@@ -639,8 +653,8 @@ impl Config {
     /// Validate all configuration values for correctness.
     ///
     /// Checks:
-    /// - RPC URL starts with `http://`, `https://`, `ws://`, or `wss://`
-    /// - RPC URL uses `https://` or `wss://` for non-localhost targets (warns on `http://`)
+    /// - RPC URL starts with `http://` or `https://`
+    /// - RPC URL uses `https://` for non-localhost targets (warns on `http://`)
     /// - Private key is valid hex (64 hex chars or `0x`-prefixed 66 chars)
     /// - Contract addresses are valid Ethereum addresses (`0x` + 40 hex chars)
     /// - `prover_max_retries` <= 10 (warns if higher)
@@ -656,29 +670,26 @@ impl Config {
     pub fn validate(&self) -> Result<(), Vec<String>> {
         let mut errors: Vec<String> = Vec::new();
 
-        // 1. RPC URL must have a valid scheme
-        if !self.rpc_url.starts_with("http://")
-            && !self.rpc_url.starts_with("https://")
-            && !self.rpc_url.starts_with("ws://")
-            && !self.rpc_url.starts_with("wss://")
-        {
+        // 1. RPC URL must have a scheme that the HTTP providers can use
+        if !self.rpc_url.starts_with("http://") && !self.rpc_url.starts_with("https://") {
             // The value is not quoted: an RPC URL can carry an API key.
             errors.push(
-                "rpc_url is invalid: must start with http://, https://, ws://, or wss://"
+                "rpc_url is invalid: must start with http:// or https:// \
+                 (ws:// and wss:// are not supported)"
                     .to_string(),
             );
         }
 
         // 1b. Warn when using unencrypted transport for non-localhost RPC URLs.
         // This strongly suggests a mainnet or testnet endpoint where HTTPS should be used.
-        if (self.rpc_url.starts_with("http://") || self.rpc_url.starts_with("ws://"))
+        if self.rpc_url.starts_with("http://")
             && !self.rpc_url.contains("127.0.0.1")
             && !self.rpc_url.contains("localhost")
         {
             tracing::warn!(
                 rpc_url = %tee_watcher::redact::url_origin(&self.rpc_url),
-                "RPC URL uses unencrypted transport (http:// or ws://). \
-                 Use https:// or wss:// for mainnet and testnet endpoints to prevent \
+                "RPC URL uses unencrypted transport (http://). \
+                 Use https:// for mainnet and testnet endpoints to prevent \
                  private key and transaction data from being intercepted."
             );
         }
@@ -1971,6 +1982,78 @@ dry_run = true
         clear_all_env_vars();
     }
 
+    #[test]
+    fn test_parse_bool_accepted_values() {
+        for value in ["true", "TRUE", "True", "1", "yes", "YES", "on", "On"] {
+            assert_eq!(parse_bool("X", value).unwrap(), Some(true), "{value}");
+        }
+        for value in ["false", "FALSE", "False", "0", "no", "NO", "off", "Off"] {
+            assert_eq!(parse_bool("X", value).unwrap(), Some(false), "{value}");
+        }
+        assert_eq!(parse_bool("X", "").unwrap(), None);
+    }
+
+    #[test]
+    fn test_parse_bool_error_names_the_variable_only() {
+        for value in ["SECRET", "2", "tru", " ", "true ", "y"] {
+            let err = parse_bool("DRY_RUN", value).unwrap_err();
+            let printed = format!("{err:?}");
+            assert_eq!(
+                printed,
+                "DRY_RUN must be one of true, false, 1, 0, yes, no, on, off"
+            );
+        }
+    }
+
+    #[test]
+    fn test_bool_env_vars() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        clear_all_env_vars();
+
+        std::env::set_var(
+            "OPERATOR_PRIVATE_KEY",
+            "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+        );
+        std::env::set_var(
+            "TEE_VERIFIER_ADDRESS",
+            "0x1111111111111111111111111111111111111111",
+        );
+        let mut tmpfile = tempfile::NamedTempFile::new().unwrap();
+        tmpfile
+            .write_all(b"dry_run = true\nnitro_verification = true\n")
+            .unwrap();
+        let path = tmpfile.path().to_str().unwrap().to_string();
+
+        std::env::set_var("DRY_RUN", "1");
+        std::env::set_var("NITRO_VERIFICATION", "Yes");
+        let config = Config::from_env(None).unwrap();
+        assert!(config.dry_run);
+        assert!(config.nitro_verification);
+
+        std::env::set_var("DRY_RUN", "off");
+        std::env::set_var("NITRO_VERIFICATION", "0");
+        let config = Config::from_env(Some(&path)).unwrap();
+        assert!(!config.dry_run);
+        assert!(!config.nitro_verification);
+
+        // Empty is the same as unset: the file's value counts.
+        std::env::set_var("DRY_RUN", "");
+        std::env::set_var("NITRO_VERIFICATION", "");
+        let config = Config::from_env(Some(&path)).unwrap();
+        assert!(config.dry_run);
+        assert!(config.nitro_verification);
+
+        for name in ["DRY_RUN", "NITRO_VERIFICATION"] {
+            std::env::set_var(name, "maybe");
+            let err = Config::from_env(Some(&path)).unwrap_err().to_string();
+            assert!(err.contains(name), "{err}");
+            assert!(!err.contains("maybe"), "{err}");
+            std::env::remove_var(name);
+        }
+
+        clear_all_env_vars();
+    }
+
     // ======================== Multi-contract config tests ========================
 
     #[test]
@@ -2455,18 +2538,23 @@ rpc_url = "https://rpc.example.com"
         assert!(errors.iter().any(|e| e.contains("rpc_url")));
     }
 
+    /// Every provider is an HTTP provider: with a WebSocket URL each poll fails.
     #[test]
-    fn test_validate_valid_rpc_url_ws() {
-        let mut config = make_valid_config();
-        config.rpc_url = "ws://127.0.0.1:8545".to_string();
-        assert!(config.validate().is_ok());
-    }
-
-    #[test]
-    fn test_validate_valid_rpc_url_wss() {
-        let mut config = make_valid_config();
-        config.rpc_url = "wss://rpc.example.com".to_string();
-        assert!(config.validate().is_ok());
+    fn test_validate_rejects_websocket_rpc_url() {
+        for url in [
+            "ws://127.0.0.1:8545/v2/SECRETKEY",
+            "wss://rpc.example.com/v2/SECRETKEY",
+        ] {
+            let mut config = make_valid_config();
+            config.rpc_url = url.to_string();
+            let errors = config.validate().unwrap_err().join("\n");
+            assert!(
+                errors.contains("rpc_url is invalid: must start with http:// or https://"),
+                "{errors}"
+            );
+            assert!(!errors.contains("SECRETKEY"), "{errors}");
+            assert!(!errors.contains("example.com"), "{errors}");
+        }
     }
 
     #[test]

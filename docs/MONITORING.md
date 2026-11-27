@@ -175,7 +175,7 @@ The operator exposes metrics in Prometheus text exposition format at `GET /metri
 | Endpoint | Description |
 |---|---|
 | `GET /health` | Returns `{"status":"ok","uptime_secs":…,"last_block_polled":…}` (200); `status` is `shutting_down` (503) during shutdown |
-| `GET /ready` | Returns 200 only if `last_block_polled > 0` and not shutting down |
+| `GET /ready` | Returns 200 once this process has polled the chain successfully and while it is not shutting down (a block restored from the state file does not count) |
 | `GET /metrics` | Prometheus text format |
 | `GET /metrics/json` | JSON format (backward compatibility) |
 
