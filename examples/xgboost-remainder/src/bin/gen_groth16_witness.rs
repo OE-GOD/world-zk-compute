@@ -168,10 +168,14 @@ fn setup_toy_circuit() -> CircuitSetup {
     }
 }
 
-fn setup_xgboost_circuit() -> CircuitSetup {
+fn setup_xgboost_circuit() -> Result<CircuitSetup> {
     let num_trees = parse_arg_usize("--trees", 1);
     let depth = parse_arg_usize("--depth", 1);
     let num_features = parse_arg_usize("--features", 2);
+    // The sizes come from the command line: check them before generate_model
+    // allocates the trees.
+    xgboost_remainder::model::check_generated_model_size(num_trees, depth, num_features)
+        .map_err(anyhow::Error::msg)?;
     let num_trees_padded = num_trees.next_power_of_two();
 
     eprintln!(
@@ -181,6 +185,8 @@ fn setup_xgboost_circuit() -> CircuitSetup {
 
     // Generate a deterministic test model
     let model = xgboost_remainder::model::generate_model(num_trees, depth, num_features);
+    // prepare_circuit_inputs does not check the model, and the sizes come from the command line.
+    xgboost_remainder::model::validate_model(&model).map_err(anyhow::Error::msg)?;
     let features = xgboost_remainder::model::generate_features(num_features, 123);
 
     let inputs = xgboost_remainder::circuit::prepare_circuit_inputs(&model, &features);
@@ -208,13 +214,13 @@ fn setup_xgboost_circuit() -> CircuitSetup {
     // We'll extract the correct values from the proof's public_inputs field later.
     let pub_values_placeholder: Vec<Fr> = Vec::new(); // filled from proof
 
-    CircuitSetup {
+    Ok(CircuitSetup {
         prover_circuit,
         verifier_circuit,
         pub_values: pub_values_placeholder,
         transcript_label: "gen-test-proof transcript",
         pedersen_seed: "gen-test-proof Pedersen committer seed string for generating bases",
-    }
+    })
 }
 
 // NOTE: DAG circuit witness generation is in gen_dag_groth16_witness.rs
@@ -225,7 +231,7 @@ fn main() -> Result<()> {
 
     let mut setup = match circuit_type.as_str() {
         "toy" => setup_toy_circuit(),
-        "xgboost" => setup_xgboost_circuit(),
+        "xgboost" => setup_xgboost_circuit()?,
         other => {
             eprintln!("Unknown circuit type: {}. Use 'toy' or 'xgboost'.", other);
             std::process::exit(1);

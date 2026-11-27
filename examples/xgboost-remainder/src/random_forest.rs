@@ -39,7 +39,7 @@
 //! * `threshold[i]`      = split threshold; -2.0 means leaf.
 //! * `value[i]`          = class-count histogram at node i (all classes).
 
-use crate::model::{tree_depth, DecisionTree, TreeNode, XgboostModel, FIXED_POINT_SCALE};
+use crate::model::{check_tree_structure, DecisionTree, TreeNode, XgboostModel, FIXED_POINT_SCALE};
 use serde::Deserialize;
 use std::path::Path;
 
@@ -126,7 +126,7 @@ pub fn parse_random_forest_json(json_str: &str) -> Result<XgboostModel, String> 
 
     for (tree_idx, raw_tree) in raw.trees.iter().enumerate() {
         let dt = convert_sklearn_tree(raw_tree, n_classes, tree_idx)?;
-        let d = tree_depth(&dt);
+        let d = check_tree_structure(&dt).map_err(|e| format!("Tree {}: {}", tree_idx, e))?;
         if d > max_depth {
             max_depth = d;
         }
@@ -601,6 +601,29 @@ mod tests {
         assert_eq!(q, expected);
     }
 
+    /// Trees the parser cannot compute a depth for are errors.
+    #[test]
+    fn test_bad_tree_structure() {
+        for (children_left, expected) in [
+            (
+                "[0, -1, -1]",
+                "Tree 0: node 0 has child 0, which leads back to it: the path never reaches a leaf",
+            ),
+            (
+                "[3, -1, -1]",
+                "Tree 0: node 0 has child index 3, but the tree has 3 nodes",
+            ),
+            (
+                "[2, -1, -1]",
+                "Tree 0: node 0 has child 2, which is already a child of node 0: \
+                 a tree node has one parent",
+            ),
+        ] {
+            let json = MINIMAL_RF_JSON.replace("[1, -1, -1]", children_left);
+            assert_eq!(parse_random_forest_json(&json).unwrap_err(), expected);
+        }
+    }
+
     // -----------------------------------------------------------------------
     // File-based tests
     // -----------------------------------------------------------------------
@@ -621,6 +644,7 @@ mod tests {
 
         // Tree depths: tree 0 = depth 2, tree 1 = depth 2, tree 2 = depth 1
         assert_eq!(model.max_depth, 2);
+        crate::model::validate_model(&model).unwrap();
 
         // Verify inference runs without panic
         let features = vec![4.0, 2.0, 1.0, 0.3];

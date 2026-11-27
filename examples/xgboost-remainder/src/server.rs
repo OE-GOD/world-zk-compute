@@ -286,7 +286,7 @@ pub async fn run_server_with_config(
     let num_features = model.num_features;
     let max_depth = model.max_depth;
 
-    let prover = CachedProver::new(model);
+    let prover = CachedProver::new(model)?;
     let circuit_hash_hex = hex::encode(prover.circuit_hash);
 
     println!(
@@ -923,5 +923,17 @@ mod tests {
             limiter.check(ip),
             "Should be allowed after tokens have refilled"
         );
+    }
+
+    #[tokio::test]
+    async fn test_server_rejects_unprovable_model() {
+        let mut model = model::sample_model();
+        model.trees.clear();
+        let config = ServerConfig {
+            port: 0,
+            ..ServerConfig::default()
+        };
+        let err = run_server_with_config(model, config).await.unwrap_err();
+        assert_eq!(err.to_string(), "Model has no trees");
     }
 }

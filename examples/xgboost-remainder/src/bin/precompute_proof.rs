@@ -78,8 +78,10 @@ fn load_model(path: &std::path::Path, model_format: &str) -> Result<XgboostModel
 }
 
 fn main() -> Result<()> {
-    let args = Args::parse();
+    run(Args::parse())
+}
 
+fn run(args: Args) -> Result<()> {
     if args.model.is_none() && !args.sample {
         anyhow::bail!("Either --model <path> or --sample is required");
     }
@@ -99,6 +101,10 @@ fn main() -> Result<()> {
         eprintln!("Loading {} model from {:?}...", args.model_format, path);
         load_model(path, &args.model_format)?
     };
+    // predict() follows child and feature indices without checking them.
+    model::validate_model(&m).map_err(anyhow::Error::msg)?;
+    // predict() asserts the feature count, so check it here to get an error instead.
+    model::check_feature_count(&m, &features).map_err(anyhow::Error::msg)?;
     eprintln!(
         "  Model: {} trees, {} features, {} classes",
         m.trees.len(),
@@ -143,4 +149,21 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_wrong_feature_count_is_an_error() {
+        for features in ["[0.6, 0.2]", "[0.6, 0.2, 0.8, 0.5, 0.3, 0.1]"] {
+            let args = Args::parse_from(["precompute_proof", "--sample", "--features", features]);
+            let count = serde_json::from_str::<Vec<f64>>(features).unwrap().len();
+            assert_eq!(
+                run(args).unwrap_err().to_string(),
+                format!("Expected 5 features, got {}", count)
+            );
+        }
+    }
 }

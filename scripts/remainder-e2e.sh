@@ -98,7 +98,7 @@ echo "════════════════════════�
 echo "  Remainder ZKML E2E Test Results"
 echo "════════════════════════════════════════════════════════════"
 echo "  Proof System:     Remainder (GKR + Hyrax PCS)"
-echo "  Model:            XGBoost (2 trees, 5 features, depth 3)"
+echo "  Model:            XGBoost (2 trees, 5 features, depth 2)"
 echo "  Predicted Class:  $PREDICTED_CLASS"
 echo "  Proof Size:       $PROOF_SIZE bytes"
 echo "  Prove Time:       ${PROVE_TIME}ms"

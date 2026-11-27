@@ -159,6 +159,7 @@ async fn run(cli: Cli) -> Result<()> {
             other
         ),
     };
+    model::validate_model(&model).map_err(|e| anyhow::anyhow!("{}", e))?;
     println!(
         "Loaded {} model: {} trees, {} features, max_depth={}",
         detected_format,
@@ -192,6 +193,8 @@ async fn run(cli: Cli) -> Result<()> {
     let input_json = std::fs::read_to_string(&input_path)?;
     let input: XgboostInput = serde_json::from_str(&input_json)?;
     println!("Input features: {:?}", input.features);
+
+    model::check_feature_count(&model, &input.features).map_err(|e| anyhow::anyhow!("{}", e))?;
 
     // Run inference (no proof)
     let predicted_class = model::predict(&model, &input.features);
@@ -335,5 +338,80 @@ mod tests {
             proof_size,
             stdout
         );
+    }
+
+    /// Run the CLI on a model and an input written to a temporary directory.
+    fn run_on(
+        name: &str,
+        model: &model::XgboostModel,
+        features: &[f64],
+        args: &[&str],
+    ) -> Result<()> {
+        let dir = std::env::temp_dir().join(format!(
+            "xgboost-remainder-cli-test-{}-{}",
+            name,
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let model_path = dir.join("model.json");
+        let input_path = dir.join("input.json");
+        std::fs::write(&model_path, serde_json::to_vec(model).unwrap()).unwrap();
+        let input = XgboostInput {
+            features: features.to_vec(),
+            expected_class: 1,
+        };
+        std::fs::write(&input_path, serde_json::to_vec(&input).unwrap()).unwrap();
+
+        let mut argv: Vec<OsString> = vec![
+            "xgboost-remainder".into(),
+            "--model".into(),
+            model_path.into(),
+            "--input".into(),
+            input_path.into(),
+            "--output".into(),
+            dir.join("output.json").into(),
+        ];
+        argv.extend(args.iter().map(OsString::from));
+        let result = std::panic::catch_unwind(|| {
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(run(Cli::parse_from(argv)))
+        });
+        std::fs::remove_dir_all(&dir).unwrap();
+        result.expect("the CLI panicked")
+    }
+
+    #[test]
+    fn test_unprovable_model_is_an_error() {
+        let features = [0.6, 0.2, 0.8, 0.5, 0.3];
+
+        let mut bad_feature = model::sample_model();
+        bad_feature.trees[0].nodes[0].feature_index = 5;
+        let mut no_trees = model::sample_model();
+        no_trees.trees.clear();
+
+        for args in [&[][..], &["--execute-only"], &["--bundle"]] {
+            let err = run_on("bad-feature", &bad_feature, &features, args).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                "Tree 0: node 0 splits on feature 5, but the model has 5 features"
+            );
+        }
+        let err = run_on(
+            "no-trees",
+            &no_trees,
+            &features,
+            &["--serve", "--port", "0"],
+        );
+        assert_eq!(err.unwrap_err().to_string(), "Model has no trees");
+    }
+
+    #[test]
+    fn test_wrong_feature_count_is_an_error() {
+        let model = model::sample_model();
+        for args in [&[][..], &["--execute-only"], &["--bundle"]] {
+            let err = run_on("feature-count", &model, &[0.6, 0.2], args).unwrap_err();
+            assert_eq!(err.to_string(), "Expected 5 features, got 2");
+        }
     }
 }

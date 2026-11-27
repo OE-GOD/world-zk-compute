@@ -278,6 +278,10 @@ fn main() -> Result<()> {
     let num_trees = parse_arg_usize("--trees", 4);
     let depth = parse_arg_usize("--depth", 2);
     let num_features = parse_arg_usize("--features", 5);
+    // The sizes come from the command line: check them before generate_model
+    // allocates the trees.
+    xgboost_remainder::model::check_generated_model_size(num_trees, depth, num_features)
+        .map_err(anyhow::Error::msg)?;
 
     eprintln!(
         "XGBoost DAG circuit: trees={}, depth={}, features={}",
@@ -286,6 +290,8 @@ fn main() -> Result<()> {
 
     // Build XGBoost circuit
     let model = xgboost_remainder::model::generate_model(num_trees, depth, num_features);
+    // prepare_circuit_inputs does not check the model, and the sizes come from the command line.
+    xgboost_remainder::model::validate_model(&model).map_err(anyhow::Error::msg)?;
     let features = xgboost_remainder::model::generate_features(num_features, 123);
     let inputs = xgboost_remainder::circuit::prepare_circuit_inputs(&model, &features);
 

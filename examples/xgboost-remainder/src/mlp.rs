@@ -1261,6 +1261,8 @@ mod tests {
         assert_eq!(xgb.num_features, 4);
         assert_eq!(xgb.num_classes, 2);
         assert_eq!(xgb.trees.len(), 2);
+        // The max_depth field is the lookup trees' depth.
+        model::validate_model(&xgb).unwrap();
     }
 
     // ---- E2E prove + verify via tree conversion (ignored — slow) ----

@@ -28,7 +28,7 @@ fn sample_model_json() -> &'static str {
     r#"{
       "num_features": 5,
       "num_classes": 2,
-      "max_depth": 3,
+      "max_depth": 2,
       "base_score": 0.0,
       "trees": [
         {
@@ -177,7 +177,8 @@ fn bench_prove_and_verify(c: &mut Criterion) {
     let mut group = c.benchmark_group("warm_prover");
     group.sample_size(10);
 
-    let cached_prover = xgboost_remainder::circuit::CachedProver::new(mdl.clone());
+    let cached_prover = xgboost_remainder::circuit::CachedProver::new(mdl.clone())
+        .expect("the sample model is provable");
 
     group.bench_function("cached_prover_prove", |b| {
         b.iter(|| {
