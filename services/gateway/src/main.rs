@@ -1470,6 +1470,69 @@ mod tests {
         assert!(records.is_empty(), "unexpected records: {records:?}");
     }
 
+    /// `/admin/usage` files requests under fingerprints: one per key, together
+    /// across requests, and never the key itself.
+    #[tokio::test]
+    async fn test_usage_shows_key_fingerprints_and_never_the_keys() {
+        // First 16 hex digits of SHA-256("alice-key") and SHA-256("bob-key").
+        const ALICE: &str = "72ee9d4355ccb9d3";
+        const BOB: &str = "9b94dc1a51a38769";
+
+        let generator = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/prove"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&generator)
+            .await;
+        let state = test_state(
+            &generator.uri(),
+            &generator.uri(),
+            &generator.uri(),
+            vec!["alice-key".to_string(), "bob-key".to_string()],
+        );
+
+        let call = |verb: http::Method, uri: &str, key: &str| {
+            let req = HttpRequest::builder()
+                .method(verb)
+                .uri(uri)
+                .header("Authorization", format!("Bearer {key}"))
+                .body(Body::empty())
+                .unwrap();
+            build_app(state.clone()).oneshot(req)
+        };
+        for key in ["alice-key", "alice-key", "bob-key"] {
+            let resp = call(http::Method::POST, "/v1/prove", key).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+        }
+
+        let usage = |uri: &'static str| {
+            let resp = call(http::Method::GET, uri, "bob-key");
+            async move {
+                let resp = resp.await.unwrap();
+                assert_eq!(resp.status(), StatusCode::OK);
+                let body = resp.into_body().collect().await.unwrap().to_bytes();
+                String::from_utf8(body.to_vec()).unwrap()
+            }
+        };
+
+        let body = usage("/admin/usage").await;
+        assert!(!body.contains("-key"), "usage shows a key: {body}");
+        assert!(!body.contains("Bearer"), "usage shows a header: {body}");
+        let usage_json: metering::UsageResponse = serde_json::from_str(&body).unwrap();
+        // Summed over the days, so the test may run across midnight.
+        let mut generated: HashMap<&str, u64> = HashMap::new();
+        for r in &usage_json.records {
+            *generated.entry(r.tenant_id.as_str()).or_default() += r.proofs_generated;
+        }
+        assert_eq!(generated, HashMap::from([(ALICE, 2), (BOB, 1)]));
+
+        // `?tenant=` takes the fingerprint.
+        let body = usage("/admin/usage?tenant=72ee9d4355ccb9d3").await;
+        let usage_json: metering::UsageResponse = serde_json::from_str(&body).unwrap();
+        assert_eq!(usage_json.totals.proofs_generated, 2);
+        assert!(usage_json.records.iter().all(|r| r.tenant_id == ALICE));
+    }
+
     #[tokio::test]
     async fn test_auth_required_when_keys_configured() {
         let mock_server = MockServer::start().await;

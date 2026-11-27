@@ -2,8 +2,8 @@
 //!
 //! Emits structured JSON log entries for every HTTP request passing through the
 //! gateway. Each entry includes: timestamp, unique request ID, method, path,
-//! response status, latency, and a client identifier extracted from the
-//! `Authorization` header (or `"anonymous"` when absent).
+//! response status, latency, and a client identifier: the fingerprint of the API
+//! key that usage metering files the request under (or `"anonymous"` when absent).
 //!
 //! The generated request ID is also returned to the caller in the
 //! `X-Request-Id` response header so that operators and clients can correlate
@@ -19,6 +19,8 @@
 use axum::{extract::Request, http::HeaderValue, middleware::Next, response::Response};
 use std::time::Instant;
 
+use crate::metering::tenant_id;
+
 /// Header name for the unique per-request identifier.
 pub const REQUEST_ID_HEADER: &str = "x-request-id";
 
@@ -28,16 +30,9 @@ pub async fn request_logger(req: Request, next: Next) -> Response {
     let method = req.method().clone();
     let path = req.uri().path().to_string();
 
-    // Extract a client identifier from the Authorization header.  We take the
-    // whole header value (not just the bearer token) so callers using other
-    // auth schemes still get a recognisable identifier.  If no header is
-    // present the entry is tagged "anonymous".
-    let client_id = req
-        .headers()
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("anonymous")
-        .to_string();
+    // Identify the client by the fingerprint of its key, so the log never holds
+    // a credential.  Without a key the entry is tagged "anonymous".
+    let client_id = tenant_id(req.headers());
 
     let request_id = uuid::Uuid::new_v4().to_string();
 
@@ -251,9 +246,14 @@ mod tests {
             log_output.contains("timestamp"),
             "log must contain timestamp"
         );
+        // First 16 hex digits of SHA-256("test-key-123").
         assert!(
-            log_output.contains("test-key-123"),
-            "log must contain the client credential"
+            log_output.contains("625faa3fbbc3d2bd"),
+            "log must contain the fingerprint of the client's key"
+        );
+        assert!(
+            !log_output.contains("test-key-123"),
+            "log must not contain the client's key: {log_output}"
         );
     }
 

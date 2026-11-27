@@ -1,8 +1,9 @@
 //! Per-tenant usage metering for billing and capacity planning.
 //!
 //! Tracks proofs generated, proofs verified, and total requests per tenant per
-//! day. Tenant identity is extracted from the `Authorization` header (same as
-//! the audit logger). Anonymous requests are grouped under `"anonymous"`.
+//! day. A tenant is identified by a fingerprint of its API key (see
+//! [`tenant_id`], which the audit logger uses too), never by the key itself.
+//! Anonymous requests are grouped under `"anonymous"`.
 //!
 //! The in-memory store is suitable for single-instance deployments. For HA
 //! setups, replace the backing `HashMap` with a durable store (e.g. Redis or
@@ -18,13 +19,17 @@ use std::sync::Arc;
 
 use axum::{
     extract::{Query, Request, State},
-    http::StatusCode,
+    http::{header, HeaderMap, StatusCode},
     middleware::Next,
     response::Response,
     Json,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
+
+/// Tenant id of requests that carry no API key.
+const ANONYMOUS: &str = "anonymous";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -171,6 +176,49 @@ impl MeteringStore {
 }
 
 // ---------------------------------------------------------------------------
+// Tenant identity
+// ---------------------------------------------------------------------------
+
+/// The tenant id of a request: the first 16 hex digits of the SHA-256 of its
+/// API key, or `"anonymous"` without one.
+///
+/// The key is the trimmed `Authorization` value after the `Bearer` scheme (in
+/// any case) and the whitespace that follows it, or the whole trimmed value
+/// for a request without that scheme. A bare scheme has no key, and neither
+/// has a value that is not visible ASCII because it holds obs-text (a byte
+/// from 0x80 to 0xFF): both are `"anonymous"`.
+///
+/// This accepts more forms than `auth_middleware`, which wants exactly
+/// `"Bearer "` and the key: here the scheme may be in any case, the whitespace
+/// may be longer, and the scheme may be missing. The request logger runs before
+/// auth, so a request that auth rejects in one of those forms is still logged
+/// under the fingerprint of the key it presented, with its 401.
+pub fn tenant_id(headers: &HeaderMap) -> String {
+    // HTTP/1 parsing trims the whitespace at the end of a header, so a request
+    // sent with "Bearer " and no key arrives as "Bearer".
+    let value = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .trim_ascii();
+
+    let key = match value.split_at_checked("Bearer".len()) {
+        Some((scheme, rest))
+            if scheme.eq_ignore_ascii_case("Bearer")
+                && (rest.is_empty() || rest.starts_with(|c: char| c.is_ascii_whitespace())) =>
+        {
+            rest.trim_ascii()
+        }
+        _ => value,
+    };
+    if key.is_empty() {
+        return ANONYMOUS.to_string();
+    }
+
+    hex::encode(&Sha256::digest(key.as_bytes())[..8])
+}
+
+// ---------------------------------------------------------------------------
 // Date helper
 // ---------------------------------------------------------------------------
 
@@ -218,8 +266,8 @@ pub fn classify_path(path: &str) -> Operation {
 
 /// Axum middleware that meters every request.
 ///
-/// Extracts the tenant identifier from the `Authorization` header (same logic
-/// as the audit logger) and increments the appropriate counters.
+/// Derives the tenant identifier from the request's API key ([`tenant_id`]) and
+/// increments the appropriate counters.
 pub async fn metering_middleware(
     State(store): State<Arc<MeteringStore>>,
     req: Request,
@@ -227,12 +275,7 @@ pub async fn metering_middleware(
 ) -> Response {
     let path = req.uri().path().to_string();
 
-    let tenant_id = req
-        .headers()
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("anonymous")
-        .to_string();
+    let tenant_id = tenant_id(req.headers());
 
     let operation = classify_path(&path);
 
@@ -367,6 +410,91 @@ mod tests {
         assert_eq!(classify_path("/models"), Operation::Other);
         assert_eq!(classify_path("/admin/usage"), Operation::Other);
         assert_eq!(classify_path("/stats"), Operation::Other);
+    }
+
+    // -- tenant_id tests --
+
+    /// First 16 hex digits of SHA-256("tenant-abc").
+    const TENANT_ABC_ID: &str = "f9b2fe86c1fed94a";
+
+    fn id_of(authorization: &str) -> String {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::AUTHORIZATION, authorization.parse().unwrap());
+        tenant_id(&headers)
+    }
+
+    #[test]
+    fn test_tenant_id_is_the_fingerprint_of_the_key() {
+        assert_eq!(id_of("Bearer tenant-abc"), TENANT_ABC_ID);
+        assert_ne!(id_of("Bearer tenant-abd"), TENANT_ABC_ID);
+    }
+
+    #[test]
+    fn test_tenant_id_ignores_the_case_of_the_scheme() {
+        assert_eq!(id_of("bearer tenant-abc"), TENANT_ABC_ID);
+        assert_eq!(id_of("BEARER tenant-abc"), TENANT_ABC_ID);
+        // The key itself is case-sensitive.
+        assert_ne!(id_of("Bearer TENANT-ABC"), TENANT_ABC_ID);
+    }
+
+    #[test]
+    fn test_tenant_id_without_the_bearer_scheme_hashes_the_whole_value() {
+        assert_eq!(id_of("tenant-abc"), TENANT_ABC_ID);
+
+        let basic = id_of("Basic dXNlcjpwYXNz");
+        assert_eq!(basic.len(), 16);
+        assert_ne!(basic, id_of("Basic dXNlcjpwYXNx"));
+    }
+
+    #[test]
+    fn test_tenant_id_anonymous_without_a_key() {
+        assert_eq!(tenant_id(&HeaderMap::new()), "anonymous");
+        assert_eq!(id_of(""), "anonymous");
+        assert_eq!(id_of("Bearer "), "anonymous");
+    }
+
+    /// A header sent with no key: the forms in which hyper hands it over from
+    /// HTTP/1 (the whitespace at the end is gone), and untrimmed forms that
+    /// code in the same process can build.
+    #[test]
+    fn test_tenant_id_anonymous_for_a_bare_scheme_as_it_arrives_over_http1() {
+        for value in ["Bearer", "bearer", "BEARER", "Bearer \t ", "  bearer  "] {
+            assert_eq!(id_of(value), "anonymous", "{value:?}");
+        }
+    }
+
+    #[test]
+    fn test_tenant_id_anonymous_for_a_value_that_is_not_visible_ascii() {
+        // HeaderValue accepts obs-text, but it is not a str, so there is no
+        // key: neither as a lone Latin-1 byte nor as valid UTF-8.
+        for bytes in [&b"Bearer caf\xe9"[..], &b"Bearer caf\xc3\xa9"[..]] {
+            let mut headers = HeaderMap::new();
+            let value = axum::http::HeaderValue::from_bytes(bytes).unwrap();
+            headers.insert(header::AUTHORIZATION, value);
+            assert_eq!(tenant_id(&headers), "anonymous", "{bytes:?}");
+        }
+    }
+
+    #[test]
+    fn test_tenant_id_trims_the_key() {
+        // "Bearer   tenant-abc  " arrives over HTTP/1 as "Bearer   tenant-abc".
+        for value in [
+            "Bearer   tenant-abc",
+            "Bearer   tenant-abc  ",
+            "bearer\ttenant-abc",
+            "  Bearer tenant-abc",
+            "  tenant-abc  ",
+        ] {
+            assert_eq!(id_of(value), TENANT_ABC_ID, "{value:?}");
+        }
+    }
+
+    #[test]
+    fn test_tenant_id_needs_whitespace_after_the_scheme() {
+        // Not the scheme: the whole value is the key.
+        assert_eq!(id_of("Bearertenant-abc"), id_of("Bearertenant-abc  "));
+        assert_ne!(id_of("Bearertenant-abc"), TENANT_ABC_ID);
+        assert_ne!(id_of("Bearertenant-abc"), "anonymous");
     }
 
     // -- MeteringStore tests --
@@ -605,7 +733,7 @@ mod tests {
         let today = current_date();
 
         // Check tenant-abc
-        let records = store.query(Some("Bearer tenant-abc"), None, None).await;
+        let records = store.query(Some(TENANT_ABC_ID), None, None).await;
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].date, today);
         assert_eq!(records[0].proofs_generated, 1);
