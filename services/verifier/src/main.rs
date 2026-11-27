@@ -132,22 +132,24 @@ async fn verify_proof(
 ///
 /// Clients can POST a gzip-compressed bundle with `Content-Type: application/octet-stream`
 /// or plain JSON with `Content-Type: application/json`. The handler auto-detects format.
+/// A gzip body that decompresses to more than
+/// [`zkml_verifier::bundle::MAX_DECOMPRESSED_BUNDLE_BYTES`] is rejected.
 async fn verify_proof_bytes(
     body: Bytes,
 ) -> Result<Json<VerifyResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let bundle = ProofBundle::from_bytes(&body)
-        .map_err(|e| err(StatusCode::BAD_REQUEST, format!("parse bundle: {e}")))?;
-
-    let result = tokio::task::spawn_blocking(move || verify(&bundle))
-        .await
-        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let result = tokio::task::spawn_blocking(move || {
+        let bundle = ProofBundle::from_bytes(&body).map_err(|e| format!("parse bundle: {e}"))?;
+        verify(&bundle).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     match result {
         Ok(r) => Ok(Json(VerifyResponse {
             verified: r.verified,
             circuit_hash: format!("0x{}", hex::encode(r.circuit_hash)),
         })),
-        Err(e) => Err(err(StatusCode::BAD_REQUEST, e.to_string())),
+        Err(e) => Err(err(StatusCode::BAD_REQUEST, e)),
     }
 }
 
@@ -554,7 +556,7 @@ fn err(code: StatusCode, msg: String) -> (StatusCode, Json<ErrorResponse>) {
 
 #[cfg(test)]
 fn build_app() -> Router {
-    build_app_with_config(ServiceConfig::from_vars(|_| None)).unwrap()
+    build_app_with_config(ServiceConfig::from_vars(|_| None).unwrap()).unwrap()
 }
 
 /// Build the router. Fails if a tenant file is configured and exists but
@@ -656,7 +658,10 @@ fn init_tracing() {
 async fn main() {
     init_tracing();
 
-    let config = ServiceConfig::from_env();
+    let config = ServiceConfig::from_env().unwrap_or_else(|e| {
+        tracing::error!("Configuration error: {e}");
+        std::process::exit(1);
+    });
     let _ = CIRCUIT_TTL.set(config.circuit_ttl_secs);
     let tls_config = tls::TlsConfig::from_env().unwrap_or_else(|e| {
         tracing::error!("TLS configuration error: {e}");
@@ -1029,6 +1034,95 @@ mod tests {
             status == 400 || status == 422,
             "expected 400 or 422, got {status}"
         );
+    }
+
+    // -- Raw body tests --
+
+    async fn post_raw(app: Router, body: Vec<u8>) -> (StatusCode, String) {
+        let req = Request::post("/verify/raw").body(Body::from(body)).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        (status, json["error"].as_str().unwrap().to_string())
+    }
+
+    #[tokio::test]
+    async fn test_verify_raw_reports_parse_and_verification_errors() {
+        let (status, error) = post_raw(build_app(), b"not json".to_vec()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            error.starts_with("parse bundle: bundle parse error: "),
+            "{error}"
+        );
+
+        let bundle = ProofBundle::from_json(
+            r#"{"proof_hex":"0xdead","gens_hex":"0x00","dag_circuit_description":{}}"#,
+        )
+        .unwrap();
+        for body in [
+            bundle.to_json_pretty().unwrap().into_bytes(),
+            bundle.to_compressed_json().unwrap(),
+        ] {
+            let (status, error) = post_raw(build_app(), body).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert_eq!(error, "invalid proof: proof too short");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_verify_raw_rejects_gzip_over_the_size_limit() {
+        let limit = zkml_verifier::bundle::MAX_DECOMPRESSED_BUNDLE_BYTES;
+        let bundle = ProofBundle {
+            proof_hex: "0".repeat(limit),
+            public_inputs_hex: String::new(),
+            gens_hex: String::new(),
+            dag_circuit_description: serde_json::json!({}),
+            model_hash: None,
+            timestamp: None,
+            prover_version: None,
+            circuit_hash: None,
+        };
+        let body = bundle.to_compressed_json().unwrap();
+        assert!(body.len() < 100_000, "compressed to {} bytes", body.len());
+
+        let (status, error) = post_raw(build_app(), body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            error,
+            format!(
+                "parse bundle: bundle parse error: gzip decompress: \
+                 decompressed bundle exceeds {limit} bytes"
+            )
+        );
+    }
+
+    /// The runtime's only blocking thread is held, so a request whose body is
+    /// parsed on that thread cannot finish until it is released.
+    #[test]
+    fn test_verify_raw_parses_on_the_blocking_pool() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let (release, held) = std::sync::mpsc::channel::<()>();
+            let holder = tokio::task::spawn_blocking(move || held.recv());
+
+            let request = tokio::spawn(post_raw(build_app(), b"not json".to_vec()));
+            for _ in 0..1000 {
+                tokio::task::yield_now().await;
+            }
+            let finished_early = request.is_finished();
+
+            release.send(()).unwrap();
+            holder.await.unwrap().unwrap();
+            let (status, _) = request.await.unwrap();
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert!(!finished_early, "the body was parsed on the async thread");
+        });
     }
 
     // -- Auth middleware tests --

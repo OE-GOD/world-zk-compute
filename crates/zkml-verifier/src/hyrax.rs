@@ -547,8 +547,12 @@ fn compute_rlc_tensor(
 
 /// Evaluate MLE of data at point: `MLE(x) = sum_w data[w] * eq(w, x)`
 /// Uses MSB-first convention: `point[0]` is the MSB of the data index.
+///
+/// The point length comes from the circuit description. It must be smaller than
+/// the word size, because the data index is taken apart by shifts of up to `n`.
 pub fn evaluate_mle_from_data(data: &[U256], point: &[U256]) -> U256 {
     let n = point.len();
+    assert!(n < usize::BITS as usize, "public input point too long");
     assert!(data.len() <= (1 << n), "data too large");
 
     let mut result = Fr::ZERO;
@@ -758,6 +762,22 @@ mod tests {
             &mut sponge,
             &mut empty_outputs(),
         );
+    }
+
+    #[test]
+    fn test_mle_point_one_below_word_size() {
+        // All coordinates are 0, so the value is the first entry of the data.
+        let data = [U256::from_u64(7), U256::from_u64(9)];
+        let point = vec![U256::ZERO; usize::BITS as usize - 1];
+        assert_eq!(evaluate_mle_from_data(&data, &point), data[0]);
+    }
+
+    #[test]
+    #[should_panic(expected = "public input point too long")]
+    fn test_mle_point_of_word_size_rejected() {
+        let data = [U256::from_u64(7)];
+        let point = vec![U256::ZERO; usize::BITS as usize];
+        evaluate_mle_from_data(&data, &point);
     }
 
     /// More claims than eval proofs is rejected up front (before sorting).

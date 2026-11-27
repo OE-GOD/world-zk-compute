@@ -12,8 +12,13 @@
 //!
 //! When `VERIFIER_TLS_CLIENT_CA` is set, the server requires client certificates
 //! signed by the specified CA (mutual TLS).
+//!
+//! An empty variable counts as not set. Setting `VERIFIER_TLS_CERT` without
+//! `VERIFIER_TLS_KEY`, or either of the other two without `VERIFIER_TLS_CERT`,
+//! stops start-up.
 
 use axum_server::tls_rustls::RustlsConfig;
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 /// TLS configuration parsed from environment variables.
@@ -30,26 +35,42 @@ pub struct TlsConfig {
 impl TlsConfig {
     /// Load TLS configuration from environment variables.
     ///
-    /// Returns `Ok(None)` if `VERIFIER_TLS_CERT` is not set (TLS disabled).
-    /// Returns `Err` if cert path is set but key path is missing.
+    /// Returns `Ok(None)` if none of the variables is set (TLS disabled).
+    /// Returns `Err` if cert path is set but key path is missing, or if key path
+    /// or client CA path is set but cert path is missing.
     pub fn from_env() -> Result<Option<Self>, String> {
         Self::from_vars(
-            std::env::var("VERIFIER_TLS_CERT").ok(),
-            std::env::var("VERIFIER_TLS_KEY").ok(),
-            std::env::var("VERIFIER_TLS_CLIENT_CA").ok(),
+            std::env::var_os("VERIFIER_TLS_CERT"),
+            std::env::var_os("VERIFIER_TLS_KEY"),
+            std::env::var_os("VERIFIER_TLS_CLIENT_CA"),
         )
     }
 
     /// Build the TLS configuration from the values of `VERIFIER_TLS_CERT`,
     /// `VERIFIER_TLS_KEY` and `VERIFIER_TLS_CLIENT_CA` (`None` = not set).
     fn from_vars(
-        cert: Option<String>,
-        key: Option<String>,
-        client_ca: Option<String>,
+        cert: Option<OsString>,
+        key: Option<OsString>,
+        client_ca: Option<OsString>,
     ) -> Result<Option<Self>, String> {
+        let is_set = |v: &Option<OsString>| v.as_ref().is_some_and(|p| !p.is_empty());
+
         let cert_path = match cert {
             Some(p) if !p.is_empty() => PathBuf::from(p),
-            _ => return Ok(None),
+            _ => {
+                return match (is_set(&key), is_set(&client_ca)) {
+                    (false, false) => Ok(None),
+                    (true, false) => {
+                        Err("VERIFIER_TLS_KEY is set but VERIFIER_TLS_CERT is missing".into())
+                    }
+                    (false, true) => {
+                        Err("VERIFIER_TLS_CLIENT_CA is set but VERIFIER_TLS_CERT is missing".into())
+                    }
+                    (true, true) => Err("VERIFIER_TLS_KEY and VERIFIER_TLS_CLIENT_CA are set \
+                         but VERIFIER_TLS_CERT is missing"
+                        .into()),
+                }
+            }
         };
 
         let key_path = key.map(PathBuf::from).ok_or_else(|| {
@@ -195,8 +216,43 @@ mod tests {
 
     #[test]
     fn test_empty_cert_path_means_disabled() {
-        let config = TlsConfig::from_vars(Some(String::new()), None, None).unwrap();
+        let config = TlsConfig::from_vars(Some("".into()), None, None).unwrap();
         assert!(config.is_none());
+        let config =
+            TlsConfig::from_vars(Some("".into()), Some("".into()), Some("".into())).unwrap();
+        assert!(config.is_none());
+    }
+
+    #[test]
+    fn test_key_or_client_ca_without_cert_is_an_error() {
+        let error = |cert: Option<&str>, key: Option<&str>, ca: Option<&str>| {
+            TlsConfig::from_vars(
+                cert.map(Into::into),
+                key.map(Into::into),
+                ca.map(Into::into),
+            )
+            .expect_err("a half-set TLS configuration must not start plain HTTP")
+        };
+        // The cert is either not set at all or set to an empty string.
+        for cert in [None, Some("")] {
+            assert_eq!(
+                error(cert, Some("/certs/server-key.pem"), None),
+                "VERIFIER_TLS_KEY is set but VERIFIER_TLS_CERT is missing"
+            );
+            assert_eq!(
+                error(cert, None, Some("/certs/ca.pem")),
+                "VERIFIER_TLS_CLIENT_CA is set but VERIFIER_TLS_CERT is missing"
+            );
+            assert_eq!(
+                error(cert, Some(""), Some("/certs/ca.pem")),
+                "VERIFIER_TLS_CLIENT_CA is set but VERIFIER_TLS_CERT is missing"
+            );
+            assert_eq!(
+                error(cert, Some("/certs/server-key.pem"), Some("/certs/ca.pem")),
+                "VERIFIER_TLS_KEY and VERIFIER_TLS_CLIENT_CA are set \
+                 but VERIFIER_TLS_CERT is missing"
+            );
+        }
     }
 
     #[test]
@@ -204,7 +260,7 @@ mod tests {
         let config = TlsConfig::from_vars(
             Some("/certs/server.pem".into()),
             Some("/certs/server-key.pem".into()),
-            Some(String::new()),
+            Some("".into()),
         )
         .unwrap()
         .unwrap();

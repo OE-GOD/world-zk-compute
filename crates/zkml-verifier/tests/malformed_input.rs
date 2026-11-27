@@ -356,6 +356,53 @@ fn point_template_end_past_the_data_is_an_error() {
     assert_point_template_rejected(&f, desc, "end 8 past the data");
 }
 
+/// The fixture's circuit description with the point template of `atom` padded
+/// to `len` entries.
+fn with_long_point_template(f: &serde_json::Value, atom: usize, len: u64) -> serde_json::Value {
+    const FIXED_ZERO: u64 = 20000;
+    let mut desc = f["dag_circuit_description"].clone();
+    let end = pt_offset(f, atom + 1);
+    let extra = len - (end - pt_offset(f, atom));
+    let data = desc["ptData"].as_array_mut().unwrap();
+    for _ in 0..extra {
+        data.insert(end as usize, serde_json::json!(FIXED_ZERO));
+    }
+    for offset in &mut desc["ptOffsets"].as_array_mut().unwrap()[atom + 1..] {
+        *offset = serde_json::json!(offset.as_u64().unwrap() + extra);
+    }
+    desc
+}
+
+// The first atom that feeds the public input layer of the fixture.
+const FIRST_PUBLIC_INPUT_ATOM: usize = 29;
+
+#[test]
+fn public_input_point_template_of_word_size_is_an_error() {
+    let f = fixture();
+    let desc = &f["dag_circuit_description"];
+    assert_eq!(
+        desc["atomTargetLayers"][FIRST_PUBLIC_INPUT_ATOM],
+        desc["numComputeLayers"].as_u64().unwrap() + 1
+    );
+    assert_eq!(desc["inputIsCommitted"], serde_json::json!([true, false]));
+
+    for len in [64, 65, 100] {
+        let desc = with_long_point_template(&f, FIRST_PUBLIC_INPUT_ATOM, len);
+        let b = bundle(
+            &hex_field(&f, "proof_hex"),
+            &hex_field(&f, "gens_hex"),
+            desc,
+        );
+        let err = verify_hybrid(&b).expect_err("long public input point template");
+        assert!(matches!(err, VerifyError::VerificationFailed(_)), "{err}");
+        assert_eq!(
+            err.to_string(),
+            "verification failed: public input point too long",
+            "{len} entries"
+        );
+    }
+}
+
 #[test]
 fn truncated_and_random_inputs_are_an_error() {
     let f = fixture();

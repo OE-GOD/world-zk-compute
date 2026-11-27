@@ -43,9 +43,17 @@ info:
     | `PORT` | `3000` | Server listen port |
     | `VERIFIER_API_KEYS` | _(empty)_ | Comma-separated API keys; empty = open access |
     | `RATE_LIMIT_RPM` | `100` | Requests per minute per client |
-    | `TLS_CERT_PATH` | _(unset)_ | PEM certificate for TLS; unset = plain HTTP |
-    | `TLS_KEY_PATH` | _(unset)_ | PEM private key for TLS |
-    | `TLS_CA_PATH` | _(unset)_ | CA cert for mutual TLS client verification |
+    | `VERIFIER_TLS_CERT` | _(unset)_ | PEM certificate for TLS; unset = plain HTTP |
+    | `VERIFIER_TLS_KEY` | _(unset)_ | PEM private key for TLS |
+    | `VERIFIER_TLS_CLIENT_CA` | _(unset)_ | CA cert for mutual TLS client verification |
+
+    An unset or empty variable keeps the default. The service does not start when
+    `PORT`, `RATE_LIMIT_RPM` or `CIRCUIT_TTL_SECS` is set to a value that does not
+    parse, when `VERIFIER_API_KEYS` is non-empty but holds no key, when
+    `VERIFIER_API_KEYS`, `VERIFIER_ADMIN_KEY` or `VERIFIER_TENANT_FILE` is not
+    valid UTF-8, when `VERIFIER_TLS_CERT` is set without `VERIFIER_TLS_KEY`, or
+    when `VERIFIER_TLS_KEY` or `VERIFIER_TLS_CLIENT_CA` is set without
+    `VERIFIER_TLS_CERT`.
   version: 0.1.0
   license:
     name: Apache-2.0
