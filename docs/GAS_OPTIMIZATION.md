@@ -164,7 +164,7 @@ Savings: ~100-2,100 gas per function call depending on warm/cold state.
 |--------------------------|---------------------|----------------------|-------------|
 | Gas per inference        | ~304K               | ~198M (single-tx)    | 1:653       |
 | Cost @ 0.1 gwei (Arb)   | $0.076              | $49.56               | 1:653       |
-| Cost @ 30 gwei (L1)     | $22.78              | $14,868.72           | 1:653       |
+| Cost @ 30 gwei (L1)     | $22.78              | $14,869.45           | 1:653       |
 | Transactions needed      | 2 (submit+finalize) | 1 or 15 (batched, plus an optional cleanup) | --          |
 | Latency                  | 1 hour (window)     | ~7 min prove + 15 tx | --          |
 
@@ -172,8 +172,8 @@ Savings: ~100-2,100 gas per function call depending on warm/cold state.
 At 0.1% dispute rate: ~502K gas ($0.13 at 0.1 gwei).
 
 The ZK figure is `eth_estimateGas` for `verifyDAGProof` on the phase1a fixture, on a local Anvil chain
-(198,249,628). The "Arb" and "L1" rows for the ZK path are price conversions only: `RemainderVerifier`
-(135,888 bytes) is over the 24,576-byte contract size limit of Ethereum, Arbitrum and World Chain and
+(198,259,338). The "Arb" and "L1" rows for the ZK path are price conversions only: `RemainderVerifier`
+(136,142 bytes) is over the 24,576-byte contract size limit of Ethereum, Arbitrum and World Chain and
 cannot be deployed there. In batched mode the largest of the 15 transactions uses 31.7M gas.
 
 The TEE path is designed so ZK is only triggered during disputes. At dispute rates below

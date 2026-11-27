@@ -505,7 +505,8 @@ mod tests {
     /// outer estimate is spent outside the inner call.
     #[test]
     fn dispute_gas_limit_leaves_verification_gas_for_inner_call() {
-        // Measured on Anvil for the phase1a fixture.
+        // Measured on Anvil for the phase1a fixture with an earlier build of the
+        // verifier; the test needs realistic values, not current ones.
         let outer_estimate = 195_975_931u64;
         let verification_gas = 198_249_628u64;
         let limit = dispute_gas_limit(outer_estimate, verification_gas);

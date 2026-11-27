@@ -8,13 +8,13 @@ EIP-170 limits deployed contract bytecode to **24,576 bytes (24 KB)**. Several c
 
 | Contract | Source Size | Status |
 |----------|-----------|--------|
-| `RemainderVerifier.sol` | ~2,784 lines (~125 KB source) | Exceeds limit (135,888 bytes runtime) |
+| `RemainderVerifier.sol` | ~2,809 lines (~126 KB source) | Exceeds limit (136,142 bytes runtime) |
 | `PoseidonSponge.sol` | ~2,569 lines (~119 KB source) | Internal library, compiled into `RemainderVerifier` |
 | `DAGRemainderGroth16Verifier.sol` | ~31,261 lines (~2 MB source) | Exceeds limit (461,497 bytes runtime) |
-| `GKRDAGVerifier.sol` | ~905 lines (~39 KB source) | Internal library, compiled into `RemainderVerifier` |
-| `GKRDAGHybridVerifier.sol` | ~1,181 lines (~49 KB source) | Internal library, compiled into `RemainderVerifier` |
+| `GKRDAGVerifier.sol` | ~928 lines (~40 KB source) | Internal library, compiled into `RemainderVerifier` |
+| `GKRDAGHybridVerifier.sol` | ~1,104 lines (~46 KB source) | Internal library, compiled into `RemainderVerifier` |
 | `RemainderGroth16Verifier.sol` | ~1,219 lines (~68 KB source) | Under limit (14,714 bytes runtime) |
-| `GKRHybridVerifier.sol` | ~647 lines (~29 KB source) | Internal library, compiled into `RemainderVerifier` |
+| `GKRHybridVerifier.sol` | ~648 lines (~29 KB source) | Internal library, compiled into `RemainderVerifier` |
 | `GKRVerifier.sol` | ~584 lines (~26 KB source) | Internal library, compiled into `RemainderVerifier` |
 
 Contracts under the limit:
@@ -39,7 +39,7 @@ Core verification logic is implemented as Solidity libraries (`library` keyword)
 - `SumcheckVerifier` — Sumcheck protocol
 - `DAGBatchVerifier` — Multi-tx batch state management
 
-The libraries are not deployed separately: the `RemainderVerifier` artifact has no link references, and no deploy script passes `--libraries`. They are part of its 135,888 bytes of runtime bytecode and do not reduce its deployed size.
+The libraries are not deployed separately: the `RemainderVerifier` artifact has no link references, and no deploy script passes `--libraries`. They are part of its 136,142 bytes of runtime bytecode and do not reduce its deployed size.
 
 ### 2. Multi-Transaction Batch Verification (DAGBatchVerifier)
 
@@ -59,7 +59,7 @@ A complete GKR DAG verifier is implemented in Rust/WASM for Arbitrum Stylus:
 - **Size**: ~60 KB raw WASM → ~22.8 KB Brotli after `wasm-opt` (under 24 KB Stylus limit)
 - **Integration**: `RemainderVerifier.verifyDAGProofStylus()` delegates to the WASM contract via `staticcall`
 
-This avoids EIP-170 for the WASM contract, by running verification in WASM rather than EVM bytecode. The Solidity entry point is still `RemainderVerifier` (135,888 bytes), which Arbitrum One and Arbitrum Sepolia reject: both enforce the 24,576-byte limit.
+This avoids EIP-170 for the WASM contract, by running verification in WASM rather than EVM bytecode. The Solidity entry point is still `RemainderVerifier` (136,142 bytes), which Arbitrum One and Arbitrum Sepolia reject: both enforce the 24,576-byte limit.
 
 ### 4. Function Splitting (Stack-Depth Management)
 
@@ -98,7 +98,7 @@ For on-chain ZK verification, options include:
 ### Recommended Approach
 
 For **Arbitrum/World Chain** (Stylus-capable):
-- Deploy `RemainderVerifier` as a thin registry/dispatcher (under EIP-170; the current contract is 135,888 bytes and would have to be split first)
+- Deploy `RemainderVerifier` as a thin registry/dispatcher (under EIP-170; the current contract is 136,142 bytes and would have to be split first)
 - Use Stylus WASM verifier for actual GKR verification
 - Use `DAGBatchVerifier` for multi-tx flow
 
@@ -115,7 +115,7 @@ For **other EVM chains**:
 cd contracts && bash ../scripts/check-contract-sizes.sh
 ```
 
-The script reports `RemainderVerifier` (135,888 bytes, 552% of the limit) as `FAIL`, warns that a contract over the limit cannot be deployed on a chain that enforces it, and exits with status 1.
+The script reports `RemainderVerifier` (136,142 bytes, about 554% of the limit; the script rounds down and prints 553%) as `FAIL`, warns that a contract over the limit cannot be deployed on a chain that enforces it, and exits with status 1.
 
 ## Contract Upgrade Strategy
 

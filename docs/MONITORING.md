@@ -227,7 +227,7 @@ These are the most important metrics for day-to-day operations:
 
 4. **`up{job="worldzk-operator"}`** -- Basic availability. If 0, the operator process is down.
 
-5. **`operator_stylus_disputes_resolved` vs `operator_solidity_disputes_resolved`** -- Indicates which on-chain verifier is being used. Stylus disputes cost ~3-6M gas; a Solidity dispute verified in one transaction is estimated at about 198M gas (`eth_estimateGas` for the test fixture on Anvil: 198,249,628).
+5. **`operator_stylus_disputes_resolved` vs `operator_solidity_disputes_resolved`** -- Indicates which on-chain verifier is being used. Stylus disputes cost ~3-6M gas; a Solidity dispute verified in one transaction is estimated at about 198M gas (`eth_estimateGas` for the test fixture on Anvil: 198,259,338).
 
 ## Alerting Rules
 

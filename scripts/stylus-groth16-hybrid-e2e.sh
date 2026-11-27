@@ -7,9 +7,10 @@ set -euo pipefail
 #
 # Full end-to-end test of the hybrid verification pipeline on Arbitrum
 # nitro-devnode:
-#   1. Stylus WASM verifier (transcript replay + Fr arithmetic, ~2-5M gas)
-#   2. Groth16 proof (EC arithmetic verification, ~230K pairing)
-#   3. Combined verification via HybridStylusGroth16Verifier (~3-6M total)
+#   1. Stylus WASM verifier (transcript replay + Fr arithmetic)
+#   2. Groth16 proof (EC arithmetic verification; its pairing check is
+#      estimated at ~230K gas, not measured here)
+#   3. Combined verification via HybridStylusGroth16Verifier
 #
 # Prerequisites:
 #   - Docker running
@@ -63,7 +64,7 @@ echo "============================================="
 echo "  Stylus + Groth16 Hybrid E2E Test"
 echo "============================================="
 echo ""
-echo "  Target: Single-tx hybrid verification (~3-6M gas)"
+echo "  Target: single-tx hybrid verification"
 echo "  Pipeline: Stylus WASM (Fr) → Groth16 (EC) → On-chain"
 echo ""
 
@@ -358,8 +359,8 @@ echo "  Stylus contract:    $CONTRACT_ADDRESS"
 echo ""
 
 # Known baseline values
-KNOWN_SOLIDITY_GAS=254000000  # ~254M (88-layer XGBoost, pure Solidity)
-KNOWN_STYLUS_GAS=207000000    # ~207M (88-layer XGBoost, Stylus full)
+KNOWN_SOLIDITY_GAS=198000000  # ~198M (88-layer XGBoost, pure Solidity, 1 tx, measured on Anvil)
+KNOWN_STYLUS_GAS=207000000    # ~207M (88-layer XGBoost, Stylus full; not measured in this repo)
 
 if [ -n "$HYBRID_GAS" ]; then
     HYBRID_M=$(echo "scale=1; $HYBRID_GAS / 1000000" | bc)
@@ -372,31 +373,27 @@ if [ -n "$STYLUS_GAS" ]; then
     STYLUS_M=$(echo "scale=1; $STYLUS_GAS / 1000000" | bc)
     echo "  Stylus (full) gas:  $STYLUS_GAS (${STYLUS_M}M)"
 else
-    echo "  Stylus (full) gas:  ~207M (baseline)"
+    echo "  Stylus (full) gas:  ~207M (baseline, not measured in this repo)"
 fi
 
 if [ -n "$SOLIDITY_GAS" ]; then
     SOLIDITY_M=$(echo "scale=1; $SOLIDITY_GAS / 1000000" | bc)
     echo "  Solidity gas:       $SOLIDITY_GAS (${SOLIDITY_M}M)"
 else
-    echo "  Solidity gas:       ~254M (baseline)"
+    echo "  Solidity gas:       ~198M (baseline)"
 fi
 
 echo ""
 echo "  --- Reference ---"
-echo "  Solidity (direct):  ~254M gas (15 transactions, batch verifier)"
-echo "  Stylus (full):      ~207M gas (1 transaction, but exceeds 30M limit)"
-echo "  Hybrid (target):    ~3-6M gas (1 transaction, within 30M limit)"
-echo "    - Stylus WASM:    ~2-5M (transcript replay + Fr arithmetic)"
-echo "    - Groth16:        ~230K (pairing verification)"
-echo "    - Overhead:       ~50K (calldata + orchestration)"
+echo "  Solidity (direct):  ~198M gas in 1 tx, or ~336M gas in 16 batch txs"
+echo "  Stylus (full):      ~207M gas (not measured in this repo; 1 transaction, over 30M)"
+echo "  Hybrid:             1 transaction; its gas is shown above when the hybrid step ran"
+echo "    - Groth16:        ~230K (estimate, not measured; grows with the public-input count)"
 
 if [ -n "$HYBRID_GAS" ]; then
     echo ""
-    # Check if within target
-    if [ "$HYBRID_GAS" -le 6000000 ]; then
-        echo "  >>> HYBRID GAS WITHIN TARGET (<=6M) <<<"
-    elif [ "$HYBRID_GAS" -le 30000000 ]; then
+    # Check against 30M gas (Ethereum L1's block gas limit)
+    if [ "$HYBRID_GAS" -le 30000000 ]; then
         echo "  >>> HYBRID GAS WITHIN BLOCK LIMIT (<=30M) <<<"
     else
         echo "  >>> WARNING: HYBRID GAS EXCEEDS BLOCK LIMIT (>30M) <<<"
@@ -417,6 +414,12 @@ echo ""
 
 if echo "$FORGE_OUTPUT" | grep -q "HYBRID E2E PASSED"; then
     echo "=== STYLUS + GROTH16 HYBRID E2E PASSED ==="
+elif echo "$FORGE_OUTPUT" | grep -q "HYBRID E2E SKIPPED"; then
+    # The forge script runs the hybrid step only when EC_GROTH16_VERIFIER names
+    # a deployed EC Groth16 verifier and EC_GROTH16_PROOF_FILE exists; this
+    # script does not deploy such a verifier.
+    echo "=== STYLUS + GROTH16 HYBRID E2E SKIPPED: the hybrid step did not run ==="
+    exit 1
 else
     echo "=== STYLUS + GROTH16 HYBRID E2E FAILED ==="
     exit 1

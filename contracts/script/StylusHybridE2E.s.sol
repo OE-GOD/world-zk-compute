@@ -11,7 +11,9 @@ import "../src/remainder/GKRDAGVerifier.sol";
 ///         and run hybrid verification comparing gas costs across all three paths:
 ///         1. Pure Solidity (direct GKR)
 ///         2. Stylus WASM (full, with EC)
-///         3. Hybrid Stylus+Groth16 (Fr only + pairing, target 3-6M gas)
+///         3. Hybrid Stylus+Groth16 (Fr arithmetic on Stylus, EC checks in one Groth16 proof)
+///      The run prints "HYBRID E2E PASSED" only when the hybrid path ran and returned true. Without
+///      EC_GROTH16_VERIFIER or EC_GROTH16_PROOF_FILE it skips that path and says so instead.
 /// @dev Usage:
 ///   DEPLOYER_KEY=0x... STYLUS_VERIFIER=0x... \
 ///     forge script script/StylusHybridE2E.s.sol:StylusHybridE2E \
@@ -26,39 +28,56 @@ contract StylusHybridE2E is Script {
         bytes32 gensHash;
     }
 
+    /// @notice Settings that run() reads from the environment
+    struct Config {
+        uint256 deployerKey;
+        address stylusVerifier;
+        // EC Groth16 verifier and proof file are optional: without either, the hybrid step is
+        // skipped and the run does not report PASSED
+        address ecGroth16Verifier;
+        uint256 ecGroth16InputCount;
+        string ecGroth16ProofFile;
+    }
+
     function run() external {
-        uint256 deployerKey = vm.envUint("DEPLOYER_KEY");
-        address stylusVerifierAddr = vm.envAddress("STYLUS_VERIFIER");
+        Config memory cfg;
+        cfg.deployerKey = vm.envUint("DEPLOYER_KEY");
+        cfg.stylusVerifier = vm.envAddress("STYLUS_VERIFIER");
+        cfg.ecGroth16Verifier = vm.envOr("EC_GROTH16_VERIFIER", address(0));
+        cfg.ecGroth16InputCount = vm.envOr("EC_GROTH16_INPUT_COUNT", uint256(3));
+        cfg.ecGroth16ProofFile = vm.envOr("EC_GROTH16_PROOF_FILE", string(""));
+        runWith(cfg);
+    }
 
-        // EC Groth16 verifier is optional -- if not provided, hybrid step is skipped
-        address ecGroth16Verifier = vm.envOr("EC_GROTH16_VERIFIER", address(0));
-        uint256 ecGroth16InputCount = vm.envOr("EC_GROTH16_INPUT_COUNT", uint256(3));
-
+    /// @notice The whole run with explicit settings. Tests call it directly, so they do not set
+    ///         process-wide environment variables that tests running in parallel would also read.
+    /// @return hybridRan True when the hybrid step ran (it reverts unless the hybrid path returned true)
+    function runWith(Config memory cfg) public returns (bool hybridRan) {
         Fixture memory fix = _loadFixture();
 
         console.log("=== Stylus + Groth16 Hybrid E2E ===");
         console.log("  Proof size:", fix.proofHex.length, "bytes");
-        console.log("  Stylus verifier:", stylusVerifierAddr);
-        if (ecGroth16Verifier != address(0)) {
-            console.log("  EC Groth16 verifier:", ecGroth16Verifier);
-            console.log("  EC Groth16 input count:", ecGroth16InputCount);
+        console.log("  Stylus verifier:", cfg.stylusVerifier);
+        if (cfg.ecGroth16Verifier != address(0)) {
+            console.log("  EC Groth16 verifier:", cfg.ecGroth16Verifier);
+            console.log("  EC Groth16 input count:", cfg.ecGroth16InputCount);
         } else {
             console.log("  EC Groth16 verifier: not configured (hybrid test skipped)");
         }
 
         // Phase 1: Deploy + register + configure
-        vm.startBroadcast(deployerKey);
-        RemainderVerifier verifier = _deployRemainder(vm.addr(deployerKey));
+        vm.startBroadcast(cfg.deployerKey);
+        RemainderVerifier verifier = _deployRemainder(vm.addr(cfg.deployerKey));
         console.log("RemainderVerifier deployed at:", address(verifier));
 
         verifier.registerDAGCircuit(fix.circuitHash, fix.descData, "XGBoost-Phase1a", fix.gensHash);
         console.log("DAG circuit registered");
 
-        verifier.setDAGStylusVerifier(fix.circuitHash, stylusVerifierAddr);
+        verifier.setDAGStylusVerifier(fix.circuitHash, cfg.stylusVerifier);
         console.log("Stylus verifier set");
 
-        if (ecGroth16Verifier != address(0)) {
-            verifier.setDAGECGroth16Verifier(fix.circuitHash, ecGroth16Verifier, ecGroth16InputCount);
+        if (cfg.ecGroth16Verifier != address(0)) {
+            verifier.setDAGECGroth16Verifier(fix.circuitHash, cfg.ecGroth16Verifier, cfg.ecGroth16InputCount);
             console.log("EC Groth16 verifier set");
         }
         vm.stopBroadcast();
@@ -66,7 +85,7 @@ contract StylusHybridE2E is Script {
         // Phase 2: Test Stylus full verification path
         console.log("");
         console.log("=== Stylus Full Verification ===");
-        vm.startBroadcast(deployerKey);
+        vm.startBroadcast(cfg.deployerKey);
         uint256 gasBefore = gasleft();
         bool stylusValid =
             verifier.verifyDAGProofStylus(fix.proofHex, fix.circuitHash, fix.publicInputsHex, fix.gensHex);
@@ -79,7 +98,7 @@ contract StylusHybridE2E is Script {
         // Phase 3: Test Solidity verification path
         console.log("");
         console.log("=== Solidity Verification ===");
-        vm.startBroadcast(deployerKey);
+        vm.startBroadcast(cfg.deployerKey);
         gasBefore = gasleft();
         bool solidityValid = verifier.verifyDAGProof(fix.proofHex, fix.circuitHash, fix.publicInputsHex, fix.gensHex);
         uint256 solidityGas = gasBefore - gasleft();
@@ -88,49 +107,58 @@ contract StylusHybridE2E is Script {
         console.log("  Solidity path gas:", solidityGas);
         require(solidityValid, "Solidity verification failed");
 
-        // Phase 4: Test Hybrid Stylus+Groth16 path (if EC verifier configured)
-        if (ecGroth16Verifier != address(0)) {
+        // Phase 4: Test Hybrid Stylus+Groth16 path. It runs only with an EC verifier and a proof
+        // file; once it runs it must return true, so a false result fails the run instead of
+        // being logged as a warning. The EC verifier is checked first: foundry.toml lets scripts
+        // read only test/fixtures, and vm.isFile reverts on any other path, so a run without an EC
+        // verifier must not look at the proof file.
+        string memory proofFile = cfg.ecGroth16ProofFile;
+        bool haveProofFile = cfg.ecGroth16Verifier != address(0) && bytes(proofFile).length > 0 && vm.isFile(proofFile);
+        if (!haveProofFile) {
             console.log("");
-            console.log("=== Hybrid Stylus+Groth16 Verification ===");
-
-            // Load the EC Groth16 proof from env or use zeros for pipeline test
-            uint256[8] memory ecProof;
-            string memory proofFile = vm.envOr("EC_GROTH16_PROOF_FILE", string(""));
-            if (bytes(proofFile).length > 0 && vm.isFile(proofFile)) {
-                string memory proofJson = vm.readFile(proofFile);
-                uint256[] memory proofArr = vm.parseJsonUintArray(proofJson, ".proof");
-                require(proofArr.length == 8, "EC Groth16 proof must have 8 elements");
-                for (uint256 i = 0; i < 8; i++) {
-                    ecProof[i] = proofArr[i];
-                }
-            }
-
-            vm.startBroadcast(deployerKey);
-            gasBefore = gasleft();
-            bool hybridValid = verifier.verifyDAGProofStylusGroth16(
-                fix.proofHex, fix.circuitHash, fix.publicInputsHex, fix.gensHex, ecProof
-            );
-            uint256 hybridGas = gasBefore - gasleft();
-            vm.stopBroadcast();
-
-            console.log("  Result:", hybridValid);
-            console.log("  Hybrid path gas:", hybridGas);
-
-            if (hybridValid) {
-                console.log("");
-                console.log("=== Gas Comparison ===");
-                console.log("  Solidity gas:", solidityGas);
-                console.log("  Stylus gas:", stylusGas);
-                console.log("  Hybrid gas:", hybridGas);
-                require(hybridValid, "Hybrid verification failed");
+            if (cfg.ecGroth16Verifier == address(0)) {
+                console.log("  Hybrid path skipped: EC_GROTH16_VERIFIER not set");
             } else {
-                console.log("  WARNING: Hybrid verification returned false");
-                console.log("  This may be expected if using mock EC Groth16 proof");
+                console.log("  Hybrid path skipped: EC_GROTH16_PROOF_FILE not given or missing");
             }
+            console.log("=== HYBRID E2E SKIPPED (Stylus and Solidity paths only; hybrid not checked) ===");
+            return false;
         }
 
         console.log("");
+        console.log("=== Hybrid Stylus+Groth16 Verification ===");
+
+        uint256[8] memory ecProof;
+        {
+            string memory proofJson = vm.readFile(proofFile);
+            uint256[] memory proofArr = vm.parseJsonUintArray(proofJson, ".proof");
+            require(proofArr.length == 8, "EC Groth16 proof must have 8 elements");
+            for (uint256 i = 0; i < 8; i++) {
+                ecProof[i] = proofArr[i];
+            }
+        }
+
+        vm.startBroadcast(cfg.deployerKey);
+        gasBefore = gasleft();
+        bool hybridValid = verifier.verifyDAGProofStylusGroth16(
+            fix.proofHex, fix.circuitHash, fix.publicInputsHex, fix.gensHex, ecProof
+        );
+        uint256 hybridGas = gasBefore - gasleft();
+        vm.stopBroadcast();
+
+        console.log("  Result:", hybridValid);
+        console.log("  Hybrid path gas:", hybridGas);
+        require(hybridValid, "Hybrid verification failed");
+
+        console.log("");
+        console.log("=== Gas Comparison ===");
+        console.log("  Solidity gas:", solidityGas);
+        console.log("  Stylus gas:", stylusGas);
+        console.log("  Hybrid gas:", hybridGas);
+
+        console.log("");
         console.log("=== HYBRID E2E PASSED ===");
+        return true;
     }
 
     function _loadFixture() private view returns (Fixture memory fix) {

@@ -25,13 +25,13 @@
 //!
 //! | Phase | Gas per transaction | Notes |
 //! |---|---|---|
-//! | Start | 8,620,625 | transcript setup + proof decode + storage writes, NO compute |
-//! | Continue (x11) | 18,615,168 to 31,687,354 | proof decode + 8 layers + storage read/write |
-//! | Finalize (x3) | 14,705,085 to 27,699,046 | proof decode + eval groups + bindings reconstruction |
+//! | Start | 8,624,888 | transcript setup + proof decode + storage writes, NO compute |
+//! | Continue (x11) | 18,616,104 to 31,688,290 | proof decode + 8 layers + storage read/write |
+//! | Finalize (x3) | 14,705,157 to 27,699,118 | proof decode + eval groups + bindings reconstruction |
 //! | Cleanup | 1,804,043 | storage deletion |
 //!
 //! The largest continue step does not fit in a 30M block. Verifying the same proof
-//! in a single transaction is estimated at 198,249,628 gas (`eth_estimateGas`).
+//! in a single transaction is estimated at 198,259,338 gas (`eth_estimateGas`).
 //!
 //! # Example
 //!
@@ -69,25 +69,25 @@ pub const GROUPS_PER_FINALIZE_BATCH: u64 = 16;
 
 /// Gas used by `startDAGBatchVerify` -- lower bound (measured on Anvil for the
 /// phase1a fixture; there is one start transaction, so all three bounds are equal).
-pub const START_GAS_LOWER: u64 = 8_620_625;
+pub const START_GAS_LOWER: u64 = 8_624_888;
 /// Gas used by `startDAGBatchVerify` -- upper bound (measured).
-pub const START_GAS_UPPER: u64 = 8_620_625;
+pub const START_GAS_UPPER: u64 = 8_624_888;
 /// Typical gas for the start transaction (measured).
-pub const START_GAS_TYPICAL: u64 = 8_620_625;
+pub const START_GAS_TYPICAL: u64 = 8_624_888;
 
 /// Gas per `continueDAGBatchVerify` call -- smallest of the 11 measured steps.
-pub const CONTINUE_GAS_LOWER: u64 = 18_615_168;
+pub const CONTINUE_GAS_LOWER: u64 = 18_616_104;
 /// Gas per `continueDAGBatchVerify` call -- largest of the 11 measured steps.
-pub const CONTINUE_GAS_UPPER: u64 = 31_687_354;
+pub const CONTINUE_GAS_UPPER: u64 = 31_688_290;
 /// Typical gas for a continue transaction (average of the 11 measured steps).
-pub const CONTINUE_GAS_TYPICAL: u64 = 23_202_425;
+pub const CONTINUE_GAS_TYPICAL: u64 = 23_203_361;
 
 /// Gas per `finalizeDAGBatchVerify` call -- smallest of the 3 measured steps.
-pub const FINALIZE_GAS_LOWER: u64 = 14_705_085;
+pub const FINALIZE_GAS_LOWER: u64 = 14_705_157;
 /// Gas per `finalizeDAGBatchVerify` call -- largest of the 3 measured steps.
-pub const FINALIZE_GAS_UPPER: u64 = 27_699_046;
+pub const FINALIZE_GAS_UPPER: u64 = 27_699_118;
 /// Typical gas for a finalize transaction (average of the 3 measured steps).
-pub const FINALIZE_GAS_TYPICAL: u64 = 23_362_026;
+pub const FINALIZE_GAS_TYPICAL: u64 = 23_362_098;
 
 /// Gas for `cleanupDAGBatchSession` (measured, after the storage deletion refund).
 pub const CLEANUP_GAS: u64 = 1_804_043;
@@ -336,7 +336,7 @@ pub fn xgboost_reference_estimate() -> BatchGasEstimate {
 ///
 /// ```rust
 /// use world_zk_sdk::gas_estimation::estimate_start_gas;
-/// assert_eq!(estimate_start_gas(88), 8_620_625);
+/// assert_eq!(estimate_start_gas(88), 8_624_888);
 /// ```
 pub fn estimate_start_gas(num_layers: u32) -> u64 {
     // The measured gas covers 88 layers. We add a mild per-layer overhead above
@@ -367,7 +367,7 @@ pub fn estimate_start_gas(num_layers: u32) -> u64 {
 ///
 /// ```rust
 /// use world_zk_sdk::gas_estimation::estimate_continue_gas;
-/// assert_eq!(estimate_continue_gas(0, 8), 31_687_354);
+/// assert_eq!(estimate_continue_gas(0, 8), 31_688_290);
 /// ```
 pub fn estimate_continue_gas(batch_idx: u32, layers_per_batch: u32) -> u64 {
     // Scale linearly between lower and upper based on how many layers are in
@@ -409,7 +409,7 @@ pub fn estimate_continue_gas(batch_idx: u32, layers_per_batch: u32) -> u64 {
 ///
 /// ```rust
 /// use world_zk_sdk::gas_estimation::estimate_finalize_gas;
-/// assert_eq!(estimate_finalize_gas(16), 27_699_046);
+/// assert_eq!(estimate_finalize_gas(16), 27_699_118);
 /// ```
 pub fn estimate_finalize_gas(groups_per_batch: u32) -> u64 {
     if groups_per_batch == 0 {
@@ -495,9 +495,9 @@ use crate::fixture::ProofData;
 ///
 /// | Phase | Gas |
 /// |---|---|
-/// | Start | 8,620,625 |
-/// | Continue (per step) | 18,615,168 to 31,687,354 |
-/// | Finalize (per step) | 14,705,085 to 27,699,046 |
+/// | Start | 8,624,888 |
+/// | Continue (per step) | 18,616,104 to 31,688,290 |
+/// | Finalize (per step) | 14,705,157 to 27,699,118 |
 /// | Cleanup | 1,804,043 |
 #[derive(Debug, Clone)]
 pub struct RpcBatchGasEstimate {
@@ -586,9 +586,9 @@ impl RpcBatchGasEstimate {
 ///
 /// | Phase | Gas |
 /// |---|---|
-/// | `startDAGBatchVerify` | 8,620,625 |
-/// | `continueDAGBatchVerify` (x11) | 18,615,168 to 31,687,354 each |
-/// | `finalizeDAGBatchVerify` (x3) | 14,705,085 to 27,699,046 each |
+/// | `startDAGBatchVerify` | 8,624,888 |
+/// | `continueDAGBatchVerify` (x11) | 18,616,104 to 31,688,290 each |
+/// | `finalizeDAGBatchVerify` (x3) | 14,705,157 to 27,699,118 each |
 /// | `cleanupDAGBatchSession` | 1,804,043 |
 ///
 /// # Example
@@ -634,7 +634,7 @@ impl<'a> RpcGasEstimator<'a> {
     ///
     /// # Gas profile reference
     ///
-    /// Start uses 8,620,625 gas for the phase1a fixture (measured on Anvil).
+    /// Start uses 8,624,888 gas for the phase1a fixture (measured on Anvil).
     /// The start phase decodes the proof transcript and stores initial session
     /// state but does NOT process any compute layers.
     ///
@@ -668,8 +668,8 @@ impl<'a> RpcGasEstimator<'a> {
     /// # Gas profile reference
     ///
     /// Each continue step processes up to `LAYERS_PER_BATCH` (8) compute
-    /// layers. The steps of the phase1a fixture use 18,615,168 (simpler layers) to
-    /// 31,687,354 gas (complex oracle expressions), measured on Anvil.
+    /// layers. The steps of the phase1a fixture use 18,616,104 (simpler layers) to
+    /// 31,688,290 gas (complex oracle expressions), measured on Anvil.
     ///
     /// # Arguments
     ///
@@ -709,8 +709,8 @@ impl<'a> RpcGasEstimator<'a> {
     /// # Gas profile reference
     ///
     /// Each finalize step processes up to `GROUPS_PER_FINALIZE_BATCH` (16)
-    /// input eval groups. The steps of the phase1a fixture use 14,705,085 to
-    /// 27,699,046 gas (measured on Anvil).
+    /// input eval groups. The steps of the phase1a fixture use 14,705,157 to
+    /// 27,699,118 gas (measured on Anvil).
     ///
     /// # Arguments
     ///
@@ -781,11 +781,11 @@ impl<'a> RpcGasEstimator<'a> {
     ///
     /// | Phase | Gas per transaction | Count |
     /// |---|---|---|
-    /// | Start | 8,620,625 | 1 |
-    /// | Continue | 18,615,168 to 31,687,354 | 11 |
-    /// | Finalize | 14,705,085 to 27,699,046 | 3 |
+    /// | Start | 8,624,888 | 1 |
+    /// | Continue | 18,616,104 to 31,688,290 | 11 |
+    /// | Finalize | 14,705,157 to 27,699,118 | 3 |
     /// | Cleanup | 1,804,043 | 1 |
-    /// | **Total** | **335,737,417** | **16 txs** |
+    /// | **Total** | **335,752,192** | **16 txs** |
     ///
     /// # Arguments
     ///
@@ -1160,21 +1160,21 @@ mod tests {
     #[test]
     fn test_constants_match_measurement() {
         // Gas used on Anvil by the phase1a fixture's transactions
-        let start = 8_620_625u64;
+        let start = 8_624_888u64;
         let continues = [
-            20_710_357u64,
-            20_721_269,
-            20_146_339,
-            21_109_263,
-            20_762_368,
-            24_067_459,
-            31_374_721,
-            31_687_354,
-            22_023_919,
-            18_615_168,
-            24_008_455,
+            20_711_293u64,
+            20_722_205,
+            20_147_275,
+            21_110_199,
+            20_763_304,
+            24_068_395,
+            31_375_657,
+            31_688_290,
+            22_024_855,
+            18_616_104,
+            24_009_391,
         ];
-        let finalizes = [27_699_046u64, 27_681_946, 14_705_085];
+        let finalizes = [27_699_118u64, 27_682_018, 14_705_157];
         let cleanup = 1_804_043u64;
 
         assert_eq!(
@@ -1201,7 +1201,7 @@ mod tests {
         assert_eq!(est.num_continue_txs, continues.len() as u64);
         assert_eq!(est.num_finalize_txs, finalizes.len() as u64);
         let total = start + continues.iter().sum::<u64>() + finalizes.iter().sum::<u64>() + cleanup;
-        assert_eq!(total, 335_737_417);
+        assert_eq!(total, 335_752_192);
         assert!(est.total_gas_lower <= total && total <= est.total_gas_upper);
 
         // The per-step estimates of full batches are the measured maxima
@@ -1256,9 +1256,9 @@ mod tests {
     #[test]
     fn test_xgboost_typical_gas_in_expected_range() {
         let est = xgboost_reference_estimate();
-        // Total typical gas for 88-layer XGBoost is the measured 335,737,417 within
+        // Total typical gas for 88-layer XGBoost is the measured 335,752,192 within
         // the rounding of the per-step averages
-        assert!(est.total_gas_typical.abs_diff(335_737_417) <= 11 + 3);
+        assert!(est.total_gas_typical.abs_diff(335_752_192) <= 11 + 3);
     }
 
     #[test]

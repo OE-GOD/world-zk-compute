@@ -626,7 +626,7 @@ forge create src/tee/TEEMLVerifier.sol:TEEMLVerifier \
 # Record: $NEW_IMPL
 ```
 
-For RemainderVerifier the contract is `src/remainder/RemainderVerifier.sol:RemainderVerifier`. Its runtime bytecode is 135,888 bytes, above the 24,576-byte contract size limit, so this step only succeeds on a chain without that limit (locally, `anvil --disable-code-size-limit`); on a default Anvil it fails with `max initcode size exceeded`.
+For RemainderVerifier the contract is `src/remainder/RemainderVerifier.sol:RemainderVerifier`. Its runtime bytecode is 136,142 bytes, above the 24,576-byte contract size limit, so this step only succeeds on a chain without that limit (locally, `anvil --disable-code-size-limit`); on a default Anvil it fails with `max initcode size exceeded`.
 
 **Step 3: Check that the new implementation is a UUPS implementation**
 

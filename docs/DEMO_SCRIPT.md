@@ -302,7 +302,7 @@ cargo install --path crates/zkml-verifier   # Rust CLI
 | "What models do you support?" | XGBoost and LightGBM. The random forest converter is broken and logistic regression is rejected by the prover CLI (see the Supported Models table in the README). Neural network support is in development. |
 | "How long does proving take?" | 4-5 seconds for an 88-layer XGBoost model. (The demo stack cannot show this: it runs in mock mode.) |
 | "What about larger models?" | Tree-based models cover most banking ML (credit scoring, fraud, AML). Neural network support is on the roadmap. |
-| "Is this on mainnet?" | No, and not on Arbitrum Sepolia either: `deployments/arbitrum-sepolia.json` records no deployed contract. The Solidity ZK verifier contract (`RemainderVerifier`, 135,888 bytes) is over the 24,576-byte contract size limit of Ethereum, Arbitrum One and World Chain and of their Sepolia testnets, so of the Solidity contracts only the TEE contract can be deployed on them. |
+| "Is this on mainnet?" | No, and not on Arbitrum Sepolia either: `deployments/arbitrum-sepolia.json` records no deployed contract. The Solidity ZK verifier contract (`RemainderVerifier`, 136,142 bytes) is over the 24,576-byte contract size limit of Ethereum, Arbitrum One and World Chain and of their Sepolia testnets, so of the Solidity contracts only the TEE contract can be deployed on them. |
 | "What is the gas cost?" | 3-6M gas on Arbitrum (~$0.02) for ZK dispute resolution via hybrid Stylus+Groth16. TEE happy path is ~$0.0001. |
 | "Can we use our existing models?" | Yes, for XGBoost and LightGBM models exported as JSON. No retraining needed. |
 | "How does this help with EU AI Act?" | Art. 11 (technical docs), Art. 12 (record-keeping), Art. 13 (transparency), Art. 15 (accuracy) -- see docs/AUDIT_TRAIL.md Section 3.2. |
@@ -342,7 +342,7 @@ forge script contracts/script/DeployTEEMLVerifier.s.sol \
 **These commands cannot complete today.** The forge command does not compile
 from the repository root, the script reads `DEPLOYER_KEY` and requires
 `REMAINDER_VERIFIER`, and the compose Anvil keeps the 24,576-byte contract size
-limit, so the 135,888-byte RemainderVerifier cannot be deployed on it. What does
+limit, so the 136,142-byte RemainderVerifier cannot be deployed on it. What does
 run is the script, which starts its own Anvil (port 8552, 500M gas limit, code
 size limit disabled), deploys both verifiers, submits a result, challenges it
 and resolves the dispute with the fixture proof:

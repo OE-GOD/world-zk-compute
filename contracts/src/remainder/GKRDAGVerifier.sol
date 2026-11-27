@@ -29,6 +29,8 @@ library GKRDAGVerifier {
     error CommittedInputEvalFailed();
     error DataTooLargeForPoint();
     error Log2OfZero();
+    error SumcheckRoundCountMismatch();
+    error LayerProofCountMismatch();
 
     // ========================================================================
     // CONSTANTS
@@ -120,8 +122,11 @@ library GKRDAGVerifier {
         ctx.dagInputProofs = dagInputProofs;
         ctx.publicValueClaims = publicValueClaims;
 
-        // Output layer: squeeze numVars challenges (matching first layer's sumcheck rounds)
-        uint256 numVars = proof.layerProofs[0].sumcheckProof.messages.length;
+        checkLayerProofCount(proof, desc.numComputeLayers);
+
+        // Output layer: one challenge per variable of layer 0. The count comes from the registered
+        // description, not from the proof, so a proof cannot choose how many challenges it gets.
+        uint256 numVars = desc.numSumcheckRounds[0];
         ctx.outputChallenges = new uint256[](numVars);
         for (uint256 i = 0; i < numVars; i++) {
             ctx.outputChallenges[i] = PoseidonSponge.squeeze(sponge) % FR_MODULUS;
@@ -167,6 +172,9 @@ library GKRDAGVerifier {
         ctx.allBindings = allBindings;
         ctx.outputChallenges = outputChallenges;
         ctx.outputEval = outputEval;
+
+        // The proof is re-supplied on every batch, so each batch checks the count again
+        checkLayerProofCount(proof, desc.numComputeLayers);
 
         for (uint256 i = startLayer; i < endLayer; i++) {
             ctx.allBindings[i] = _processOneLayer(i, ctx, sponge);
@@ -344,12 +352,28 @@ library GKRDAGVerifier {
     // SINGLE LAYER PROCESSING
     // ========================================================================
 
+    /// @notice Revert unless the proof carries exactly one layer proof per compute layer of the
+    ///         registered description.
+    /// @dev Like the round-count check in _processOneLayer, the description, not the proof, fixes
+    ///      the shape. An extra layer proof would never be read, so the same proof would have a
+    ///      second accepted encoding; a missing one would make the verifier index past the end.
+    function checkLayerProofCount(GKRVerifier.GKRProof memory proof, uint256 numComputeLayers) internal pure {
+        if (proof.layerProofs.length != numComputeLayers) revert LayerProofCountMismatch();
+    }
+
     /// @notice Process one compute layer: RLC aggregation + committed sumcheck + PoP
     function _processOneLayer(uint256 layerIdx, VerifyContext memory ctx, PoseidonSponge.Sponge memory sponge)
         private
         view
         returns (uint256[] memory bindings)
     {
+        // The registered description fixes the number of sumcheck rounds of each layer. Without
+        // this check the proof would choose it, and with it the number of bindings.
+        GKRVerifier.CommittedLayerProof memory lp = ctx.proof.layerProofs[layerIdx];
+        if (lp.sumcheckProof.messages.length != ctx.desc.numSumcheckRounds[layerIdx]) {
+            revert SumcheckRoundCountMismatch();
+        }
+
         // Count claims for this layer
         uint256 numClaims = _countClaimsFor(layerIdx, ctx.desc);
         if (layerIdx == 0) numClaims++; // Output claim targets layer 0
@@ -361,7 +385,6 @@ library GKRDAGVerifier {
         }
 
         // Absorb messages and derive bindings
-        GKRVerifier.CommittedLayerProof memory lp = ctx.proof.layerProofs[layerIdx];
         bindings = _absorbMessagesAndDeriveBindings(lp.sumcheckProof.messages, sponge);
 
         // Absorb post-sumcheck commitments

@@ -368,7 +368,7 @@ or pass contract addresses manually via flags (e.g., `--engine-address 0x...`).
 ### Sepolia contract size limits
 
 Sepolia enforces EIP-170 (24,576 byte code size limit). The full RemainderVerifier
-contract (135,888 bytes) exceeds this limit. ProgramRegistry, TEEMLVerifier and ExecutionEngine are
+contract (136,142 bytes) exceeds this limit. ProgramRegistry, TEEMLVerifier and ExecutionEngine are
 deployable on Sepolia. Full GKR/Groth16 verification cannot be deployed on Arbitrum Sepolia
 either: it enforces the same 24,576-byte limit (as do Arbitrum One, World Chain, World Chain
 Sepolia and Ethereum mainnet), and `deployments/chains.json` marks it `teeOnly`. Only the TEE

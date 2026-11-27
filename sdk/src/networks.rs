@@ -39,7 +39,7 @@ pub const WORLD_CHAIN_SEPOLIA: NetworkConfig = NetworkConfig {
     tee_verifier_address: "0x0000000000000000000000000000000000000000",
     execution_engine_address: "0x0000000000000000000000000000000000000000",
     explorer_url: "https://sepolia.worldscan.org",
-    // The chain enforces the 24,576-byte contract size limit, so the 135 KB
+    // The chain enforces the 24,576-byte contract size limit, so the 136 KB
     // RemainderVerifier cannot be deployed there (checked against the public RPC).
     tee_only: true,
 };

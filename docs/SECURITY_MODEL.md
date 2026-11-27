@@ -210,7 +210,7 @@ The contract and prover code have not undergone a formal third-party security au
 
 ### 6.3 Gas Costs Limit On-Chain Verification
 
-Direct GKR+Hyrax verification costs about 198M gas for the phase1a fixture (`eth_estimateGas` on Anvil), exceeding Ethereum L1's 30M block gas limit. The batch verifier splits it into 15 transactions (plus an optional cleanup), but its largest step measures 31.7M gas, also above 30M; the hybrid Stylus+Groth16 path is quoted at ~3-6M gas. `RemainderVerifier` is 135,888 bytes of runtime bytecode, over the 24,576-byte contract size limit of Ethereum mainnet and Sepolia, Arbitrum One and Arbitrum Sepolia, World Chain and World Chain Sepolia, so it cannot be deployed on any of them; `TEEMLVerifier` alone can.
+Direct GKR+Hyrax verification costs about 198M gas for the phase1a fixture (`eth_estimateGas` on Anvil), exceeding Ethereum L1's 30M block gas limit. The batch verifier splits it into 15 transactions (plus an optional cleanup), but its largest step measures 31.7M gas, also above 30M; the hybrid Stylus+Groth16 path is quoted at ~3-6M gas. `RemainderVerifier` is 136,142 bytes of runtime bytecode, over the 24,576-byte contract size limit of Ethereum mainnet and Sepolia, Arbitrum One and Arbitrum Sepolia, World Chain and World Chain Sepolia, so it cannot be deployed on any of them; `TEEMLVerifier` alone can.
 
 **Implication:** On-chain dispute resolution is expensive. The economic security model requires that the prover stake (0.1 ETH) exceeds the ZK proof generation cost for disputes to be economically rational.
 

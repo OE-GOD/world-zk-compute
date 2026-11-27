@@ -36,7 +36,7 @@
       "codeSizeLimit": 24576,
       "gasLimit": 500000000,
       "teeOnly": true,
-      "notes": "Arbitrum Sepolia testnet. Enforces the 24576-byte contract size limit (checked 2026-11-22: creating a 30000-byte contract is rejected with 'max code size exceeded'), so RemainderVerifier (135 KB) cannot be deployed. Only TEEMLVerifier + ExecutionEngine are deployable."
+      "notes": "Arbitrum Sepolia testnet. Enforces the 24576-byte contract size limit (checked 2026-11-22: creating a 30000-byte contract is rejected with 'max code size exceeded'), so RemainderVerifier (136 KB) cannot be deployed. Only TEEMLVerifier + ExecutionEngine are deployable."
     },
     {
       "name": "world-chain-sepolia",
@@ -49,7 +49,7 @@
       "codeSizeLimit": 24576,
       "gasLimit": 500000000,
       "teeOnly": true,
-      "notes": "World Chain Sepolia testnet. Enforces the 24576-byte contract size limit (checked 2026-11-22: creating a 30000-byte contract is rejected with CreateContractSizeLimit), so RemainderVerifier (135 KB) cannot be deployed. Only TEEMLVerifier + ExecutionEngine are deployable."
+      "notes": "World Chain Sepolia testnet. Enforces the 24576-byte contract size limit (checked 2026-11-22: creating a 30000-byte contract is rejected with CreateContractSizeLimit), so RemainderVerifier (136 KB) cannot be deployed. Only TEEMLVerifier + ExecutionEngine are deployable."
     }
   ]
 }

@@ -13,8 +13,11 @@ import "../src/tee/TEEMLVerifier.sol";
 
 /// @title DeployWorldChain
 /// @notice Deploy the full World ZK Compute stack to World Chain Sepolia (chainId 4801).
-/// @dev Does NOT deploy a mock verifier -- World Chain Sepolia supports large contracts
-///      (200KB code size, 500M gas limit) so the full RemainderVerifier can be deployed.
+/// @dev Does NOT deploy a mock verifier. World Chain Sepolia enforces the standard 24,576-byte
+///      contract size limit (a 30,000-byte contract was rejected there), and RemainderVerifier's
+///      runtime code is far larger. Deploying it is this script's first transaction, so on this
+///      chain the script fails at that transaction until the verifier is split or shrunk below
+///      that limit.
 ///
 ///   Usage:
 ///     DEPLOYER_PRIVATE_KEY=0x... forge script script/DeployWorldChain.s.sol:DeployWorldChain \

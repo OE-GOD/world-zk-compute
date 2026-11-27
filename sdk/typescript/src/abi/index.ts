@@ -6252,6 +6252,16 @@ export const remainderVerifierAbi = [
   },
   {
     "type": "error",
+    "name": "LayerProofCountMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "LayerProofCountMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "LayerSizesLengthMismatch",
     "inputs": []
   },
@@ -6533,6 +6543,16 @@ export const remainderVerifierAbi = [
   {
     "type": "error",
     "name": "SumcheckFailed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "SumcheckRoundCountMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "SumcheckRoundCountMismatch",
     "inputs": []
   },
   {

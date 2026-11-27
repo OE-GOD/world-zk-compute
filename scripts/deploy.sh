@@ -108,7 +108,7 @@ REQUIRED:
 OPTIONS:
   --verify               Verify contracts on Etherscan/Blockscout after deployment
   --dry-run              Simulate deployment (no transactions broadcast)
-  --with-remainder       Also deploy RemainderVerifier (135 KB: the chain must allow
+  --with-remainder       Also deploy RemainderVerifier (136 KB: the chain must allow
                          contracts over 24,576 bytes, e.g. a local Anvil started with
                          --disable-code-size-limit --gas-limit 500000000)
   --private-key <key>    Deployer private key (alternative to DEPLOYER_PRIVATE_KEY env)

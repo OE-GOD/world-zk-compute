@@ -7,9 +7,13 @@ import "../src/ExecutionEngine.sol";
 import "../src/mocks/MockRiscZeroVerifier.sol";
 
 /// @title DeployLocalScript
-/// @notice LOCAL DEPLOYMENT (Mock Verifier) — for Anvil testing only
+/// @notice LOCAL DEPLOYMENT (Mock Verifier) — for Anvil testing only (chain id 31337; any other chain reverts)
 contract DeployLocalScript is Script {
     function run() external {
+        // The mock verifier accepts every proof, so an engine wired to it would pay tips for junk
+        // proofs. Refuse any chain but a local Anvil node.
+        require(block.chainid == 31337, "DeployLocal is for Anvil only");
+
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         address feeRecipient = vm.envAddress("FEE_RECIPIENT");
 

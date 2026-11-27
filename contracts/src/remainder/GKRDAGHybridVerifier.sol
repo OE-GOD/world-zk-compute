@@ -27,6 +27,8 @@ library GKRDAGHybridVerifier {
     error OnChainMLEMismatch();
     error NotEnoughCommitsForPoP();
     error Log2OfZero();
+    error SumcheckRoundCountMismatch();
+    error LayerProofCountMismatch();
 
     // ========================================================================
     // CONSTANTS
@@ -88,6 +90,12 @@ library GKRDAGHybridVerifier {
         GKRDAGVerifier.DAGCircuitDescription memory desc,
         PoseidonSponge.Sponge memory sponge
     ) private pure returns (DAGLayerChallenges memory layerCh) {
+        // The registered description fixes the number of sumcheck rounds of each layer. Without
+        // this check the proof would choose it, and with it the number of bindings.
+        if (lp.sumcheckProof.messages.length != desc.numSumcheckRounds[layerIdx]) {
+            revert SumcheckRoundCountMismatch();
+        }
+
         // Count claims for this layer
         uint256 numClaims = _countClaimsFor(layerIdx, desc);
         if (layerIdx == 0) numClaims++; // Output claim targets layer 0
@@ -140,8 +148,15 @@ library GKRDAGHybridVerifier {
     ) internal pure returns (DAGTranscriptChallenges memory challenges) {
         uint256 numLayers = desc.numComputeLayers;
 
-        // Step 1: Squeeze output challenges
-        uint256 numVars = proof.layerProofs[0].sumcheckProof.messages.length;
+        // One layer proof per compute layer of the registered description, as in
+        // GKRDAGVerifier.checkLayerProofCount: an extra one would never be read (a second encoding
+        // of the same proof) and a missing one would be indexed past the end. verifyDAGECChecks
+        // runs only after this replay, on the same proof.
+        if (proof.layerProofs.length != numLayers) revert LayerProofCountMismatch();
+
+        // Step 1: Squeeze one output challenge per variable of layer 0, counted from the registered
+        // description rather than from the proof
+        uint256 numVars = desc.numSumcheckRounds[0];
         challenges.outputChallenges = new uint256[](numVars);
         for (uint256 i = 0; i < numVars; i++) {
             challenges.outputChallenges[i] = PoseidonSponge.squeeze(sponge) % FR_MODULUS;

@@ -73,7 +73,7 @@ REQUIRED ENVIRONMENT:
   ALCHEMY_SEPOLIA_RPC_URL    Alchemy (or other provider) RPC URL for Sepolia
   REMAINDER_VERIFIER         Address TEEMLVerifier calls to resolve disputes.
                              TEEMLVerifier.initialize() rejects address(0), and
-                             RemainderVerifier itself (135 KB) is over Sepolia's
+                             RemainderVerifier itself (136 KB) is over Sepolia's
                              24,576-byte contract size limit, so deploy.sh cannot
                              deploy one there.
 
