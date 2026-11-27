@@ -25,13 +25,16 @@ use crate::proof_cache::{CachedProof, ProofCache, ProofCacheKey};
 use crate::prove_metrics::{pipeline_metrics, ProveStage, ProveTimeline};
 use crate::queue::{JobQueue, QueuedJob};
 use crate::recursive_wrapper;
+use crate::redact;
 use crate::xgboost_decomp::XGBoostDecompStrategy;
+use alloy::contract::{CallBuilder, CallDecoder};
+use alloy::eips::BlockNumberOrTag;
 use alloy::network::{Ethereum, EthereumWallet};
 use alloy::primitives::{Address, B256, U256};
 use alloy::providers::fillers::{
     BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, WalletFiller,
 };
-use alloy::providers::Provider;
+use alloy::providers::{PendingTransactionError, Provider, ProviderBuilder, WatchTxError};
 use alloy::rpc::types::Filter;
 use alloy::signers::local::PrivateKeySigner;
 use alloy::sol_types::SolEvent;
@@ -54,6 +57,34 @@ pub type SigningProvider = FillProvider<
     alloy::providers::RootProvider,
     Ethereum,
 >;
+
+/// Maximum time to connect to the RPC endpoint
+pub const RPC_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Maximum time an RPC call may take
+pub const RPC_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Build the provider that signs transactions with `signer`. A connection or
+/// a call that takes longer than its timeout fails.
+pub fn signing_provider(
+    rpc_url: reqwest::Url,
+    signer: PrivateKeySigner,
+    connect_timeout: Duration,
+    request_timeout: Duration,
+) -> anyhow::Result<SigningProvider> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(connect_timeout)
+        .timeout(request_timeout)
+        .build()?;
+
+    Ok(ProviderBuilder::new()
+        .disable_recommended_fillers()
+        .filler(GasFiller)
+        .filler(BlobGasFiller::default())
+        .filler(ChainIdFiller::default())
+        .wallet(EthereumWallet::from(signer))
+        .connect_reqwest(client, rpc_url))
+}
 
 /// Nonce manager type alias with matching transport and network types
 pub type SigningNonceManager = NonceManager<SigningProvider>;
@@ -260,46 +291,9 @@ impl OptimizedProcessor {
 
         info!("Found {} pending requests", request_ids.len());
 
-        // Batch-fetch inputUrls from events for all pending requests in a single RPC call
-        // (inputUrl is no longer stored on-chain, only emitted in the ExecutionRequested event)
-        let input_urls =
-            batch_fetch_input_urls(provider, config.engine_address, &request_ids).await;
-
-        // Fetch details and add to queue IN PARALLEL
-        let fetch_futures: Vec<_> = request_ids
-            .iter()
-            .map(|&request_id| {
-                let provider = provider.clone();
-                let config = config.clone();
-                let program_cache = self.program_cache.clone();
-                let job_queue = self.job_queue.clone();
-                let meta = input_urls.get(&request_id).cloned().unwrap_or_default();
-                async move {
-                    fetch_request_details(
-                        &provider,
-                        &config,
-                        request_id,
-                        meta.url,
-                        meta.input_type,
-                        &program_cache,
-                        &job_queue,
-                    )
-                    .await
-                }
-            })
-            .collect();
-
-        let results = join_all(fetch_futures).await;
-
-        let mut added = 0;
-        for (i, result) in results.into_iter().enumerate() {
-            match result {
-                Ok(true) => added += 1,
-                Ok(false) => debug!("Request {} filtered out", request_ids[i]),
-                Err(e) => warn!("Failed to fetch request {}: {}", request_ids[i], e),
-            }
-        }
-
+        let added = self
+            .queue_new_requests(provider, config, &request_ids)
+            .await;
         info!("Added {} jobs to queue (fetched in parallel)", added);
 
         // Start prefetching inputs for queued jobs (background, non-blocking)
@@ -324,6 +318,80 @@ impl OptimizedProcessor {
         info!("Processed {} requests in {:?}", processed, elapsed);
 
         Ok(processed)
+    }
+
+    /// Add pending requests to the job queue and return how many were added.
+    ///
+    /// Requests whose input URL is not found are skipped: they are still
+    /// pending in the next cycle and are looked up again then.
+    async fn queue_new_requests(
+        &self,
+        provider: &Arc<SigningProvider>,
+        config: &ProverConfig,
+        request_ids: &[U256],
+    ) -> usize {
+        // Batch-fetch inputUrls from events for all pending requests in a single RPC call
+        // (inputUrl is no longer stored on-chain, only emitted in the ExecutionRequested event)
+        let input_urls =
+            match batch_fetch_input_urls(provider, config.engine_address, request_ids).await {
+                Ok(input_urls) => input_urls,
+                Err(e) => {
+                    warn!(
+                        "Failed to batch-fetch inputUrls from events, skipping {} requests: {}",
+                        request_ids.len(),
+                        redact::redact_urls(&e.to_string())
+                    );
+                    return 0;
+                }
+            };
+
+        // Fetch details and add to queue IN PARALLEL
+        let mut found_ids = Vec::new();
+        let mut fetch_futures = Vec::new();
+        for &request_id in request_ids {
+            let Some(meta) = input_urls.get(&request_id).cloned() else {
+                warn!(
+                    "No ExecutionRequested event found for request {}, skipping it",
+                    request_id
+                );
+                continue;
+            };
+            found_ids.push(request_id);
+
+            let provider = provider.clone();
+            let config = config.clone();
+            let program_cache = self.program_cache.clone();
+            let job_queue = self.job_queue.clone();
+            fetch_futures.push(async move {
+                fetch_request_details(
+                    &provider,
+                    &config,
+                    request_id,
+                    meta.url,
+                    meta.input_type,
+                    &program_cache,
+                    &job_queue,
+                )
+                .await
+            });
+        }
+
+        let results = join_all(fetch_futures).await;
+
+        let mut added = 0;
+        for (request_id, result) in found_ids.into_iter().zip(results) {
+            match result {
+                Ok(true) => added += 1,
+                Ok(false) => debug!("Request {} filtered out", request_id),
+                // An RPC error names the URL of the node
+                Err(e) => warn!(
+                    "Failed to fetch request {}: {}",
+                    request_id,
+                    redact::redact_urls(&e.to_string())
+                ),
+            }
+        }
+        added
     }
 
     /// Process jobs from queue in parallel
@@ -354,11 +422,7 @@ impl OptimizedProcessor {
             return Ok(0);
         }
 
-        info!(
-            "Processing {} jobs in parallel (pending nonces: {})",
-            jobs.len(),
-            nonce_manager.pending()
-        );
+        info!("Processing {} jobs in parallel", jobs.len());
 
         // Spawn parallel tasks
         for job in jobs {
@@ -424,8 +488,10 @@ impl OptimizedProcessor {
         for handle in handles {
             match handle.await {
                 Ok(Ok(_)) => processed += 1,
-                Ok(Err(e)) => warn!("Job failed: {}", e),
-                Err(e) => error!("Task panicked: {}", e),
+                // A job error can be an RPC error, which names the URL of
+                // the node
+                Ok(Err(e)) => warn!("Job failed: {}", redact::redact_urls(&e.to_string())),
+                Err(e) => error!("Task panicked: {}", redact::redact_urls(&e.to_string())),
             }
         }
 
@@ -434,7 +500,7 @@ impl OptimizedProcessor {
 }
 
 /// Input metadata extracted from ExecutionRequested events
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 struct EventInputMeta {
     /// Input URL from the event
     url: String,
@@ -444,13 +510,14 @@ struct EventInputMeta {
 
 /// Batch-fetch inputUrls and inputTypes from ExecutionRequested events for multiple request IDs.
 ///
-/// Performs a single `get_logs` RPC call with all request IDs, returning a map
-/// of request_id → EventInputMeta. Much more efficient than one query per request.
+/// Performs a single `get_logs` RPC call with all request IDs over the whole
+/// chain, returning a map of request_id → EventInputMeta. Much more efficient
+/// than one query per request.
 async fn batch_fetch_input_urls(
     provider: &Arc<SigningProvider>,
     engine_address: Address,
     request_ids: &[U256],
-) -> std::collections::HashMap<U256, EventInputMeta> {
+) -> anyhow::Result<std::collections::HashMap<U256, EventInputMeta>> {
     use std::collections::HashMap;
 
     let mut result: HashMap<U256, EventInputMeta> = HashMap::new();
@@ -461,31 +528,27 @@ async fn batch_fetch_input_urls(
         .map(|id| B256::from(id.to_be_bytes::<32>()))
         .collect();
 
+    // Without a block range the node searches only the latest block
     let filter = Filter::new()
+        .from_block(BlockNumberOrTag::Earliest)
+        .to_block(BlockNumberOrTag::Latest)
         .address(engine_address)
         .event_signature(IExecutionEngine::ExecutionRequested::SIGNATURE_HASH)
         .topic1(topic_values);
 
-    match provider.get_logs(&filter).await {
-        Ok(logs) => {
-            for log in logs {
-                if let Ok(decoded) = log.log_decode::<IExecutionEngine::ExecutionRequested>() {
-                    let req_id = decoded.inner.data.requestId;
-                    let meta = EventInputMeta {
-                        url: decoded.inner.data.inputUrl.clone(),
-                        input_type: decoded.inner.data.inputType,
-                    };
-                    result.insert(req_id, meta);
-                }
-            }
-            debug!("Batch-fetched {} inputUrls from events", result.len());
-        }
-        Err(e) => {
-            warn!("Failed to batch-fetch inputUrls from events: {}", e);
+    for log in provider.get_logs(&filter).await? {
+        if let Ok(decoded) = log.log_decode::<IExecutionEngine::ExecutionRequested>() {
+            let req_id = decoded.inner.data.requestId;
+            let meta = EventInputMeta {
+                url: decoded.inner.data.inputUrl.clone(),
+                input_type: decoded.inner.data.inputType,
+            };
+            result.insert(req_id, meta);
         }
     }
+    debug!("Batch-fetched {} inputUrls from events", result.len());
 
-    result
+    Ok(result)
 }
 
 /// Fetch request details and add to queue (standalone for parallel execution)
@@ -962,28 +1025,27 @@ async fn process_single_job(
         prove_result.proof.len()
     );
 
-    // Step 8: Cache the proof for future use
-    let cached = CachedProof::new(
-        prove_result.proof.clone(),
-        prove_result.journal.clone(),
+    let proof = CachedProof::new(
+        prove_result.proof,
+        prove_result.journal,
         prove_result.cycles,
         prove_timer.elapsed(),
     );
-    proof_cache.put(&cache_key, cached).await;
 
-    // Step 9: Submit proof (with retry logic)
+    // Step 8: Submit proof (with retry logic) and cache it for future use
     timeline.enter_stage(ProveStage::Submission);
     info!("[Job {}] Submitting proof...", job.request_id);
     let submit_timer = Timer::start();
 
-    let submit_result = send_submit_with_retry(
+    let submit_result = submit_and_cache(
         &engine,
         request_id,
-        prove_result.proof.clone(),
-        prove_result.journal.clone(),
+        proof,
         nonce_manager,
         job.request_id,
         &retry_config,
+        proof_cache,
+        &cache_key,
     )
     .await?;
 
@@ -1055,8 +1117,10 @@ async fn fetch_program_from_registry(
         let program = match registry.getProgram(*image_id).call().await {
             Ok(result) => result,
             Err(e) => {
-                warn!("Failed to fetch program from registry: {:?}", e);
-                anyhow::bail!("Program {} not found in registry: {:?}", image_id, e);
+                // The Debug text names the URL of the node
+                let error = redact::redact_urls(&format!("{:?}", e));
+                warn!("Failed to fetch program from registry: {}", error);
+                anyhow::bail!("Program {} not found in registry: {}", image_id, error);
             }
         };
 
@@ -1204,6 +1268,8 @@ pub struct RetryConfig {
     pub max_delay: Duration,
     /// Multiplier for exponential backoff
     pub backoff_multiplier: f64,
+    /// Maximum time to wait for the receipt of a sent transaction
+    pub receipt_timeout: Duration,
 }
 
 impl Default for RetryConfig {
@@ -1213,20 +1279,50 @@ impl Default for RetryConfig {
             initial_delay: Duration::from_millis(500),
             max_delay: Duration::from_secs(10),
             backoff_multiplier: 2.0,
+            receipt_timeout: Duration::from_secs(300),
         }
     }
 }
 
-/// Check if an error is retryable (transient) or permanent
+/// How the HTTP client failed, for an error behind which there is one
+#[derive(Debug, PartialEq)]
+enum HttpClientFailure {
+    /// No connection to the node was made, so nothing was sent
+    NotConnected,
+    /// The request may have reached the node: a request timeout, or a
+    /// connection that broke after it was made
+    AfterConnecting,
+}
+
+/// How the HTTP client failed, if `error` or an error behind it comes from
+/// it. None for an error the node answered with, or an HTTP status.
+fn http_client_failure(error: &(dyn std::error::Error + 'static)) -> Option<HttpClientFailure> {
+    let mut next = Some(error);
+    while let Some(error) = next {
+        if let Some(http) = error.downcast_ref::<reqwest::Error>() {
+            // A connect timeout is a timeout and a connect error
+            return Some(if http.is_connect() {
+                HttpClientFailure::NotConnected
+            } else {
+                HttpClientFailure::AfterConnecting
+            });
+        }
+        next = error.source();
+    }
+    None
+}
+
+/// Check if an error is retryable (transient) or permanent, by its text. For
+/// errors that do not come from the HTTP client (see [`http_client_failure`]).
 ///
 /// Retryable errors include:
 /// - Network timeouts
 /// - Connection errors
 /// - Rate limiting (429)
 /// - Server errors (5xx)
+/// - Nonce too low (the next attempt has a nonce re-read from the chain)
 ///
 /// Non-retryable errors include:
-/// - Nonce too low (transaction already mined)
 /// - Insufficient funds
 /// - Contract reverts (execution reverted)
 /// - Already claimed/completed
@@ -1235,7 +1331,6 @@ fn is_retryable_error(error: &str) -> bool {
 
     // Non-retryable errors - return false immediately
     let permanent_errors = [
-        "nonce too low",
         "insufficient funds",
         "execution reverted",
         "already claimed",
@@ -1255,6 +1350,7 @@ fn is_retryable_error(error: &str) -> bool {
 
     // Retryable errors
     let transient_errors = [
+        "nonce too low",
         "timeout",
         "timed out",
         "connection",
@@ -1326,83 +1422,8 @@ async fn send_claim_with_retry(
     job_id: u64,
     config: &RetryConfig,
 ) -> anyhow::Result<TransactionResult> {
-    let mut attempts = 0u32;
-    let mut delay = config.initial_delay;
-
-    loop {
-        attempts += 1;
-        let nonce = nonce_manager.next_nonce();
-        debug!(
-            "[Job {}] Claim attempt {} with nonce {}",
-            job_id, attempts, nonce
-        );
-
-        let result = engine.claimExecution(request_id).nonce(nonce).send().await;
-
-        match result {
-            Ok(pending_tx) => {
-                // Transaction sent, wait for receipt
-                match pending_tx.get_receipt().await {
-                    Ok(receipt) => {
-                        nonce_manager.transaction_completed();
-                        if !receipt.status() {
-                            return Err(anyhow::anyhow!(
-                                "Claim tx {:?} reverted on-chain",
-                                receipt.transaction_hash
-                            ));
-                        }
-                        if attempts > 1 {
-                            info!("[Job {}] Claim succeeded on attempt {}", job_id, attempts);
-                        }
-                        return Ok(TransactionResult {
-                            tx_hash: receipt.transaction_hash,
-                            attempts,
-                        });
-                    }
-                    Err(e) => {
-                        let error_str = format!("{:?}", e);
-                        nonce_manager.handle_nonce_error(&error_str, nonce).await?;
-
-                        if !is_retryable_error(&error_str) || attempts >= config.max_retries {
-                            return Err(anyhow::anyhow!(
-                                "Claim receipt failed after {} attempts: {}",
-                                attempts,
-                                error_str
-                            ));
-                        }
-
-                        warn!(
-                            "[Job {}] Claim receipt failed (attempt {}), retrying: {}",
-                            job_id, attempts, error_str
-                        );
-                    }
-                }
-            }
-            Err(e) => {
-                let error_str = format!("{:?}", e);
-                nonce_manager.handle_nonce_error(&error_str, nonce).await?;
-
-                if !is_retryable_error(&error_str) || attempts >= config.max_retries {
-                    return Err(anyhow::anyhow!(
-                        "Claim send failed after {} attempts: {}",
-                        attempts,
-                        error_str
-                    ));
-                }
-
-                warn!(
-                    "[Job {}] Claim send failed (attempt {}), retrying: {}",
-                    job_id, attempts, error_str
-                );
-            }
-        }
-
-        // Exponential backoff
-        tokio::time::sleep(delay).await;
-        delay = Duration::from_secs_f64(
-            (delay.as_secs_f64() * config.backoff_multiplier).min(config.max_delay.as_secs_f64()),
-        );
-    }
+    let call = engine.claimExecution(request_id);
+    send_with_retry("Claim", call, nonce_manager, job_id, config).await
 }
 
 /// Send a submit proof transaction with retry logic
@@ -1415,80 +1436,185 @@ async fn send_submit_with_retry(
     job_id: u64,
     config: &RetryConfig,
 ) -> anyhow::Result<TransactionResult> {
+    let call = engine.submitProof(request_id, proof.into(), journal.into());
+    send_with_retry("Submit", call, nonce_manager, job_id, config).await
+}
+
+/// Submit a proof and, once the submission succeeded, put it into the proof cache
+#[allow(clippy::too_many_arguments)]
+async fn submit_and_cache(
+    engine: &IExecutionEngine::IExecutionEngineInstance<Arc<SigningProvider>>,
+    request_id: U256,
+    proof: CachedProof,
+    nonce_manager: &Arc<SigningNonceManager>,
+    job_id: u64,
+    config: &RetryConfig,
+    proof_cache: &ProofCache,
+    cache_key: &ProofCacheKey,
+) -> anyhow::Result<TransactionResult> {
+    let result = send_submit_with_retry(
+        engine,
+        request_id,
+        proof.proof.clone(),
+        proof.journal.clone(),
+        nonce_manager,
+        job_id,
+        config,
+    )
+    .await?;
+
+    proof_cache.put(cache_key, proof).await;
+    Ok(result)
+}
+
+/// Time between two reads of a receipt after a read failed
+const RECEIPT_POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Wait for the receipt of a transaction the node has accepted, for at most
+/// `receipt_timeout` from now. None when there is no receipt by then.
+///
+/// A failed read of the receipt does not mean that the transaction failed,
+/// and sending it again could put it on the chain twice, so the receipt of
+/// the same hash is read again until the time is up.
+async fn wait_for_receipt(
+    pending_tx: alloy::providers::PendingTransactionBuilder<Ethereum>,
+    kind: &str,
+    job_id: u64,
+    receipt_timeout: Duration,
+) -> Option<alloy::rpc::types::TransactionReceipt> {
+    let sent_at = Instant::now();
+    let tx_hash = *pending_tx.tx_hash();
+    let provider = pending_tx.provider().clone();
+
+    let watched = tokio::time::timeout(
+        receipt_timeout,
+        pending_tx.with_timeout(Some(receipt_timeout)).get_receipt(),
+    )
+    .await;
+    // The error of the last read; None when the receipt was not there yet
+    let mut error = match watched {
+        Ok(Ok(receipt)) => return Some(receipt),
+        Err(_) | Ok(Err(PendingTransactionError::TxWatcher(WatchTxError::Timeout))) => return None,
+        Ok(Err(e)) => Some(format!("{:?}", e)),
+    };
+
+    loop {
+        let left = receipt_timeout.saturating_sub(sent_at.elapsed());
+        if left.is_zero() {
+            return None;
+        }
+        if let Some(error) = &error {
+            warn!(
+                "[Job {}] {} tx {:?}: reading the receipt failed, reading it again: {}",
+                job_id,
+                kind,
+                tx_hash,
+                redact::redact_urls(error)
+            );
+        }
+        tokio::time::sleep(RECEIPT_POLL_INTERVAL.min(left)).await;
+
+        let left = receipt_timeout.saturating_sub(sent_at.elapsed());
+        match tokio::time::timeout(left, provider.get_transaction_receipt(tx_hash)).await {
+            Ok(Ok(Some(receipt))) => return Some(receipt),
+            Ok(Ok(None)) => error = None,
+            Ok(Err(e)) => error = Some(format!("{:?}", e)),
+            Err(_) => return None,
+        }
+    }
+}
+
+/// Send a contract call as a transaction and wait for its receipt, with retry
+/// logic. `kind` names the transaction in log lines and errors.
+async fn send_with_retry<D: CallDecoder + Clone>(
+    kind: &str,
+    call: CallBuilder<&Arc<SigningProvider>, D>,
+    nonce_manager: &Arc<SigningNonceManager>,
+    job_id: u64,
+    config: &RetryConfig,
+) -> anyhow::Result<TransactionResult> {
     let mut attempts = 0u32;
     let mut delay = config.initial_delay;
 
     loop {
         attempts += 1;
-        let nonce = nonce_manager.next_nonce();
-        debug!(
-            "[Job {}] Submit attempt {} with nonce {}",
-            job_id, attempts, nonce
-        );
 
-        let result = engine
-            .submitProof(request_id, proof.clone().into(), journal.clone().into())
-            .nonce(nonce)
-            .send()
+        // Estimates the gas, signs and broadcasts
+        let result = nonce_manager
+            .send(|nonce| {
+                debug!(
+                    "[Job {}] {} attempt {} with nonce {}",
+                    job_id, kind, attempts, nonce
+                );
+                let call = call.clone().nonce(nonce);
+                async move { call.send().await }
+            })
             .await;
 
-        match result {
+        let (error_str, retryable) = match result {
             Ok(pending_tx) => {
-                // Transaction sent, wait for receipt
-                match pending_tx.get_receipt().await {
-                    Ok(receipt) => {
-                        nonce_manager.transaction_completed();
+                let tx_hash = *pending_tx.tx_hash();
+                match wait_for_receipt(pending_tx, kind, job_id, config.receipt_timeout).await {
+                    Some(receipt) => {
                         if !receipt.status() {
                             return Err(anyhow::anyhow!(
-                                "Submit tx {:?} reverted on-chain",
+                                "{} tx {:?} reverted on-chain",
+                                kind,
                                 receipt.transaction_hash
                             ));
                         }
                         if attempts > 1 {
-                            info!("[Job {}] Submit succeeded on attempt {}", job_id, attempts);
+                            info!(
+                                "[Job {}] {} succeeded on attempt {}",
+                                job_id, kind, attempts
+                            );
                         }
                         return Ok(TransactionResult {
                             tx_hash: receipt.transaction_hash,
                             attempts,
                         });
                     }
-                    Err(e) => {
-                        let error_str = format!("{:?}", e);
-                        nonce_manager.handle_nonce_error(&error_str, nonce).await?;
-
-                        if !is_retryable_error(&error_str) || attempts >= config.max_retries {
-                            return Err(anyhow::anyhow!(
-                                "Submit receipt failed after {} attempts: {}",
-                                attempts,
-                                error_str
-                            ));
-                        }
-
-                        warn!(
-                            "[Job {}] Submit receipt failed (attempt {}), retrying: {}",
-                            job_id, attempts, error_str
-                        );
+                    None => {
+                        // If the transaction was dropped, its nonce is free again
+                        nonce_manager.sync_from_chain().await;
+                        return Err(anyhow::anyhow!(
+                            "{} tx {:?} has no receipt after {:?}",
+                            kind,
+                            tx_hash,
+                            config.receipt_timeout
+                        ));
                     }
                 }
             }
             Err(e) => {
-                let error_str = format!("{:?}", e);
-                nonce_manager.handle_nonce_error(&error_str, nonce).await?;
-
-                if !is_retryable_error(&error_str) || attempts >= config.max_retries {
-                    return Err(anyhow::anyhow!(
-                        "Submit send failed after {} attempts: {}",
-                        attempts,
-                        error_str
-                    ));
-                }
-
-                warn!(
-                    "[Job {}] Submit send failed (attempt {}), retrying: {}",
-                    job_id, attempts, error_str
-                );
+                // The Debug text names the URL of the node, so it is redacted
+                let error_str = redact::redact_urls(&format!("{:?}", e));
+                let retryable = match http_client_failure(&e) {
+                    Some(HttpClientFailure::NotConnected) => true,
+                    // The node may have accepted the transaction before its
+                    // answer was lost, and a retry would send a second one.
+                    // The text is not looked at: it says "timeout", and the
+                    // port in the URL can read like "502".
+                    Some(HttpClientFailure::AfterConnecting) => false,
+                    None => is_retryable_error(&error_str),
+                };
+                (error_str, retryable)
             }
+        };
+
+        if !retryable || attempts >= config.max_retries {
+            return Err(anyhow::anyhow!(
+                "{} send failed after {} attempts: {}",
+                kind,
+                attempts,
+                error_str
+            ));
         }
+
+        warn!(
+            "[Job {}] {} send failed (attempt {}), retrying: {}",
+            job_id, kind, attempts, error_str
+        );
 
         // Exponential backoff
         tokio::time::sleep(delay).await;
@@ -1542,7 +1668,10 @@ async fn check_profitability(
     let claim_gas = match engine.claimExecution(request_id).estimate_gas().await {
         Ok(gas) => gas,
         Err(e) => {
-            warn!("Failed to estimate claim gas, using default: {}", e);
+            warn!(
+                "Failed to estimate claim gas, using default: {}",
+                redact::redact_urls(&e.to_string())
+            );
             100_000u64 // Conservative default for claim
         }
     };
@@ -1564,7 +1693,7 @@ async fn check_profitability(
             // Use a conservative default based on typical proof submission costs
             debug!(
                 "Failed to estimate submit gas (expected before claim): {}",
-                e
+                redact::redact_urls(&e.to_string())
             );
             300_000u64 // Conservative default for submit with ~500 byte proof
         }
@@ -1605,153 +1734,68 @@ async fn check_profitability(
 mod tests {
     use super::*;
     use crate::bonsai::ProvingMode;
-    use crate::test_support::serve_http;
-    use alloy::providers::ProviderBuilder;
-    use serde_json::json;
-    use std::sync::Mutex;
+    use crate::test_support::{serve_http, MockChain, MockNode};
 
-    /// Stand-in for a JSON-RPC node: accepts every transaction and reports it
-    /// as mined with a fixed receipt status. Records the methods called.
-    struct MockNode {
-        provider: Arc<SigningProvider>,
-        nonce_manager: Arc<SigningNonceManager>,
-        calls: Arc<Mutex<Vec<String>>>,
+    /// Retries without a noticeable delay
+    fn fast_retries() -> RetryConfig {
+        RetryConfig {
+            initial_delay: Duration::from_millis(1),
+            receipt_timeout: Duration::from_secs(30),
+            ..Default::default()
+        }
     }
 
-    impl MockNode {
-        async fn start(receipt_status: &'static str) -> Self {
-            let calls = Arc::new(Mutex::new(Vec::new()));
-            let call_log = calls.clone();
-
-            let addr = serve_http(move |request| {
-                let call: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
-                let method = call["method"].as_str().unwrap_or_default().to_string();
-                call_log.lock().unwrap().push(method.clone());
-
-                let hash = format!("0x{}", "11".repeat(32));
-                let result = match method.as_str() {
-                    "eth_chainId" => json!("0x7a69"),
-                    "eth_getTransactionCount" => json!("0x0"),
-                    "eth_estimateGas" => json!("0x186a0"),
-                    "eth_blockNumber" => json!("0x1"),
-                    "eth_feeHistory" => json!({
-                        "oldestBlock": "0x1",
-                        "baseFeePerGas": ["0x3b9aca00", "0x3b9aca00"],
-                        "gasUsedRatio": [0.5],
-                        "reward": [["0x3b9aca00"]],
-                    }),
-                    "eth_sendRawTransaction" => json!(hash),
-                    "eth_getTransactionReceipt" => json!({
-                        "transactionHash": hash,
-                        "transactionIndex": "0x0",
-                        "blockHash": hash,
-                        "blockNumber": "0x1",
-                        "from": format!("0x{}", "22".repeat(20)),
-                        "to": format!("0x{}", "ee".repeat(20)),
-                        "cumulativeGasUsed": "0x186a0",
-                        "gasUsed": "0x186a0",
-                        "effectiveGasPrice": "0x3b9aca00",
-                        "contractAddress": null,
-                        "logs": [],
-                        "logsBloom": format!("0x{}", "00".repeat(256)),
-                        "status": receipt_status,
-                        "type": "0x2",
-                    }),
-                    _ => {
-                        let error = json!({
-                            "jsonrpc": "2.0",
-                            "id": call["id"],
-                            "error": { "code": -32601, "message": "method not found" },
-                        });
-                        return (200, error.to_string().into_bytes());
-                    }
-                };
-
-                let response = json!({ "jsonrpc": "2.0", "id": call["id"], "result": result });
-                (200, response.to_string().into_bytes())
-            })
-            .await;
-
-            // Same provider stack as run_prover builds
-            let signer = PrivateKeySigner::random();
-            let address = signer.address();
-            let provider = Arc::new(
-                ProviderBuilder::new()
-                    .disable_recommended_fillers()
-                    .filler(GasFiller)
-                    .filler(BlobGasFiller::default())
-                    .filler(ChainIdFiller::default())
-                    .wallet(EthereumWallet::from(signer))
-                    .connect_http(format!("http://{addr}").parse().unwrap()),
-            );
-            let nonce_manager =
-                Arc::new(NonceManager::new(provider.clone(), address).await.unwrap());
-
-            Self {
-                provider,
-                nonce_manager,
-                calls,
-            }
-        }
-
-        fn engine(&self) -> IExecutionEngine::IExecutionEngineInstance<Arc<SigningProvider>> {
-            IExecutionEngine::new(Address::repeat_byte(0xee), self.provider.clone())
-        }
-
-        /// Number of transactions sent to the node
-        fn transactions_sent(&self) -> usize {
-            self.calls
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|method| *method == "eth_sendRawTransaction")
-                .count()
-        }
+    /// Claim request `id` with `config`
+    async fn claim(
+        node: &MockNode,
+        id: u64,
+        config: &RetryConfig,
+    ) -> anyhow::Result<TransactionResult> {
+        send_claim_with_retry(
+            &node.engine(),
+            U256::from(id),
+            &node.nonce_manager,
+            id,
+            config,
+        )
+        .await
     }
 
     #[tokio::test]
     async fn test_claim_with_successful_receipt() {
-        let node = MockNode::start("0x1").await;
+        let node = MockNode::start(MockChain::default()).await;
 
-        let result = send_claim_with_retry(
-            &node.engine(),
-            U256::from(7),
-            &node.nonce_manager,
-            7,
-            &RetryConfig::default(),
-        )
-        .await
-        .unwrap();
+        let result = claim(&node, 7, &RetryConfig::default()).await.unwrap();
 
-        assert_eq!(result.tx_hash, B256::repeat_byte(0x11));
+        assert_eq!(result.tx_hash, node.chain().transactions[0].hash);
         assert_eq!(node.transactions_sent(), 1);
-        assert_eq!(node.nonce_manager.pending(), 0);
+        assert_eq!(node.nonce_manager.current().await, 1);
     }
 
     #[tokio::test]
     async fn test_reverted_claim_is_an_error() {
-        let node = MockNode::start("0x0").await;
-
-        let result = send_claim_with_retry(
-            &node.engine(),
-            U256::from(7),
-            &node.nonce_manager,
-            7,
-            &RetryConfig::default(),
-        )
+        let node = MockNode::start(MockChain {
+            receipt_status: Some("0x0"),
+            ..Default::default()
+        })
         .await;
+
+        let result = claim(&node, 7, &RetryConfig::default()).await;
 
         let err = result.err().expect("reverted claim reported as success");
         assert!(err.to_string().contains("reverted on-chain"), "{err}");
         // The transaction was mined: its nonce is used and it is not sent again
         assert_eq!(node.transactions_sent(), 1);
-        assert_eq!(node.nonce_manager.pending(), 0);
-        assert_eq!(node.nonce_manager.current(), 1);
+        assert_eq!(node.nonce_manager.current().await, 1);
     }
 
     #[tokio::test]
     async fn test_reverted_submit_is_an_error() {
-        let node = MockNode::start("0x0").await;
+        let node = MockNode::start(MockChain {
+            receipt_status: Some("0x0"),
+            ..Default::default()
+        })
+        .await;
 
         let result = send_submit_with_retry(
             &node.engine(),
@@ -1767,13 +1811,588 @@ mod tests {
         let err = result.err().expect("reverted submit reported as success");
         assert!(err.to_string().contains("reverted on-chain"), "{err}");
         assert_eq!(node.transactions_sent(), 1);
-        assert_eq!(node.nonce_manager.pending(), 0);
-        assert_eq!(node.nonce_manager.current(), 1);
+        assert_eq!(node.nonce_manager.current().await, 1);
+    }
+
+    /// A claim that reverts at gas estimation sends nothing and is not
+    /// retried, and its nonce goes to the next claim.
+    #[tokio::test]
+    async fn test_revert_at_estimation_uses_no_nonce() {
+        let node = MockNode::start(MockChain {
+            reverting_requests: vec![U256::from(7)],
+            ..Default::default()
+        })
+        .await;
+
+        let err = claim(&node, 7, &fast_retries())
+            .await
+            .err()
+            .expect("reverting claim reported as success");
+        assert!(err.to_string().contains("after 1 attempts"), "{err}");
+        assert!(err.to_string().contains("execution reverted"), "{err}");
+        assert_eq!(node.transactions_sent(), 0);
+        assert_eq!(node.nonce_manager.current().await, 0);
+
+        claim(&node, 8, &fast_retries()).await.unwrap();
+        assert_eq!(node.accepted_nonces(), [0]);
+    }
+
+    #[tokio::test]
+    async fn test_submit_revert_at_estimation_uses_no_nonce() {
+        let node = MockNode::start(MockChain {
+            reverting_requests: vec![U256::from(7)],
+            ..Default::default()
+        })
+        .await;
+
+        for (id, reverts) in [(7, true), (8, false)] {
+            let result = send_submit_with_retry(
+                &node.engine(),
+                U256::from(id),
+                vec![1],
+                vec![2],
+                &node.nonce_manager,
+                id,
+                &fast_retries(),
+            )
+            .await;
+            assert_eq!(result.is_err(), reverts);
+        }
+        assert_eq!(node.accepted_nonces(), [0]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_concurrent_claims_use_consecutive_nonces() {
+        let node = Arc::new(
+            MockNode::start(MockChain {
+                mined_count: 5,
+                pending_count: 5,
+                reverting_requests: [2, 3, 9].map(U256::from).to_vec(),
+                ..Default::default()
+            })
+            .await,
+        );
+
+        let claims = (0..10).map(|id| {
+            let node = node.clone();
+            tokio::spawn(async move { claim(&node, id, &fast_retries()).await.is_ok() })
+        });
+        let succeeded: Vec<bool> = join_all(claims)
+            .await
+            .into_iter()
+            .map(|result| result.unwrap())
+            .collect();
+
+        let expected: Vec<bool> = (0..10).map(|id| ![2, 3, 9].contains(&id)).collect();
+        assert_eq!(succeeded, expected);
+        // Seven transactions, without gap or duplicate
+        assert_eq!(node.transactions_sent(), 7);
+        assert_eq!(node.accepted_nonces(), [5, 6, 7, 8, 9, 10, 11]);
+        assert_eq!(node.nonce_manager.current().await, 12);
+    }
+
+    /// A transaction whose receipt never comes ends with an error, and the
+    /// nonce of a dropped transaction goes to the next one.
+    #[tokio::test]
+    async fn test_missing_receipt_is_an_error_after_the_timeout() {
+        let node = MockNode::start(MockChain {
+            drops_transactions: true,
+            ..Default::default()
+        })
+        .await;
+        let config = RetryConfig {
+            receipt_timeout: Duration::from_millis(200),
+            ..fast_retries()
+        };
+
+        let result = tokio::time::timeout(Duration::from_secs(30), claim(&node, 7, &config))
+            .await
+            .expect("still waiting for the receipt");
+        let err = result.err().expect("claim without receipt succeeded");
+        let tx_hash = node.chain().transactions[0].hash;
+        assert!(err.to_string().contains(&format!("{tx_hash:?}")), "{err}");
+        // Not sent a second time
+        assert_eq!(node.transactions_sent(), 1);
+
+        node.chain().drops_transactions = false;
+        claim(&node, 8, &fast_retries()).await.unwrap();
+        assert_eq!(node.accepted_nonces(), [0, 0]);
+    }
+
+    /// A transaction that is still in the node's pool when the wait for its
+    /// receipt ends keeps its nonce.
+    #[tokio::test]
+    async fn test_pending_transaction_keeps_its_nonce_after_the_timeout() {
+        let node = MockNode::start(MockChain {
+            receipt_status: None,
+            ..Default::default()
+        })
+        .await;
+        let config = RetryConfig {
+            receipt_timeout: Duration::from_millis(200),
+            ..fast_retries()
+        };
+
+        assert!(claim(&node, 7, &config).await.is_err());
+
+        node.chain().receipt_status = Some("0x1");
+        claim(&node, 8, &fast_retries()).await.unwrap();
+        assert_eq!(node.accepted_nonces(), [0, 1]);
+    }
+
+    #[tokio::test]
+    async fn test_nonce_too_low_is_retried_with_the_reread_nonce() {
+        let node = MockNode::start(MockChain::default()).await;
+
+        // Another user of the account sent three transactions
+        node.chain().mined_count = 3;
+        node.chain().pending_count = 3;
+
+        let result = claim(&node, 7, &fast_retries()).await.unwrap();
+
+        assert_eq!(result.attempts, 2);
+        assert_eq!(node.transactions_sent(), 2);
+        assert_eq!(node.accepted_nonces(), [3]);
+    }
+
+    /// The proof is cached once its submission succeeded, not before.
+    #[tokio::test]
+    async fn test_proof_is_cached_only_after_its_submit_succeeded() {
+        // Memory-only cache, so the test writes no proof files
+        let cache = ProofCache::new(10, None, Duration::from_secs(3600));
+        let key = ProofCacheKey::new(B256::repeat_byte(1), B256::repeat_byte(2), false);
+        let proof = CachedProof::new(vec![1], vec![2], 3, Duration::ZERO);
+
+        // Reverts at estimation, reverts on-chain, succeeds
+        for (reverting_requests, receipt_status, cached) in [
+            (vec![U256::from(7)], "0x1", 0),
+            (vec![], "0x0", 0),
+            (vec![], "0x1", 1),
+        ] {
+            let node = MockNode::start(MockChain {
+                reverting_requests,
+                receipt_status: Some(receipt_status),
+                ..Default::default()
+            })
+            .await;
+            let result = submit_and_cache(
+                &node.engine(),
+                U256::from(7),
+                proof.clone(),
+                &node.nonce_manager,
+                7,
+                &fast_retries(),
+                &cache,
+                &key,
+            )
+            .await;
+
+            assert_eq!(result.is_ok(), cached == 1);
+            assert_eq!(cache.memory_len().await, cached);
+        }
+        assert_eq!(cache.get(&key).await.unwrap().proof, [1]);
+    }
+
+    #[tokio::test]
+    async fn test_rpc_call_fails_after_the_request_timeout() {
+        // Accepts connections (the kernel does) and never answers
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let provider = signing_provider(
+            format!("http://{addr}").parse().unwrap(),
+            PrivateKeySigner::random(),
+            Duration::from_secs(10),
+            Duration::from_millis(200),
+        )
+        .unwrap();
+
+        let result = tokio::time::timeout(Duration::from_secs(20), provider.get_chain_id()).await;
+        assert!(result.expect("the call is still waiting").is_err());
+    }
+
+    #[test]
+    fn test_default_timeouts() {
+        assert_eq!(
+            RetryConfig::default().receipt_timeout,
+            Duration::from_secs(300)
+        );
+        assert_eq!(RPC_CONNECT_TIMEOUT, Duration::from_secs(10));
+        assert_eq!(RPC_REQUEST_TIMEOUT, Duration::from_secs(30));
+        assert_eq!(RECEIPT_POLL_INTERVAL, Duration::from_secs(2));
+    }
+
+    /// Claim request 7 through the node at `url`. The nonces come from `node`.
+    async fn claim_through(
+        node: &MockNode,
+        url: String,
+        config: &RetryConfig,
+    ) -> anyhow::Result<TransactionResult> {
+        let provider = signing_provider(
+            url.parse().unwrap(),
+            PrivateKeySigner::random(),
+            Duration::from_secs(10),
+            Duration::from_millis(200),
+        )
+        .unwrap();
+        let engine = IExecutionEngine::new(Address::repeat_byte(0xee), Arc::new(provider));
+
+        let claim = send_claim_with_retry(&engine, U256::from(7), &node.nonce_manager, 7, config);
+        tokio::time::timeout(Duration::from_secs(30), claim)
+            .await
+            .expect("the claim is still waiting")
+    }
+
+    /// Claim request 7 through a node at `path` that accepts connections (the
+    /// kernel does) and never answers. The nonces come from `node`.
+    async fn claim_through_silent_node(
+        node: &MockNode,
+        path: &str,
+        config: &RetryConfig,
+    ) -> anyhow::Result<TransactionResult> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        claim_through(node, format!("http://{addr}{path}"), config).await
+    }
+
+    /// A port on which nothing listens
+    async fn refusing_addr() -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        listener.local_addr().unwrap()
+    }
+
+    /// The node accepts the transaction and answers after the request
+    /// timeout. Sending the call again would put a second transaction on
+    /// the chain.
+    #[tokio::test]
+    async fn test_request_timeout_at_send_is_not_retried() {
+        let node = MockNode::start_with(
+            MockChain {
+                late_methods: vec!["eth_sendRawTransaction"],
+                ..Default::default()
+            },
+            "",
+            Duration::from_millis(500),
+        )
+        .await;
+
+        let result =
+            tokio::time::timeout(Duration::from_secs(30), claim(&node, 7, &fast_retries()))
+                .await
+                .expect("the claim is still waiting");
+
+        let err = result.err().expect("claim without an answer succeeded");
+        assert!(
+            err.to_string().contains("send failed after 1 attempts"),
+            "{err}"
+        );
+        assert_eq!(node.transactions_sent(), 1);
+        assert_eq!(node.accepted_nonces(), vec![0]);
+        // The pending count was read again: the accepted transaction keeps
+        // its nonce
+        assert_eq!(node.nonce_manager.current().await, 1);
+    }
+
+    #[tokio::test]
+    async fn test_refused_connection_at_send_is_retried() {
+        let node = MockNode::start(MockChain::default()).await;
+        let addr = refusing_addr().await;
+
+        let err = claim_through(&node, format!("http://{addr}"), &fast_retries())
+            .await
+            .err()
+            .expect("claim through a refusing node succeeded");
+
+        assert!(
+            err.to_string().contains("send failed after 3 attempts"),
+            "{err}"
+        );
+        assert_eq!(node.nonce_manager.current().await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_send_error_does_not_show_the_url_path() {
+        let node = MockNode::start(MockChain::default()).await;
+        let config = RetryConfig {
+            max_retries: 1,
+            ..fast_retries()
+        };
+
+        let err = claim_through_silent_node(&node, "/v2/SECRETKEY", &config)
+            .await
+            .err()
+            .expect("claim through a silent node succeeded");
+
+        let text = format!("{err:#}");
+        assert!(text.contains("send failed after 1 attempts"), "{text}");
+        assert!(text.contains("127.0.0.1"), "{text}");
+        assert!(!text.contains("SECRETKEY"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn test_http_client_failure_tells_a_refused_connection_from_a_timeout() {
+        let provider_at = |addr: std::net::SocketAddr| {
+            signing_provider(
+                format!("http://{addr}").parse().unwrap(),
+                PrivateKeySigner::random(),
+                Duration::from_secs(10),
+                Duration::from_millis(200),
+            )
+            .unwrap()
+        };
+
+        let refused = provider_at(refusing_addr().await);
+        let err = refused.get_chain_id().await.unwrap_err();
+        assert_eq!(
+            http_client_failure(&err),
+            Some(HttpClientFailure::NotConnected),
+            "{err:?}"
+        );
+
+        // Accepts connections (the kernel does) and never answers
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let silent = provider_at(listener.local_addr().unwrap());
+        let err = silent.get_chain_id().await.unwrap_err();
+        assert_eq!(
+            http_client_failure(&err),
+            Some(HttpClientFailure::AfterConnecting),
+            "{err:?}"
+        );
+
+        // A node's error answer is not one
+        let node = MockNode::start(MockChain::default()).await;
+        node.chain().fail_transaction_count = true;
+        let err = node
+            .provider
+            .get_transaction_count(Address::ZERO)
+            .await
+            .unwrap_err();
+        assert_eq!(http_client_failure(&err), None, "{err:?}");
+    }
+
+    /// A failed read of the receipt is followed by another read of the same
+    /// transaction's receipt, not by a second transaction.
+    #[tokio::test]
+    async fn test_failed_receipt_read_does_not_send_the_transaction_again() {
+        let node = MockNode::start(MockChain {
+            failing_receipt_reads: 1,
+            ..Default::default()
+        })
+        .await;
+
+        let result =
+            tokio::time::timeout(Duration::from_secs(30), claim(&node, 7, &fast_retries()))
+                .await
+                .expect("still waiting for the receipt")
+                .unwrap();
+
+        assert_eq!(result.attempts, 1);
+        assert_eq!(result.tx_hash, node.chain().transactions[0].hash);
+        assert_eq!(node.transactions_sent(), 1);
+        assert_eq!(node.nonce_manager.current().await, 1);
+    }
+
+    /// Receipt reads that fail until the timeout end with the error of a
+    /// missing receipt, still without a second transaction.
+    #[tokio::test]
+    async fn test_failing_receipt_reads_end_at_the_timeout() {
+        let node = MockNode::start(MockChain {
+            failing_receipt_reads: usize::MAX,
+            ..Default::default()
+        })
+        .await;
+        let config = RetryConfig {
+            receipt_timeout: Duration::from_millis(500),
+            ..fast_retries()
+        };
+
+        let started = Instant::now();
+        let result = tokio::time::timeout(Duration::from_secs(30), claim(&node, 7, &config))
+            .await
+            .expect("still waiting for the receipt");
+
+        let err = result.err().expect("claim without receipt succeeded");
+        assert!(err.to_string().contains("has no receipt after"), "{err}");
+        // Ends at the timeout, not after a whole poll interval
+        assert!(
+            started.elapsed() < Duration::from_millis(1500),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(node.transactions_sent(), 1);
+    }
+
+    /// A processor and a node on which requests 7 and 8 are pending. Only
+    /// request 7 has an event, in a block before the latest one.
+    async fn processor_with_pending_requests(
+        fail_get_logs: bool,
+    ) -> (OptimizedProcessor, MockNode, ProverConfig) {
+        let node = MockNode::start(MockChain {
+            events: vec![(
+                40,
+                IExecutionEngine::ExecutionRequested {
+                    requestId: U256::from(7),
+                    requester: Address::repeat_byte(0x33),
+                    imageId: B256::repeat_byte(0x44),
+                    inputDigest: B256::repeat_byte(0x55),
+                    inputUrl: "https://input.test/7".to_string(),
+                    inputType: 1,
+                    tip: U256::from(1_000_000_000_000_000u64),
+                    expiresAt: U256::from(u32::MAX),
+                },
+            )],
+            fail_get_logs,
+            ..Default::default()
+        })
+        .await;
+        let config = ProverConfig {
+            engine_address: *node.engine().address(),
+            ..Default::default()
+        };
+        (test_processor(10).unwrap(), node, config)
+    }
+
+    #[tokio::test]
+    async fn test_requests_are_queued_with_the_url_of_an_earlier_block() {
+        let (processor, node, config) = processor_with_pending_requests(false).await;
+
+        let added = processor
+            .queue_new_requests(&node.provider, &config, &[7, 8].map(U256::from))
+            .await;
+
+        // Request 8 has no event: it is not queued with an empty URL
+        assert_eq!(added, 1);
+        let queue = processor.job_queue.read().await;
+        let jobs: Vec<_> = queue.iter_jobs().collect();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].request_id, 7);
+        assert_eq!(jobs[0].input_url, "https://input.test/7");
+        assert_eq!(jobs[0].input_type, 1);
+    }
+
+    #[tokio::test]
+    async fn test_request_without_event_is_looked_up_again() {
+        let (processor, node, config) = processor_with_pending_requests(false).await;
+        let pending = [U256::from(8)];
+
+        let added = processor
+            .queue_new_requests(&node.provider, &config, &pending)
+            .await;
+        assert_eq!(added, 0);
+
+        // The node now knows the event
+        let (block, mut event) = node.chain().events[0].clone();
+        event.requestId = U256::from(8);
+        event.inputUrl = "https://input.test/8".to_string();
+        node.chain().events.push((block, event));
+        let added = processor
+            .queue_new_requests(&node.provider, &config, &pending)
+            .await;
+        assert_eq!(added, 1);
+        let queue = processor.job_queue.read().await;
+        assert_eq!(
+            queue.iter_jobs().next().unwrap().input_url,
+            "https://input.test/8"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_failed_url_lookup_queues_nothing() {
+        let (processor, node, config) = processor_with_pending_requests(true).await;
+
+        let added = processor
+            .queue_new_requests(&node.provider, &config, &[7, 8].map(U256::from))
+            .await;
+
+        assert_eq!(added, 0);
+        assert_eq!(processor.job_queue.read().await.iter_jobs().count(), 0);
+
+        // The next cycle finds it
+        node.chain().fail_get_logs = false;
+        let added = processor
+            .queue_new_requests(&node.provider, &config, &[7, 8].map(U256::from))
+            .await;
+        assert_eq!(added, 1);
+    }
+
+    /// Log lines written on this thread, for a subscriber of [`capture_logs`]
+    #[derive(Clone, Default)]
+    struct LogBuffer(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for LogBuffer {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl LogBuffer {
+        fn text(&self) -> String {
+            String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+        }
+    }
+
+    /// Capture the log lines of this thread until the guard is dropped
+    fn capture_logs() -> (LogBuffer, tracing::subscriber::DefaultGuard) {
+        let logs = LogBuffer::default();
+        let writer = logs.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::WARN)
+            .finish();
+        (logs, tracing::subscriber::set_default(subscriber))
+    }
+
+    #[tokio::test]
+    async fn test_failed_request_lookup_does_not_log_the_url_path() {
+        let node = MockNode::start_with(
+            MockChain {
+                events: vec![(
+                    40,
+                    IExecutionEngine::ExecutionRequested {
+                        requestId: U256::from(7),
+                        requester: Address::repeat_byte(0x33),
+                        imageId: B256::repeat_byte(0x44),
+                        inputDigest: B256::repeat_byte(0x55),
+                        inputUrl: "https://input.test/7".to_string(),
+                        inputType: 0,
+                        tip: U256::from(1_000_000_000_000_000u64),
+                        expiresAt: U256::from(u32::MAX),
+                    },
+                )],
+                // getRequest and getCurrentTip run into the request timeout
+                late_methods: vec!["eth_call"],
+                ..Default::default()
+            },
+            "/v2/SECRETKEY",
+            Duration::from_millis(500),
+        )
+        .await;
+        let config = ProverConfig {
+            engine_address: *node.engine().address(),
+            ..Default::default()
+        };
+        let processor = test_processor(10).unwrap();
+
+        let (logs, _guard) = capture_logs();
+        let added = processor
+            .queue_new_requests(&node.provider, &config, &[U256::from(7)])
+            .await;
+
+        assert_eq!(added, 0);
+        let text = logs.text();
+        assert!(text.contains("Failed to fetch request 7"), "{text}");
+        assert!(text.contains("127.0.0.1"), "{text}");
+        assert!(!text.contains("SECRETKEY"), "{text}");
     }
 
     #[tokio::test]
     async fn test_claim_is_skipped_after_early_claim() {
-        let node = MockNode::start("0x1").await;
+        let node = MockNode::start(MockChain::default()).await;
         let engine = node.engine();
         let retry_config = RetryConfig::default();
 
@@ -1796,7 +2415,7 @@ mod tests {
             .unwrap();
         }
         assert_eq!(node.transactions_sent(), 0);
-        assert_eq!(node.nonce_manager.current(), 0);
+        assert_eq!(node.nonce_manager.current().await, 0);
 
         // A job without an early claim claims now
         claim_unless_claimed(

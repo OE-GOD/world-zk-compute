@@ -7,7 +7,6 @@
 //! 4. Submits proofs and collects rewards
 
 use alloy::{
-    network::EthereumWallet,
     primitives::{Address, B256, U256},
     providers::ProviderBuilder,
     signers::local::PrivateKeySigner,
@@ -373,7 +372,7 @@ async fn run_prover(
     skip_profitability_check: bool,
 ) -> anyhow::Result<()> {
     // Parse proving mode
-    let mode = ProvingMode::from_str(&proving_mode);
+    let mode: ProvingMode = proving_mode.parse()?;
 
     // Detect GPU devices
     let gpu_manager = if max_gpu_concurrent > 0 {
@@ -485,17 +484,12 @@ async fn run_prover(
     let wallet_address = signer.address();
     info!("Prover wallet: {}", wallet_address);
 
-    let wallet = EthereumWallet::from(signer.clone());
-    // Note: We remove NonceFiller and manage nonces ourselves for parallel safety
-    let provider = ProviderBuilder::new()
-        .disable_recommended_fillers()
-        .filler(alloy::providers::fillers::GasFiller)
-        .filler(alloy::providers::fillers::BlobGasFiller::default())
-        .filler(alloy::providers::fillers::ChainIdFiller::default())
-        .wallet(wallet)
-        .connect_http(rpc_url.parse()?);
-
-    let provider = Arc::new(provider);
+    let provider = Arc::new(monitor::signing_provider(
+        rpc_url.parse()?,
+        signer.clone(),
+        monitor::RPC_CONNECT_TIMEOUT,
+        monitor::RPC_REQUEST_TIMEOUT,
+    )?);
 
     // Parse engine address
     let engine: Address = engine_address.parse()?;
@@ -505,7 +499,7 @@ async fn run_prover(
         Arc::new(nonce::NonceManager::new(provider.clone(), signer.address()).await?);
     info!(
         "✓ Nonce manager initialized (current nonce: {})",
-        nonce_manager.current()
+        nonce_manager.current().await
     );
 
     // Parse registry address if provided
@@ -629,12 +623,22 @@ async fn run_prover(
         state.update_gpu_health(gpu_health).await;
 
         let health_server = health::HealthServer::new(health_port, state.clone());
-        let _health_handle = health_server.start().await;
-        info!("✓ Health server: http://0.0.0.0:{}", health_port);
-        info!("  - GET /health  - liveness check");
-        info!("  - GET /metrics - Prometheus metrics");
-        info!("  - GET /status  - detailed status");
-        Some(state)
+        match health_server.start().await {
+            Ok(_health_handle) => {
+                info!("✓ Health server: http://0.0.0.0:{}", health_port);
+                info!("  - GET /health  - liveness check");
+                info!("  - GET /metrics - Prometheus metrics");
+                info!("  - GET /status  - detailed status");
+                Some(state)
+            }
+            Err(e) => {
+                error!(
+                    "✗ Health server not started: cannot listen on port {}: {}",
+                    health_port, e
+                );
+                None
+            }
+        }
     } else {
         None
     };
@@ -727,14 +731,7 @@ async fn run_prover(
         }
     }
 
-    // Graceful shutdown: wait for in-flight work to complete
-    info!("Waiting for in-flight tasks to complete (30s grace period)...");
-    let shutdown_config = shutdown::ShutdownConfig::default();
-    shutdown::graceful_shutdown(&shutdown_controller, &shutdown_config, || {
-        Box::pin(async { Ok(()) })
-    })
-    .await?;
-
+    // A cycle waits for all of its jobs, so nothing is in flight here
     info!("Prover node shut down cleanly.");
     Ok(())
 }

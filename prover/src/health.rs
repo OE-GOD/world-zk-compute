@@ -11,8 +11,8 @@
 //! ## Usage
 //!
 //! ```rust
-//! let server = HealthServer::new(8081, metrics.clone());
-//! server.start().await;
+//! let server = HealthServer::new(8081, state.clone());
+//! server.start().await?;
 //! ```
 
 use crate::metrics::{metrics, MetricsSnapshot};
@@ -146,28 +146,20 @@ impl HealthServer {
         Self { port, state }
     }
 
-    /// Start the health server (non-blocking)
-    pub async fn start(self) -> tokio::task::JoinHandle<()> {
+    /// Start the health server (non-blocking). Fails when its port cannot be
+    /// bound.
+    pub async fn start(self) -> std::io::Result<tokio::task::JoinHandle<()>> {
         let addr = SocketAddr::from(([0, 0, 0, 0], self.port));
-        info!("Starting health server on http://{}", addr);
-
-        let state = self.state;
-
-        tokio::spawn(async move {
-            if let Err(e) = Self::run_server(addr, state).await {
-                error!("Health server error: {}", e);
-            }
-        })
-    }
-
-    async fn run_server(
-        addr: SocketAddr,
-        state: SharedState,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let listener = tokio::net::TcpListener::bind(addr).await?;
         info!("Health server listening on {}", addr);
 
-        Self::serve(listener, state, CONNECTION_TIMEOUT).await
+        let state = self.state;
+
+        Ok(tokio::spawn(async move {
+            if let Err(e) = Self::serve(listener, state, CONNECTION_TIMEOUT).await {
+                error!("Health server error: {}", e);
+            }
+        }))
     }
 
     /// Accept connections and answer each within `connection_timeout`
@@ -533,6 +525,19 @@ mod tests {
             .await
             .expect("server kept the idle connection open");
         assert_eq!(response, "");
+    }
+
+    #[tokio::test]
+    async fn test_start_fails_when_the_port_is_taken() {
+        let taken = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        let port = taken.local_addr().unwrap().port();
+        let state = SharedState::new("0x123".to_string(), "0x456".to_string());
+
+        let err = HealthServer::new(port, state)
+            .start()
+            .await
+            .expect_err("health server started on a port in use");
+        assert_eq!(err.kind(), std::io::ErrorKind::AddrInUse);
     }
 
     #[test]
