@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,8 +8,10 @@ import (
 	"os"
 
 	"github.com/consensys/gnark-crypto/ecc"
+	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	"github.com/consensys/gnark/backend/groth16"
 	groth16bn254 "github.com/consensys/gnark/backend/groth16/bn254"
+	"github.com/consensys/gnark/backend/witness"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/r1cs"
 )
@@ -49,12 +50,12 @@ type DAGWitnessJSON struct {
 		} `json:"input_groups"`
 	} `json:"public_inputs"`
 	PublicOutputs struct {
-		RlcBetas      []string `json:"rlc_betas"`
-		ZDotJStars    []string `json:"z_dot_jstars"`
-		LTensorFlat   []string `json:"l_tensor_flat"`
-		LTensorOffsets []int   `json:"l_tensor_offsets"`
-		ZDotRs        []string `json:"z_dot_rs"`
-		MleEvals      []string `json:"mle_evals"`
+		RlcBetas       []string `json:"rlc_betas"`
+		ZDotJStars     []string `json:"z_dot_jstars"`
+		LTensorFlat    []string `json:"l_tensor_flat"`
+		LTensorOffsets []int    `json:"l_tensor_offsets"`
+		ZDotRs         []string `json:"z_dot_rs"`
+		MleEvals       []string `json:"mle_evals"`
 	} `json:"public_outputs"`
 	Witness struct {
 		LayerPODPs []struct {
@@ -80,8 +81,8 @@ type DAGWitnessJSON struct {
 		PtOffsets         []int  `json:"ptOffsets"`
 		PtData            []int  `json:"ptData"`
 		InputIsCommitted  []bool `json:"inputIsCommitted"`
-		IncomingOffsets    []int  `json:"incomingOffsets"`
-		IncomingAtomIdx    []int  `json:"incomingAtomIdx"`
+		IncomingOffsets   []int  `json:"incomingOffsets"`
+		IncomingAtomIdx   []int  `json:"incomingAtomIdx"`
 	} `json:"dag_circuit_description"`
 	DAGLayers []struct {
 		NumRounds      int `json:"num_rounds"`
@@ -213,35 +214,36 @@ func dagConfigFromWitness(w *DAGWitnessJSON) DAGCircuitConfig {
 	}
 
 	return DAGCircuitConfig{
-		NumComputeLayers:    nLayers,
-		LayerNumVars:        layerNumVars,
-		LayerDegrees:        layerDegrees,
-		LayerNumClaims:      layerNumClaims,
-		OutputNumVars:       w.Config.OutputNumVars,
-		NumInputGroups:      nGroups,
-		InputGroupNumClaims: inputGroupNumClaims,
-		InputGroupLHalfLen:  inputGroupLHalfLen,
-		InputGroupRHalfLen:  inputGroupRHalfLen,
-		NumPublicClaims:     nPubClaims,
-		PubInputCount:       w.Config.PubInputCount,
-		PubClaimNumVars:     pubClaimNumVars,
-		PointTemplates:      pointTemplates,
+		NumComputeLayers:     nLayers,
+		LayerNumVars:         layerNumVars,
+		LayerDegrees:         layerDegrees,
+		LayerNumClaims:       layerNumClaims,
+		OutputNumVars:        w.Config.OutputNumVars,
+		NumInputGroups:       nGroups,
+		InputGroupNumClaims:  inputGroupNumClaims,
+		InputGroupLHalfLen:   inputGroupLHalfLen,
+		InputGroupRHalfLen:   inputGroupRHalfLen,
+		NumPublicClaims:      nPubClaims,
+		PubInputCount:        w.Config.PubInputCount,
+		PubClaimNumVars:      pubClaimNumVars,
+		PointTemplates:       pointTemplates,
 		PointTemplateSources: pointTemplateSources,
 	}
 }
 
 // buildDAGAssignment constructs a DAG circuit assignment from parsed witness JSON.
-func buildDAGAssignment(config DAGCircuitConfig, w *DAGWitnessJSON) *DAGWrapperCircuit {
+func buildDAGAssignment(config DAGCircuitConfig, w *DAGWitnessJSON) (*DAGWrapperCircuit, error) {
 	nLayers := config.NumComputeLayers
+	bp := &bigIntParser{}
 
 	assignment := AllocateDAGCircuit(config)
 
 	assignment.CircuitHash = [2]frontend.Variable{
-		parseBigInt(w.PublicInputs.CircuitHash[0]),
-		parseBigInt(w.PublicInputs.CircuitHash[1]),
+		bp.parse(w.PublicInputs.CircuitHash[0]),
+		bp.parse(w.PublicInputs.CircuitHash[1]),
 	}
 	for i := 0; i < config.OutputNumVars; i++ {
-		assignment.OutputChallenges[i] = parseBigInt(w.PublicInputs.OutputChallenges[i])
+		assignment.OutputChallenges[i] = bp.parse(w.PublicInputs.OutputChallenges[i])
 	}
 
 	// Per-layer
@@ -250,20 +252,20 @@ func buildDAGAssignment(config DAGCircuitConfig, w *DAGWitnessJSON) *DAGWrapperC
 		layer := w.PublicInputs.Layers[li]
 		nc := config.LayerNumClaims[li]
 		for i := 0; i < nc; i++ {
-			assignment.Layers[li].RlcCoeffs[i] = parseBigInt(layer.RlcCoeffs[i])
+			assignment.Layers[li].RlcCoeffs[i] = bp.parse(layer.RlcCoeffs[i])
 		}
 		nv := config.LayerNumVars[li]
 		for i := 0; i < nv; i++ {
-			assignment.Layers[li].Bindings[i] = parseBigInt(layer.Bindings[i])
-			assignment.Layers[li].Gammas[i] = parseBigInt(layer.Gammas[i])
+			assignment.Layers[li].Bindings[i] = bp.parse(layer.Bindings[i])
+			assignment.Layers[li].Gammas[i] = bp.parse(layer.Gammas[i])
 		}
 		for i := 0; i <= nv; i++ {
-			assignment.Layers[li].Rhos[i] = parseBigInt(layer.Rhos[i])
+			assignment.Layers[li].Rhos[i] = bp.parse(layer.Rhos[i])
 		}
-		assignment.Layers[li].PODPChallenge = parseBigInt(layer.PODPChallenge)
+		assignment.Layers[li].PODPChallenge = bp.parse(layer.PODPChallenge)
 		if config.HasPoP(li) && len(assignment.Layers[li].PopChallenges) > 0 {
 			if len(layer.PopChallenges) > 0 {
-				assignment.Layers[li].PopChallenges[0] = parseBigInt(layer.PopChallenges[0])
+				assignment.Layers[li].PopChallenges[0] = bp.parse(layer.PopChallenges[0])
 			} else {
 				assignment.Layers[li].PopChallenges[0] = zero
 			}
@@ -272,9 +274,9 @@ func buildDAGAssignment(config DAGCircuitConfig, w *DAGWitnessJSON) *DAGWrapperC
 		// PODP witness
 		if nv > 0 {
 			assignment.LayerPODPs[li] = PODPWitness{
-				ZVector: parseVarSlice(w.Witness.LayerPODPs[li].ZVector),
-				ZDelta:  parseBigInt(w.Witness.LayerPODPs[li].ZDelta),
-				ZBeta:   parseBigInt(w.Witness.LayerPODPs[li].ZBeta),
+				ZVector: bp.parseVarSlice(w.Witness.LayerPODPs[li].ZVector),
+				ZDelta:  bp.parse(w.Witness.LayerPODPs[li].ZDelta),
+				ZBeta:   bp.parse(w.Witness.LayerPODPs[li].ZBeta),
 			}
 		} else {
 			assignment.LayerPODPs[li] = PODPWitness{
@@ -291,24 +293,24 @@ func buildDAGAssignment(config DAGCircuitConfig, w *DAGWitnessJSON) *DAGWrapperC
 		ig := w.PublicInputs.InputGroups[g]
 		nc := config.InputGroupNumClaims[g]
 		for i := 0; i < nc; i++ {
-			assignment.InputGroups[g].RlcCoeffs[i] = parseBigInt(ig.RlcCoeffs[i])
+			assignment.InputGroups[g].RlcCoeffs[i] = bp.parse(ig.RlcCoeffs[i])
 		}
-		assignment.InputGroups[g].PODPChallenge = parseBigInt(ig.PODPChallenge)
+		assignment.InputGroups[g].PODPChallenge = bp.parse(ig.PODPChallenge)
 
 		// L-half and R-half bindings (resolved, from witness JSON)
 		for i := 0; i < config.InputGroupLHalfLen[g]; i++ {
-			assignment.InputGroups[g].LBindings[i] = parseBigInt(ig.LHalfBindings[i])
+			assignment.InputGroups[g].LBindings[i] = bp.parse(ig.LHalfBindings[i])
 		}
 		for i := 0; i < config.InputGroupRHalfLen[g]; i++ {
-			assignment.InputGroups[g].RBindings[i] = parseBigInt(ig.RHalfBindings[i])
+			assignment.InputGroups[g].RBindings[i] = bp.parse(ig.RHalfBindings[i])
 		}
 
 		// Input group PODP witness
 		if len(ig.ZVector) > 0 {
 			assignment.InputGroupPODPs[g] = PODPWitness{
-				ZVector: parseVarSlice(ig.ZVector),
-				ZDelta:  parseBigInt(ig.ZDelta),
-				ZBeta:   parseBigInt(ig.ZBeta),
+				ZVector: bp.parseVarSlice(ig.ZVector),
+				ZDelta:  bp.parse(ig.ZDelta),
+				ZBeta:   bp.parse(ig.ZBeta),
 			}
 		} else {
 			rHalfLen := config.InputGroupRHalfLen[g]
@@ -327,17 +329,17 @@ func buildDAGAssignment(config DAGCircuitConfig, w *DAGWitnessJSON) *DAGWrapperC
 
 	// Public outputs
 	for i := 0; i < nLayers; i++ {
-		assignment.RlcBeta[i] = parseBigInt(w.PublicOutputs.RlcBetas[i])
-		assignment.ZDotJStar[i] = parseBigInt(w.PublicOutputs.ZDotJStars[i])
+		assignment.RlcBeta[i] = bp.parse(w.PublicOutputs.RlcBetas[i])
+		assignment.ZDotJStar[i] = bp.parse(w.PublicOutputs.ZDotJStars[i])
 	}
 	for i := range w.PublicOutputs.LTensorFlat {
-		assignment.LTensorFlat[i] = parseBigInt(w.PublicOutputs.LTensorFlat[i])
+		assignment.LTensorFlat[i] = bp.parse(w.PublicOutputs.LTensorFlat[i])
 	}
 	for g := 0; g < config.NumInputGroups; g++ {
-		assignment.ZDotR[g] = parseBigInt(w.PublicOutputs.ZDotRs[g])
+		assignment.ZDotR[g] = bp.parse(w.PublicOutputs.ZDotRs[g])
 	}
 	for p := 0; p < config.NumPublicClaims; p++ {
-		assignment.MleEval[p] = parseBigInt(w.PublicOutputs.MleEvals[p])
+		assignment.MleEval[p] = bp.parse(w.PublicOutputs.MleEvals[p])
 	}
 
 	// Public claim points: resolve from atom routing for non-committed input layers
@@ -370,7 +372,7 @@ func buildDAGAssignment(config DAGCircuitConfig, w *DAGWitnessJSON) *DAGWrapperC
 				idx := pi - ptStart
 				if idx < config.PubClaimNumVars[pubIdx] {
 					if entry < 1000 {
-						assignment.PubClaimPoints[pubIdx][idx] = parseBigInt(w.PublicInputs.Layers[source].Bindings[entry])
+						assignment.PubClaimPoints[pubIdx][idx] = bp.parse(w.PublicInputs.Layers[source].Bindings[entry])
 					} else if entry >= FIXED_REF_BASE {
 						assignment.PubClaimPoints[pubIdx][idx] = big.NewInt(int64(entry - FIXED_REF_BASE))
 					}
@@ -392,9 +394,7 @@ func buildDAGAssignment(config DAGCircuitConfig, w *DAGWitnessJSON) *DAGWrapperC
 			if end > len(hexStr) {
 				end = len(hexStr)
 			}
-			v := new(big.Int)
-			v.SetString(hexStr[start:end], 16)
-			assignment.PublicInputValues[i] = v
+			assignment.PublicInputValues[i] = bp.parse("0x" + hexStr[start:end])
 		}
 	} else {
 		for i := 0; i < config.PubInputCount; i++ {
@@ -402,7 +402,7 @@ func buildDAGAssignment(config DAGCircuitConfig, w *DAGWitnessJSON) *DAGWrapperC
 		}
 	}
 
-	return assignment
+	return assignment, bp.err
 }
 
 // cmdDAGProveJSON generates a Groth16 proof for a DAG circuit from witness JSON.
@@ -423,7 +423,11 @@ func cmdDAGProveJSON() {
 	fmt.Fprintf(os.Stderr, "DAG config: %d compute layers, %d input groups, %d public claims\n",
 		config.NumComputeLayers, config.NumInputGroups, config.NumPublicClaims)
 
-	assignment := buildDAGAssignment(config, &w)
+	assignment, err := buildDAGAssignment(config, &w)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error in DAG witness JSON: %v\n", err)
+		os.Exit(1)
+	}
 
 	// Redirect stdout to stderr to suppress gnark's fmt.Printf warnings during compile/witness
 	origStdout := os.Stdout
@@ -477,130 +481,84 @@ func cmdDAGProveJSON() {
 
 	// Verify
 	fmt.Fprintln(os.Stderr, "Verifying proof locally...")
-	publicWitness, _ := witness.Public()
+	publicWitness, err := witness.Public()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error extracting public witness: %v\n", err)
+		os.Exit(1)
+	}
 	if err := groth16.Verify(proof, vk, publicWitness); err != nil {
 		fmt.Fprintf(os.Stderr, "verification failed: %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Fprintln(os.Stderr, "Proof verified locally!")
 
-	// Extract proof points
-	var proofBuf bytes.Buffer
-	proof.WriteTo(&proofBuf)
-	proofBn254 := proof.(*groth16bn254.Proof)
-
-	proofPoints := make([]string, 8)
-	proofPoints[0] = fpToHex(&proofBn254.Ar.X)
-	proofPoints[1] = fpToHex(&proofBn254.Ar.Y)
-	proofPoints[2] = fpToHex(&proofBn254.Bs.X.A1)
-	proofPoints[3] = fpToHex(&proofBn254.Bs.X.A0)
-	proofPoints[4] = fpToHex(&proofBn254.Bs.Y.A1)
-	proofPoints[5] = fpToHex(&proofBn254.Bs.Y.A0)
-	proofPoints[6] = fpToHex(&proofBn254.Krs.X)
-	proofPoints[7] = fpToHex(&proofBn254.Krs.Y)
-
-	// Build public inputs matching buildDAGGroth16Inputs layout
-	var pubInputs []string
-
-	// CircuitHash [2]
-	pubInputs = append(pubInputs, w.PublicInputs.CircuitHash[0], w.PublicInputs.CircuitHash[1])
-	// OutputChallenges
-	pubInputs = append(pubInputs, w.PublicInputs.OutputChallenges...)
-
-	// Per-layer
-	for li := 0; li < config.NumComputeLayers; li++ {
-		layer := w.PublicInputs.Layers[li]
-		pubInputs = append(pubInputs, layer.RlcCoeffs...)
-		pubInputs = append(pubInputs, layer.Bindings...)
-		pubInputs = append(pubInputs, layer.Rhos...)
-		pubInputs = append(pubInputs, layer.Gammas...)
-		pubInputs = append(pubInputs, layer.PODPChallenge)
-		if config.HasPoP(li) {
-			if len(layer.PopChallenges) > 0 {
-				pubInputs = append(pubInputs, layer.PopChallenges[0])
-			} else {
-				pubInputs = append(pubInputs, "0x0")
-			}
-		}
-	}
-
-	// Per-input-group (rlcCoeffs + podpChallenge + lBindings + rBindings)
-	for g := 0; g < config.NumInputGroups; g++ {
-		ig := w.PublicInputs.InputGroups[g]
-		pubInputs = append(pubInputs, ig.RlcCoeffs...)
-		pubInputs = append(pubInputs, ig.PODPChallenge)
-		pubInputs = append(pubInputs, ig.LHalfBindings...)
-		pubInputs = append(pubInputs, ig.RHalfBindings...)
-	}
-
-	// Per-public-claim points (resolved from atom routing)
-	dagDesc := w.DAGCircuitDescription
-	numInputLayersCmd := len(dagDesc.InputIsCommitted)
-	for j := 0; j < numInputLayersCmd; j++ {
-		if dagDesc.InputIsCommitted[j] {
-			continue
-		}
-		targetIdx := config.NumComputeLayers + j
-		if targetIdx >= len(dagDesc.IncomingOffsets)-1 {
-			continue
-		}
-		inStart := dagDesc.IncomingOffsets[targetIdx]
-		inEnd := dagDesc.IncomingOffsets[targetIdx+1]
-		for k := 0; k < inEnd-inStart; k++ {
-			globalAtom := dagDesc.IncomingAtomIdx[inStart+k]
-			source := 0
-			for li := 0; li < config.NumComputeLayers; li++ {
-				if globalAtom >= dagDesc.AtomOffsets[li] && globalAtom < dagDesc.AtomOffsets[li+1] {
-					source = li
-					break
-				}
-			}
-			ptStart := dagDesc.PtOffsets[globalAtom]
-			ptEnd := dagDesc.PtOffsets[globalAtom+1]
-			for pi := ptStart; pi < ptEnd; pi++ {
-				entry := dagDesc.PtData[pi]
-				if entry < 1000 {
-					pubInputs = append(pubInputs, w.PublicInputs.Layers[source].Bindings[entry])
-				} else if entry >= FIXED_REF_BASE {
-					val := big.NewInt(int64(entry - FIXED_REF_BASE))
-					pubInputs = append(pubInputs, fmt.Sprintf("0x%x", val))
-				}
-			}
-		}
-	}
-
-	// Public input values (from ABI-encoded data)
-	if w.PublicValuesABI != "" && len(w.PublicValuesABI) > 2 {
-		hexStr := w.PublicValuesABI
-		if len(hexStr) > 2 && hexStr[:2] == "0x" {
-			hexStr = hexStr[2:]
-		}
-		for i := 0; i < config.PubInputCount && i*64 < len(hexStr); i++ {
-			start := i * 64
-			end := start + 64
-			if end > len(hexStr) {
-				end = len(hexStr)
-			}
-			pubInputs = append(pubInputs, "0x"+hexStr[start:end])
-		}
-	}
-
-	// Outputs
-	pubInputs = append(pubInputs, w.PublicOutputs.RlcBetas...)
-	pubInputs = append(pubInputs, w.PublicOutputs.ZDotJStars...)
-	pubInputs = append(pubInputs, w.PublicOutputs.LTensorFlat...)
-	pubInputs = append(pubInputs, w.PublicOutputs.ZDotRs...)
-	pubInputs = append(pubInputs, w.PublicOutputs.MleEvals...)
-
-	fixture := map[string]interface{}{
-		"proof":         proofPoints,
-		"public_inputs": pubInputs,
+	fixture, err := dagFixture(proof, publicWitness)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error building fixture: %v\n", err)
+		os.Exit(1)
 	}
 
 	out, _ := json.MarshalIndent(fixture, "", "  ")
 	fmt.Println(string(out))
 	fmt.Fprintf(os.Stderr, "DAG JSON fixture written (%d proof points, %d public inputs)\n",
-		len(proofPoints), len(pubInputs))
+		len(fixture.Proof), len(fixture.PublicInputs))
+}
+
+// dagFixtureJSON is the JSON fixture prove-dag-json prints: the eight proof
+// coordinates in the order the Solidity verifier takes them, then the public
+// inputs.
+type dagFixtureJSON struct {
+	Proof        []string `json:"proof"`
+	PublicInputs []string `json:"public_inputs"`
+}
+
+// dagFixture turns a verified proof and its public witness into the fixture.
+// The public inputs come from the public witness gnark verified, in the
+// circuit's declaration order, not from a second copy rebuilt from the JSON
+// that could drift from the assignment.
+func dagFixture(proof groth16.Proof, publicWitness witness.Witness) (*dagFixtureJSON, error) {
+	p, ok := proof.(*groth16bn254.Proof)
+	if !ok {
+		return nil, fmt.Errorf("proof is %T, not a BN254 Groth16 proof", proof)
+	}
+	// The fixture has room for A, B and C only; a proof with commitments
+	// would not verify from it.
+	if len(p.Commitments) > 0 {
+		return nil, fmt.Errorf("proof has %d commitments; the fixture cannot carry them", len(p.Commitments))
+	}
+	pubInputs, err := publicInputsHex(publicWitness)
+	if err != nil {
+		return nil, err
+	}
+	return &dagFixtureJSON{
+		Proof: []string{
+			fpToHex(&p.Ar.X),
+			fpToHex(&p.Ar.Y),
+			fpToHex(&p.Bs.X.A1),
+			fpToHex(&p.Bs.X.A0),
+			fpToHex(&p.Bs.Y.A1),
+			fpToHex(&p.Bs.Y.A0),
+			fpToHex(&p.Krs.X),
+			fpToHex(&p.Krs.Y),
+		},
+		PublicInputs: pubInputs,
+	}, nil
+}
+
+// publicInputsHex formats a public witness as the 0x-prefixed, 64-hex-digit
+// strings the Solidity fixtures use.
+func publicInputsHex(publicWitness witness.Witness) ([]string, error) {
+	vec, ok := publicWitness.Vector().(fr.Vector)
+	if !ok {
+		return nil, fmt.Errorf("public witness is %T, not a BN254 fr.Vector", publicWitness.Vector())
+	}
+	out := make([]string, len(vec))
+	for i := range vec {
+		var b big.Int
+		vec[i].BigInt(&b)
+		out[i] = fmt.Sprintf("0x%064x", &b)
+	}
+	return out, nil
 }
 
 // cmdDAGInfo shows DAG circuit statistics from witness JSON on stdin.

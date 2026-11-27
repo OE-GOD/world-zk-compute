@@ -38,11 +38,14 @@ make test           # Run tests
 cat witness.json | ./gnark-wrapper prove-json
 
 # DAG circuit Groth16 proof (XGBoost)
-cat witness.json | ./gnark-wrapper prove-dag-json --config-json
+cat witness.json | ./gnark-wrapper prove-dag-json
 
-# Show circuit info
-./gnark-wrapper dag-info
+# Show DAG circuit info (reads the witness JSON from stdin)
+./gnark-wrapper dag-info < witness.json
 ```
+
+`--config-json` only affects `prove` and `prove-json`; `prove-dag-json` and
+`dag-info` always take the circuit shape from the witness JSON.
 
 ## Dependencies
 
@@ -54,10 +57,18 @@ cat witness.json | ./gnark-wrapper prove-dag-json --config-json
 
 After running `prove-dag-json`, the wrapper generates:
 - `DAGRemainderGroth16Verifier.sol` — Solidity verifier with embedded verification key
-- Groth16 proof bytes (printed to stdout)
+- A JSON fixture (proof points and public inputs), printed to stdout
 
 ## Notes
 
-- The checked-in `gnark-wrapper` binary is arm64 macOS. CI and Docker need a Linux build.
-- Proving keys (`proving_key.bin`, `verification_key.bin`) are generated on first run and cached.
-- DAG circuit compilation takes ~30s; subsequent proofs use cached keys.
+- No binary is checked in; build one with the commands above.
+- Every key comes from a one-party `groth16.Setup` run on the local machine.
+- `prove-dag-json`, `prove-ec-json` and `prove-ec-chunked-json` run a fresh
+  setup on every call, so each run has new keys and writes a new verifier
+  `.sol` into the current directory, overwriting the previous one. Nothing is
+  cached between runs.
+- `prove` and `prove-json` load `proving_key.bin` and `verification_key.bin`
+  written by `setup`. `prove-json` runs a fresh setup instead (and writes
+  `RemainderGroth16Verifier.sol`) when `proving_key.bin` is missing or
+  `--config-json` is given.
+- DAG circuit compilation takes ~30s.

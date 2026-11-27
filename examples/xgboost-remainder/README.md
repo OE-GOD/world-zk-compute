@@ -55,7 +55,6 @@ xgboost-remainder/
     circuit.go            simple GKR wrapper
     dag_circuit.go        DAG GKR wrapper (variable-width layers)
     dag_main.go           DAG prove/verify commands
-    poseidon.go           gnark Poseidon circuit
     gnark-wrapper         binary, not checked in (build it: go build -o gnark-wrapper .)
   benches/
     prover_bench.rs       criterion benchmarks
@@ -142,9 +141,10 @@ cargo run --release --bin gen_dag_groth16_witness > witness.json
 
 # 2. Build the gnark wrapper and run it to produce the Groth16 proof
 (cd gnark-wrapper && go build -o gnark-wrapper .)
-cat witness.json | ./gnark-wrapper/gnark-wrapper prove-dag-json --config-json
+cat witness.json | ./gnark-wrapper/gnark-wrapper prove-dag-json
 
-# 3. The output includes the Groth16 proof and the Solidity verifier contract
+# 3. stdout is a JSON fixture (proof points and public inputs); the Solidity
+#    verifier is written to DAGRemainderGroth16Verifier.sol in the current directory
 ```
 
 ## gnark-wrapper usage
@@ -155,18 +155,21 @@ verification's Fr-arithmetic portion:
 ```bash
 cd gnark-wrapper
 
-# Simple GKR circuit (reads witness JSON from stdin)
+# Simple GKR circuit (reads witness JSON from stdin; needs the keys that
+# `go run . setup` writes to proving_key.bin and verification_key.bin)
 go run . prove < witness.json
 
 # DAG GKR circuit (reads witness JSON from stdin)
-cat witness.json | go run . prove-dag-json --config-json
+cat witness.json | go run . prove-dag-json
 
 # Show circuit info
-go run . dag-info --config-json < witness.json
+go run . dag-info < witness.json
 ```
 
-The wrapper auto-exports a Solidity verifier contract
-(`DAGRemainderGroth16Verifier.sol`) with embedded verification keys.
+Each `prove-dag-json` run does a fresh one-party Groth16 setup and writes a
+new Solidity verifier (`DAGRemainderGroth16Verifier.sol`, with that run's
+verification key) into the current directory, overwriting the previous one.
+`prove-dag-json` keeps no keys between runs; see `gnark-wrapper/BUILD.md`.
 
 ## On-chain verification
 
