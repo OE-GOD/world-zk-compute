@@ -84,8 +84,8 @@ pub fn verify_compute_layers(
         output_eval: G1Point::INFINITY,
     };
 
-    // Output layer: squeeze numVars challenges
-    let num_vars = proof.layer_proofs[0].sumcheck_proof.messages.len();
+    // Output layer: squeeze numVars challenges, numVars as registered for layer 0
+    let num_vars = check_round_counts(proof, desc);
     ctx.output_challenges = Vec::with_capacity(num_vars);
     for _ in 0..num_vars {
         ctx.output_challenges.push(Fr::from_fq(&sponge.squeeze()).0);
@@ -101,6 +101,38 @@ pub fn verify_compute_layers(
     }
 
     ctx
+}
+
+/// Check the proof's shape against the circuit description, before any
+/// message or challenge is used, and return the number of output-layer
+/// variables (layer 0's registered rounds).
+///
+/// There must be exactly one layer proof and one round count per compute
+/// layer. Only the first num_compute_layers of each are read, so extra layer
+/// proofs would give a second encoding of the same proof, and extra round
+/// counts a second encoding of the same description; the Rust verifier
+/// (zkml-verifier check_proof_shape) rejects both, and so must this one.
+///
+/// The bindings of a layer are derived from however many messages its proof
+/// carries, and the output challenges were counted from layer 0's messages,
+/// so without the per-layer check the proof, not the circuit, chose the
+/// round counts.
+fn check_round_counts(proof: &GKRProof, desc: &DAGCircuitDescription) -> usize {
+    verify!(
+        proof.layer_proofs.len() == desc.num_compute_layers,
+        "layer proof count differs from numComputeLayers"
+    );
+    verify!(
+        desc.num_sumcheck_rounds.len() == desc.num_compute_layers,
+        "numSumcheckRounds length differs from numComputeLayers"
+    );
+    for i in 0..desc.num_compute_layers {
+        verify!(
+            proof.layer_proofs[i].sumcheck_proof.messages.len() == desc.num_sumcheck_rounds[i],
+            "sumcheck message count differs from numSumcheckRounds"
+        );
+    }
+    desc.num_sumcheck_rounds[0]
 }
 
 /// Process one compute layer: RLC aggregation + committed sumcheck + PoP
@@ -369,7 +401,7 @@ pub fn verify_compute_layers_hybrid(
     };
 
     // Output layer: squeeze numVars challenges (same as full)
-    let num_vars = proof.layer_proofs[0].sumcheck_proof.messages.len();
+    let num_vars = check_round_counts(proof, desc);
     ctx.output_challenges = Vec::with_capacity(num_vars);
     for _ in 0..num_vars {
         ctx.output_challenges.push(Fr::from_fq(&sponge.squeeze()).0);

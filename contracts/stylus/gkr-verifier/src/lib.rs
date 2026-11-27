@@ -136,11 +136,14 @@ use stylus_sdk::abi::Bytes;
 ///   oracle_product_offsets      (length-prefixed u256[])
 ///   oracle_result_idxs          (length-prefixed u256[])
 ///   oracle_expr_coeffs          (length-prefixed u256[])
+///
+/// Each value must fit its field (u8, u64, usize, bool as 0 or 1) and the data
+/// must end after the last array, so one description has one encoding.
 fn decode_circuit_description(data: &[u8]) -> DAGCircuitDescription {
     let mut dec = ProofDecoder::new(data);
 
-    let num_compute_layers = read_usize_from(&mut dec);
-    let num_input_layers = read_usize_from(&mut dec);
+    let num_compute_layers = dec.read_usize();
+    let num_input_layers = dec.read_usize();
 
     let layer_types = read_u8_array(&mut dec);
     let num_sumcheck_rounds = read_usize_array(&mut dec);
@@ -153,6 +156,7 @@ fn decode_circuit_description(data: &[u8]) -> DAGCircuitDescription {
     let oracle_product_offsets = read_usize_array(&mut dec);
     let oracle_result_idxs = read_usize_array(&mut dec);
     let oracle_expr_coeffs = read_u256_array(&mut dec);
+    dec.finish();
 
     DAGCircuitDescription {
         num_compute_layers,
@@ -171,63 +175,55 @@ fn decode_circuit_description(data: &[u8]) -> DAGCircuitDescription {
     }
 }
 
-/// Read a single U256 from the decoder, returning its low-order usize value.
-fn read_usize_from(dec: &mut ProofDecoder) -> usize {
-    let v = dec.read_u256_public();
-    // Only use the lowest 64 bits; panic if larger.
-    verify!(
-        v.0[1] == 0 && v.0[2] == 0 && v.0[3] == 0,
-        "value too large for usize"
-    );
-    v.0[0] as usize
-}
-
 /// Read a length-prefixed array of U256 values interpreted as `u8`.
+/// A value above 255 is refused instead of being cut to its low byte.
 fn read_u8_array(dec: &mut ProofDecoder) -> Vec<u8> {
-    let len = read_usize_from(dec);
+    let len = dec.read_usize();
     let mut result = Vec::with_capacity(len);
     for _ in 0..len {
-        let v = dec.read_u256_public();
-        result.push(v.0[0] as u8);
+        let v = u8::try_from(dec.read_u64());
+        verify!(v.is_ok(), "value does not fit in 8 bits");
+        result.push(v.unwrap_or(0));
     }
     result
 }
 
 /// Read a length-prefixed array of U256 values interpreted as `usize`.
 fn read_usize_array(dec: &mut ProofDecoder) -> Vec<usize> {
-    let len = read_usize_from(dec);
+    let len = dec.read_usize();
     let mut result = Vec::with_capacity(len);
     for _ in 0..len {
-        result.push(read_usize_from(dec));
+        result.push(dec.read_usize());
     }
     result
 }
 
 /// Read a length-prefixed array of U256 values interpreted as `u64`.
 fn read_u64_array(dec: &mut ProofDecoder) -> Vec<u64> {
-    let len = read_usize_from(dec);
+    let len = dec.read_usize();
     let mut result = Vec::with_capacity(len);
     for _ in 0..len {
-        let v = dec.read_u256_public();
-        result.push(v.0[0]);
+        result.push(dec.read_u64());
     }
     result
 }
 
-/// Read a length-prefixed array of U256 values interpreted as `bool` (0 = false, nonzero = true).
+/// Read a length-prefixed array of U256 values interpreted as `bool`.
+/// Only 0 and 1 are accepted, as in Solidity's ABI encoding of `bool[]`.
 fn read_bool_array(dec: &mut ProofDecoder) -> Vec<bool> {
-    let len = read_usize_from(dec);
+    let len = dec.read_usize();
     let mut result = Vec::with_capacity(len);
     for _ in 0..len {
-        let v = dec.read_u256_public();
-        result.push(!v.is_zero());
+        let v = dec.read_u64();
+        verify!(v <= 1, "bool value must be 0 or 1");
+        result.push(v == 1);
     }
     result
 }
 
 /// Read a length-prefixed array of raw U256 values.
 fn read_u256_array(dec: &mut ProofDecoder) -> Vec<U256> {
-    let len = read_usize_from(dec);
+    let len = dec.read_usize();
     let mut result = Vec::with_capacity(len);
     for _ in 0..len {
         result.push(dec.read_u256_public());
@@ -495,7 +491,8 @@ pub fn verify_dag_proof_hybrid_inner(
 ///   2. Per compute layer (0..N): rlc_beta
 ///   3. Per compute layer (0..N): z_dot_j_star
 ///   4. num_eval_groups (U256)
-///   5. Per eval group: l_tensor_flat length (U256), then l_tensor_flat entries
+///   5. Total l_tensor_flat length over all groups (U256), then every group's
+///      l_tensor entries one after the other (no per-group lengths)
 ///   6. Per eval group: z_dot_r
 ///   7. num_mle_evals (U256)
 ///   8. Per public claim: mle_eval
@@ -800,6 +797,39 @@ mod tests {
         assert_eq!(desc.oracle_product_offsets, vec![0, 1]);
         assert_eq!(desc.oracle_result_idxs, vec![0]);
         assert_eq!(desc.oracle_expr_coeffs, vec![U256::ONE]);
+    }
+
+    /// A length-prefixed array holding one entry, 2^64 + `low`.
+    fn one_entry_above_64_bits(low: u64) -> Vec<u8> {
+        let mut buf = Vec::new();
+        push_usize(&mut buf, 1);
+        push_u256(&mut buf, U256([low, 1, 0, 0]));
+        buf
+    }
+
+    #[test]
+    #[should_panic(expected = "value does not fit in 64 bits")]
+    fn test_u64_array_entry_above_64_bits_is_rejected() {
+        // The ptData reader used to keep only the low limb, so 2^64 + 7 was read as 7.
+        let buf = one_entry_above_64_bits(7);
+        read_u64_array(&mut ProofDecoder::new(&buf));
+    }
+
+    #[test]
+    #[should_panic(expected = "value does not fit in 64 bits")]
+    fn test_u8_array_entry_above_64_bits_is_rejected() {
+        // The layerTypes reader used to keep only the low byte, so 2^64 + 1 was read as 1.
+        let buf = one_entry_above_64_bits(1);
+        read_u8_array(&mut ProofDecoder::new(&buf));
+    }
+
+    #[test]
+    #[should_panic(expected = "value does not fit in 8 bits")]
+    fn test_u8_array_entry_above_255_is_rejected() {
+        let mut buf = Vec::new();
+        push_usize(&mut buf, 1);
+        push_usize(&mut buf, 256 + 1);
+        read_u8_array(&mut ProofDecoder::new(&buf));
     }
 
     /// Build a minimal (empty) circuit description for panic-path tests.
